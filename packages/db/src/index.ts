@@ -1,2 +1,4 @@
-// Пакет @cg/db: схема БД и Effect-сервис Db (появятся в Task 2).
-export const packageName = "@cg/db" as const;
+// Пакет @cg/db: схема БД, Effect-сервис Db и миграции.
+export { Db, type Database } from "./Db";
+export { MigrationError, migrationsFolder, runMigrations } from "./migrate";
+export * from "./schema";

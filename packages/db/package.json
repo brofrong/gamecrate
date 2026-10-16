@@ -5,9 +5,23 @@
   "type": "module",
   "module": "src/index.ts",
   "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./test": "./test/testDb.ts"
+  },
   "scripts": {
     "check": "bun check",
     "lint": "bun lint src",
-    "test": "bun test --pass-with-no-tests"
+    "test": "bun test --env-file=../../.env"
+  },
+  "dependencies": {
+    "@effect/sql-pg": "4.0.5",
+    "drizzle-orm": "1.0.0-rc.4",
+    "effect": "4.0.5"
+  },
+  "devDependencies": {
+    "better-auth": "1.7.10",
+    "better-auth-steam": "0.2.3",
+    "drizzle-kit": "1.0.0-rc.4"
   }
 }

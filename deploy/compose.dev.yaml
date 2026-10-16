@@ -1,0 +1,26 @@
+# Локальный Postgres для разработки и тестов.
+# Запуск: docker compose -f deploy/compose.dev.yaml up -d
+# Учётные данные берутся из окружения (POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB),
+# по умолчанию cg / cg / cloud_gaming — совпадают с DATABASE_URL и TEST_DATABASE_URL в .env.example.
+name: cloud-gaming-dev
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cg}
+      POSTGRES_DB: ${POSTGRES_DB:-cloud_gaming}
+    ports:
+      - "127.0.0.1:5442:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pgdata:
