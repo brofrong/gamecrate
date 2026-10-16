@@ -1,0 +1,11 @@
+{
+  "name": "@cg/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun check",
+    "lint": "bun lint src",
+    "test": "bun test --pass-with-no-tests"
+  }
+}

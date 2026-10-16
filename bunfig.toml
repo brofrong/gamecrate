@@ -1,0 +1,3 @@
+[install]
+# Версии зависимостей пинуются точно (без ^/~) — см. Global Constraints.
+exact = true
