@@ -1,0 +1,47 @@
+# SPIKE (throwaway): проверка стрима Steam-игр в браузер через WebRTC + NVENC.
+# Запуск на brofrong: docker compose up -d ; веб-интерфейс через ssh-туннель на :8080
+services:
+  egl:
+    build: .
+    image: cg-spike:550.163.01
+    container_name: cg-spike
+    runtime: nvidia
+    network_mode: host # WebRTC по UDP без двойного NAT через docker bridge
+    shm_size: 2g
+    restart: "no"
+    environment:
+      TZ: Europe/Moscow
+      PASSWD: ${SPIKE_PASSWD:?set SPIKE_PASSWD}
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      DISPLAY_SIZEW: "1920"
+      DISPLAY_SIZEH: "1080"
+      SELKIES_MODE: webrtc # по умолчанию websockets (TCP) — источник лагов через интернет
+      SELKIES_ENCODER: h264enc # на этой GPU уходит в NVENC (pixelflux)
+      SELKIES_FRAMERATE: "60,30-120"
+      SELKIES_VIDEO_BITRATE: "10000,2000-40000"
+      SELKIES_KEYFRAME_INTERVAL: "2" # 0 = бесконечный GOP: одна потеря замораживает картинку до переподключения
+      SELKIES_RATE_CONTROL_MODE: cbr
+      # один UDP-порт на все сессии, сервер доступен напрямую по публичному IP
+      SELKIES_WEBRTC_UDP_MUX_PORT: "59000"
+      SELKIES_WEBRTC_PUBLIC_IP: 37.153.14.138
+      SELKIES_WEBRTC_ICE_LITE: "true"
+      SELKIES_ENABLE_WEBRTC_STATISTICS: "true"
+      SELKIES_WAYLAND: "${SPIKE_WAYLAND:-true}" # нужен nvidia-drm modeset=1 на хосте, иначе откат на X11 + CPU readback
+      SELKIES_ENABLE_HTTPS: "false" # доступ только через ssh-туннель на localhost
+      SELKIES_ENABLE_BASIC_AUTH: "${SPIKE_AUTH:-true}" # 8080 наружу не проброшен, пароль защищает от домашней сети
+    volumes:
+      - cg-spike-home:/home/ubuntu
+      # GBM-бэкенд NVIDIA: в Debian лежит в nvidia/current/, toolkit его не прокидывает
+      - /usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1:ro
+      - /usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  cg-spike-home:
