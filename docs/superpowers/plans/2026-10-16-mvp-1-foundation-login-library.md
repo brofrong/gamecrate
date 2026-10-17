@@ -218,7 +218,7 @@ spike/              (уже есть, остаётся как справочни
 - Test: `apps/web/test/ProtonBadge.test.tsx`, `apps/web/test/library.test.tsx`
 
 **Interfaces:**
-- Consumes: RPC `auth.me`, `library.list`, `library.refresh`, `admin.ping`; `tierLabel`, `LibraryView` из `@cg/rpc`; клиенты Better Auth (`better-auth/client` + `steamOpenIDClient`, `genericOAuthClient`).
+- Consumes: RPC `auth.me`, `library.list`, `library.refresh`, `admin.ping`; `tierLabel`, `LibraryView` из `@cg/rpc`; клиенты Better Auth (`better-auth/client` + `steamOpenIDClient`, (genericOAuth не имеет клиентского плагина в 1.7.10)).
 - Produces: `bun run --cwd apps/web build` → `apps/web/dist/` (index.html + ассеты); `dev.ts` — `Bun.serve` с HTML-импортом и HMR на `:5173`, проксирует `/api/*` и `/rpc` (WS) на `:3000`.
 
 - [ ] **Step 1:** Сборка: `build.ts` вызывает `Bun.build({ entrypoints: ["src/index.html"], outdir: "dist", minify: true, plugins: [tailwind] })` (`bun-plugin-tailwind`). shadcn/ui: компоненты `button`, `card`, `badge`, `tooltip`, `skeleton` в `src/components/ui`. Тёмная тема по умолчанию.
@@ -233,7 +233,7 @@ spike/              (уже есть, остаётся как справочни
 - [ ] **Step 4:** Реализовать:
   - `/` — если не вошёл: экран с кнопкой «Войти через Steam» (`authClient.steam.login({ callbackURL: "/library" })`); если вошёл — редирект на `/library`.
   - `/library` — сетка вертикальных обложек (как в GameHub: тёмный фон, крупные обложки 600×900, название под обложкой, плашка ProtonDB, время в Steam), кнопка «Обновить» (`library.refresh`; при `SteamUnavailable` — тост «Steam сейчас недоступен, показываем сохранённую библиотеку»), аватар и «Выйти» в шапке. Кнопка «Играть» на карточке — disabled с подсказкой «Скоро» (запуск — план 2).
-  - `/admin` — без сессии кнопка «Войти через Pocket ID» (`authClient.signIn.oauth2({ providerId: "pocket-id", callbackURL: "/admin" })`); роль `player` → «Нет доступа»; `admin` → заголовок «Админка» и результат `admin.ping`.
+  - `/admin` — без сессии кнопка «Войти через Pocket ID» (`authClient.signIn.social({ provider: "pocket-id", callbackURL: "/admin" })`); роль `player` → «Нет доступа»; `admin` → заголовок «Админка» и результат `admin.ping`.
   - `rpc.ts` — Effect RPC-клиент по WebSocket на `/rpc` + атомы `@effect/atom-react` для `auth.me` и `library.list`.
 - [ ] **Step 5:** `bun test apps/web` — Expected: PASS. `bun run build` — Expected: появился `apps/web/dist/index.html`.
 - [ ] **Step 6:** Ручная проверка локально: `bun run dev` (api + web), вход через Steam на `http://localhost:5173` проходит, библиотека с обложками и плашками.
@@ -254,7 +254,7 @@ spike/              (уже есть, остаётся как справочни
 - [ ] **Step 2:** `deploy/deploy.sh`: `rsync` репозитория (без `node_modules`, `.git`, `spike/nv`) в `brofrong:~/cloud-gaming`, затем `ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env up -d --build'`. `.env` на сервер копируется отдельно один раз (`scp .env.production brofrong:~/cloud-gaming/.env`, права 600), скрипт его не перезаписывает.
 - [ ] **Step 3: ручной шаг владельца** (описать в `deploy/README.md`):
   - в ingressi (`https://proxy.brofrong.ru`) добавить хост `game.brofrong.ru` → `http://cg-api:3000`, WebSocket включён, HTTPS (Let's Encrypt);
-  - в Pocket ID (`https://sso.brofrong.ru`) создать OIDC-клиента «Cloud Gaming», callback `https://game.brofrong.ru/api/auth/oauth2/callback/pocket-id`, группа `cloud_gaming_admins`, добавить в неё себя; client id/secret — в `.env` на сервере.
+  - в Pocket ID (`https://sso.brofrong.ru`) создать OIDC-клиента «Cloud Gaming», callback `https://game.brofrong.ru/api/auth/callback/pocket-id`, группа `cloud_gaming_admins`, добавить в неё себя; client id/secret — в `.env` на сервере.
 - [ ] **Step 4:** `./deploy/deploy.sh`; проверка: `curl -s https://game.brofrong.ru/healthz` → `ok`; `ssh brofrong 'docker ps --filter name=cg- --format "{{.Names}} {{.Status}}"'` → оба `healthy`; число остальных контейнеров на сервере не изменилось.
 - [ ] **Step 5:** Приёмка с владельцем: вход через Steam на `https://game.brofrong.ru` → библиотека с Vampire Survivors и плашкой ProtonDB; вход через Pocket ID на `/admin` → «Админка», `pong`.
 - [ ] **Step 6:** Commit `feat(deploy): compose deployment to brofrong`.
