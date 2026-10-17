@@ -1,6 +1,7 @@
 # Боевой деплой на brofrong. Запуск: см. deploy/deploy.sh и deploy/README.md.
 # Переменные читаются из ~/cloud-gaming/.env (docker compose --env-file .env),
-# который деплой не создаёт и не перезаписывает — см. README.
+# который деплой не создаёт и не перезаписывает (дописывает только строку AGENT_TOKEN,
+# если её нет) — см. README.
 name: cloud-gaming
 
 # Ротация логов docker: без неё json-file растёт без ограничений.
@@ -10,12 +11,17 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# Один образ приложения на api, оркестратор и агента (разные `command`). Собирается
+# сервисом cg-api; cg-orchestrator и cg-agent берут тот же тег (pull_policy: never —
+# образ локальный, в реестре его нет).
+x-app-image: &app-image cloud-gaming/cg-api:latest
+
 services:
   cg-api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: cloud-gaming/cg-api:latest
+    image: *app-image
     container_name: cg-api
     restart: unless-stopped
     # Только нужные api переменные, а не весь .env: POSTGRES_PASSWORD сюда не попадает
@@ -37,6 +43,8 @@ services:
     networks:
       - cg
       - proxy
+      # Контейнеры сессий (Selkies, http://cg-session-<id>:8080) — только для прокси /stream/<id>/.
+      - cg-sessions
     depends_on:
       cg-postgres:
         condition: service_healthy
@@ -52,6 +60,78 @@ services:
       retries: 5
       start_period: 20s
     # Порты наружу не публикуются: наружу отдаёт ingressi (Caddy) через внешнюю сеть proxy.
+
+  # Оркестратор: планировщик и таймеры сессий, WebSocket /agent для агентов воркеров.
+  # Только сеть cg, порт наружу не публикуется (агенты подключаются изнутри cg).
+  cg-orchestrator:
+    image: *app-image
+    pull_policy: never
+    container_name: cg-orchestrator
+    command: ["bun", "apps/orchestrator/src/main.ts"]
+    restart: unless-stopped
+    environment:
+      ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-3001}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      AGENT_TOKEN: ${AGENT_TOKEN:?AGENT_TOKEN is required}
+    mem_limit: 256m
+    logging: *logging
+    networks:
+      - cg
+    depends_on:
+      cg-postgres:
+        condition: service_healthy
+      # api и оркестратор оба применяют миграции при старте; api healthy = его миграции
+      # уже прошли, так они не идут параллельно.
+      cg-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "bun"
+        - "-e"
+        - "fetch('http://localhost:'+(process.env.ORCHESTRATOR_PORT||3001)+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Агент воркера brofrong: запускает/останавливает контейнеры сессий cg-session-<id>
+  # через Docker API. Сокет Docker смонтирован; процесс — пользователь bun (1000) с
+  # дополнительной группой владельца сокета (DOCKER_GID, deploy.sh берёт её из
+  # `stat -c %g /var/run/docker.sock`), без privileged и без root.
+  # Контейнеры сессий не входят в compose-проект: `docker compose up/down` их не трогает,
+  # перезапущенный агент подхватывает живые по метке cg.session.
+  cg-agent:
+    image: *app-image
+    pull_policy: never
+    container_name: cg-agent
+    command: ["bun", "apps/agent/src/main.ts"]
+    restart: unless-stopped
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:-995}"
+    environment:
+      WORKER_ID: ${WORKER_ID:-brofrong}
+      ORCHESTRATOR_URL: ws://cg-orchestrator:${ORCHESTRATOR_PORT:-3001}/agent
+      AGENT_TOKEN: ${AGENT_TOKEN:?AGENT_TOKEN is required}
+      WORKER_PUBLIC_IP: ${WORKER_PUBLIC_IP:-37.153.14.138}
+      SLOTS: ${SLOTS:-1}
+      UDP_PORT_BASE: ${UDP_PORT_BASE:-59000}
+      SESSION_IMAGE: ${SESSION_IMAGE:-cg-session:550.163.01}
+      SESSION_NETWORK: cg-sessions
+      GBM_ALLOCATOR_PATH: ${GBM_ALLOCATOR_PATH:-/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01}
+      DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 256m
+    logging: *logging
+    networks:
+      - cg
+    depends_on:
+      cg-orchestrator:
+        condition: service_healthy
+    # Healthcheck нет: у агента нет HTTP. Связь с оркестратором видна в логе
+    # оркестратора («Agent connected» workerId=brofrong) и в workers.last_seen_at.
 
   cg-postgres:
     image: postgres:18
@@ -78,6 +158,11 @@ networks:
   cg:
     name: cg
   proxy:
+    external: true
+  # Сеть контейнеров сессий. Создаётся deploy.sh (`docker network create cg-sessions`), если её нет;
+  # из сервисов compose к ней подключён только cg-api.
+  cg-sessions:
+    name: cg-sessions
     external: true
 
 volumes:
