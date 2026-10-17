@@ -35,6 +35,11 @@
    - `POSTGRES_PASSWORD` — новый случайный пароль для `cg-postgres`.
    - `DATABASE_URL=postgres://cg:<POSTGRES_PASSWORD>@cg-postgres:5432/cloud_gaming` — тот же пароль,
      что в `POSTGRES_PASSWORD`.
+   - Необязательно: `ALLOWED_ORIGINS` — дополнительные Origin для WebSocket `/rpc` через запятую;
+     без неё разрешён только origin `PUBLIC_URL`, для прода этого достаточно.
+
+   `cg-api` получает только перечисленные в `deploy/compose.yaml` переменные (не весь `.env`):
+   `POSTGRES_PASSWORD` видит лишь `cg-postgres`. Новая переменная сервера — добавить её туда же.
 2. `chmod 600 .env.production`.
 3. Скопировать на сервер **один раз**: `scp -p .env.production brofrong:~/cloud-gaming/.env`
    (сначала `ssh brofrong 'mkdir -p ~/cloud-gaming'`, если каталога ещё нет).
@@ -63,8 +68,8 @@
 ```
 
 Скрипт:
-1. `rsync` репозитория в `brofrong:~/cloud-gaming` (без `node_modules`, `.git`, `spike/nv`, `.env*`
-   кроме `.env.example`).
+1. `rsync` репозитория в `brofrong:~/cloud-gaming` (без `node_modules`, `.git`, `spike/nv`,
+   `.superpowers`, `docs`, `.env*` кроме `.env.example`).
 2. Проверяет, что `~/cloud-gaming/.env` существует на сервере (падает с понятной ошибкой, если нет
    — см. шаг 1).
 3. `ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env up -d --build'`.

@@ -14,6 +14,8 @@ rsync -az --delete \
   --exclude ".git/" \
   --exclude "node_modules/" \
   --exclude "spike/nv/" \
+  --exclude ".superpowers/" \
+  --exclude "docs/" \
   --exclude ".turbo/" \
   --exclude "dist/" \
   --exclude ".DS_Store" \

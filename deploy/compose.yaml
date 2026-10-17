@@ -3,6 +3,13 @@
 # который деплой не создаёт и не перезаписывает — см. README.
 name: cloud-gaming
 
+# Ротация логов docker: без неё json-file растёт без ограничений.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   cg-api:
     build:
@@ -11,8 +18,22 @@ services:
     image: cloud-gaming/cg-api:latest
     container_name: cg-api
     restart: unless-stopped
-    env_file:
-      - ../.env
+    # Только нужные api переменные, а не весь .env: POSTGRES_PASSWORD сюда не попадает
+    # (пароль уже внутри DATABASE_URL). Значения подставляются из --env-file .env.
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      STEAM_API_KEY: ${STEAM_API_KEY:?STEAM_API_KEY is required}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      POCKET_ID_URL: ${POCKET_ID_URL:?POCKET_ID_URL is required}
+      POCKET_ID_CLIENT_ID: ${POCKET_ID_CLIENT_ID:?POCKET_ID_CLIENT_ID is required}
+      POCKET_ID_CLIENT_SECRET: ${POCKET_ID_CLIENT_SECRET:?POCKET_ID_CLIENT_SECRET is required}
+      POCKET_ID_ADMIN_GROUP: ${POCKET_ID_ADMIN_GROUP:?POCKET_ID_ADMIN_GROUP is required}
+      WEB_DIST_DIR: ${WEB_DIST_DIR:-/app/apps/web/dist}
+    mem_limit: 512m
+    logging: *logging
     networks:
       - cg
       - proxy
@@ -38,8 +59,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: cg
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: cloud_gaming
+    mem_limit: 512m
+    logging: *logging
     volumes:
       - cg-postgres-data:/var/lib/postgresql
     networks:
