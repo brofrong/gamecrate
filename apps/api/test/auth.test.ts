@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Db } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { AdminRpcs, AuthRpcs, type CurrentUserShape } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
@@ -48,9 +49,12 @@ const fakeAuth = (user: CurrentUserShape | null) =>
     currentUser: () => Effect.succeed(Option.fromNullishOr(user)),
   });
 
+// admin.settings.* требуют Db; admin.ping и auth.me её не трогают.
 const rpcLayer = (user: CurrentUserShape | null) =>
   Layer.mergeAll(AdminRpcHandlers, AuthRpcHandlers, RpcMiddlewares).pipe(
     Layer.provide(fakeAuth(user)),
+    // Заглушка без методов: эти тесты не обращаются к БД.
+    Layer.provide(Layer.succeed(Db, {} as Db["Service"])),
   );
 
 const adminPing = (user: CurrentUserShape | null) =>

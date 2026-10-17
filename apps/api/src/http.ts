@@ -1,4 +1,5 @@
-// HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc), статика SPA.
+// HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
+// прокси стрима (/stream/<id>/*), статика SPA.
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
 import {
@@ -12,8 +13,11 @@ import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers } from "./auth/rpc";
-import { AppConfig, type AppConfigValues } from "./config";
+import { AppConfig, rpcAllowedOrigins } from "./config";
 import { LibraryRpcHandlers } from "./library/rpc";
+import { SessionEvents } from "./session/SessionEvents";
+import { SessionRpcHandlers } from "./session/rpc";
+import { StreamProxyRoute } from "./session/streamProxy";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -41,14 +45,11 @@ export const RpcHandlers = Layer.mergeAll(
   AuthRpcHandlers,
   AdminRpcHandlers,
   LibraryRpcHandlers,
+  SessionRpcHandlers.pipe(Layer.provide(SessionEvents.layer)),
   RpcMiddlewares,
 );
 
-/** Origin, которым разрешён WebSocket `/rpc`: origin `PUBLIC_URL` + `ALLOWED_ORIGINS`. */
-export const rpcAllowedOrigins = (
-  config: AppConfigValues,
-): ReadonlySet<string> =>
-  new Set([new URL(config.publicUrl).origin, ...config.allowedOrigins]);
+export { rpcAllowedOrigins } from "./config";
 
 /**
  * WebSocket-протокол RPC на `GET /rpc` с проверкой Origin на HTTP-апгрейде.
@@ -102,5 +103,6 @@ export const HttpApp = Layer.mergeAll(
   HealthRoute,
   AuthRoute,
   RpcRoute,
+  StreamProxyRoute,
   StaticRoute,
 );
