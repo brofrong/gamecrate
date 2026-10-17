@@ -1,0 +1,62 @@
+# Боевой деплой на brofrong. Запуск: см. deploy/deploy.sh и deploy/README.md.
+# Переменные читаются из ~/cloud-gaming/.env (docker compose --env-file .env),
+# который деплой не создаёт и не перезаписывает — см. README.
+name: cloud-gaming
+
+services:
+  cg-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: cloud-gaming/cg-api:latest
+    container_name: cg-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    networks:
+      - cg
+      - proxy
+    depends_on:
+      cg-postgres:
+        condition: service_healthy
+    healthcheck:
+      # В образе нет curl/wget — используем встроенный fetch через `bun -e`.
+      test:
+        - "CMD"
+        - "bun"
+        - "-e"
+        - "fetch('http://localhost:'+(process.env.PORT||3000)+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Порты наружу не публикуются: наружу отдаёт ingressi (Caddy) через внешнюю сеть proxy.
+
+  cg-postgres:
+    image: postgres:18
+    container_name: cg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: cloud_gaming
+    volumes:
+      - cg-postgres-data:/var/lib/postgresql
+    networks:
+      - cg
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cg -d cloud_gaming"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порты наружу не публикуются и сеть proxy не подключена — только внутренняя cg.
+
+networks:
+  cg:
+    name: cg
+  proxy:
+    external: true
+
+volumes:
+  cg-postgres-data:
+    name: cg-postgres-data
