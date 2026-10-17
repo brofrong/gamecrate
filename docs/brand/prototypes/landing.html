@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>GameCrate — лендинг v4</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #05060f; --bg2: #0a0d1c; --card: #0f1326;
+    --fg: #f3f4ff; --muted: #8b90b8; --line: rgba(255,255,255,0.08);
+    --c1: #3cc2ff; --c2: #3a6cff; --c3: #5b2fff; --ok: #3ddc97; --warn: #ffd166;
+    --grad: linear-gradient(135deg, #3cc2ff 0%, #3a6cff 50%, #5b2fff 100%);
+    --font: "Inter", -apple-system, system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+  .g { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 24px; border-radius: 12px; font-weight: 600; font-size: 15px; border: 0; cursor: pointer; font-family: inherit; transition: transform .15s ease, box-shadow .15s ease; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.p { background: var(--grad); color: #fff; box-shadow: 0 10px 30px rgba(60,110,255,0.35); }
+  .btn.p:hover { box-shadow: 0 14px 40px rgba(60,110,255,0.5); }
+  .btn.s { background: rgba(255,255,255,0.06); color: var(--fg); border: 1px solid rgba(255,255,255,0.12); backdrop-filter: blur(8px); }
+  .btn svg { width: 18px; height: 18px; }
+  .ph { display: inline-block; font-size: 11px; background: rgba(255,209,102,0.12); color: var(--warn); padding: 3px 8px; border-radius: 6px; font-weight: 600; letter-spacing: 0.04em; vertical-align: middle; }
+
+  /* ---------- nav ---------- */
+  .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50; transition: background .3s, border-color .3s; border-bottom: 1px solid transparent; }
+  .nav.solid { background: rgba(5,6,15,0.7); backdrop-filter: blur(14px); border-color: var(--line); }
+  .nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 68px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .brand img { width: 30px; height: 30px; }
+  .brand .wmw { display: inline-block; overflow: hidden; white-space: nowrap; vertical-align: middle; }
+  .brand .wm { display: inline-block; letter-spacing: -0.02em; }
+  .links { display: flex; gap: 28px; color: var(--muted); font-size: 14px; font-weight: 500; }
+  .links a:hover { color: var(--fg); }
+  .nav .btn { padding: 10px 16px; font-size: 14px; border-radius: 10px; }
+  @media (max-width: 860px) { .links { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; min-height: 100vh; display: flex; align-items: center; overflow: hidden; }
+  .wall { position: absolute; inset: -18% -20%; z-index: 0; transform: perspective(1400px) rotateX(18deg) rotateZ(-8deg) scale(1.08); transform-origin: 50% 40%; will-change: transform; }
+  .wall .row { display: flex; gap: 14px; margin-bottom: 14px; width: max-content; will-change: transform; }
+  .wall .row .cover { transition: transform .4s ease, box-shadow .4s ease; }
+  .wall .row.hold .cover { transform: translateY(-4px); box-shadow: 0 26px 50px rgba(0,0,0,0.6), 0 0 0 1px rgba(60,194,255,0.35); }
+  .hero .shade, .hero .wrap { pointer-events: none; }
+  .hero .wrap button, .hero .wrap a { pointer-events: auto; }
+  .wall .cover { width: 150px; height: 225px; flex: 0 0 auto; border-radius: 10px; overflow: hidden; background: #141834; box-shadow: 0 20px 40px rgba(0,0,0,0.5); position: relative; }
+  .wall .cover img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .6s; }
+  .wall .cover img.ok { opacity: 1; }
+  .hero .shade { position: absolute; inset: 0; z-index: 1; background:
+    radial-gradient(ellipse 70% 60% at 30% 55%, rgba(5,6,15,0.94), rgba(5,6,15,0.6) 60%, rgba(5,6,15,0.3) 100%),
+    linear-gradient(180deg, rgba(5,6,15,0.8) 0%, rgba(5,6,15,0.15) 30%, rgba(5,6,15,0.15) 70%, var(--bg) 100%); }
+  .hero .wrap { position: relative; z-index: 2; padding-top: 120px; padding-bottom: 90px; }
+  .plat { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .plat span { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #c8cbe8; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); padding: 6px 11px; border-radius: 999px; backdrop-filter: blur(6px); }
+  .plat svg { width: 13px; height: 13px; stroke: var(--c1); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .hero h1 { font-size: clamp(42px, 6.6vw, 86px); line-height: 0.96; letter-spacing: -0.045em; margin: 0 0 22px; font-weight: 800; max-width: 820px; }
+  .hero p.lead { font-size: clamp(16px, 1.6vw, 20px); color: #b8bce0; max-width: 540px; margin: 0 0 32px; line-height: 1.5; }
+  .perks { margin-top: 56px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; max-width: 980px; }
+  .perk { background: rgba(10,13,28,0.6); border: 1px solid var(--line); border-radius: 14px; padding: 14px; backdrop-filter: blur(10px); }
+  .perk b { display: block; font-size: 15px; letter-spacing: -0.01em; margin-bottom: 4px; }
+  .perk span { font-size: 12px; color: var(--muted); line-height: 1.35; display: block; }
+  .perk svg { width: 18px; height: 18px; stroke: var(--c1); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; margin-bottom: 10px; }
+  @media (max-width: 1000px) { .perks { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 600px) { .perks { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---------- section base ---------- */
+  section { position: relative; padding: 110px 0; }
+  .sec-head { max-width: 680px; margin-bottom: 48px; }
+  .sec-head .label { font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--c1); font-weight: 700; margin-bottom: 14px; }
+  .sec-head h2 { font-size: clamp(30px, 4vw, 50px); letter-spacing: -0.035em; line-height: 1.05; margin: 0 0 16px; font-weight: 800; }
+  .sec-head p { color: var(--muted); font-size: 17px; line-height: 1.55; margin: 0; }
+
+  /* ---------- tech / flow (no box) ---------- */
+  .tech { padding-top: 40px; padding-bottom: 60px; }
+  .flow { position: relative; height: 560px; cursor: crosshair; }
+  .flow canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .flow .lbl { position: absolute; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 700; pointer-events: none; text-align: center; width: 200px; margin-left: -100px; }
+  .flow .lbl small { display: block; text-transform: none; letter-spacing: 0; font-weight: 500; color: #6d729a; margin-top: 4px; font-size: 11px; }
+  .hud { position: absolute; left: 0; top: 0; font-family: var(--mono); font-size: 12px; pointer-events: none; display: grid; gap: 8px; min-width: 250px; }
+  .hud .row { display: grid; grid-template-columns: 78px 64px 1fr; align-items: center; gap: 10px; color: #c9cdf0; }
+  .hud .row .k { color: #6d729a; letter-spacing: 0.08em; font-size: 10px; }
+  .hud .row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .hud .row .v.ok { color: var(--ok); } .hud .row .v.c1 { color: var(--c1); } .hud .row .v.warn { color: var(--warn); }
+  .hud canvas { width: 110px; height: 22px; display: block; }
+  .flow .hint { position: absolute; right: 0; bottom: 0; font-size: 12px; color: var(--muted); pointer-events: none; }
+  .tech-notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 20px; }
+  .note { border-left: 2px solid rgba(60,194,255,0.4); padding-left: 16px; }
+  .note b { display: block; margin-bottom: 6px; font-size: 15px; }
+  .note span { color: var(--muted); font-size: 14px; line-height: 1.5; }
+  @media (max-width: 860px) { .flow { height: 460px; } .tech-notes { grid-template-columns: 1fr; } .hud { min-width: 0; } .hud .row { grid-template-columns: 64px 54px 1fr; } .hud canvas { width: 70px; } }
+
+  /* ---------- how it works: animated demo ---------- */
+  .how { display: grid; grid-template-columns: 340px 1fr; gap: 40px; align-items: center; }
+  @media (max-width: 960px) { .how { grid-template-columns: 1fr; } }
+  .steps { display: grid; gap: 6px; }
+  .stepi { padding: 18px 20px; border-radius: 16px; border: 1px solid transparent; cursor: pointer; transition: background .25s, border-color .25s; position: relative; }
+  .stepi .n { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .stepi h3 { margin: 0 0 6px; font-size: 19px; letter-spacing: -0.02em; }
+  .stepi p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+  .stepi.on { background: var(--card); border-color: var(--line); }
+  .stepi.on .n { color: var(--c1); }
+  .stepi .bar { position: absolute; left: 20px; right: 20px; bottom: 0; height: 2px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; opacity: 0; }
+  .stepi.on .bar { opacity: 1; }
+  .stepi .bar i { display: block; height: 100%; width: 0; background: var(--grad); }
+  .stepi.on .bar i { animation: fill var(--len) linear forwards; }
+  @keyframes fill { to { width: 100%; } }
+  .demo { position: relative; height: 480px; border-radius: 24px; background: radial-gradient(ellipse at 30% 20%, rgba(58,108,255,0.14), transparent 60%), var(--bg2); border: 1px solid var(--line); overflow: hidden; }
+  .phase { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0; transform: translateY(14px) scale(0.98); transition: opacity .5s, transform .5s; pointer-events: none; }
+  .phase.on { opacity: 1; transform: none; }
+  .cursor { position: absolute; z-index: 10; width: 22px; height: 22px; left: 50%; top: 60%; transition: left .9s cubic-bezier(.4,0,.2,1), top .9s cubic-bezier(.4,0,.2,1), transform .15s; filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6)); pointer-events: none; }
+  .cursor.click { transform: scale(0.8); }
+  .ripple { position: absolute; z-index: 9; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--c1); opacity: 0; pointer-events: none; }
+  .ripple.go { animation: rip .7s ease-out; }
+  @keyframes rip { 0% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(7); } }
+  /* phase 1: steam qr */
+  .qrcard { display: flex; gap: 28px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 26px 30px; }
+  .qr { width: 150px; height: 150px; display: grid; grid-template-columns: repeat(15, 1fr); gap: 1px; background: #fff; padding: 8px; border-radius: 10px; position: relative; overflow: hidden; }
+  .qr i { display: block; background: #0b0e1f; border-radius: 1px; }
+  .qr i.w { background: #fff; }
+  .qr .scan { position: absolute; left: 0; right: 0; height: 3px; background: var(--c1); box-shadow: 0 0 16px var(--c1); top: 0; animation: scan 1.6s ease-in-out infinite; }
+  @keyframes scan { 0%,100% { top: 6%; } 50% { top: 92%; } }
+  .qrtext h4 { margin: 0 0 8px; font-size: 20px; letter-spacing: -0.02em; display: flex; align-items: center; gap: 10px; }
+  .qrtext p { margin: 0 0 14px; color: var(--muted); font-size: 14px; max-width: 260px; line-height: 1.5; }
+  .phone { width: 56px; height: 100px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.2); position: relative; background: #0b0e1f; }
+  .phone::after { content: ""; position: absolute; left: 50%; top: 6px; width: 16px; height: 3px; margin-left: -8px; background: rgba(255,255,255,0.2); border-radius: 2px; }
+  .phone .cam { position: absolute; inset: 18px 8px 14px; border-radius: 6px; background: rgba(60,194,255,0.12); border: 1px dashed rgba(60,194,255,0.4); }
+  .linked { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ok); opacity: 0; transition: opacity .4s; }
+  .phase.linked-on .linked { opacity: 1; }
+  .phase.linked-on .qr .scan { display: none; }
+  /* phase 2: library */
+  .lib { width: min(560px, 92%); }
+  .lib .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+  .lib .top b { color: var(--fg); font-size: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  .tile { aspect-ratio: 2/3; border-radius: 8px; overflow: hidden; background: #141834; position: relative; transition: transform .3s, box-shadow .3s; }
+  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tile .tier { position: absolute; left: 6px; top: 6px; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: rgba(61,220,151,0.9); color: #04140c; }
+  .tile .tier.g { background: rgba(255,209,102,0.9); }
+  .tile .play { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px; background: linear-gradient(transparent, rgba(0,0,0,0.85)); opacity: 0; transition: opacity .3s; }
+  .tile .play b { display: block; background: var(--grad); color: #fff; text-align: center; border-radius: 6px; padding: 6px; font-size: 11px; }
+  .tile.hot { transform: scale(1.12); box-shadow: 0 20px 40px rgba(0,0,0,0.6), 0 0 0 2px var(--c1); z-index: 2; }
+  .tile.hot .play { opacity: 1; }
+  /* phase 3: stream */
+  .screen { width: min(600px, 92%); aspect-ratio: 16/9; border-radius: 14px; overflow: hidden; background: #0b0e1f; border: 1px solid rgba(255,255,255,0.12); position: relative; box-shadow: 0 30px 60px rgba(0,0,0,0.6); }
+  .screen .boot { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-family: var(--mono); font-size: 13px; color: #c9cdf0; transition: opacity .4s; }
+  .screen .boot .pb { width: 220px; height: 4px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
+  .screen .boot .pb i { display: block; height: 100%; width: 0; background: var(--grad); }
+  .phase.booting .boot .pb i { animation: fill 1.6s ease-in-out forwards; }
+  .screen .game { position: absolute; inset: 0; opacity: 0; transition: opacity .6s; background: linear-gradient(120deg, #1b1f6b, #5b2fff 40%, #3cc2ff 80%); background-size: 300% 300%; animation: gm 6s ease-in-out infinite; }
+  @keyframes gm { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+  .phase.playing .game { opacity: 1; } .phase.playing .boot { opacity: 0; }
+  .screen .game::before { content: "здесь будет живое видео стрима"; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); font-size: 12px; color: rgba(255,255,255,0.7); background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px; }
+  .screen .ov { position: absolute; left: 10px; top: 10px; font-family: var(--mono); font-size: 11px; color: var(--ok); background: rgba(0,0,0,0.45); padding: 4px 8px; border-radius: 4px; }
+
+  /* ---------- plans ---------- */
+  .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) { .plans { grid-template-columns: 1fr; } }
+  .plan { background: var(--card); border: 1px solid var(--line); border-radius: 24px; padding: 30px; position: relative; display: flex; flex-direction: column; transition: transform .2s, border-color .2s; }
+  .plan:hover { transform: translateY(-4px); border-color: rgba(60,194,255,0.35); }
+  .plan.hot { border-color: rgba(60,194,255,0.5); background: linear-gradient(160deg, rgba(60,194,255,0.12), rgba(91,47,255,0.12)), var(--card); }
+  .plan .tag { position: absolute; top: -12px; left: 30px; background: var(--grad); color: #fff; font-size: 11px; font-weight: 700; padding: 5px 10px; border-radius: 999px; letter-spacing: 0.06em; }
+  .plan h3 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.02em; }
+  .plan .who { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+  .plan .hours { font-size: 44px; font-weight: 800; letter-spacing: -0.04em; line-height: 1; }
+  .plan .hours small { font-size: 15px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 4px; }
+  .plan .cost { color: var(--muted); font-size: 14px; margin: 8px 0 22px; }
+  .plan ul { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 10px; flex: 1; }
+  .plan li { display: flex; gap: 10px; font-size: 14px; color: #c8cbe8; align-items: flex-start; }
+  .plan li i { width: 18px; height: 18px; border-radius: 5px; background: rgba(61,220,151,0.15); color: var(--ok); display: inline-flex; align-items: center; justify-content: center; font-style: normal; font-size: 11px; flex: 0 0 auto; margin-top: 1px; }
+  .plan li.no { color: #5c6089; } .plan li.no i { background: rgba(255,255,255,0.05); color: #5c6089; }
+  .gpu { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.06); color: #c9cdf0; }
+
+  /* ---------- achievements ---------- */
+  .ach { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  @media (max-width: 960px) { .ach { grid-template-columns: repeat(2, 1fr); } }
+  .a { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 20px; display: flex; gap: 16px; align-items: center; transition: transform .2s, border-color .2s; }
+  .a:hover { transform: translateY(-3px); border-color: rgba(60,194,255,0.35); }
+  .a .hex { width: 56px; height: 56px; flex: 0 0 auto; clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%); background: var(--grad); display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  .a.lock .hex { background: #1a1e3a; filter: grayscale(1); opacity: .6; }
+  .a.lock { opacity: .7; }
+  .a b { display: block; font-size: 15px; margin-bottom: 3px; letter-spacing: -0.01em; }
+  .a span { font-size: 12.5px; color: var(--muted); line-height: 1.4; display: block; }
+  .a .ev { display: inline-block; font-size: 10px; font-weight: 700; color: var(--warn); margin-top: 6px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+  /* ---------- faq as chat ---------- */
+  .chat { max-width: 720px; display: grid; gap: 14px; }
+  .msg { display: flex; gap: 12px; align-items: flex-end; opacity: 0; transform: translateY(12px); transition: opacity .5s, transform .5s; }
+  .msg.show { opacity: 1; transform: none; }
+  .msg.me { flex-direction: row-reverse; }
+  .msg .av { width: 34px; height: 34px; border-radius: 50%; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
+  .msg.me .av { background: #23284a; }
+  .msg.gc .av { background: var(--grad); padding: 6px; } .msg.gc .av img { width: 100%; height: 100%; }
+  .msg .bub { max-width: 78%; padding: 12px 16px; border-radius: 18px; font-size: 15px; line-height: 1.5; }
+  .msg.me .bub { background: var(--c2); color: #fff; border-bottom-right-radius: 6px; }
+  .msg.gc .bub { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 6px; color: #d6d9f2; }
+
+  /* ---------- cta + footer ---------- */
+  .cta { text-align: center; padding: 120px 0; }
+  .cta h2 { font-size: clamp(34px, 5vw, 64px); letter-spacing: -0.04em; margin: 0 0 18px; line-height: 1; }
+  .cta p { color: var(--muted); margin: 0 0 30px; font-size: 18px; }
+  footer { border-top: 1px solid var(--line); padding: 36px 0; color: var(--muted); font-size: 13px; }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; }
+  .glow { position: absolute; width: 700px; height: 700px; border-radius: 50%; background: radial-gradient(circle, rgba(58,108,255,0.16), rgba(0,0,0,0) 65%); pointer-events: none; }
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="#" id="brand"></a>
+    <div class="links"><a href="#tech">Технология</a><a href="#how">Как работает</a><a href="#plans">Тарифы</a><a href="#ach">Ачивки</a><a href="#faq">FAQ</a></div>
+    <button class="btn s"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-9.97 9.2l5.36 2.21a2.8 2.8 0 0 1 1.6-.49h.15l2.38-3.45v-.05a3.77 3.77 0 1 1 3.77 3.77h-.09l-3.4 2.43v.13a2.83 2.83 0 0 1-5.62.44L2.3 14.6A10 10 0 1 0 12 2Zm-3.7 15.2-1.23-.5a2.12 2.12 0 0 0 3.87-.18 2.12 2.12 0 0 0-1.13-2.77l-1.27-.52a1.55 1.55 0 1 1-1.3 2.81l-1.3-.54a2.12 2.12 0 0 0 2.36 1.7Zm7.19-7.78a2.51 2.51 0 1 1 0-5.02 2.51 2.51 0 0 1 0 5.02Zm0-.63a1.88 1.88 0 1 0 0-3.76 1.88 1.88 0 0 0 0 3.76Z"/></svg>Войти через Steam</button>
+  </div>
+</nav>
+
+<!-- ================= HERO ================= -->
+<header class="hero" id="top">
+  <div class="wall" id="wall"></div>
+  <div class="shade"></div>
+  <div class="wrap">
+    <div class="plat">
+      <span><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg>Браузер</span>
+      <span><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M2 8h20M8 21h8M12 17v4"/></svg>Windows · macOS</span>
+      <span><svg viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg>Android · iOS</span>
+    </div>
+    <h1>Любая игра.<br>Где <span class="g">угодно</span>.<br>Прямо сейчас.</h1>
+    <p class="lead">Твоя библиотека Steam на облачной видеокарте. В браузере, на ПК или с телефона — без установки и без мощного железа.</p>
+    <button class="btn p">Играть<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+    <div class="perks">
+      <div class="perk"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M7 11l2 2 4-4"/></svg><b>До 4K · 60 FPS</b><span>Картинка как на топовом ПК</span></div>
+      <div class="perk"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><b>Старт за секунды</b><span>Без скачивания и патчей</span></div>
+      <div class="perk"><svg viewBox="0 0 24 24"><path d="M20 17a4 4 0 0 0-1-7.9A6 6 0 0 0 7 7a5 5 0 0 0-1 10z"/></svg><b>Прогресс в Steam Cloud</b><span>Сейвы живут в твоём аккаунте</span></div>
+      <div class="perk"><svg viewBox="0 0 24 24"><path d="M2 12h4l3-8 4 16 3-8h6"/></svg><b>Вся библиотека</b><span>Не каталог, а твои игры</span></div>
+      <div class="perk"><svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="11" rx="4"/><path d="M7 12h3M8.5 10.5v3M15 11h.01M17.5 13h.01"/></svg><b>Любой ввод</b><span>Геймпад, клава и мышь</span></div>
+      <div class="perk"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="14" y="10" width="7" height="11" rx="2"/></svg><b>С любого экрана</b><span>Начал на ПК, продолжил с телефона</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ================= TECH ================= -->
+<section class="tech" id="tech">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="label">Технология</div>
+      <h2>GPU там. <span class="g">Игра здесь.</span></h2>
+      <p>Каждая игра запускается в своём контейнере на сервере с видеокартой. Готовые кадры летят тебе по сети, а ввод летит обратно. Между ними — миллисекунды.</p>
+    </div>
+    <div class="flow" id="flow">
+      <canvas id="fc"></canvas>
+      <div class="hud" id="hud">
+        <div class="row"><span class="k">FPS</span><span class="v ok" id="h-fps">60</span><canvas id="g-fps"></canvas></div>
+        <div class="row"><span class="k">FRAMETIME</span><span class="v c1" id="h-ft">16.6 ms</span><canvas id="g-ft"></canvas></div>
+        <div class="row"><span class="k">LATENCY</span><span class="v c1" id="h-lat">14 ms</span><canvas id="g-lat"></canvas></div>
+        <div class="row"><span class="k">BITRATE</span><span class="v warn" id="h-br">38 Mbps</span><canvas id="g-br"></canvas></div>
+      </div>
+      <div class="lbl" id="lA">Дата-центр<small>контейнеры с играми на серверах с GPU</small></div>
+      <div class="lbl" id="lB">Твоё устройство<small>здесь будет живое видео стрима</small></div>
+      <div class="hint">частицы тянутся к курсору</div>
+    </div>
+    <div class="tech-notes">
+      <div class="note"><b>Контейнер на игру</b><span>Игра живёт в изолированном контейнере со своим Steam и своей долей GPU. Вышел — контейнер удалился, следы не остаются.</span></div>
+      <div class="note"><b>Видео вместо игры</b><span>На твою сторону идёт H.264/AV1-поток с аппаратным кодированием, а не сама игра. Поэтому хватает любого устройства.</span></div>
+      <div class="note"><b>Сервера рядом</b><span>Дата-центр в России, чтобы пинг был 10–30 мс, а не 100. Задержку видно в оверлее прямо в игре.</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= HOW IT WORKS ================= -->
+<section id="how">
+  <div class="glow" style="left:-300px;top:0"></div>
+  <div class="wrap">
+    <div class="sec-head"><div class="label">Как это работает</div><h2>От входа до игры за три клика</h2></div>
+    <div class="how">
+      <div class="steps" id="steps">
+        <div class="stepi on" data-i="0" style="--len:4.2s"><div class="n">01</div><h3>Привяжи Steam</h3><p>Один раз отсканируй QR в приложении Steam. Пароль нам не нужен.</p><div class="bar"><i></i></div></div>
+        <div class="stepi" data-i="1" style="--len:4.6s"><div class="n">02</div><h3>Выбери игру</h3><p>Вся твоя библиотека с отметкой «запустится / проверь».</p><div class="bar"><i></i></div></div>
+        <div class="stepi" data-i="2" style="--len:5s"><div class="n">03</div><h3>Нажми Играть</h3><p>Контейнер поднимается, стрим стартует. Дальше — как на своём ПК.</p><div class="bar"><i></i></div></div>
+      </div>
+      <div class="demo" id="demo">
+        <svg class="cursor" id="cur" viewBox="0 0 24 24"><path d="M4 2l16 9-7 2-3 8z" fill="#fff" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <div class="ripple" id="rip"></div>
+        <div class="phase on" id="p0">
+          <div class="qrcard">
+            <div class="qr" id="qr"><div class="scan"></div></div>
+            <div class="qrtext">
+              <h4>Войти через Steam</h4>
+              <p>Открой Steam на телефоне → Steam Guard → отсканируй.</p>
+              <span class="linked">✓ Привязано: <b>dga</b> · 212 игр</span>
+            </div>
+            <div class="phone"><div class="cam"></div></div>
+          </div>
+        </div>
+        <div class="phase" id="p1">
+          <div class="lib">
+            <div class="top"><b>Библиотека</b><span>212 игр · 180 запускаются</span></div>
+            <div class="grid" id="lgrid"></div>
+          </div>
+        </div>
+        <div class="phase" id="p2">
+          <div class="screen">
+            <div class="boot"><span id="bootText">Поднимаем контейнер…</span><div class="pb"><i></i></div></div>
+            <div class="game"><div class="ov">● 60 FPS · 14 ms</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= PLANS ================= -->
+<section id="plans">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="label">Тарифы <span class="ph">цены и цифры — заглушки</span></div>
+      <h2>Платишь за часы игры</h2>
+      <p>Час — это час с запуском игры и до выхода. Пока сидишь в меню сайта, ничего не списывается. Неиспользованные часы переносятся на следующий месяц.</p>
+    </div>
+    <div class="plans">
+      <div class="plan">
+        <h3>Старт</h3><div class="who">Попробовать и поиграть по вечерам</div>
+        <div class="hours">10<small>часов / мес</small></div><div class="cost">490 ₽ · 49 ₽ за час</div>
+        <ul><li><i>✓</i>1080p · 60 FPS</li><li><i>✓</i>Общая очередь на сервер</li><li><i>✓</i>Стандартное железо <span class="gpu">RTX 3060</span></li><li class="no"><i>–</i>Без очереди</li><li class="no"><i>–</i>4K и 120 FPS</li></ul>
+        <button class="btn s" style="justify-content:center">Выбрать</button>
+      </div>
+      <div class="plan hot">
+        <div class="tag">ПОПУЛЯРНЫЙ</div>
+        <h3>Про</h3><div class="who">Для тех, кто играет каждый день</div>
+        <div class="hours">40<small>часов / мес</small></div><div class="cost">1 490 ₽ · 37 ₽ за час</div>
+        <ul><li><i>✓</i>1440p · 60 FPS</li><li><i>✓</i><b>Без очереди</b> — сервер всегда есть</li><li><i>✓</i>Быстрое железо <span class="gpu">RTX 4070</span></li><li><i>✓</i>Сессия до 8 часов</li><li class="no"><i>–</i>4K и 120 FPS</li></ul>
+        <button class="btn p" style="justify-content:center">Выбрать</button>
+      </div>
+      <div class="plan">
+        <h3>Ультра</h3><div class="who">Максимум, без компромиссов</div>
+        <div class="hours">120<small>часов / мес</small></div><div class="cost">3 490 ₽ · 29 ₽ за час</div>
+        <ul><li><i>✓</i><b>4K · 120 FPS</b></li><li><i>✓</i>Без очереди + приоритет</li><li><i>✓</i>Топовое железо <span class="gpu">RTX 4090</span></li><li><i>✓</i>Сессия без лимита</li><li><i>✓</i>Ранний доступ к новым фичам</li></ul>
+        <button class="btn s" style="justify-content:center">Выбрать</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ACHIEVEMENTS ================= -->
+<section id="ach">
+  <div class="wrap">
+    <div class="sec-head"><div class="label">Ачивки</div><h2>Играй и собирай</h2><p>Свои достижения за то, как ты играешь на GameCrate. Часть открыта только в сезонные ивенты.</p></div>
+    <div class="ach">
+      <div class="a"><div class="hex">🚀</div><div><b>Первый запуск</b><span>Запустил первую игру в облаке</span></div></div>
+      <div class="a"><div class="hex">🏃</div><div><b>Марафонец</b><span>5 часов подряд, не выходя</span></div></div>
+      <div class="a"><div class="hex">🦉</div><div><b>Ночная смена</b><span>Играл после трёх ночи</span></div></div>
+      <div class="a"><div class="hex">🔥</div><div><b>Феникс</b><span>Вернулся в сессию после обрыва связи</span></div></div>
+      <div class="a"><div class="hex">📚</div><div><b>Коллекционер</b><span>Запустил 25 разных игр</span></div></div>
+      <div class="a"><div class="hex">💯</div><div><b>Сотня</b><span>100 часов на платформе</span></div></div>
+      <div class="a lock"><div class="hex">💘</div><div><b>Настоящая любовь</b><span>14 февраля провёл с нами</span><em class="ev">Сезонная · февраль</em></div></div>
+      <div class="a lock"><div class="hex">🎃</div><div><b>Тыквенный час</b><span>Хоррор-марафон на Хэллоуин</span><em class="ev">Сезонная · октябрь</em></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FAQ CHAT ================= -->
+<section id="faq">
+  <div class="wrap">
+    <div class="sec-head"><div class="label">FAQ</div><h2>Обычно спрашивают</h2></div>
+    <div class="chat" id="chat">
+      <div class="msg me"><div class="av">Ты</div><div class="bub">А лагать не будет?</div></div>
+      <div class="msg gc"><div class="av"><img src="reference-mark.png" alt=""></div><div class="bub">При нормальном интернете задержка 10–30 мс. Это меньше, чем у телевизора с геймпадом по Bluetooth. Сервера в России, так что пинг короткий.</div></div>
+      <div class="msg me"><div class="av">Ты</div><div class="bub">Какие игры пойдут?</div></div>
+      <div class="msg gc"><div class="av"><img src="reference-mark.png" alt=""></div><div class="bub">Почти всё из Steam. Рядом с каждой игрой в библиотеке стоит отметка — запустится ли без проблем. Онлайн-игры с жёстким античитом пока под вопросом, честно пишем.</div></div>
+      <div class="msg me"><div class="av">Ты</div><div class="bub">Сейвы пропадут?</div></div>
+      <div class="msg gc"><div class="av"><img src="reference-mark.png" alt=""></div><div class="bub">Нет, они в Steam Cloud, как обычно. Начал с ноутбука — продолжил с телефона.</div></div>
+      <div class="msg me"><div class="av">Ты</div><div class="bub">Надо что-то ставить?</div></div>
+      <div class="msg gc"><div class="av"><img src="reference-mark.png" alt=""></div><div class="bub">В браузере — ничего. На телефоне и ПК будет приложение, но это по желанию.</div></div>
+      <div class="msg me"><div class="av">Ты</div><div class="bub">А если интернет оборвётся?</div></div>
+      <div class="msg gc"><div class="av"><img src="reference-mark.png" alt=""></div><div class="bub">Игра живёт ещё несколько минут и ждёт тебя. Вернулся — продолжил с того же места. И получил ачивку «Феникс».</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CTA ================= -->
+<section class="cta">
+  <div class="glow" style="left:50%;top:50%;transform:translate(-50%,-50%)"></div>
+  <div class="wrap" style="position:relative">
+    <h2>Твои игры <span class="g">ждут</span>.</h2>
+    <p>Войди через Steam и выбери, во что сегодня.</p>
+    <button class="btn p">Играть</button>
+  </div>
+</section>
+
+<footer><div class="wrap"><span class="brand" style="font-size:15px"><img src="reference-mark.png" alt="" style="width:22px;height:22px">GameCrate · Games in containers</span><span>© 2026 GameCrate. Steam является торговой маркой Valve Corporation.</span></div></footer>
+
+<script>
+const nav=document.getElementById('nav');addEventListener('scroll',()=>nav.classList.toggle('solid',scrollY>40),{passive:true});
+
+// ---------- cover wall ----------
+const APPS=[1091500,1245620,1145350,1086940,413150,367520,1030300,570,730,105600,427520,374320,620,292030,504230,220,646570,294100,632470,753640,526870,892970,548430,2379780,271590,1174180,814380,1172470,1623730,553850,1966720,2358720,2246340,2767030,3164500,1771300,2001120,1903340,3017860,3241660];
+const coverUrl=id=>`https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/library_600x900.jpg`;
+const headerUrl=id=>`https://cdn.cloudflare.steamstatic.com/steam/apps/${id}/header.jpg`;
+const wall=document.getElementById('wall');
+for(let r=0;r<5;r++){const row=document.createElement('div');row.className='row'+(r%2?' rev':'');row.style.setProperty('--dur',(70+r*14)+'s');
+  const items=[];for(let i=0;i<12;i++)items.push(APPS[(r*7+i*3)%APPS.length]);
+  row.innerHTML=items.concat(items).map(id=>`<div class="cover"><img loading="lazy" data-id="${id}" src="${coverUrl(id)}" alt=""></div>`).join('');wall.appendChild(row);}
+wall.querySelectorAll('img').forEach(img=>{img.addEventListener('load',()=>img.classList.add('ok'));img.addEventListener('error',()=>{if(!img.dataset.fb){img.dataset.fb=1;img.src=headerUrl(img.dataset.id);}});});
+// rows drift on their own; the row under the cursor brakes to a stop, the others keep going
+(function(){
+  const hero=document.getElementById('top');const rows=[...wall.querySelectorAll('.row')];
+  rows.forEach((r,i)=>{r._x=0;r._base=(i%2?1:-1)*(26+i*5);r._v=r._base;});
+  let hover=null;
+  hero.addEventListener('mousemove',e=>{const el=document.elementFromPoint(e.clientX,e.clientY);const row=el&&el.closest?el.closest('.row'):null;if(row!==hover){hover&&hover.classList.remove('hold');hover=row;hover&&hover.classList.add('hold');}});
+  hero.addEventListener('mouseleave',()=>{hover&&hover.classList.remove('hold');hover=null;});
+  let last=performance.now();
+  function tick(now){const dt=Math.min(0.05,(now-last)/1000);last=now;
+    for(const r of rows){const target=r===hover?0:r._base;const k=r===hover?3.5:1.2;r._v+=(target-r._v)*Math.min(1,dt*k);r._x+=r._v*dt;const half=r.scrollWidth/2;if(half>0){if(r._x<=-half)r._x+=half;if(r._x>0)r._x-=half;}r.style.transform=`translateX(${r._x}px)`;}
+    requestAnimationFrame(tick);}
+  requestAnimationFrame(tick);
+})();
+
+// ---------- logo: full lockup at top, collapses into the GC cube on scroll ----------
+function gcIcon(uid,size){return `<svg class="gc" viewBox="0 0 200 220" width="${size}" height="${size*1.1}" aria-hidden="true"><defs><linearGradient id="g-${uid}" gradientUnits="userSpaceOnUse" x1="30" y1="20" x2="180" y2="210"><stop offset="0" stop-color="#3cc2ff"/><stop offset=".5" stop-color="#3a6cff"/><stop offset="1" stop-color="#5b2fff"/></linearGradient><mask id="m-${uid}"><g fill="#fff"><g transform="matrix(0.866 0.5 -0.866 0.5 100 10)"><rect width="100" height="100"/><rect x="24" y="24" width="52" height="52" fill="#000"/></g><g transform="matrix(0.866 0.5 0 1 13.4 60)"><rect width="100" height="100"/><g class="cut" fill="#000" data-ox="62" data-oy="50"><polygon points="24,24 100,24 100,40 50,40 50,62 76,62 76,76 24,76"/></g></g><g transform="matrix(0.866 -0.5 0 1 100 110)"><rect width="100" height="100"/><g class="cut" fill="#000" data-ox="62" data-oy="50"><polygon points="24,24 100,24 100,76 24,76"/></g></g></g><path d="M100 110L13.4 60M100 110L186.6 60M100 110L100 210" stroke="#000" stroke-width="5" fill="none"/></mask></defs><g mask="url(#m-${uid})"><rect width="200" height="220" fill="url(#g-${uid})"/><polygon points="100,110 13.4,60 13.4,160 100,210" fill="#000" opacity=".10"/><polygon points="100,110 186.6,60 186.6,160 100,210" fill="#000" opacity=".26"/></g></svg>`;}
+function setMorph(svg,p){svg.querySelectorAll('.cut').forEach(c=>{const ox=+c.dataset.ox,oy=+c.dataset.oy;c.setAttribute('transform',`translate(${ox} ${oy}) scale(${p}) translate(${-ox} ${-oy})`);});}
+(function(){
+  const brand=document.getElementById('brand');
+  brand.innerHTML=gcIcon('nav',32)+'<span class="wmw"><span class="wm">GameCrate</span></span>';
+  const svg=brand.querySelector('svg'),wmw=brand.querySelector('.wmw'),wm=brand.querySelector('.wm');
+  const natural=wm.getBoundingClientRect().width;let p=0,tp=0;
+  addEventListener('scroll',()=>{tp=Math.min(1,Math.max(0,(scrollY-20)/140));},{passive:true});
+  (function loop(){p+=(tp-p)*0.14;const e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;setMorph(svg,e);wmw.style.width=((1-e)*natural)+'px';wmw.style.opacity=1-e;wm.style.transform=`translateX(${-16*e}px)`;requestAnimationFrame(loop);})();
+})();
+
+// ---------- tech flow ----------
+(function(){
+  const flow=document.getElementById('flow'),c=document.getElementById('fc'),ctx=c.getContext('2d');
+  const lA=document.getElementById('lA'),lB=document.getElementById('lB'),hud=document.getElementById('hud');
+  let W=0,H=0;function resize(){const r=flow.getBoundingClientRect();W=r.width;H=r.height;c.width=W*devicePixelRatio;c.height=H*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);}
+  resize();addEventListener('resize',resize);
+  const m={x:-9999,y:-9999,in:false};
+  flow.addEventListener('mousemove',e=>{const r=flow.getBoundingClientRect();m.x=e.clientX-r.left;m.y=e.clientY-r.top;m.in=true;});
+  flow.addEventListener('mouseleave',()=>{m.in=false;});
+  let visible=false;new IntersectionObserver(es=>es.forEach(e=>visible=e.isIntersecting),{threshold:0.05}).observe(flow);
+  const PAL=[[60,194,255],[58,108,255],[91,47,255],[140,90,255],[40,160,240]];
+  const N=600,parts=[];for(let i=0;i<N;i++)parts.push({p:Math.random(),off:(Math.random()-0.5)*120,sp:0.0016+Math.random()*0.0022,col:PAL[i%PAL.length],sz:1.5+Math.random()*2.5,tw:Math.random()*6,dx:0,dy:0});
+  // hud graphs
+  const series={fps:[],ft:[],lat:[],br:[]};const gEl={fps:document.getElementById('g-fps'),ft:document.getElementById('g-ft'),lat:document.getElementById('g-lat'),br:document.getElementById('g-br')};
+  const vEl={fps:document.getElementById('h-fps'),ft:document.getElementById('h-ft'),lat:document.getElementById('h-lat'),br:document.getElementById('h-br')};
+  const gCol={fps:'#3ddc97',ft:'#3cc2ff',lat:'#3cc2ff',br:'#ffd166'};
+  for(const k in gEl){const g=gEl[k];g.width=220;g.height=44;}
+  function pushStat(k,v,fmt,min,max){const s=series[k];s.push(v);if(s.length>60)s.shift();vEl[k].textContent=fmt(v);const g=gEl[k],gc=g.getContext('2d');gc.clearRect(0,0,220,44);
+    gc.beginPath();s.forEach((y,i)=>{const px=i/59*220,py=44-((y-min)/(max-min))*40-2;i?gc.lineTo(px,py):gc.moveTo(px,py);});gc.strokeStyle=gCol[k];gc.lineWidth=2;gc.stroke();
+    gc.lineTo((s.length-1)/59*220,44);gc.lineTo(0,44);gc.closePath();gc.fillStyle=gCol[k]+'22';gc.fill();}
+  let last=0;
+  function iso(x,y,s,col,a){const h=s*0.5;ctx.globalAlpha=a;
+    ctx.beginPath();ctx.moveTo(x,y-h);ctx.lineTo(x+s,y-h*1.5);ctx.lineTo(x,y-h*2);ctx.lineTo(x-s,y-h*1.5);ctx.closePath();ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;ctx.fill();
+    ctx.beginPath();ctx.moveTo(x-s,y-h*1.5);ctx.lineTo(x,y-h);ctx.lineTo(x,y);ctx.lineTo(x-s,y-h*0.5);ctx.closePath();ctx.fillStyle=`rgb(${col[0]*0.6|0},${col[1]*0.6|0},${col[2]*0.7|0})`;ctx.fill();
+    ctx.beginPath();ctx.moveTo(x+s,y-h*1.5);ctx.lineTo(x,y-h);ctx.lineTo(x,y);ctx.lineTo(x+s,y-h*0.5);ctx.closePath();ctx.fillStyle=`rgb(${col[0]*0.4|0},${col[1]*0.4|0},${col[2]*0.55|0})`;ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.12)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x-s,y-h*1.5);ctx.lineTo(x,y-h);ctx.lineTo(x+s,y-h*1.5);ctx.moveTo(x,y-h);ctx.lineTo(x,y);ctx.stroke();ctx.globalAlpha=1;}
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function draw(t){
+    if(!visible){requestAnimationFrame(draw);return;}
+    ctx.clearRect(0,0,W,H);
+    const narrow=W<760;const ax=narrow?W*0.2:W*0.22,ay=H*0.56,bx=narrow?W*0.72:W*0.72,by=H*0.56;
+    const cxp=(ax+bx)/2,cyp=ay-120;
+    // beam
+    ctx.beginPath();ctx.moveTo(ax,ay);ctx.quadraticCurveTo(cxp,cyp,bx,by);ctx.strokeStyle='rgba(60,120,255,0.06)';ctx.lineWidth=110;ctx.stroke();
+    // particles: on curve + attraction toward cursor
+    for(const p of parts){p.p+=p.sp;if(p.p>1){p.p-=1;p.dx=p.dy=0;}const u=p.p;
+      const x=(1-u)*(1-u)*ax+2*(1-u)*u*cxp+u*u*bx,y=(1-u)*(1-u)*ay+2*(1-u)*u*cyp+u*u*by;
+      const tx=2*(1-u)*(cxp-ax)+2*u*(bx-cxp),ty=2*(1-u)*(cyp-ay)+2*u*(by-cyp);const L=Math.hypot(tx,ty)||1;const nx=-ty/L,ny=tx/L;const spread=Math.sin(u*Math.PI);
+      let px=x+nx*p.off*spread,py=y+ny*p.off*spread;
+      if(m.in){const ddx=m.x-(px+p.dx),ddy=m.y-(py+p.dy);const d=Math.hypot(ddx,ddy);if(d<220){const f=(1-d/220)*0.9;p.dx+=ddx/d*f*3;p.dy+=ddy/d*f*3;}}
+      p.dx*=0.93;p.dy*=0.93;px+=p.dx;py+=p.dy;
+      const near=m.in?Math.max(0,1-Math.hypot(m.x-px,m.y-py)/120):0;
+      const a=(0.2+spread*0.8)*(0.6+0.4*Math.sin(t/300+p.tw));
+      ctx.fillStyle=`rgba(${p.col[0]+near*120|0},${p.col[1]+near*60|0},255,${Math.min(1,a+near*0.5)})`;ctx.fillRect(px,py,p.sz+near*1.5,p.sz+near*1.5);}
+    // data center: stacks of containers
+    const s=narrow?16:24;const base=ay+s*1.1;
+    const cols=[[60,194,255],[58,108,255],[91,47,255],[80,70,230]];
+    for(let i=0;i<3;i++)for(let j=0;j<3;j++){const x=ax+(i-j)*s,y=base+(i+j)*s*0.5;const hgt=1+((i*3+j)%3);for(let k=0;k<hgt;k++){const pulse=0.75+0.25*Math.sin(t/600+i+j+k);iso(x,y-k*s,s,cols[(i+j+k)%4],pulse);}}
+    const g=ctx.createRadialGradient(ax,ay,0,ax,ay,200);g.addColorStop(0,'rgba(60,194,255,0.18)');g.addColorStop(1,'rgba(60,194,255,0)');ctx.fillStyle=g;ctx.fillRect(ax-200,ay-200,400,400);
+    // device: laptop + phone
+    const bw=narrow?180:300,bh=narrow?112:188;ctx.save();ctx.translate(bx-bw/2,by-bh/2);const tilt=m.in?(m.x-bx)/W*0.06:Math.sin(t/2000)*0.015;ctx.transform(1,tilt*0.25,-tilt,1,0,0);
+    ctx.shadowColor='rgba(58,108,255,0.35)';ctx.shadowBlur=40;rr(0,0,bw,bh,12);ctx.fillStyle='#10132a';ctx.fill();ctx.shadowBlur=0;ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.stroke();
+    const sg=ctx.createLinearGradient(0,0,bw,bh);sg.addColorStop(0,`hsl(${(t/50)%360},70%,42%)`);sg.addColorStop(1,`hsl(${(t/50+80)%360},75%,22%)`);ctx.fillStyle=sg;rr(8,8,bw-16,bh-16,8);ctx.fill();
+    ctx.save();rr(8,8,bw-16,bh-16,8);ctx.clip();for(let i=0;i<7;i++){const x=8+((t/10+i*55)%(bw-16)),y=24+Math.sin(t/280+i)*22+i*12;ctx.fillStyle='rgba(255,255,255,0.3)';ctx.fillRect(x,y,12,12);}ctx.restore();
+    ctx.fillStyle='rgba(0,0,0,0.5)';rr(14,14,74,18,4);ctx.fill();ctx.fillStyle='#3ddc97';ctx.font='700 10px JetBrains Mono,monospace';ctx.fillText('60 FPS · 14 ms',19,27);
+    // base of laptop
+    ctx.fillStyle='#1a1f40';rr(-14,bh,bw+28,8,4);ctx.fill();
+    // phone next to it
+    ctx.fillStyle='#10132a';rr(bw+22,bh*0.3,bw*0.2,bh*0.75,8);ctx.fill();ctx.strokeStyle='rgba(255,255,255,0.15)';ctx.stroke();ctx.fillStyle=sg;rr(bw+26,bh*0.3+6,bw*0.2-8,bh*0.75-12,5);ctx.fill();
+    ctx.restore();
+    lA.style.left=ax+'px';lA.style.top=(base+s*3.2)+'px';lB.style.left=(bx+20)+'px';lB.style.top=(by+bh/2+30)+'px';
+    // hud stats
+    if(t-last>120){last=t;const d=m.in?Math.max(0,(1-Math.hypot(m.x-cxp,m.y-cyp)/W))*6:0;
+      const fps=58+Math.round(Math.random()*2.4);const ft=1000/fps+(Math.random()-0.5);const lat=12+Math.random()*4+d;const br=34+Math.random()*7;
+      pushStat('fps',fps,v=>v,40,70);pushStat('ft',ft,v=>v.toFixed(1)+' ms',10,25);pushStat('lat',lat,v=>Math.round(v)+' ms',0,40);pushStat('br',br,v=>Math.round(v)+' Mbps',0,60);}
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+})();
+
+// ---------- how it works demo ----------
+(function(){
+  const steps=[...document.querySelectorAll('.stepi')],phases=[0,1,2].map(i=>document.getElementById('p'+i));
+  const cur=document.getElementById('cur'),rip=document.getElementById('rip'),demo=document.getElementById('demo');
+  // qr
+  const qr=document.getElementById('qr');let seed=7;for(let i=0;i<225;i++){seed=(seed*16807)%2147483647;const on=(seed&3)!==0&&(seed>>4&1);const r=Math.floor(i/15),c=i%15;const finder=(r<4&&c<4)||(r<4&&c>10)||(r>10&&c<4);const el=document.createElement('i');if(!(finder||on))el.className='w';qr.insertBefore(el,qr.firstChild);}
+  // library grid
+  const lg=document.getElementById('lgrid');const ids=[1245620,1086940,1091500,1030300,2767030,553850,2358720,413150,892970,2379780,1903340,105600];
+  lg.innerHTML=ids.map((id,i)=>`<div class="tile" data-i="${i}"><img src="${coverUrl(id)}" alt=""><span class="tier${i%5===3?' g':''}">${i%5===3?'ПРОВЕРЬ':'ОК'}</span><div class="play"><b>Играть</b></div></div>`).join('');
+  const tiles=[...lg.querySelectorAll('.tile')];
+  let run=0,timers=[];
+  function at(ms,fn){timers.push(setTimeout(fn,ms));}
+  function moveCursor(el,ox=0.5,oy=0.5){const r=el.getBoundingClientRect(),d=demo.getBoundingClientRect();cur.style.left=(r.left-d.left+r.width*ox)+'px';cur.style.top=(r.top-d.top+r.height*oy)+'px';}
+  function click(){cur.classList.add('click');rip.style.left=(parseFloat(cur.style.left)-5)+'px';rip.style.top=(parseFloat(cur.style.top)-5)+'px';rip.classList.remove('go');void rip.offsetWidth;rip.classList.add('go');setTimeout(()=>cur.classList.remove('click'),150);}
+  function show(i){const id=++run;timers.forEach(clearTimeout);timers=[];
+    steps.forEach((s,k)=>{s.classList.toggle('on',k===i);const bar=s.querySelector('.bar i');bar.style.animation='none';void bar.offsetWidth;bar.style.animation='';});
+    phases.forEach((p,k)=>{p.classList.toggle('on',k===i);p.classList.remove('linked-on','booting','playing');});
+    if(i===0){cur.style.left='85%';cur.style.top='85%';at(2600,()=>phases[0].classList.add('linked-on'));at(4200,()=>{if(run===id)show(1);});}
+    if(i===1){const target=tiles[4];at(300,()=>moveCursor(target,0.5,0.4));at(1300,()=>target.classList.add('hot'));at(1900,()=>moveCursor(target,0.5,0.86));at(2800,()=>click());at(3100,()=>target.classList.remove('hot'));at(4600,()=>{if(run===id)show(2);});}
+    if(i===2){cur.style.left='90%';cur.style.top='90%';phases[2].classList.add('booting');const bt=document.getElementById('bootText');bt.textContent='Поднимаем контейнер…';at(900,()=>bt.textContent='Выделяем GPU…');at(1500,()=>bt.textContent='Запускаем стрим…');at(2000,()=>phases[2].classList.add('playing'));at(5000,()=>{if(run===id)show(0);});}
+  }
+  steps.forEach(s=>s.addEventListener('click',()=>show(+s.dataset.i)));
+  let started=false;new IntersectionObserver(es=>{if(es[0].isIntersecting&&!started){started=true;show(0);}},{threshold:0.3}).observe(demo);
+})();
+
+// ---------- faq chat reveal ----------
+(function(){const msgs=[...document.querySelectorAll('.msg')];const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){const i=msgs.indexOf(e.target);setTimeout(()=>e.target.classList.add('show'),(i%2)*250);io.unobserve(e.target);}}),{threshold:0.4});msgs.forEach(m=>io.observe(m));})();
+</script>
+</body>
+</html>

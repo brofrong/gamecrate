@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>GameCrate — логотип v7: без скруглений, C в тексте уже</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#05060f; --card:#0f1326; --fg:#f3f4ff; --muted:#8b90b8; --line:rgba(255,255,255,0.08); --c1:#3cc2ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:"Inter",system-ui,sans-serif; -webkit-font-smoothing:antialiased; padding-bottom:120px; }
+  .wrap { max-width:1100px; margin:0 auto; padding:0 28px; }
+  h1 { font-size:30px; letter-spacing:-0.03em; margin:48px 0 6px; }
+  h2 { font-size:20px; letter-spacing:-0.02em; margin:56px 0 14px; }
+  p.sub { color:var(--muted); margin:0 0 20px; line-height:1.5; }
+  a { color:var(--c1); }
+  .stage { background:var(--card); border:1px solid var(--line); border-radius:24px; padding:48px; display:flex; flex-direction:column; align-items:center; gap:34px; min-height:380px; }
+  .ctl { display:flex; align-items:center; gap:18px; width:100%; max-width:600px; flex-wrap:wrap; }
+  .ctl input[type=range] { flex:1; accent-color:#3a6cff; min-width:160px; }
+  .ctl button { font:inherit; font-size:13px; font-weight:600; color:var(--fg); background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); padding:8px 14px; border-radius:10px; cursor:pointer; }
+  .ctl .val { font-family:ui-monospace,Menlo,monospace; color:var(--muted); width:40px; text-align:right; }
+  .ctl label { font-size:13px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .tile { border-radius:20px; padding:36px; display:flex; align-items:center; justify-content:center; min-height:200px; border:1px solid var(--line); position:relative; }
+  .tile.dark { background:var(--bg); } .tile.light { background:#f6f7fb; }
+  .tile .lbl { position:absolute; left:16px; top:14px; font-size:11px; letter-spacing:0.12em; text-transform:uppercase; color:#6d729a; font-weight:700; }
+  .sizes { display:flex; align-items:flex-end; gap:34px; flex-wrap:wrap; }
+  .sizes div { display:flex; flex-direction:column; align-items:center; gap:10px; font-size:11px; color:var(--muted); font-family:ui-monospace,Menlo,monospace; }
+  .sizes .chip { background:#1a1e3a; border-radius:8px; padding:8px; display:flex; }
+  .scroller { height:420px; overflow:auto; border:1px solid var(--line); border-radius:20px; background:var(--bg); position:relative; }
+  .scroller .nav { position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; padding:0 24px; height:64px; background:rgba(5,6,15,0.75); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
+  .scroller .fill { padding:40px 24px; color:var(--muted); line-height:1.6; }
+  .scroller .fill h3 { color:var(--fg); font-size:40px; letter-spacing:-0.03em; margin:0 0 16px; }
+  .scroller .links { display:flex; gap:22px; font-size:14px; color:var(--muted); }
+  .note { background:rgba(60,194,255,0.08); border:1px solid rgba(60,194,255,0.2); border-radius:14px; padding:16px 18px; font-size:14px; color:#c8cbe8; line-height:1.55; }
+  svg.gc text { font-family:"Inter",system-ui,sans-serif; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Логотип v7 — острые углы, C в названии чуть уже</h1>
+  <p class="sub">Полный логотип — шестигранное кольцо (как на твоём первом референсе) и название, где G и C — синие фигуры из куба со скруглёнными углами. При сворачивании верхняя полоса кольца изгибается в «крышу», боковые полосы растворяются, а G и C прилетают на их место и встают под изометрию — получается GC-куб со второго референса. Прошлые версии: <a href="/files/logo-proto.html" target="_blank">v1</a>, <a href="/files/logo-proto-v2.html" target="_blank">v2</a>, <a href="/files/logo-proto-v3.html" target="_blank">v3</a>. Лендинг: <a href="/files/landing-v4.html" target="_blank">landing-v4</a>.</p>
+
+  <div class="stage">
+    <div id="big"></div>
+    <div class="ctl">
+      <span style="font-size:13px;color:var(--muted)">полный</span>
+      <input type="range" id="rng" min="0" max="1" step="0.001" value="0">
+      <span style="font-size:13px;color:var(--muted)">компакт</span>
+      <span class="val" id="val">0.00</span>
+      <button id="play">▶ туда-сюда</button>
+      <label>ширина C в названии <input type="range" id="cw" min="0.7" max="1" step="0.01" value="0.86" style="width:120px"><span class="val" id="cwv">0.86</span></label>
+    </div>
+  </div>
+
+  <h2>Варианты</h2>
+  <div class="grid">
+    <div class="tile dark"><span class="lbl">Полный · тёмный</span><div class="lk" data-p="0" data-h="110"></div></div>
+    <div class="tile light"><span class="lbl">Полный · светлый</span><div class="lk" data-p="0" data-h="110" data-light="1"></div></div>
+    <div class="tile dark"><span class="lbl">Компакт · тёмный</span><div class="lk" data-p="1" data-h="132"></div></div>
+    <div class="tile light"><span class="lbl">Компакт · светлый</span><div class="lk" data-p="1" data-h="132" data-light="1"></div></div>
+  </div>
+
+  <h2>Мелкие размеры</h2>
+  <div class="sizes" id="sizes"></div>
+
+  <h2>В шапке</h2>
+  <p class="sub">Покрути колесом внутри блока.</p>
+  <div class="scroller" id="scr">
+    <div class="nav"><div id="navbrand"></div><div class="links"><span>Технология</span><span>Как работает</span><span>Тарифы</span></div></div>
+    <div class="fill"><h3>Любая игра.<br>Где угодно.</h3><p>Прокрути вниз — буквы вернутся на куб.</p><p style="height:900px"></p></div>
+  </div>
+
+  <h2 style="margin-top:48px">Заметки</h2>
+  <div class="note">
+    1. Полосы кольца и «крыша» — одной толщины со штрихом букв (по вертикали 22.8 единицы из 200, как верхняя перекладина G), поэтому верх почти не меняет форму при сворачивании: только концы крыши срезаются вдоль верхних кромок букв. Боковые полосы растворяются, когда буквы прилетают.<br>
+    2. Скруглений нет — буквы острые и в кубе, и в названии. В названии C чуть уже (ползунок «ширина C»), на грани — полной ширины.<br>
+    3. «ame», «rate» и слоган — пока живой Inter; в финале переведу в кривые.
+  </div>
+</div>
+
+<script>
+// ---------- helpers ----------
+const mul=(P,Q)=>[P[0]*Q[0]+P[2]*Q[1],P[1]*Q[0]+P[3]*Q[1],P[0]*Q[2]+P[2]*Q[3],P[1]*Q[2]+P[3]*Q[3],P[0]*Q[4]+P[2]*Q[5]+P[4],P[1]*Q[4]+P[3]*Q[5]+P[5]];
+const T=(x,y)=>[1,0,0,1,x,y], S=k=>[k,0,0,k,0,0];
+const lerpM=(A,B,t)=>A.map((a,i)=>a+(B[i]-a)*t);
+const mstr=M=>`matrix(${M.map(v=>+v.toFixed(4)).join(' ')})`;
+const ease=p=>p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+const clamp01=v=>Math.max(0,Math.min(1,v));
+const LEFT=[0.866,0.5,0,1,13.4,60], RIGHT=[0.866,-0.5,0,1,100,110];
+const FS=96, WORD_X=232, BASE_Y=146, CAP=70, GAP=5;
+// block letters in a 100x100 box — the same shapes stand on the cube faces
+const G_PTS=[[0,0],[100,0],[100,24],[24,24],[24,76],[76,76],[76,62],[50,62],[50,40],[100,40],[100,100],[0,100]];
+const C_PTS=[[0,0],[100,0],[100,24],[24,24],[24,76],[100,76],[100,100],[0,100]];
+function rpath(pts,r){const n=pts.length;let d='';for(let i=0;i<n;i++){const p=pts[i],a=pts[(i-1+n)%n],b=pts[(i+1)%n];const v1=[a[0]-p[0],a[1]-p[1]],v2=[b[0]-p[0],b[1]-p[1]];const l1=Math.hypot(v1[0],v1[1]),l2=Math.hypot(v2[0],v2[1]);const rr=Math.min(r,l1/2,l2/2);const s=[p[0]+v1[0]/l1*rr,p[1]+v1[1]/l1*rr],e=[p[0]+v2[0]/l2*rr,p[1]+v2[1]/l2*rr];d+=(i?'L':'M')+s[0].toFixed(2)+' '+s[1].toFixed(2)+' Q'+p[0]+' '+p[1]+' '+e[0].toFixed(2)+' '+e[1].toFixed(2);}return d+'Z';}
+let TEXT_R=0, C_W=0.86;
+
+let uid=0;
+function buildLogo(parent,{height=220,light=false,p0=0}={}){
+  const id='l'+(uid++);const color=light?'#0b0e1f':'#f3f4ff';const tag=light?'#5c6089':'#8b90b8';
+  parent.innerHTML=`<svg class="gc" viewBox="0 0 900 220" height="${height}" style="color:${color};display:block" font-weight="800" aria-label="GameCrate">
+  <defs>
+    <linearGradient id="g-${id}" gradientUnits="userSpaceOnUse" x1="30" y1="20" x2="180" y2="210"><stop offset="0" stop-color="#3cc2ff"/><stop offset=".5" stop-color="#3a6cff"/><stop offset="1" stop-color="#5b2fff"/></linearGradient>
+    <linearGradient id="gG-${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3cc2ff"/><stop offset="1" stop-color="#3a6cff"/></linearGradient>
+    <linearGradient id="gC-${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3f7aff"/><stop offset="1" stop-color="#5b2fff"/></linearGradient>
+    <mask id="m-${id}">
+      <g fill="#fff">
+        <polygon class="top"/>
+        <polygon class="fL" points="13.4,60 33.1,71.4 33.1,148.6 100,187.25 100,210 13.4,160"/>
+        <polygon class="fR" points="186.6,60 186.6,160 100,210 100,187.25 166.9,148.6 166.9,71.4"/>
+      </g>
+      <path d="M100 110L13.4 60M100 110L186.6 60M100 110L100 210" stroke="#000" stroke-width="5" fill="none"/>
+      <path class="seamT" stroke="#000" stroke-width="5" fill="none"/>
+    </mask>
+  </defs>
+  <g mask="url(#m-${id})">
+    <rect width="200" height="220" fill="url(#g-${id})"/>
+    <polygon points="100,110 13.4,60 13.4,160 100,210" fill="#000" opacity=".10"/>
+    <polygon points="100,110 186.6,60 186.6,160 100,210" fill="#000" opacity=".26"/>
+  </g>
+  <path class="pG" fill="url(#gG-${id})"/>
+  <path class="pC" fill="url(#gC-${id})"/>
+  <g fill="currentColor" font-size="${FS}">
+    <text class="tAme">ame</text>
+    <text class="tRate">rate</text>
+    <text class="tTag" font-size="30" font-weight="500" fill="${tag}" x="${WORD_X}" y="190">Games in containers</text>
+  </g>
+</svg>`;
+  const svg=parent.firstElementChild;const q=s=>svg.querySelector(s);
+  const pG=q('.pG'),pC=q('.pC'),tAme=q('.tAme'),tRate=q('.tRate'),tTag=q('.tTag'),fL=q('.fL'),fR=q('.fR'),top=q('.top'),seamT=q('.seamT');
+  // top: hex-ring band (full lockup) -> chevron "roof" over the letters (compact)
+  // bands are 16 units thick everywhere; the roof is the same band with its ends mitred along the letters' top edges
+  const TOP_RING=[[13.4,60],[100,10],[186.6,60],[166.9,71.4],[100,32.75],[33.1,71.4]];
+  const TOP_ROOF=[[13.4,60],[100,10],[186.6,60],[166.0,70.9],[100,32.8],[34.0,70.9]];
+  const st={wAme:0,wRate:0,full:900,p:p0};
+  function measure(){st.wAme=tAme.getComputedTextLength();st.wRate=tRate.getComputedTextLength();st.full=WORD_X+CAP+GAP+st.wAme+GAP+CAP*C_W+GAP+st.wRate+8;set(st.p);}
+  function set(p){
+    st.p=p;const e=ease(p);const k=CAP/100;
+    const xG=WORD_X, xAme=xG+CAP+GAP, xC=xAme+st.wAme+GAP, xRate=xC+CAP*C_W+GAP;
+    // letters: text position (rounded) -> cube face (sharp, isometric)
+    const G0=mul(T(xG,BASE_Y-CAP),S(k)), G1=mul(LEFT,mul(T(2.5,2.5),S(0.95)));
+    const C0=mul(T(xC,BASE_Y-CAP),[k*C_W,0,0,k,0,0]), C1=mul(RIGHT,mul(T(2.5,2.5),S(0.95)));
+    pG.setAttribute('transform',mstr(lerpM(G0,G1,e)));pC.setAttribute('transform',mstr(lerpM(C0,C1,e)));
+    const r=TEXT_R*(1-e);pG.setAttribute('d',rpath(G_PTS,r));pC.setAttribute('d',rpath(C_PTS,r));
+    // ring bands dissolve as the letters land; the top band bends into the roof
+    const faceA=1-clamp01((e-0.45)/0.45);fL.setAttribute('opacity',faceA);fR.setAttribute('opacity',faceA);
+    const tp=TOP_RING.map((a,i)=>[a[0]+(TOP_ROOF[i][0]-a[0])*e,a[1]+(TOP_ROOF[i][1]-a[1])*e]);
+    top.setAttribute('points',tp.map(p=>p[0].toFixed(2)+','+p[1].toFixed(2)).join(' '));
+    seamT.setAttribute('d',`M100 10L${tp[4][0].toFixed(2)} ${tp[4][1].toFixed(2)}`);
+    // the rest of the word dissolves and drifts toward the cube
+    const fade=clamp01(1-e*1.6);
+    [[tAme,xAme],[tRate,xRate]].forEach(([el,x])=>{el.setAttribute('x',x-60*e);el.setAttribute('y',BASE_Y);el.setAttribute('opacity',fade);});
+    tTag.setAttribute('x',WORD_X-60*e);tTag.setAttribute('opacity',fade);
+    const vw=200+(st.full-200)*(1-e);
+    svg.setAttribute('viewBox',`0 0 ${vw} 220`);svg.setAttribute('width',vw*height/220);
+  }
+  measure();
+  document.fonts&&document.fonts.ready.then(measure);
+  return {svg,set,get p(){return st.p;}};
+}
+
+// ---------- big demo ----------
+const big=buildLogo(document.getElementById('big'),{height:220});
+const rng=document.getElementById('rng'),val=document.getElementById('val'),playBtn=document.getElementById('play');
+let playing=false,t0=0;
+rng.addEventListener('input',()=>{playing=false;playBtn.textContent='▶ туда-сюда';big.set(+rng.value);val.textContent=(+rng.value).toFixed(2);});
+playBtn.addEventListener('click',()=>{playing=!playing;playBtn.textContent=playing?'■ стоп':'▶ туда-сюда';t0=performance.now();});
+(function loop(now){if(playing){const p=(1-Math.cos((now-t0)/1500))/2;rng.value=p;big.set(p);val.textContent=p.toFixed(2);}requestAnimationFrame(loop);})(0);
+
+// ---------- variants + sizes ----------
+const all=[big];
+document.querySelectorAll('.lk').forEach(el=>all.push(buildLogo(el,{height:+el.dataset.h,light:!!el.dataset.light,p0:+el.dataset.p})));
+const sizes=document.getElementById('sizes');[[16,0],[24,0],[32,1],[48,1],[64,1],[96,1]].forEach(([s,p])=>{const d=document.createElement('div');d.innerHTML=`<span class="chip"><span></span></span><span>${s}px · ${p?'GC':'без букв'}</span>`;sizes.appendChild(d);all.push(buildLogo(d.querySelector('.chip span'),{height:s*1.1,p0:p}));});
+const cw=document.getElementById('cw'),cwv=document.getElementById('cwv');
+cw.addEventListener('input',()=>{C_W=+cw.value;cwv.textContent=cw.value;all.forEach(l=>l.set(l.p));});
+
+// ---------- nav demo ----------
+const nav=buildLogo(document.getElementById('navbrand'),{height:36});all.push(nav);
+const scr=document.getElementById('scr');let p=0,tp=0;scr.addEventListener('scroll',()=>{tp=Math.min(1,Math.max(0,(scr.scrollTop-10)/140));},{passive:true});
+(function nl(){if(Math.abs(tp-p)>0.0005){p+=(tp-p)*0.14;nav.set(p);}requestAnimationFrame(nl);})();
+</script>
+</body>
+</html>
