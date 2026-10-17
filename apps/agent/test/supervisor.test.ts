@@ -259,6 +259,7 @@ describe("SessionSupervisor", () => {
             CG_APP_ID: "1794680",
             SELKIES_WEBRTC_UDP_MUX_PORT: "59001",
             SELKIES_WEBRTC_PUBLIC_IP: "203.0.113.7",
+            PASSWD: expect.any(String),
           },
           labels: { "cg.session": "s1", "cg.slot": "1", "cg.app": "1794680" },
           network: "cg-sessions",
@@ -271,7 +272,39 @@ describe("SessionSupervisor", () => {
           runtime: "nvidia",
           gpus: true,
           shmSizeBytes: 2 * 1024 * 1024 * 1024,
+          // Ни sudo, ни su, ни pkexec в контейнере не поднимают права.
+          securityOpt: ["no-new-privileges:true"],
+          // Каталог для интерпозера геймпадов: без sudo entrypoint его не создаст.
+          tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
         });
+      }),
+    ));
+
+  it("each session container gets its own random account password", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle(start);
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s2",
+          slot: 0,
+          udpPort: 59000,
+        });
+        yield* h.tick("0 seconds");
+        const passwords = h.fake.state.created.map((spec) => spec.env.PASSWD);
+        expect(passwords).toHaveLength(2);
+        for (const password of passwords) {
+          expect(password).toMatch(/^[A-Za-z0-9_-]{32,}$/);
+          expect(password).not.toBe("mypasswd");
+        }
+        expect(passwords[0]).not.toBe(passwords[1]);
+        // Пароль не уходит ни в отчёты, ни в снимок.
+        const visible = JSON.stringify([
+          yield* h.drain,
+          yield* h.supervisor.snapshot,
+        ]);
+        for (const password of passwords)
+          expect(visible).not.toContain(password ?? "?");
       }),
     ));
 

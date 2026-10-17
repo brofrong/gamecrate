@@ -29,16 +29,19 @@ rsync этого каталога в `~/cg-session-image` на воркере, �
 
 ## Контракт контейнера (задаёт агент)
 
-| Что | Значение |
-|---|---|
-| `CG_APP_ID` | appid игры для автозапуска |
-| `SELKIES_WEBRTC_UDP_MUX_PORT` | UDP-порт слота, публикуется наружу 1:1 (`-p P:P/udp`) |
-| `SELKIES_WEBRTC_PUBLIC_IP` | публичный IP воркера |
-| том на `/home/ubuntu` | дом пользователя: вход Steam, игры, сохранения |
-| метка | `cg.session=<sessionId>` |
-| сеть | `cg-sessions` (bridge); веб-порт 8080 наружу не публикуется |
-| GPU | `--runtime nvidia --gpus all --shm-size 2g` |
-| Debian | GBM-бэкенд: `/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.<ver>` → `/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1` и `/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so` (ro) |
+| Что                           | Значение                                                                                                                                                                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CG_APP_ID`                   | appid игры для автозапуска                                                                                                                                                                          |
+| `SELKIES_WEBRTC_UDP_MUX_PORT` | UDP-порт слота, публикуется наружу 1:1 (`-p P:P/udp`)                                                                                                                                               |
+| `SELKIES_WEBRTC_PUBLIC_IP`    | публичный IP воркера                                                                                                                                                                                |
+| том на `/home/ubuntu`         | дом пользователя: вход Steam, игры, сохранения                                                                                                                                                      |
+| метка                         | `cg.session=<sessionId>`                                                                                                                                                                            |
+| сеть                          | `cg-sessions` (bridge); веб-порт 8080 наружу не публикуется                                                                                                                                         |
+| GPU                           | `--runtime nvidia --gpus all --shm-size 2g`                                                                                                                                                         |
+| права                         | `--security-opt no-new-privileges:true`: setuid (`sudo-root`, `su`, `pkexec`) не поднимает права; базовый образ без него даёт `ubuntu` root (`NOPASSWD: ALL`)                                       |
+| `/dev/input`                  | `--tmpfs /dev/input:mode=1777,size=64k,nosuid,nodev,noexec`: entrypoint создаёт каталог через `sudo-root`, при `no-new-privileges` — не может; без каталога интерпозер геймпадов не работает        |
+| `PASSWD`                      | случайный на каждый контейнер (по умолчанию в базовом образе — `mypasswd`); при `no-new-privileges` entrypoint его не применит (`selkies: cannot change the password of ubuntu` в логе — ожидаемо)  |
+| Debian                        | GBM-бэкенд: `/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.<ver>` → `/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1` и `/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so` (ro) |
 
 Зашито в образ: `SELKIES_MODE=webrtc`, `SELKIES_WAYLAND=true`, `SELKIES_ENCODER=h264enc`,
 `SELKIES_RATE_CONTROL_MODE=cbr`, `SELKIES_VIDEO_BITRATE=10000,2000-40000`,
@@ -61,21 +64,22 @@ Bridge-сеть `cg-sessions`, копия дома спайка (вход Steam 
 `-p 59001:59001/udp`, `SELKIES_WEBRTC_UDP_MUX_PORT=59001`, `CG_APP_ID=1794680`, метка
 `cg.session=manual`. Спайк на время проверки остановлен (одна GPU).
 
-| Что | Результат |
-|---|---|
-| Сборка | `cg-session:550.163.01`, 9.68 ГБ (слои общие с базой; свой слой — библиотеки и `cg-launch`) |
-| Лог Selkies | `Selkies 2.0.0 starting: webrtc transport, Wayland capture, encoder h264enc at 30-120 fps, fixed 1920x1080` |
-| Кодирование | `[Wayland] Encoder: NVENC H264 4:2:0 on NVIDIA GeForce GTX 1650 SUPER`, `Zero-copy capture ... encoded in place on NVENC`, `CBR 10000`, 60 fps |
-| UDP в bridge-сети | `WebRTC UDP mux: every session's host candidates share UDP port 59001 on 172.29.0.2` |
-| `GET http://cg-session-manual:8080/api/status` из контейнера в `cg-sessions` | 200 через ~6,5 с после `docker run` |
-| Вход в Steam | автологин, `LogOnResponse 'OK'` |
-| `CG_APP_ID` в автостарте | виден: переменные контейнера доходят до сессии Plasma и Steam (в окружении процесса `steam` есть `CG_APP_ID=1794680` и `LD_PRELOAD=...selkies_input_interposer.so...`) |
-| Время до игры | **~40 с** от `docker run` до `VampireSurvivors.exe` (спайк: 37 с); `docker exec … pgrep -f "AppId=1794680"` находит процесс |
-| Стрим (браузер на Mac через интернет, `ssh -L` на веб-порт) | картинка игры идёт; WebRTC: удалённый кандидат `host udp 37.153.14.138:59001`, H.264 1920x1080, 60 fps, потерь 0, RTT 3 мс |
-| Ввод | клавиатура доходит до игры (заставка → главное меню) |
-| Нагрузка (меню игры) | GPU ~6–17 %, NVENC ~15 %, ~650 МБ VRAM на всю сессию |
+| Что                                                                          | Результат                                                                                                                                                              |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Сборка                                                                       | `cg-session:550.163.01`, 9.68 ГБ (слои общие с базой; свой слой — библиотеки и `cg-launch`)                                                                            |
+| Лог Selkies                                                                  | `Selkies 2.0.0 starting: webrtc transport, Wayland capture, encoder h264enc at 30-120 fps, fixed 1920x1080`                                                            |
+| Кодирование                                                                  | `[Wayland] Encoder: NVENC H264 4:2:0 on NVIDIA GeForce GTX 1650 SUPER`, `Zero-copy capture ... encoded in place on NVENC`, `CBR 10000`, 60 fps                         |
+| UDP в bridge-сети                                                            | `WebRTC UDP mux: every session's host candidates share UDP port 59001 on 172.29.0.2`                                                                                   |
+| `GET http://cg-session-manual:8080/api/status` из контейнера в `cg-sessions` | 200 через ~6,5 с после `docker run`                                                                                                                                    |
+| Вход в Steam                                                                 | автологин, `LogOnResponse 'OK'`                                                                                                                                        |
+| `CG_APP_ID` в автостарте                                                     | виден: переменные контейнера доходят до сессии Plasma и Steam (в окружении процесса `steam` есть `CG_APP_ID=1794680` и `LD_PRELOAD=...selkies_input_interposer.so...`) |
+| Время до игры                                                                | **~40 с** от `docker run` до `VampireSurvivors.exe` (спайк: 37 с); `docker exec … pgrep -f "AppId=1794680"` находит процесс                                            |
+| Стрим (браузер на Mac через интернет, `ssh -L` на веб-порт)                  | картинка игры идёт; WebRTC: удалённый кандидат `host udp 37.153.14.138:59001`, H.264 1920x1080, 60 fps, потерь 0, RTT 3 мс                                             |
+| Ввод                                                                         | клавиатура доходит до игры (заставка → главное меню)                                                                                                                   |
+| Нагрузка (меню игры)                                                         | GPU ~6–17 %, NVENC ~15 %, ~650 МБ VRAM на всю сессию                                                                                                                   |
 
 Заметки:
+
 - `pgrep -f "AppId=<id>"` надо вызывать напрямую (`docker exec <c> pgrep -f ...`); через `sh -c`
   он находит и сам `sh` с этой строкой в аргументах.
 - `SELKIES_WAYLAND_X11_FALLBACK=false` (в базе `true`) запрещает молчаливый уход на X11-захват, но

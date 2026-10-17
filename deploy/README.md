@@ -41,6 +41,14 @@
   `cg.session`/`cg.slot`/`cg.app`, наружу опубликован только UDP-порт слота (`59000/udp` для слота
   0), том дома пользователя `cg-home-<userId>`. `docker compose up/down` их не трогает; агент после
   перезапуска подхватывает живые по метке `cg.session`.
+- Права в контейнере сессии: агент создаёт его с `--security-opt no-new-privileges:true` (в
+  базовом образе у `ubuntu` `NOPASSWD: ALL` в sudoers и свой `/etc/shadow`; с флагом `sudo`, `su`,
+  `pkexec` права не поднимают), `--tmpfs /dev/input:mode=1777` (каталог для интерпозера геймпадов,
+  без sudo entrypoint его не создаст) и случайным `PASSWD` на каждый контейнер.
+  **Не сделано (нужен sudo на хосте, делает владелец):** сетевая изоляция контейнеров сессий —
+  правила `iptables` в цепочке `DOCKER-USER`, запрещающие из `cg-sessions` (`docker network inspect
+cg-sessions` → подсеть) доступ к локальной сети и адресам хоста, кроме ответов `cg-api`.
+  Сейчас из контейнера сессии доступны интернет и, в принципе, другие сервисы хоста/LAN.
 - Реверс-прокси (Caddy, `ingressi`) снаружи сети `proxy` проксирует `https://game.brofrong.ru` на
   `http://cg-api:3000` — это настраивает владелец сервера (см. шаг 2 ниже), наш деплой этого не
   делает и не трогает чужие контейнеры/сети/конфиг Caddy.
@@ -71,6 +79,7 @@
    Каждый сервис получает только перечисленные для него в `deploy/compose.yaml` переменные (не весь
    `.env`): `POSTGRES_PASSWORD` видит лишь `cg-postgres`, `AGENT_TOKEN` — оркестратор и агент.
    Новая переменная сервера — добавить её туда же.
+
 2. `chmod 600 .env.production`.
 3. Скопировать на сервер **один раз**: `scp -p .env.production brofrong:~/cloud-gaming/.env`
    (сначала `ssh brofrong 'mkdir -p ~/cloud-gaming'`, если каталога ещё нет).
@@ -98,7 +107,7 @@
 > оркестратору** (через несколько секунд после `up`). На brofrong одна GPU и один слот (UDP
 > `59000`). Если GPU или UDP `59000` в этот момент заняты (спайк `cg-spike` или что-то ещё),
 > первая же нажатая «Играть» упадёт с «Не удалось запустить игровой сервер» (`failed to bind host
-> port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк останавливать **до деплоя**, а не
+port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк останавливать **до деплоя**, а не
 > только на время приёмки:
 >
 > ```sh
@@ -115,6 +124,7 @@
 ```
 
 Скрипт:
+
 1. `rsync` репозитория в `brofrong:~/cloud-gaming` (без `node_modules`, `.git`, `spike/nv`,
    `images/session/nv`, `.superpowers`, `docs`, `.env*` кроме `.env.example`).
 2. Проверяет, что `~/cloud-gaming/.env` существует на сервере (падает с понятной ошибкой, если нет
@@ -193,6 +203,7 @@ ssh brofrong 'docker logs --tail 100 cg-session-<sessionId>'
 ## Шаг 4 (приёмка, делает владелец)
 
 MVP-1:
+
 - Вход через Steam на `https://game.brofrong.ru` → библиотека с Vampire Survivors и плашкой
   ProtonDB.
 - Вход через Pocket ID на `/admin` → «Админка», `pong`.
@@ -209,6 +220,7 @@ MVP-2 (сессии). На время приёмки спайк остановл
    фактическим временем ±1 мин; контейнер `cg-session-*` удалён.
 
 Дополнительно проверить:
+
 - **StopSession даёт Steam выгрузить сохранения.** После «Выйти из игры» в логе агента у сессии
   `Session stopped` с `cloudSynced` = `true` (`docker logs cg-agent 2>&1 | grep "Session stopped"`),
   и прогресс виден в следующей сессии. `cloudSynced: false` у сессии, где игра шла, значит, что

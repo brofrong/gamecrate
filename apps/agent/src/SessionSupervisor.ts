@@ -13,6 +13,7 @@ import {
   Option,
   Queue,
 } from "effect";
+import { randomBytes } from "node:crypto";
 import { AgentConfig, type AgentConfigValues } from "./config";
 import {
   type ContainerSpec,
@@ -70,10 +71,19 @@ const GBM_TARGETS = [
   "/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so",
 ];
 
+/**
+ * Пароль пользователя `ubuntu` в контейнере (`PASSWD` базового образа, по умолчанию
+ * общеизвестный `mypasswd`): случайный на каждый контейнер, нигде не логируется и
+ * не сообщается. Entrypoint применяет его через `sudo-root chpasswd` — при
+ * `no-new-privileges` это не удаётся (и не нужно: поднять права нечем).
+ */
+export const sessionPassword = () => randomBytes(24).toString("base64url");
+
 /** Контейнер сессии для `StartSession` (как ручной запуск из Task 5). */
 export const sessionSpec = (
   config: AgentConfigValues,
   command: StartSession,
+  password: string,
 ): ContainerSpec => ({
   name: containerName(command.sessionId),
   image: config.sessionImage,
@@ -81,6 +91,7 @@ export const sessionSpec = (
     CG_APP_ID: String(command.appId),
     SELKIES_WEBRTC_UDP_MUX_PORT: String(command.udpPort),
     SELKIES_WEBRTC_PUBLIC_IP: config.publicIp,
+    PASSWD: password,
   },
   labels: {
     "cg.session": command.sessionId,
@@ -99,6 +110,12 @@ export const sessionSpec = (
   runtime: "nvidia",
   gpus: true,
   shmSizeBytes: SHM_SIZE_BYTES,
+  // В базовом образе у `ubuntu` `NOPASSWD: ALL` в sudoers, а /etc/shadow ему
+  // принадлежит (su root): без этого флага любой процесс сессии получает root.
+  securityOpt: ["no-new-privileges:true"],
+  // Интерпозеру геймпадов Selkies нужен каталог /dev/input (файлов в нём нет);
+  // entrypoint создаёт его через sudo-root, что при no-new-privileges невозможно.
+  tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
 });
 
 /**
@@ -491,7 +508,7 @@ const make = Effect.gen(function* () {
         appId: command.appId,
       });
       yield* Effect.forkIn(
-        lifecycle(session, sessionSpec(config, command)),
+        lifecycle(session, sessionSpec(config, command, sessionPassword())),
         scope,
       );
     });

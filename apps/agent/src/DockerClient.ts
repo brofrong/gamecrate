@@ -39,6 +39,10 @@ export interface ContainerSpec {
   /** `--gpus all`. */
   readonly gpus: boolean;
   readonly shmSizeBytes: number;
+  /** `--security-opt`, напр. `no-new-privileges:true`. */
+  readonly securityOpt: ReadonlyArray<string>;
+  /** `--tmpfs`: точка монтирования → опции (`mode=1777,size=64k`). */
+  readonly tmpfs: Readonly<Record<string, string>>;
 }
 
 export interface ContainerInfo {
@@ -105,6 +109,8 @@ export const createBody = (spec: ContainerSpec) => {
       ),
       NetworkMode: spec.network,
       RestartPolicy: { Name: "no" },
+      SecurityOpt: spec.securityOpt,
+      Tmpfs: spec.tmpfs,
     },
     NetworkingConfig: { EndpointsConfig: { [spec.network]: {} } },
   };

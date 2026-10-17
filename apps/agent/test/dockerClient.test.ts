@@ -74,6 +74,8 @@ const spec: ContainerSpec = {
   runtime: "nvidia",
   gpus: true,
   shmSizeBytes: 2147483648,
+  securityOpt: ["no-new-privileges:true"],
+  tmpfs: { "/dev/input": "mode=1777" },
 };
 
 describe("DockerClient", () => {
@@ -100,6 +102,8 @@ describe("DockerClient", () => {
         PortBindings: { "59001/udp": [{ HostIp: "", HostPort: "59001" }] },
         NetworkMode: "cg-sessions",
         RestartPolicy: { Name: "no" },
+        SecurityOpt: ["no-new-privileges:true"],
+        Tmpfs: { "/dev/input": "mode=1777" },
       },
       NetworkingConfig: { EndpointsConfig: { "cg-sessions": {} } },
     });
