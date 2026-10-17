@@ -94,6 +94,22 @@
 
 ## Шаг 3: деплой
 
+> **Внимание: GPU-слот начинает принимать настоящие сессии, как только `cg-agent` подключится к
+> оркестратору** (через несколько секунд после `up`). На brofrong одна GPU и один слот (UDP
+> `59000`). Если GPU или UDP `59000` в этот момент заняты (спайк `cg-spike` или что-то ещё),
+> первая же нажатая «Играть» упадёт с «Не удалось запустить игровой сервер» (`failed to bind host
+> port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк останавливать **до деплоя**, а не
+> только на время приёмки:
+>
+> ```sh
+> ssh brofrong 'cd ~/cg-spike && docker compose stop'      # до ./deploy/deploy.sh
+> ssh brofrong 'ss -lun | grep ":59000 " || echo free'      # UDP 59000 свободен
+> ```
+>
+> Вернуть спайк — только когда сессий нет (`docker ps --filter label=cg.session` пуст) и они не
+> ожидаются, потому что спайк снова займёт GPU и `59000`:
+> `ssh brofrong 'cd ~/cg-spike && docker compose start'`.
+
 ```sh
 ./deploy/deploy.sh
 ```
