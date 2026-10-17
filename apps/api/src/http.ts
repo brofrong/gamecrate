@@ -13,6 +13,7 @@ import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers } from "./auth/rpc";
 import { AppConfig } from "./config";
+import { LibraryRpcHandlers } from "./library/rpc";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -39,6 +40,7 @@ const AuthRoute = HttpRouter.use((router) =>
 export const RpcHandlers = Layer.mergeAll(
   AuthRpcHandlers,
   AdminRpcHandlers,
+  LibraryRpcHandlers,
   RpcMiddlewares,
 );
 

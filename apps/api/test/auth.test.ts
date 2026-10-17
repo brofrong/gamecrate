@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DbTest } from "@cg/db/test";
 import { AdminRpcs, AuthRpcs, type CurrentUserShape } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import { Effect, Layer, Option, Redacted } from "effect";
@@ -13,6 +14,8 @@ import { RpcMiddlewares } from "../src/auth/currentUser";
 import { AuthRpcHandlers } from "../src/auth/rpc";
 import { AppConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { ProtonDb } from "../src/steam/ProtonDb";
+import { SteamApi } from "../src/steam/SteamApi";
 
 const player: CurrentUserShape = {
   id: "u-player",
@@ -100,6 +103,14 @@ describe("http", () => {
     HttpRouter.toWebHandler(
       HttpApp.pipe(
         Layer.provide(fakeAuth(null)),
+        // Зависимости хендлеров library.* (в этих тестах не вызываются).
+        Layer.provide(
+          Layer.mergeAll(
+            DbTest,
+            Layer.mock(SteamApi)({}),
+            Layer.mock(ProtonDb)({}),
+          ),
+        ),
         Layer.provide(
           Layer.succeed(AppConfig, {
             port: 0,

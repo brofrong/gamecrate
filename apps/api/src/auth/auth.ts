@@ -1,6 +1,6 @@
 // Better Auth: вход через Steam (OpenID) и Pocket ID (OIDC), роли пользователей.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
-import { account, session, user, verification } from "@cg/db";
+import { account, type Db, session, user, verification } from "@cg/db";
 import type { CurrentUserShape, Role } from "@cg/rpc";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
@@ -8,9 +8,12 @@ import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { steamOpenID } from "better-auth-steam";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
-import { Context, Effect, Layer, Option, Redacted } from "effect";
+import { Context, Effect, FiberSet, Layer, Option, Redacted } from "effect";
 import type { Headers } from "effect/http/Headers";
 import { AppConfig, type AppConfigValues } from "../config";
+import { syncOnLogin } from "../library/LibraryService";
+import type { ProtonDb } from "../steam/ProtonDb";
+import type { SteamApi } from "../steam/SteamApi";
 
 /** Роль пользователя Pocket ID по claim `groups`. */
 export const pocketIdRole = (
@@ -121,6 +124,32 @@ export const makeAuth = (
 
 export type Auth = ReturnType<typeof makeAuth>;
 
+/**
+ * Хук входа: после создания сессии запускает фоновую синхронизацию библиотеки
+ * (`startSync(userId)`; пользователей без `steamId` она пропускает). Не ждёт её
+ * и никогда не роняет вход — даже если запустить синхронизацию не удалось.
+ */
+export const librarySyncHooks = (
+  startSync: (userId: string) => void,
+): NonNullable<BetterAuthOptions["databaseHooks"]> => ({
+  session: {
+    create: {
+      after: async (newSession) => {
+        try {
+          startSync(newSession.userId);
+        } catch (cause) {
+          Effect.runFork(
+            Effect.logError("Failed to start library sync on login", {
+              userId: newSession.userId,
+              cause: String(cause),
+            }),
+          );
+        }
+      },
+    },
+  },
+});
+
 const toWebHeaders = (headers: Headers): globalThis.Headers =>
   new globalThis.Headers(Object.entries(headers));
 
@@ -158,9 +187,21 @@ export class BetterAuth extends Context.Service<
       ),
   });
 
-  static readonly layer: Layer.Layer<BetterAuth, never, AppConfig> =
-    Layer.effect(
-      BetterAuth,
-      AppConfig.useSync((config) => BetterAuth.fromAuth(makeAuth(config))),
-    );
+  /** Вход через Steam запускает фоновую синхронизацию библиотеки (`librarySyncHooks`). */
+  static readonly layer: Layer.Layer<
+    BetterAuth,
+    never,
+    AppConfig | Db | SteamApi | ProtonDb
+  > = Layer.effect(
+    BetterAuth,
+    Effect.gen(function* () {
+      const config = yield* AppConfig;
+      // Синхронизации живут в scope слоя (срок работы сервера), а не запроса входа.
+      const runFork = yield* FiberSet.makeRuntime<Db | SteamApi | ProtonDb>();
+      const databaseHooks = librarySyncHooks((userId) => {
+        runFork(syncOnLogin(userId));
+      });
+      return BetterAuth.fromAuth(makeAuth(config, { databaseHooks }));
+    }),
+  );
 }
