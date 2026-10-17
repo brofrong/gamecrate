@@ -1,8 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-/* Шрифты бренда лежат в бандле (fontsource), с чужих CDN ничего не грузим. */
-@import "@fontsource-variable/inter";
-@import "@fontsource-variable/jetbrains-mono";
+/* Шрифты бренда (Inter, JetBrains Mono) подключаются в `src/fonts.ts` через FontFace:
+   url() в CSS Bun инлайнит base64 целиком, а так файлы лежат в бандле отдельно. */
 
 /* Тема одна — тёмная: `<html class="dark">`, токены shadcn/ui (zinc) прямо в :root. */
 @custom-variant dark (&:is(.dark *));
@@ -42,7 +41,12 @@
   --brand-dim: #6d729a;
   --brand-ok: #3ddc97;
   --brand-warn: #ffd166;
-  --brand-gradient: linear-gradient(135deg, #3cc2ff 0%, #3a6cff 50%, #5b2fff 100%);
+  --brand-gradient: linear-gradient(
+    135deg,
+    #3cc2ff 0%,
+    #3a6cff 50%,
+    #5b2fff 100%
+  );
   --font-sans: "Inter Variable", system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
 }

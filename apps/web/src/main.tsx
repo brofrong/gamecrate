@@ -3,6 +3,7 @@ import { RegistryProvider } from "@effect/atom-react";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { loadBrandFonts } from "./fonts";
 import { rootRoute } from "./routes/__root";
 import { adminRoute } from "./routes/admin";
 import { indexRoute } from "./routes/index";
@@ -17,6 +18,8 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+
+loadBrandFonts();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root не найден в index.html");
