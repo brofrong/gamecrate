@@ -1134,3 +1134,67 @@ describe("fix round 1", () => {
       }),
     ));
 });
+
+describe("stream url pin", () => {
+  it("StreamReady or reconnect with a foreign streamUrl is ignored", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 2);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+
+        // Чужой хост, чужая сессия, другой порт, путь, https, учётные данные.
+        for (const streamUrl of [
+          "http://169.254.169.254:8080",
+          "http://cg-session-s2:8080",
+          "http://cg-session-s1:8081",
+          "http://cg-session-s1:8080/admin",
+          "https://cg-session-s1:8080",
+          "http://x:y@cg-session-s1:8080",
+          "not a url",
+        ])
+          yield* runner.handle(
+            report("w1", { _tag: "StreamReady", sessionId: "s1", streamUrl }),
+            at(t0, 1),
+          );
+        expect((yield* sessionRow("s1")).streamUrl).toBeNull();
+
+        // Переподключение агента с поддельным адресом тоже не записывает его.
+        yield* runner.handle(
+          connected("w1", [
+            {
+              sessionId: "s1",
+              slot: 0,
+              streamUrl: "http://evil.example:8080",
+              gameRunning: false,
+            },
+          ]),
+          at(t0, 2),
+        );
+        expect((yield* sessionRow("s1")).streamUrl).toBeNull();
+
+        // Правильный адрес записывается в каноническом виде.
+        yield* runner.handle(
+          report("w1", {
+            _tag: "StreamReady",
+            sessionId: "s1",
+            streamUrl: "http://cg-session-s1:8080/",
+          }),
+          at(t0, 3),
+        );
+        expect((yield* sessionRow("s1")).streamUrl).toBe(
+          "http://cg-session-s1:8080",
+        );
+      }),
+    ));
+});

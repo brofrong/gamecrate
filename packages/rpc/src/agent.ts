@@ -19,6 +19,44 @@ export const RunningSession = Schema.Struct({
 });
 export type RunningSession = typeof RunningSession.Type;
 
+/** Порт веб-сервера Selkies в контейнере сессии. */
+export const selkiesPort = 8080;
+
+/**
+ * Единственный допустимый внутренний адрес Selkies сессии в сети
+ * `cg-sessions`: `http://cg-session-<sessionId>:8080`.
+ */
+export const sessionStreamUrl = (sessionId: string) =>
+  `http://cg-session-${sessionId}:${selkiesPort}`;
+
+/**
+ * `streamUrl` — ровно адрес Selkies этой сессии (`sessionStreamUrl`): http,
+ * хост `cg-session-<sessionId>`, порт 8080, без пути, query и учётных данных.
+ * Оркестратор не записывает, а api не проксирует никакой другой адрес — иначе
+ * подделанный отчёт агента превратил бы прокси стрима в SSRF.
+ */
+export const isSessionStreamUrl = (
+  sessionId: string,
+  streamUrl: string,
+): boolean => {
+  try {
+    const url = new URL(streamUrl);
+    const expected = new URL(sessionStreamUrl(sessionId));
+    return (
+      url.protocol === "http:" &&
+      url.hostname === expected.hostname &&
+      url.port === String(selkiesPort) &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Подключение агента. `workerId` — имя воркера из конфига агента; слот `i`
  * на воркере — UDP-порт `udpPortBase + i`, публичный IP — `publicIp`.

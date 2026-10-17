@@ -7,13 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db, games, sessions, user, userGames } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import type { CurrentUserShape } from "@cg/rpc";
+import { type CurrentUserShape, sessionStreamUrl } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import { Effect, Layer, ManagedRuntime, Option, Redacted } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { BetterAuth } from "../src/auth/auth";
 import { AppConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { StreamUpstream } from "../src/session/streamProxy";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
 
@@ -27,6 +28,7 @@ const player = (id: string): CurrentUserShape => ({
 const users: Record<string, CurrentUserShape> = {
   "sid=carol": player("u-carol"),
   "sid=dave": player("u-dave"),
+  "sid=erin": player("u-erin"),
   "sid=alice": player("u-alice"),
   "sid=bob": player("u-bob"),
 };
@@ -46,9 +48,17 @@ const fakeAuth = Layer.succeed(BetterAuth, {
 
 const publicOrigin = "http://localhost:3000";
 
-const appDeps = (webDistDir: string) =>
+/**
+ * `upstreamFor` — куда на самом деле подключаться вместо
+ * `http://cg-session-<id>:8080` (в тестах нет DNS сети `cg-sessions`).
+ */
+const appDeps = (
+  webDistDir: string,
+  upstreamFor: (sessionId: string) => string,
+) =>
   Layer.mergeAll(
     fakeAuth,
+    Layer.succeed(StreamUpstream, upstreamFor),
     DbTest,
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
@@ -74,7 +84,17 @@ type Echo = {
   body: string;
 };
 
-/** Фейковый Selkies: HTTP-эхо запроса и WS-эхо (первое сообщение — заголовки апгрейда). */
+/** Что видел фейковый Selkies: число HTTP-запросов и закрытия WebSocket. */
+const seen = {
+  requests: 0,
+  closes: [] as Array<{ code: number; reason: string }>,
+};
+
+/**
+ * Фейковый Selkies: HTTP-эхо запроса (`/redirect?to=<url>` — 302 на `to`) и
+ * WS-эхо (первое сообщение — заголовки апгрейда; `close:<code>` — закрыть
+ * соединение со стороны Selkies с этим кодом).
+ */
 const startUpstream = () =>
   Bun.serve<{ path: string; headers: Record<string, string> }>({
     hostname: "127.0.0.1",
@@ -91,6 +111,10 @@ const startUpstream = () =>
         })
       )
         return undefined;
+      seen.requests++;
+      const to = url.searchParams.get("to");
+      if (url.pathname === "/redirect" && to !== null)
+        return new Response(null, { status: 302, headers: { location: to } });
       const echo: Echo = {
         method: request.method,
         path: url.pathname + url.search,
@@ -104,7 +128,12 @@ const startUpstream = () =>
         ws.send(JSON.stringify(ws.data));
       },
       message(ws, message) {
-        ws.send(message);
+        const close = /^close:(\d+)$/.exec(String(message));
+        if (close) ws.close(Number(close[1]), "upstream done");
+        else ws.send(message);
+      },
+      close(_ws, code, reason) {
+        seen.closes.push({ code, reason });
       },
     },
   });
@@ -123,6 +152,24 @@ const rawUpgrade = (
         upgrade: "websocket",
         "sec-websocket-version": "13",
         "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+        ...headers,
+      }).map(([name, value]) => `${name}: ${value}`);
+      socket.write([`GET ${path} HTTP/1.1`, ...lines, "", ""].join("\r\n"));
+    });
+    socket.once("data", (data) => {
+      resolve(data.toString().split("\r\n")[0] ?? "");
+      socket.destroy();
+    });
+    socket.once("error", reject);
+  });
+
+/** Сырой HTTP GET по TCP (путь уходит как есть, без нормализации клиентом). */
+const rawGet = (port: number, path: string, headers: Record<string, string>) =>
+  new Promise<string>((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      const lines = Object.entries({
+        host: `127.0.0.1:${port}`,
+        connection: "close",
         ...headers,
       }).map(([name, value]) => `${name}: ${value}`);
       socket.write([`GET ${path} HTTP/1.1`, ...lines, "", ""].join("\r\n"));
@@ -175,17 +222,27 @@ describe("stream proxy", () => {
     ended: crypto.randomUUID(),
     notReady: crypto.randomUUID(),
     down: crypto.randomUUID(),
+    forged: crypto.randomUUID(),
   };
 
   beforeAll(async () => {
     webDistDir = await mkdtemp(join(tmpdir(), "cg-web-"));
     upstream = startUpstream();
+    // Порт, на котором никто не слушает: апстрим ещё не поднялся.
+    const closed = Bun.serve({ port: 0, fetch: () => new Response("") });
+    const closedPort = closed.port;
+    await closed.stop(true);
+    const upstreamFor = (sessionId: string) =>
+      sessionId === ids.down
+        ? `http://127.0.0.1:${closedPort}`
+        : `http://127.0.0.1:${upstream.port}`;
+
     runtime = ManagedRuntime.make(
       HttpRouter.serve(HttpApp, {
         disableLogger: true,
         disableListenLog: true,
       }).pipe(
-        Layer.provideMerge(appDeps(webDistDir)),
+        Layer.provideMerge(appDeps(webDistDir, upstreamFor)),
         Layer.provideMerge(
           BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 }),
         ),
@@ -197,18 +254,12 @@ describe("stream proxy", () => {
     if (!("port" in address)) throw new Error("expected a TCP address");
     port = address.port;
 
-    // Порт, на котором никто не слушает: апстрим ещё не поднялся.
-    const closed = Bun.serve({ port: 0, fetch: () => new Response("") });
-    const closedPort = closed.port;
-    await closed.stop(true);
-
-    const streamUrl = `http://127.0.0.1:${upstream.port}`;
     // Одна активная сессия на пользователя: у каждого случая свой пользователь.
     await runtime.runPromise(
       Effect.gen(function* () {
         const db = yield* Db;
         yield* db.insert(user).values(
-          ["u-alice", "u-bob", "u-carol", "u-dave"].map((id) => ({
+          ["u-alice", "u-bob", "u-carol", "u-dave", "u-erin"].map((id) => ({
             id,
             name: id,
             email: `${id}@example.test`,
@@ -224,7 +275,7 @@ describe("stream proxy", () => {
           userId,
           appId: 10,
           state: "playing" as const,
-          streamUrl,
+          streamUrl: sessionStreamUrl(id),
         });
         yield* db.insert(sessions).values([
           row(ids.alice, "u-alice"),
@@ -239,10 +290,12 @@ describe("stream proxy", () => {
             state: "starting",
             streamUrl: null,
           },
-          // Апстрим ещё не поднялся (никто не слушает порт).
+          // Апстрим ещё не поднялся (никто не слушает порт, см. upstreamFor).
+          row(ids.down, "u-dave"),
+          // В БД чужой адрес (не cg-session-<id>:8080) — не проксируется.
           {
-            ...row(ids.down, "u-dave"),
-            streamUrl: `http://127.0.0.1:${closedPort}`,
+            ...row(ids.forged, "u-erin"),
+            streamUrl: `http://127.0.0.1:${upstream.port}`,
           },
         ]);
       }),
@@ -401,5 +454,122 @@ describe("stream proxy", () => {
       headers: { cookie: "sid=alice" },
     });
     expect(ok.status).toBe(200);
+  });
+  it("stream proxy rejects path tricks and malformed session ids", async () => {
+    const before = seen.requests;
+    const status = (path: string, cookie = "sid=alice") =>
+      rawGet(port, path, { cookie });
+    // Обход в чужую сессию через `..`, `%2F`, `%2e%2e`.
+    for (const path of [
+      `/stream/${ids.alice}/../${ids.bob}/`,
+      `/stream/${ids.alice}/../${ids.bob}/api/status`,
+      `/stream/${ids.alice}%2F..%2F${ids.bob}/`,
+      `/stream/${ids.alice}%2f%2e%2e%2f${ids.bob}/`,
+      `/stream/${ids.alice}/%2e%2e/${ids.bob}/`,
+      `/stream/${ids.alice}/%2E%2E/${ids.bob}/`,
+    ])
+      expect(`${path} ${await status(path)}`).toContain(" 403 ");
+    // Не uuid — 403 до запроса к БД (без 500 на `\0`).
+    for (const path of [
+      "/stream/%00/",
+      "/stream/%00",
+      "/stream/not-a-session/",
+      `/stream/${ids.alice.toUpperCase()}/`,
+      `/stream/${ids.alice}%00/`,
+    ])
+      expect(`${path} ${await status(path)}`).toContain(" 403 ");
+    expect(
+      await rawUpgrade(port, "/stream/%00/api/webrtc/signaling", {
+        cookie: "sid=alice",
+        origin: publicOrigin,
+      }),
+    ).toContain(" 403 ");
+    // Ни один из этих запросов не дошёл до Selkies.
+    expect(seen.requests).toBe(before);
+  });
+
+  it("stream proxy refuses a streamUrl other than cg-session-<id>:8080", async () => {
+    const before = seen.requests;
+    const get = await http(`/stream/${ids.forged}/api/status`, {
+      headers: { cookie: "sid=erin" },
+    });
+    expect(get.status).toBe(502);
+    expect(
+      await rawUpgrade(port, `/stream/${ids.forged}/api/webrtc/signaling`, {
+        cookie: "sid=erin",
+        origin: publicOrigin,
+      }),
+    ).toContain(" 502 ");
+    expect(seen.requests).toBe(before);
+  });
+
+  it("websocket close propagates both ways", async () => {
+    const url = `ws://127.0.0.1:${port}/stream/${ids.alice}/api/webrtc/signaling`;
+    const headers = { cookie: "sid=alice", origin: publicOrigin };
+    const closeOf = (ws: WebSocket) =>
+      new Promise<{ code: number; reason: string }>((resolve) =>
+        ws.addEventListener("close", (event) =>
+          resolve({ code: event.code, reason: event.reason }),
+        ),
+      );
+
+    // Браузер закрывает → Selkies получает тот же код.
+    const browser = await openWs(url, headers);
+    await browser.next();
+    const closesBefore = seen.closes.length;
+    browser.ws.close(4001, "bye");
+    const deadline = Date.now() + 3000;
+    while (seen.closes.length === closesBefore && Date.now() < deadline)
+      await Bun.sleep(20);
+    expect(seen.closes.slice(closesBefore)).toEqual([
+      { code: 4001, reason: "bye" },
+    ]);
+
+    // Selkies закрывает → браузер получает его код (и прикладной, и 1011).
+    for (const code of [4002, 1011]) {
+      const upstreamSide = await openWs(url, headers);
+      await upstreamSide.next();
+      const closed = closeOf(upstreamSide.ws);
+      upstreamSide.ws.send(`close:${code}`);
+      expect((await closed).code).toBe(code);
+    }
+  });
+
+  it("proxied responses deny foreign framing and keep redirects under the prefix", async () => {
+    const page = await http(`/stream/${ids.alice}/`, {
+      headers: { cookie: "sid=alice" },
+    });
+    expect(page.headers.get("content-security-policy")).toBe(
+      "frame-ancestors 'self'",
+    );
+    expect(page.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+
+    const prefix = `/stream/${ids.alice}`;
+    const upstreamOrigin = `http://127.0.0.1:${upstream.port}`;
+    const location = async (to: string) => {
+      const response = await http(
+        `${prefix}/redirect?to=${encodeURIComponent(to)}`,
+        { headers: { cookie: "sid=alice" } },
+      );
+      expect(response.status).toBe(302);
+      expect(response.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+      return response.headers.get("location");
+    };
+    // Абсолютный путь и адрес самого Selkies → под префикс сессии.
+    expect(await location("/target?a=1")).toBe(`${prefix}/target?a=1`);
+    expect(await location(`${upstreamOrigin}/deep/t?x=1#h`)).toBe(
+      `${prefix}/deep/t?x=1#h`,
+    );
+    expect(await location(`${sessionStreamUrl(ids.alice)}/p`)).toBe(
+      `${prefix}/p`,
+    );
+    expect(await location(`//127.0.0.1:${upstream.port}/z`)).toBe(
+      `${prefix}/z`,
+    );
+    // Относительный и внешний — без изменений.
+    expect(await location("target")).toBe("target");
+    expect(await location("https://example.com/x")).toBe(
+      "https://example.com/x",
+    );
   });
 });

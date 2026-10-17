@@ -440,4 +440,30 @@ describe("session rpc", () => {
     expect(result.warning?.idleDeadline).toBe("2026-10-17T10:03:00.000Z");
     expect(result.playing?.idleDeadline).toBeNull();
   });
+  it("malformed session ids are SessionNotFound without touching the db", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const ids = ["\u0000", `${id}\u0000`, id.toUpperCase(), "", "x"];
+        const tags: Array<string> = [];
+        for (const sessionId of ids) {
+          const watch = yield* rpc["session.watch"]({ sessionId }).pipe(
+            Stream.runCollect,
+            Effect.flip,
+          );
+          const heartbeat = yield* Effect.flip(
+            rpc["session.heartbeat"]({ sessionId, inputAgeMs: 0 }),
+          );
+          const stop = yield* Effect.flip(rpc["session.stop"]({ sessionId }));
+          tags.push(watch._tag, heartbeat._tag, stop._tag);
+        }
+        return { tags, count: ids.length * 3, row: yield* sessionRow(id) };
+      }),
+    );
+    expect(result.tags).toEqual(Array(result.count).fill("SessionNotFound"));
+    expect(result.row.clientSeenAt).toBeNull();
+    expect(result.row.stopRequestedAt).toBeNull();
+  });
 });

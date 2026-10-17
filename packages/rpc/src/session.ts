@@ -58,6 +58,16 @@ export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(
   { sessionId: Schema.String },
 ) {}
 
+const sessionIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Формат id сессии: uuid в нижнем регистре (`crypto.randomUUID()` в
+ * `session.start`). Другой формат — сессии заведомо нет; проверяется до запроса
+ * к БД (иначе, например, `\0` в тексте — ошибка Postgres).
+ */
+export const isSessionId = (id: string): boolean => sessionIdPattern.test(id);
+
 /** Максимум `inputAgeMs` в heartbeat; больше — считается равным ему. */
 export const maxInputAgeMs = 24 * 60 * 60 * 1000;
 

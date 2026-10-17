@@ -9,8 +9,10 @@ import {
 } from "@cg/db";
 import {
   defaultSessionSettings,
+  isSessionStreamUrl,
   SessionSettings,
   sessionSettingsKey,
+  sessionStreamUrl,
 } from "@cg/rpc";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
@@ -261,17 +263,31 @@ export const recordHeartbeat = (
       );
   });
 
-/** Внутренний адрес Selkies активной сессии этого воркера. */
+/**
+ * Внутренний адрес Selkies активной сессии этого воркера. Принимается только
+ * `http://cg-session-<sessionId>:8080` (`isSessionStreamUrl`) и записывается в
+ * этом каноническом виде; любой другой адрес (из `StreamReady` или из списка
+ * `running` при переподключении) — предупреждение в логе, ничего не меняется:
+ * api проксирует браузер на этот адрес, подделанный адрес был бы SSRF.
+ */
 export const setStreamUrl = (
   workerId: string,
   sessionId: string,
   streamUrl: string,
 ) =>
   Effect.gen(function* () {
+    if (!isSessionStreamUrl(sessionId, streamUrl)) {
+      yield* Effect.logWarning("Ignoring unexpected streamUrl from agent", {
+        workerId,
+        sessionId,
+        streamUrl,
+      });
+      return;
+    }
     const db = yield* Db;
     yield* db
       .update(sessions)
-      .set({ streamUrl })
+      .set({ streamUrl: sessionStreamUrl(sessionId) })
       .where(
         and(
           eq(sessions.id, sessionId),

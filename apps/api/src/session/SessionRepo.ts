@@ -8,7 +8,7 @@ import {
   sessions,
   userGames,
 } from "@cg/db";
-import type { SessionState, SessionView } from "@cg/rpc";
+import { isSessionId, type SessionState, type SessionView } from "@cg/rpc";
 import { and, eq, notInArray, type SQL, sql } from "drizzle-orm";
 import { DateTime, Effect } from "effect";
 import { loadSessionSettings } from "../admin/settings";
@@ -129,12 +129,16 @@ export const activeView = (
     Effect.orDie,
   );
 
+// Функции по `sessionId` из запроса сначала проверяют формат (`isSessionId`):
+// не uuid — сессии заведомо нет, БД не спрашиваем.
+
 /** Представление сессии пользователя; чужая или нет — undefined. */
 export const ownView = (
   userId: string,
   sessionId: string,
 ): Effect.Effect<SessionView | undefined, never, Db> =>
   Effect.gen(function* () {
+    if (!isSessionId(sessionId)) return undefined;
     const [row] = yield* selectSessions(
       and(eq(sessions.id, sessionId), eq(sessions.userId, userId)),
     );
@@ -200,6 +204,7 @@ export const heartbeat = (
   inputAgeMs: number,
 ): Effect.Effect<boolean, never, Db> =>
   Effect.gen(function* () {
+    if (!isSessionId(sessionId)) return false;
     const db = yield* Db;
     const now = yield* DateTime.nowAsDate;
     const lastInputAt = new Date(now.getTime() - inputAgeMs);
@@ -225,6 +230,7 @@ export const requestStop = (
   sessionId: string,
 ): Effect.Effect<boolean, never, Db> =>
   Effect.gen(function* () {
+    if (!isSessionId(sessionId)) return false;
     const db = yield* Db;
     const now = yield* DateTime.nowAsDate;
     const [owned] = yield* db
@@ -250,6 +256,7 @@ export const streamUrlOf = (
   sessionId: string,
 ): Effect.Effect<string | undefined, never, Db> =>
   Effect.gen(function* () {
+    if (!isSessionId(sessionId)) return undefined;
     const db = yield* Db;
     const [row] = yield* db
       .select({ streamUrl: sessions.streamUrl })

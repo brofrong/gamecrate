@@ -15,6 +15,9 @@ import {
 
 export const sessionChangedChannel = "session_changed";
 
+/** Сколько непрочитанных уведомлений держит буфер (на всех подписчиков). */
+const notificationBuffer = 1024;
+
 export class SessionEvents extends Context.Service<
   SessionEvents,
   {
@@ -39,8 +42,12 @@ export class SessionEvents extends Context.Service<
     SessionEvents,
     Effect.gen(function* () {
       const db = yield* Db;
+      // Ограниченный буфер с вытеснением старых: уведомление — лишь сигнал
+      // «перечитай сейчас», а каждый `session.watch` и так перечитывает сессию
+      // раз в 5 с. Медленный подписчик теряет старые id вместо того, чтобы
+      // копить в памяти все изменения всех сессий.
       const pubsub = yield* Effect.acquireRelease(
-        PubSub.unbounded<string>(),
+        PubSub.sliding<string>(notificationBuffer),
         PubSub.shutdown,
       );
       const listening = yield* Deferred.make<void>();

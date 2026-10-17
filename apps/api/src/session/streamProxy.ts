@@ -14,8 +14,20 @@
 // cookie (наша сессия Better Auth) и `Referer` не передаются. `Set-Cookie`
 // Selkies браузеру не отдаётся — контейнер не может ставить cookie нашему домену.
 // Selkies ещё не поднялся (отказ соединения, таймаут) — 502.
+//
+// Жёсткие ограничения:
+// - id в пути — только формат `isSessionId` (uuid), иначе 403 до запроса к БД;
+//   путь нормализуется (`..`, `%2e%2e`) до разбора, так что обход в чужую
+//   сессию упирается в проверку владельца;
+// - подключаемся только к `http://cg-session-<id>:8080` этой сессии: `streamUrl`
+//   в БД, не равный ему (`isSessionStreamUrl`), — 502 и предупреждение в логе
+//   (защита от SSRF через подделанный отчёт агента);
+// - ответы Selkies нельзя встроить в чужой сайт (`frame-ancestors 'self'`,
+//   `X-Frame-Options: SAMEORIGIN`); `Location` на абсолютный путь или на сам
+//   Selkies переписывается под префикс `/stream/<id>`.
 import { Db } from "@cg/db";
-import { Effect } from "effect";
+import { isSessionId, isSessionStreamUrl, sessionStreamUrl } from "@cg/rpc";
+import { Context, Effect, Fiber, FiberSet } from "effect";
 import {
   HttpRouter,
   type HttpServerRequest,
@@ -25,6 +37,16 @@ import * as Socket from "effect/socket/Socket";
 import { BetterAuth } from "../auth/auth";
 import { AppConfig, rpcAllowedOrigins } from "../config";
 import { streamUrlOf } from "./SessionRepo";
+
+/**
+ * Куда подключаться для сессии. По умолчанию — `http://cg-session-<id>:8080`
+ * (`sessionStreamUrl`); тесты подменяют адресом фейкового Selkies (в них нет
+ * DNS сети `cg-sessions`). Подключение всегда идёт сюда, а не по строке из БД.
+ */
+export const StreamUpstream = Context.Reference<(sessionId: string) => string>(
+  "@cg/api/StreamUpstream",
+  { defaultValue: () => sessionStreamUrl },
+);
 
 /** `/stream/<id>` и остаток пути (с начальным `/`, если есть). */
 const streamPath = /^\/stream\/([^/?#]+)(\/[^?#]*)?$/;
@@ -69,24 +91,15 @@ const forbidden = HttpServerResponse.text("Forbidden", { status: 403 });
 const badGateway = HttpServerResponse.text("Стрим ещё не готов", {
   status: 502,
 });
+const streamUnavailable = HttpServerResponse.text("Стрим недоступен", {
+  status: 502,
+});
 
 const isSafeMethod = (method: string) =>
   method === "GET" || method === "HEAD" || method === "OPTIONS";
 
 const isWebSocketUpgrade = (request: HttpServerRequest.HttpServerRequest) =>
   request.headers["upgrade"]?.toLowerCase() === "websocket";
-
-/** Адрес Selkies из БД: только http(s) без учётных данных, иначе undefined. */
-const parseStreamUrl = (streamUrl: string): URL | undefined => {
-  try {
-    const url = new URL(streamUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-    if (url.username !== "" || url.password !== "") return undefined;
-    return url;
-  } catch {
-    return undefined;
-  }
-};
 
 /** URL апстрима: путь `streamUrl` + остаток пути после `/stream/<id>` + query. */
 const upstreamUrl = (base: URL, rest: string, search: string) => {
@@ -108,12 +121,48 @@ const forwardRequestHeaders = (
   return headers;
 };
 
-const forwardResponse = (response: Response) => {
+/** Куда отвечает Selkies: префикс сессии и origin, которые считаются им самим. */
+interface Upstream {
+  readonly prefix: string;
+  readonly origins: ReadonlySet<string>;
+  readonly target: URL;
+}
+
+const hasScheme = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * `Location` от Selkies: абсолютный путь (`/x`) и адрес самого Selkies
+ * (`http://cg-session-<id>:8080/x`, `//cg-session-<id>:8080/x`) — под
+ * префикс сессии; относительный и внешний — как есть.
+ */
+export const rewriteLocation = (location: string, upstream: Upstream) => {
+  if (location.startsWith("/") && !location.startsWith("//"))
+    return upstream.prefix + location;
+  if (!hasScheme.test(location) && !location.startsWith("//")) return location;
+  let url: URL;
+  try {
+    url = new URL(location, upstream.target);
+  } catch {
+    return location;
+  }
+  return upstream.origins.has(url.origin)
+    ? upstream.prefix + url.pathname + url.search + url.hash
+    : location;
+};
+
+const forwardResponse = (response: Response, upstream: Upstream) => {
   const headers = new globalThis.Headers();
   response.headers.forEach((value, name) => {
     if (!droppedResponseHeaders.has(name.toLowerCase()))
       headers.set(name, value);
   });
+  // Встраивать стрим можно только нашим страницам. Отдельный заголовок CSP:
+  // несколько политик действуют одновременно, политика Selkies не ослабляется.
+  headers.append("content-security-policy", "frame-ancestors 'self'");
+  headers.set("x-frame-options", "SAMEORIGIN");
+  const location = headers.get("location");
+  if (location !== null)
+    headers.set("location", rewriteLocation(location, upstream));
   // fetch уже распаковал тело: исходные кодировка и длина к нему не относятся.
   if (headers.has("content-encoding")) {
     headers.delete("content-encoding");
@@ -132,6 +181,7 @@ const forwardResponse = (response: Response) => {
 const proxyHttp = (
   request: HttpServerRequest.HttpServerRequest,
   target: URL,
+  upstream: Upstream,
   sessionId: string,
 ) =>
   Effect.gen(function* () {
@@ -148,7 +198,7 @@ const proxyHttp = (
         }),
       catch: (cause) => cause,
     }).pipe(Effect.timeout(upstreamTimeout));
-    return forwardResponse(response);
+    return forwardResponse(response, upstream);
   }).pipe(
     Effect.catch((cause) =>
       Effect.as(
@@ -201,6 +251,11 @@ const pipeFrames = (
  * WebSocket: сначала открывается соединение с Selkies (не открылось — 502 без
  * апгрейда браузера), затем апгрейд браузера и перекачка кадров в обе стороны
  * (текст остаётся текстом, бинарные — бинарными) до закрытия любой стороны.
+ *
+ * Запускается в отдельном файбере слоя маршрута (`runBridge`), а не в файбере
+ * запроса: когда браузер закрывает WebSocket, Bun отменяет исходный запрос и
+ * сервер прерывает его файбер — мост успел бы только закрыть Selkies с 1000,
+ * не передав код и причину браузера.
  */
 const proxyWebSocket = (
   request: HttpServerRequest.HttpServerRequest,
@@ -249,16 +304,23 @@ const handle = (
   request: HttpServerRequest.HttpServerRequest,
   auth: BetterAuth["Service"],
   allowedOrigins: ReadonlySet<string>,
+  upstreamFor: (sessionId: string) => string,
+  runBridge: (
+    bridge: Effect.Effect<HttpServerResponse.HttpServerResponse>,
+  ) => Fiber.Fiber<HttpServerResponse.HttpServerResponse>,
 ) =>
   Effect.gen(function* () {
+    // `new URL` нормализует `..` и `%2e%2e` до разбора пути.
     const url = new URL(request.url, "http://localhost");
     const match = streamPath.exec(url.pathname);
-    const rawId = match?.[1];
-    if (match === null || rawId === undefined) return forbidden;
+    const sessionId = match?.[1];
+    // Только uuid: `%00`, `%2F` и прочее — сразу 403, без БД.
+    if (match === null || sessionId === undefined || !isSessionId(sessionId))
+      return forbidden;
     const rest = match[2];
     // Без завершающего слэша: клиент Selkies строит URL от своего пути.
     if (rest === undefined)
-      return HttpServerResponse.redirect(`/stream/${rawId}/${url.search}`, {
+      return HttpServerResponse.redirect(`/stream/${sessionId}/${url.search}`, {
         status: 308,
       });
 
@@ -268,26 +330,29 @@ const handle = (
     if ((upgrade || !isSafeMethod(request.method)) && !originAllowed)
       return forbidden;
 
-    let sessionId: string;
-    try {
-      sessionId = decodeURIComponent(rawId);
-    } catch {
-      return forbidden;
-    }
     const user = yield* auth.currentUser(request.headers);
     if (user._tag === "None") return forbidden;
     const streamUrl = yield* streamUrlOf(user.value.id, sessionId);
     if (streamUrl === undefined) return forbidden;
-    const base = parseStreamUrl(streamUrl);
-    if (base === undefined) {
-      yield* Effect.logError("Session has an invalid streamUrl", { sessionId });
-      return badGateway;
+    if (!isSessionStreamUrl(sessionId, streamUrl)) {
+      yield* Effect.logWarning("Session streamUrl is not its Selkies address", {
+        sessionId,
+        streamUrl,
+      });
+      return streamUnavailable;
     }
 
+    const base = new URL(upstreamFor(sessionId));
+    const upstream: Upstream = {
+      prefix: `/stream/${sessionId}`,
+      origins: new Set([base.origin, new URL(streamUrl).origin]),
+      target: base,
+    };
     const target = upstreamUrl(base, rest, url.search);
     return upgrade
-      ? yield* proxyWebSocket(request, target, sessionId)
-      : yield* proxyHttp(request, target, sessionId);
+      ? // Прерывание ожидания (файбер запроса) мост не останавливает.
+        yield* Fiber.join(runBridge(proxyWebSocket(request, target, sessionId)))
+      : yield* proxyHttp(request, target, upstream, sessionId);
   });
 
 /** Маршрут `/stream/:sessionId/*` (и `/stream/:sessionId` — редирект со слэшем). */
@@ -296,8 +361,17 @@ export const StreamProxyRoute = HttpRouter.use((router) =>
     const auth = yield* BetterAuth;
     const db = yield* Db;
     const allowedOrigins = rpcAllowedOrigins(yield* AppConfig);
+    const upstreamFor = yield* StreamUpstream;
+    // Мосты WebSocket живут в scope слоя: при остановке сервера прерываются.
+    const runBridge = yield* FiberSet.makeRuntime<
+      never,
+      HttpServerResponse.HttpServerResponse,
+      never
+    >();
     yield* router.add("*", "/stream/:sessionId/*", (request) =>
-      handle(request, auth, allowedOrigins).pipe(Effect.provideService(Db, db)),
+      handle(request, auth, allowedOrigins, upstreamFor, runBridge).pipe(
+        Effect.provideService(Db, db),
+      ),
     );
   }),
 );
