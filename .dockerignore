@@ -1,15 +1,19 @@
 # Docker build context = repo root (deploy/compose.yaml: build.context: ..).
 # Без этого файла `COPY . .` в deploy/Dockerfile тащит в слой образа всё дерево,
 # включая боевой .env на сервере (~/cloud-gaming/.env) — секреты попадали бы в образ.
-.env
-.env.*
-!.env.example
+#
+# ВАЖНО: .dockerignore-паттерны без "**/" матчат только корень контекста, в отличие
+# от .gitignore/rsync — они не рекурсивны. Поэтому .env/.env.* (и .turbo, *.tgz)
+# пишем с "**/", иначе вложенные файлы (например spike/.env) всё равно попадут в образ.
+**/.env
+**/.env.*
+!**/.env.example
 
 .git
 node_modules
 **/node_modules
-.turbo
+**/.turbo
 **/dist
 .superpowers
 spike/nv
-*.tgz
+**/*.tgz
