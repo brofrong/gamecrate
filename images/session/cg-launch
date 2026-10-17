@@ -1,0 +1,20 @@
+#!/bin/bash
+# Запуск игры сразу после входа в графическую сессию (автостарт KDE, /etc/xdg/autostart/cg-launch.desktop).
+# Работает в окружении сессии Plasma: там LD_PRELOAD интерпозера ввода Selkies (геймпад) и переменные
+# контейнера, в том числе CG_APP_ID. Пустой CG_APP_ID — ничего не запускать (просто рабочий стол).
+set -u
+
+app_id="${CG_APP_ID:-}"
+if [ -z "${app_id}" ]; then
+  echo "[cg-launch] CG_APP_ID is empty, nothing to launch" >&2
+  exit 0
+fi
+case "${app_id}" in
+  *[!0-9]*)
+    echo "[cg-launch] CG_APP_ID is not a number: ${app_id}" >&2
+    exit 1
+    ;;
+esac
+
+echo "[cg-launch] steam -silent -applaunch ${app_id}" >&2
+exec steam -silent -applaunch "${app_id}"
