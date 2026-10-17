@@ -133,6 +133,60 @@ describe("session", () => {
     expect(screen.getByText("Сессия завершена. Вы играли 10 мин")).toBeTruthy();
   });
 
+  it("ended with a reason shows it with a neutral icon and the played time", () => {
+    const onLibrary = mock(() => {});
+    const timedOut = renderPlayer(
+      view("ended", {
+        failReason: "Игра не запустилась за отведённое время",
+        playedSeconds: 0,
+      }),
+      { onLibrary },
+    );
+    expect(screen.getByText("Сессия завершена")).toBeTruthy();
+    expect(
+      screen.getByText("Игра не запустилась за отведённое время"),
+    ).toBeTruthy();
+    expect(screen.getByText("Вы играли 0 мин")).toBeTruthy();
+    // Не зелёная галочка успеха.
+    expect(timedOut.container.querySelector(".text-emerald-400")).toBeNull();
+    expect(
+      timedOut.container.querySelector('[data-icon="neutral"]'),
+    ).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "В библиотеку" }));
+    expect(onLibrary).toHaveBeenCalledTimes(1);
+    timedOut.unmount();
+
+    // Без причины — прежний экран успеха.
+    const ok = renderPlayer(view("ended", { playedSeconds: 600 }));
+    expect(screen.getByText("Сессия завершена. Вы играли 10 мин")).toBeTruthy();
+    expect(ok.container.querySelector(".text-emerald-400")).not.toBeNull();
+  });
+
+  it("failed after real play says the game was interrupted and shows played time", () => {
+    const played = renderPlayer(
+      view("failed", {
+        failReason: "Сервер с игрой перестал отвечать",
+        playedSeconds: 4320,
+      }),
+    );
+    expect(screen.getByText("Игра прервалась")).toBeTruthy();
+    expect(screen.queryByText("Не удалось запустить игру")).toBeNull();
+    expect(screen.getByText("Сервер с игрой перестал отвечать")).toBeTruthy();
+    expect(screen.getByText("Вы играли 1 ч 12 мин")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "В библиотеку" })).toBeTruthy();
+    played.unmount();
+
+    renderPlayer(
+      view("failed", {
+        failReason: "Не удалось запустить игровой сервер",
+        playedSeconds: 0,
+      }),
+    );
+    expect(screen.getByText("Не удалось запустить игру")).toBeTruthy();
+    expect(screen.queryByText("Игра прервалась")).toBeNull();
+    expect(screen.queryByText(/Вы играли/)).toBeNull();
+  });
+
   it("idle prompt counts down to idleDeadline and calls onHere", async () => {
     let now = Date.parse("2026-10-17T12:00:00.000Z");
     const deadline = new Date(now + 65_000).toISOString();

@@ -3,6 +3,7 @@ import type { SessionView } from "@cg/rpc";
 import {
   CircleAlert,
   CircleCheck,
+  CircleMinus,
   Hourglass,
   LoaderCircle,
   SearchX,
@@ -53,6 +54,14 @@ function LibraryButton({ onLibrary }: { onLibrary: () => void }) {
   return <Button onClick={onLibrary}>В библиотеку</Button>;
 }
 
+function Reason({ text }: { text: string }) {
+  return <p className="text-sm text-muted-foreground">{text}</p>;
+}
+
+function Played({ seconds }: { seconds: number }) {
+  return <p className="text-sm">{`Вы играли ${formatPlayed(seconds)}`}</p>;
+}
+
 /** Состояние сессии, когда стрим не показан. */
 export function SessionStatus({
   view,
@@ -88,7 +97,24 @@ export function SessionStatus({
         />
       );
     case "ended":
-      return (
+      // Причина у `ended` — сессию закрыл сервер (таймаут запуска, игрок не
+      // вернулся): не успех, но и не ошибка.
+      return view.failReason ? (
+        <StatusScreen
+          icon={
+            <CircleMinus
+              data-icon="neutral"
+              className="size-6 text-muted-foreground"
+            />
+          }
+          title="Сессия завершена"
+          gameName={gameName}
+        >
+          <Reason text={view.failReason} />
+          <Played seconds={view.playedSeconds} />
+          <LibraryButton onLibrary={onLibrary} />
+        </StatusScreen>
+      ) : (
         <StatusScreen
           icon={<CircleCheck className="size-6 text-emerald-400" />}
           title={`Сессия завершена. Вы играли ${formatPlayed(view.playedSeconds)}`}
@@ -97,19 +123,21 @@ export function SessionStatus({
           <LibraryButton onLibrary={onLibrary} />
         </StatusScreen>
       );
-    case "failed":
+    case "failed": {
+      // Игра успела идти — сбой прервал её, а не помешал запуску.
+      const played = view.playedSeconds > 0;
       return (
         <StatusScreen
           icon={<CircleAlert className="size-6 text-destructive" />}
-          title="Не удалось запустить игру"
+          title={played ? "Игра прервалась" : "Не удалось запустить игру"}
           gameName={gameName}
         >
-          {view.failReason && (
-            <p className="text-sm text-muted-foreground">{view.failReason}</p>
-          )}
+          {view.failReason && <Reason text={view.failReason} />}
+          {played && <Played seconds={view.playedSeconds} />}
           <LibraryButton onLibrary={onLibrary} />
         </StatusScreen>
       );
+    }
     default:
       // playing / idle_warning / disconnected, а стрим ещё не готов.
       return (
