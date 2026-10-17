@@ -9,8 +9,10 @@ import { toast } from "sonner";
 import { signInWithSteam } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
 import { LibraryContent } from "@/components/LibraryContent";
+import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useStalled } from "@/lib/useStalled";
 import { cn } from "@/lib/utils";
 import {
   errorTag,
@@ -39,9 +41,13 @@ function LibrarySkeleton() {
 function LibraryPage() {
   const me = useAtomValue(meAtom);
   const library = useAtomValue(libraryAtom);
-  const reload = useAtomRefresh(libraryAtom);
+  const reloadMe = useAtomRefresh(meAtom);
+  const reloadLibrary = useAtomRefresh(libraryAtom);
   const refresh = useAtomSet(refreshLibraryAtom, { mode: "promiseExit" });
   const [refreshing, setRefreshing] = useState(false);
+  const [stalled, restartWait] = useStalled(
+    AsyncResult.isInitial(me) || AsyncResult.isInitial(library),
+  );
 
   if (
     resultErrorTag(me) === "Unauthorized" ||
@@ -51,6 +57,14 @@ function LibraryPage() {
   }
 
   const user = AsyncResult.isSuccess(me) ? me.value : undefined;
+  // Любая ошибка, кроме Unauthorized, или слишком долгое ожидание — сервер недоступен.
+  const unreachable =
+    AsyncResult.isFailure(me) || AsyncResult.isFailure(library) || stalled;
+  const retry = () => {
+    restartWait();
+    reloadMe();
+    reloadLibrary();
+  };
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -94,7 +108,9 @@ function LibraryPage() {
             <span className="text-sm text-muted-foreground">{count}</span>
           )}
         </div>
-        {user !== undefined && user.steamId === null ? (
+        {unreachable ? (
+          <ServerUnreachable onRetry={retry} />
+        ) : user !== undefined && user.steamId === null ? (
           // Pocket ID: у админа нет Steam-аккаунта, библиотеки быть не может.
           <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-4 text-center">
             <p className="text-lg font-medium">
@@ -104,25 +120,14 @@ function LibraryPage() {
               Войти через Steam
             </Button>
           </div>
+        ) : AsyncResult.isSuccess(library) ? (
+          <LibraryContent
+            view={library.value}
+            onRefresh={() => void onRefresh()}
+            refreshing={refreshing}
+          />
         ) : (
-          AsyncResult.match(library, {
-            onInitial: () => <LibrarySkeleton />,
-            onFailure: () => (
-              <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-4 text-center">
-                <p className="text-lg font-medium">
-                  Не удалось загрузить библиотеку
-                </p>
-                <Button onClick={reload}>Повторить</Button>
-              </div>
-            ),
-            onSuccess: ({ value }) => (
-              <LibraryContent
-                view={value}
-                onRefresh={() => void onRefresh()}
-                refreshing={refreshing}
-              />
-            ),
-          })
+          <LibrarySkeleton />
         )}
       </main>
     </div>

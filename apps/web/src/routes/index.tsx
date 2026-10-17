@@ -1,5 +1,5 @@
 // `/`: лендинг с входом через Steam; вошедшего пользователя уводим в библиотеку.
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { Gamepad2, LoaderCircle } from "lucide-react";
@@ -7,8 +7,10 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { signInWithSteam } from "@/auth";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
+import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
-import { meAtom } from "@/rpc";
+import { useStalled } from "@/lib/useStalled";
+import { meAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
 const loginFailed = "Не удалось войти через Steam. Попробуйте ещё раз.";
@@ -67,11 +69,28 @@ function Landing({ error }: { error: boolean }) {
 
 function IndexPage() {
   const me = useAtomValue(meAtom);
+  const refreshMe = useAtomRefresh(meAtom);
+  const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
   const { error } = indexRoute.useSearch();
 
-  if (AsyncResult.isInitial(me)) return <FullscreenLoader />;
   if (AsyncResult.isSuccess(me)) return <Navigate to="/library" />;
-  return <Landing error={error !== undefined} />;
+  if (resultErrorTag(me) === "Unauthorized") {
+    return <Landing error={error !== undefined} />;
+  }
+  // Любая другая ошибка или слишком долгое ожидание — сервер недоступен.
+  if (AsyncResult.isFailure(me) || stalled) {
+    return (
+      <main className="flex min-h-dvh items-center justify-center px-6">
+        <ServerUnreachable
+          onRetry={() => {
+            restartWait();
+            refreshMe();
+          }}
+        />
+      </main>
+    );
+  }
+  return <FullscreenLoader />;
 }
 
 export const indexRoute = createRoute({
