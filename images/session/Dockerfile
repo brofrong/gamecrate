@@ -40,6 +40,11 @@ COPY --chmod=0644 cg-launch.desktop /etc/xdg/autostart/cg-launch.desktop
 
 # Постоянные настройки Selkies (спека §9). Слотовые SELKIES_WEBRTC_UDP_MUX_PORT и
 # SELKIES_WEBRTC_PUBLIC_IP задаёт агент при создании контейнера.
+# SELKIES_ENABLE_DUAL_MODE=false — клиент не может переключить медиа на websockets (TCP), только WebRTC/UDP.
+# SELKIES_WAYLAND_X11_FALLBACK=false — без nvidia-drm modeset=1 не уходить молча на X11 (решение R11).
+# Важно: базовый образ при этом не падает, а остаётся на Wayland с программным композитингом
+# (/etc/container-entrypoint.sh: «GPU: the compositor cannot reach it; compositing in software»).
+# Признак здоровой сессии — в логе «Zero-copy capture ... encoded in place on NVENC».
 ENV TZ=Europe/Moscow \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
@@ -55,7 +60,9 @@ ENV TZ=Europe/Moscow \
     SELKIES_WEBRTC_ICE_LITE=true \
     SELKIES_ENABLE_HTTPS=false \
     SELKIES_ENABLE_BASIC_AUTH=false \
-    SELKIES_UI_SHOW_SIDEBAR=false
+    SELKIES_UI_SHOW_SIDEBAR=false \
+    SELKIES_ENABLE_DUAL_MODE=false \
+    SELKIES_WAYLAND_X11_FALLBACK=false
 
 # Разрешение рабочего стола зафиксировано: без этого Selkies подгоняет экран под окно браузера при
 # каждом подключении/ресайзе/полноэкранном режиме, и Unity-игры (Vampire Survivors) падают на смене

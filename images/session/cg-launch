@@ -2,6 +2,9 @@
 # Запуск игры сразу после входа в графическую сессию (автостарт KDE, /etc/xdg/autostart/cg-launch.desktop).
 # Работает в окружении сессии Plasma: там LD_PRELOAD интерпозера ввода Selkies (геймпад) и переменные
 # контейнера, в том числе CG_APP_ID. Пустой CG_APP_ID — ничего не запускать (просто рабочий стол).
+# Игра запускается не больше одного раза за жизнь контейнера: если Plasma перезапустится и автостарт
+# сработает снова, повторный запуск пропускается. Замок — каталог в /tmp (слой контейнера, не том
+# /home/ubuntu): новый контейнер начинает без замка, mkdir атомарен.
 set -u
 
 app_id="${CG_APP_ID:-}"
@@ -15,6 +18,12 @@ case "${app_id}" in
     exit 1
     ;;
 esac
+
+lock="/tmp/cg-launch.lock"
+if ! mkdir "${lock}" 2>/dev/null; then
+  echo "[cg-launch] already launched in this container (${lock} exists), skipping" >&2
+  exit 0
+fi
 
 echo "[cg-launch] steam -silent -applaunch ${app_id}" >&2
 exec steam -silent -applaunch "${app_id}"

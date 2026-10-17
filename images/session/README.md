@@ -9,7 +9,9 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
 - `Dockerfile` — 32-битные библиотеки NVIDIA версии драйвера хоста (Steam 32-битный, toolkit их не
   прокидывает), постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт.
 - `cg-launch` — `steam -silent -applaunch "$CG_APP_ID"`; пустой `CG_APP_ID` — ничего не делает,
-  не число — ошибка (exit 1).
+  не число — ошибка (exit 1). Запускает игру не больше одного раза за жизнь контейнера: замок
+  `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`); если Plasma
+  перезапустится и автостарт сработает снова — `[cg-launch] already launched …, skipping`.
 - `cg-launch.desktop` → `/etc/xdg/autostart/`: KDE запускает `cg-launch` внутри сессии Plasma,
   где есть `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит геймпад, спека §7.3).
 - `.dockerignore` — в контекст сборки идут только эти файлы и `nv/x/32/`.
@@ -42,7 +44,9 @@ rsync этого каталога в `~/cg-session-image` на воркере, �
 `SELKIES_RATE_CONTROL_MODE=cbr`, `SELKIES_VIDEO_BITRATE=10000,2000-40000`,
 `SELKIES_FRAMERATE=60,30-120`, `SELKIES_KEYFRAME_INTERVAL=2`, `SELKIES_WEBRTC_ICE_LITE=true`,
 `SELKIES_ENABLE_HTTPS=false`, `SELKIES_ENABLE_BASIC_AUTH=false`, `SELKIES_UI_SHOW_SIDEBAR=false`,
-`SELKIES_MANUAL_WIDTH=1920`, `SELKIES_MANUAL_HEIGHT=1080`, `TZ=Europe/Moscow`.
+`SELKIES_ENABLE_DUAL_MODE=false` (клиент не может переключить медиа на websockets/TCP),
+`SELKIES_WAYLAND_X11_FALLBACK=false`, `SELKIES_MANUAL_WIDTH=1920`, `SELKIES_MANUAL_HEIGHT=1080`,
+`TZ=Europe/Moscow`.
 
 **Разрешение зафиксировано 1920x1080.** Без этого Selkies подгоняет экран под окно браузера при
 подключении (на Mac с Retina — 2560x1600, scale 2), при ресайзе и полноэкранном режиме. Vampire
@@ -74,8 +78,15 @@ Bridge-сеть `cg-sessions`, копия дома спайка (вход Steam 
 Заметки:
 - `pgrep -f "AppId=<id>"` надо вызывать напрямую (`docker exec <c> pgrep -f ...`); через `sh -c`
   он находит и сам `sh` с этой строкой в аргументах.
-- В базовом образе `SELKIES_WAYLAND_X11_FALLBACK=true`: без `nvidia-drm modeset=1` Selkies молча
-  уходит на X11-захват через CPU. Признак нормы — в логе `Wayland capture` и `Zero-copy capture`.
+- `SELKIES_WAYLAND_X11_FALLBACK=false` (в базе `true`) запрещает молчаливый уход на X11-захват, но
+  контейнер при этом не падает: без `nvidia-drm modeset=1` базовый entrypoint остаётся на Wayland с
+  программным композитингом (`GPU: the compositor cannot reach it; compositing in software`).
+  Признак здоровой сессии — в логе `Zero-copy capture ... encoded in place on NVENC`.
+- Если локальное состояние облака Steam в доме отстало от облака (например, играли на другом
+  устройстве или прошлый контейнер убит посреди игры), первый `-applaunch` может остановиться на
+  диалоге Steam «Unable to Sync» (Play anyway / Cancel): игра не стартует, пока пользователь не
+  ответит в стриме. Встретилось в смоук-проверке 2026-10-17; повторный `-applaunch` после Cancel
+  запустил игру за 4 с.
 - Selkies пропускает WebSocket-апгрейд только same-origin (Origin совпадает с Host), без Origin или
   из `SELKIES_ALLOWED_ORIGINS`. Через прокси api с `Origin: https://game.brofrong.ru` и
   `Host: cg-session-<id>:8080` будет 403 — это решается в прокси (Task 7).
