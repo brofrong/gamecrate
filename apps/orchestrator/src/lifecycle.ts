@@ -3,6 +3,11 @@
  * и I/O, текущее время и настройки передаются аргументами.
  *
  * Применение `Decision` вызывающей стороной (одной транзакцией):
+ * Снимок: `openSegment` — открытый (`open = true`) отрезок сессии из
+ * `play_segments` или `null`; его `endedAt` — сохранённый конец, который
+ * вызывающая сторона продлевает до `now` на каждом heartbeat агента, пока
+ * игра жива (т.е. это время последнего подтверждённого heartbeat'а игры).
+ *
  * - `ops` применяются строго по порядку к отрезкам `play_segments` сессии:
  *   `Close` — закрыть текущий открытый отрезок (`endedAt = at`, `open = false`;
  *   `at` может быть раньше уже продлённого `endedAt` — перезаписать);
@@ -26,7 +31,7 @@ export type Snapshot = {
   clientSeenAt: Date | null;
   lastInputAt: Date | null;
   agentSeenAt: Date | null;
-  openSegment: { startedAt: Date; billable: boolean } | null;
+  openSegment: { startedAt: Date; endedAt: Date; billable: boolean } | null;
 };
 
 export type LifecycleEvent =
@@ -79,6 +84,10 @@ const closeAt = (s: Snapshot, at: Date, now: Date): SegmentOp[] =>
   s.openSegment
     ? [{ _tag: "Close", at: max(s.openSegment.startedAt, min(at, now)) }]
     : [];
+
+/** Отрезок, которого быть не должно, закрываем нулевой длины — ничего не оплачивается. */
+const closeStray = (s: Snapshot): SegmentOp[] =>
+  s.openSegment ? [{ _tag: "Close", at: s.openSegment.startedAt }] : [];
 
 const decision = (
   state: SessionState,
@@ -149,7 +158,8 @@ const onTick = (
         ]);
       }
       if (s.state === "playing") {
-        const lastInput = s.lastInputAt ?? s.stateSince;
+        // Простой меряется внутри игрового времени: ввод до старта игры не в счёт.
+        const lastInput = max(s.lastInputAt ?? s.stateSince, s.stateSince);
         return ms(lastInput, now) > N ? decision("idle_warning") : keep;
       }
       // idle_warning: ответ засчитывается, только если ввод пришёл в окне M.
@@ -214,7 +224,10 @@ const onEvent = (
 
     case "GameStarted":
       return s.state === "starting"
-        ? decision("playing", [{ _tag: "Open", at: now, billable: true }])
+        ? decision("playing", [
+            ...closeStray(s),
+            { _tag: "Open", at: now, billable: true },
+          ])
         : keep;
 
     case "GameExited":
@@ -222,16 +235,28 @@ const onEvent = (
         ? keep
         : decision("stopping", closeAt(s, now, now));
 
+    // Из `disconnected` отрезок закрывается неоплачиваемым — разрыв не учитывается намеренно.
     case "UserStop":
       if (s.state === "queued") return decision("ended");
       if (s.state === "stopping") return keep;
       return decision("stopping", closeAt(s, now, now), "StopContainer");
 
     case "StopFinished":
-      return decision("ended", closeAt(s, now, now));
+      // GameExited мог потеряться: закрываем по последнему heartbeat'у игры,
+      // ожидание выгрузки сохранений не оплачивается.
+      return decision(
+        "ended",
+        s.openSegment ? closeAt(s, s.openSegment.endedAt, now) : [],
+      );
 
     case "Failed":
-      return decision("failed", closeAt(s, now, now), null, e.reason);
+      // Падение воркера: не учитываем время после последнего heartbeat'а агента.
+      return decision(
+        "failed",
+        closeAt(s, s.agentSeenAt ?? now, now),
+        null,
+        e.reason,
+      );
   }
 };
 

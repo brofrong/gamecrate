@@ -31,9 +31,9 @@ const snap = (
   agentSeenAt: seen,
   openSegment:
     state === "playing" || state === "idle_warning"
-      ? { startedAt: T0, billable: true }
+      ? { startedAt: T0, endedAt: seen, billable: true }
       : state === "disconnected"
-        ? { startedAt: T0, billable: false }
+        ? { startedAt: T0, endedAt: seen, billable: false }
         : null,
   ...overrides,
 });
@@ -142,7 +142,11 @@ describe("decide", () => {
       clientSeenAt: sec(13 * 60 + 10),
       lastInputAt: lastSeen,
       agentSeenAt: sec(13 * 60),
-      openSegment: { startedAt: lastSeen, billable: false },
+      openSegment: {
+        startedAt: lastSeen,
+        endedAt: sec(13 * 60),
+        billable: false,
+      },
     };
     const d2 = decide(disconnected, tick, returnedAt, settings);
     expect(d2).toEqual({
@@ -172,7 +176,11 @@ describe("decide", () => {
       clientSeenAt: lastSeen,
       lastInputAt: lastSeen,
       agentSeenAt: sec(15 * 60 + 10),
-      openSegment: { startedAt: lastSeen, billable: false },
+      openSegment: {
+        startedAt: lastSeen,
+        endedAt: sec(15 * 60),
+        billable: false,
+      },
     };
     expect(decide(s, tick, sec(15 * 60 + 16), settings)).toEqual(
       unchanged("disconnected"),
@@ -197,7 +205,11 @@ describe("decide", () => {
       clientSeenAt: sec(16 * 60 + 16),
       lastInputAt: min(10),
       agentSeenAt: sec(16 * 60 + 16),
-      openSegment: { startedAt: min(10), billable: false },
+      openSegment: {
+        startedAt: min(10),
+        endedAt: sec(16 * 60),
+        billable: false,
+      },
     };
     expect(decide(s, tick, sec(16 * 60 + 20), settings)).toEqual({
       state: "stopping",
@@ -286,7 +298,7 @@ describe("decide", () => {
       agentSeenAt: min(4),
       clientSeenAt: sec(6 * 60),
       lastInputAt: sec(6 * 60),
-      openSegment: { startedAt: min(5), billable: true },
+      openSegment: { startedAt: min(5), endedAt: min(6), billable: true },
     });
     expect(decide(s, tick, sec(6 * 60 + 1), settings).ops).toEqual([
       { _tag: "Close", at: min(5) },
@@ -419,42 +431,68 @@ describe("decide", () => {
     );
   });
 
-  it("failed event closes the open segment at now", () => {
+  it("failed event closes the open segment at the last agent heartbeat", () => {
     const now = min(7);
     const reason = "Не удалось запустить контейнер";
+    const failed = { _tag: "Failed", reason } as const;
+    // worker crash: the user is not billed past the last heartbeat
     expect(
       decide(
-        snap("playing", {}, now),
-        { _tag: "Failed", reason },
+        snap("playing", { agentSeenAt: sec(6 * 60 + 40), clientSeenAt: now }),
+        failed,
         now,
         settings,
       ),
     ).toEqual({
       state: "failed",
-      ops: [{ _tag: "Close", at: now }],
+      ops: [{ _tag: "Close", at: sec(6 * 60 + 40) }],
       command: null,
       failReason: reason,
     });
+    // agent never seen → now
+    expect(
+      decide(snap("playing", { agentSeenAt: null }, now), failed, now, settings)
+        .ops,
+    ).toEqual([{ _tag: "Close", at: now }]);
+    // heartbeat older than the segment start → clamped to the start
     expect(
       decide(
-        snap("starting", {}, now),
-        { _tag: "Failed", reason },
+        snap("playing", {
+          agentSeenAt: min(1),
+          openSegment: { startedAt: min(5), endedAt: min(6), billable: true },
+        }),
+        failed,
         now,
         settings,
-      ),
-    ).toEqual({ state: "failed", ops: [], command: null, failReason: reason });
+      ).ops,
+    ).toEqual([{ _tag: "Close", at: min(5) }]);
+    expect(decide(snap("starting", {}, now), failed, now, settings)).toEqual({
+      state: "failed",
+      ops: [],
+      command: null,
+      failReason: reason,
+    });
   });
 
-  it("stop finished outside stopping still ends with the segment closed", () => {
-    const now = min(7);
-    expect(
-      decide(snap("playing", {}, now), { _tag: "StopFinished" }, now, settings),
-    ).toEqual({
+  it("stop finished outside stopping closes at the segment's stored end, not now", () => {
+    // GameExited was missed: the cloud-save wait after the last heartbeat is not billed
+    const now = min(9);
+    const s = snap("playing", {
+      openSegment: { startedAt: T0, endedAt: min(7), billable: true },
+    });
+    expect(decide(s, { _tag: "StopFinished" }, now, settings)).toEqual({
       state: "ended",
-      ops: [{ _tag: "Close", at: now }],
+      ops: [{ _tag: "Close", at: min(7) }],
       command: null,
       failReason: null,
     });
+    // stored end later than now → clamped to now
+    const ahead = snap("playing", {
+      openSegment: { startedAt: T0, endedAt: min(10), billable: true },
+    });
+    expect(decide(ahead, { _tag: "StopFinished" }, now, settings).ops).toEqual([
+      { _tag: "Close", at: now },
+    ]);
   });
 
   it("terminal states ignore every event and repair a stray open segment", () => {
@@ -481,7 +519,11 @@ describe("decide", () => {
         ).toEqual(unchanged(state));
         // an inconsistent snapshot: open segment in a terminal state → zero-length close
         const stray = snap(state, {
-          openSegment: { startedAt: min(30), billable: true },
+          openSegment: {
+            startedAt: min(30),
+            endedAt: min(31),
+            billable: true,
+          },
         });
         expect(decide(stray, e, now, settings)).toEqual({
           state,
@@ -507,5 +549,105 @@ describe("decide", () => {
     expect(
       decide(snap("stopping", {}, now), { _tag: "GameExited" }, now, settings),
     ).toEqual(unchanged("stopping"));
+  });
+  it("idle is measured within game time: a long silent start does not count", () => {
+    // starting lasted 20 min without any input, then the game started
+    const startedAt = min(20);
+    const starting = snap("starting", {
+      stateSince: T0,
+      lastInputAt: null,
+      clientSeenAt: startedAt,
+      agentSeenAt: startedAt,
+    });
+    // start timeout is 15 min by default; use 30 so the start is not cut short
+    const slow = { ...settings, startTimeoutMinutes: 30 };
+    expect(
+      decide(starting, { _tag: "GameStarted" }, startedAt, slow).state,
+    ).toBe("playing");
+    const playing: Snapshot = {
+      state: "playing",
+      stateSince: startedAt,
+      clientSeenAt: sec(20 * 60 + 5),
+      lastInputAt: null,
+      agentSeenAt: sec(20 * 60 + 5),
+      openSegment: { startedAt, endedAt: startedAt, billable: true },
+    };
+    expect(decide(playing, tick, sec(20 * 60 + 5), settings)).toEqual(
+      unchanged("playing"),
+    );
+    // input from before the game started is ignored too
+    const preGameInput = { ...playing, lastInputAt: min(2) };
+    expect(decide(preGameInput, tick, sec(20 * 60 + 5), settings)).toEqual(
+      unchanged("playing"),
+    );
+    // N after the game start → idle_warning
+    const later = sec(35 * 60 + 1);
+    const fresh = { clientSeenAt: later, agentSeenAt: later };
+    expect(decide({ ...playing, ...fresh }, tick, later, settings)).toEqual(
+      unchanged("idle_warning"),
+    );
+    expect(
+      decide({ ...preGameInput, ...fresh }, tick, later, settings),
+    ).toEqual(unchanged("idle_warning"));
+  });
+
+  it("playing with lastInputAt null counts idle from stateSince", () => {
+    const s = snap("playing", {
+      lastInputAt: null,
+      clientSeenAt: sec(15 * 60 + 1),
+      agentSeenAt: sec(15 * 60 + 1),
+    });
+    expect(decide(s, tick, min(15), settings)).toEqual(unchanged("playing"));
+    expect(decide(s, tick, sec(15 * 60 + 1), settings)).toEqual(
+      unchanged("idle_warning"),
+    );
+  });
+
+  it("idle_warning: input after the warning but beyond M does not rescue", () => {
+    // late Tick: input came 2 min 5 s after the warning (M = 2 min)
+    const now = sec(2 * 60 + 10);
+    const s = snap("idle_warning", {
+      stateSince: T0,
+      lastInputAt: sec(2 * 60 + 5),
+      clientSeenAt: now,
+      agentSeenAt: now,
+    });
+    expect(decide(s, tick, now, settings)).toEqual({
+      state: "stopping",
+      ops: [{ _tag: "Close", at: now }],
+      command: "StopContainer",
+      failReason: null,
+    });
+  });
+
+  it("game start with a stray open segment closes it zero-length first", () => {
+    const now = min(3);
+    const s = snap(
+      "starting",
+      { openSegment: { startedAt: min(1), endedAt: min(2), billable: true } },
+      now,
+    );
+    expect(decide(s, { _tag: "GameStarted" }, now, settings)).toEqual({
+      state: "playing",
+      ops: [
+        { _tag: "Close", at: min(1) },
+        { _tag: "Open", at: now, billable: true },
+      ],
+      command: null,
+      failReason: null,
+    });
+  });
+
+  it("user stop while disconnected leaves the gap unbilled", () => {
+    const now = min(12);
+    const s = snap("disconnected", { clientSeenAt: min(10), agentSeenAt: now });
+    const d = decide(s, { _tag: "UserStop" }, now, settings);
+    expect(d).toEqual({
+      state: "stopping",
+      ops: [{ _tag: "Close", at: now }],
+      command: "StopContainer",
+      failReason: null,
+    });
+    expect(d.ops.some((op) => op._tag === "MarkOpenBillable")).toBe(false);
   });
 });
