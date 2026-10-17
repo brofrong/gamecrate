@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "bun --env-file=../../.env --watch src/main.ts",
     "check": "bun check",
     "lint": "bun lint src",
-    "test": "bun test"
+    "test": "bun test --env-file=../../.env"
   },
   "dependencies": {
     "@cg/db": "workspace:*",
-    "@cg/rpc": "workspace:*"
+    "@cg/rpc": "workspace:*",
+    "@effect/platform-bun": "4.0.5",
+    "drizzle-orm": "1.0.0-rc.4",
+    "effect": "4.0.5"
   }
 }
