@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { SteamUnavailable } from "@cg/rpc";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Fiber, Layer, Redacted } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
+import { TestClock } from "effect/testing";
 import { AppConfig } from "../src/config";
 import type { OwnedGames } from "../src/steam/SteamApi";
 import { SteamApi } from "../src/steam/SteamApi";
@@ -10,12 +11,14 @@ const dummyApiKey = "test-dummy-steam-key-0000000000";
 
 /** Фейковый `HttpClient`: `respond` строит ответ (или сетевую ошибку) на любой запрос. */
 const fakeHttpClient = (
-  respond: () => { status: number; body: unknown } | "network-error",
+  respond: () =>
+    { status: number; body: unknown } | "network-error" | "never-responds",
 ) =>
   Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request) => {
       const result = respond();
+      if (result === "never-responds") return Effect.never;
       if (result === "network-error")
         return Effect.fail(
           new HttpClientError.HttpClientError({
@@ -61,6 +64,9 @@ const run = (
       Effect.provide(fakeConfig),
     ),
   );
+
+/** Успешный ответ Steam с заданным `response`. */
+const ok = (response: unknown) => () => ({ status: 200, body: { response } });
 
 describe("SteamApi.getOwnedGames", () => {
   it("parses games", async () => {
@@ -126,5 +132,65 @@ describe("SteamApi.getOwnedGames", () => {
     if (result._tag !== "Failure") return;
     expect((result.failure as SteamUnavailable).reason).toBe("unavailable");
     expect(String(result.failure)).not.toContain(dummyApiKey);
+  });
+
+  it("game without name or playtime decodes with fallbacks, others intact", async () => {
+    const result = await run(
+      ok({
+        game_count: 3,
+        games: [
+          { appid: 730, name: "Counter-Strike 2", playtime_forever: 4000 },
+          { appid: 999001 },
+          { appid: 999002, name: "", playtime_forever: 5 },
+        ],
+      }),
+    );
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success).toEqual({
+      _tag: "Games",
+      games: [
+        { appId: 730, name: "Counter-Strike 2", playtimeMinutes: 4000 },
+        { appId: 999001, name: "App 999001", playtimeMinutes: 0 },
+        { appId: 999002, name: "App 999002", playtimeMinutes: 5 },
+      ],
+    });
+  });
+
+  it("game_count 0 without games is an empty library, not Private", async () => {
+    const result = await run(ok({ game_count: 0 }));
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success).toEqual({ _tag: "Games", games: [] });
+  });
+
+  it("game_count 0 with empty games is an empty library", async () => {
+    const result = await run(ok({ game_count: 0, games: [] }));
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success).toEqual({ _tag: "Games", games: [] });
+  });
+
+  it("times out after 10 s as unavailable", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* SteamApi.use((api) =>
+          api.getOwnedGames("76561197960287930"),
+        ).pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust("9 seconds");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust("1 second");
+        return yield* Fiber.join(fiber);
+      }).pipe(
+        Effect.provide(SteamApi.layer),
+        Effect.provide(fakeHttpClient(() => "never-responds")),
+        Effect.provide(fakeConfig),
+        Effect.provide(TestClock.layer()),
+      ),
+    );
+    expect(result._tag).toBe("Failure");
+    if (result._tag !== "Failure") return;
+    expect(result.failure).toBeInstanceOf(SteamUnavailable);
+    expect((result.failure as SteamUnavailable).reason).toBe("unavailable");
   });
 });

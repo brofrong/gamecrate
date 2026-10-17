@@ -1,6 +1,6 @@
 // Клиент Steam Web API: библиотека игр пользователя (`IPlayerService/GetOwnedGames`).
 import { SteamUnavailable } from "@cg/rpc";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Duration, Effect, Layer, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { AppConfig } from "../config";
 
@@ -11,8 +11,10 @@ const GetOwnedGamesResponse = Schema.Struct({
       Schema.Array(
         Schema.Struct({
           appid: Schema.Int,
-          name: Schema.String,
-          playtime_forever: Schema.Int,
+          // Steam иногда отдаёт запись без имени/времени: одна такая игра не должна
+          // ломать декодирование всей библиотеки (см. фолбэки в `getOwnedGames`).
+          name: Schema.optional(Schema.String),
+          playtime_forever: Schema.optional(Schema.Int),
         }),
       ),
     ),
@@ -33,6 +35,9 @@ export type OwnedGames =
 
 const ownedGamesUrl =
   "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/";
+
+/** Предел ожидания Steam (запрос + тело): `library.list` ждёт первую синхронизацию. */
+const requestTimeout = Duration.seconds(10);
 
 export class SteamApi extends Context.Service<
   SteamApi,
@@ -92,18 +97,29 @@ export class SteamApi extends Context.Service<
             ),
           );
 
-          if (body.response.games === undefined)
+          // Закрытый профиль — пустой `response`; `{game_count: 0}` — просто нет игр.
+          if (
+            body.response.games === undefined &&
+            body.response.game_count === undefined
+          )
             return { _tag: "Private" } as const;
 
           return {
             _tag: "Games",
-            games: body.response.games.map((game) => ({
+            games: (body.response.games ?? []).map((game) => ({
               appId: game.appid,
-              name: game.name,
-              playtimeMinutes: game.playtime_forever,
+              // games.name в БД NOT NULL и непустое.
+              name: game.name || `App ${game.appid}`,
+              playtimeMinutes: game.playtime_forever ?? 0,
             })),
           } as const;
-        });
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: requestTimeout,
+            orElse: () =>
+              Effect.fail(new SteamUnavailable({ reason: "unavailable" })),
+          }),
+        );
 
       return SteamApi.of({ getOwnedGames });
     }),
