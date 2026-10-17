@@ -1,4 +1,4 @@
-# Образ cg-api: ставит зависимости (включая патч drizzle-orm из patches/),
+# Образ cg-api: ставит зависимости (включая патчи drizzle-orm и better-auth-steam из patches/),
 # собирает SPA (apps/web/dist), затем запускает api напрямую через bun (без транспиляции).
 #
 # Собирается из корня репозитория: docker compose (см. compose.yaml) передаёт
@@ -17,7 +17,7 @@ COPY packages/db/package.json packages/db/package.json
 COPY packages/rpc/package.json packages/rpc/package.json
 
 # --frozen-lockfile: падает, если bun.lock не совпадает с манифестами.
-# patches/drizzle-orm@1.0.0-rc.4.patch применяется автоматически (patchedDependencies в package.json).
+# patches/*.patch (drizzle-orm, better-auth-steam) применяются автоматически (patchedDependencies в package.json).
 RUN bun install --frozen-lockfile
 
 # Теперь остальной код (apps/*/src, packages/*/src, тесты, конфиги).
