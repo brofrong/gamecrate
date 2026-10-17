@@ -17,6 +17,7 @@ import {
   PubSub,
   Queue,
   type Scope,
+  Semaphore,
   Stream,
 } from "effect";
 
@@ -31,8 +32,8 @@ export interface WorkerInfo {
 
 /**
  * События хаба.
- * - `Connected` — агент подключился (или переподключился); `running` — сессии,
- *   которые уже идут на воркере.
+ * - `Connected` — агент подключился (или переподключился), строка `workers` уже
+ *   записана; `running` — сессии, которые уже идут на воркере.
  * - `Report` — отчёт агента текущего соединения воркера.
  * - `Disconnected` — соединение воркера оборвалось и более нового нет.
  *   Замена соединения более новым `Disconnected` не публикует.
@@ -96,6 +97,8 @@ const make = Effect.gen(function* () {
   const byWorker = new Map<string, Connection>();
   /** Воркер текущего соединения по id WebSocket-клиента. */
   const byClient = new Map<number, string>();
+  /** Воркеры, о подключении которых подписчики узнали (`Connected` без `Disconnected`). */
+  const announced = new Set<string>();
   let nextId = 0;
 
   const upsertWorker = (info: WorkerInfo) => {
@@ -118,36 +121,79 @@ const make = Effect.gen(function* () {
       });
   };
 
-  /** Регистрирует соединение; прежнее соединение воркера завершается. */
+  /** Соединение всё ещё текущее для своего воркера. */
+  const isCurrent = (connection: Connection) =>
+    byWorker.get(connection.info.workerId)?.id === connection.id;
+
+  /**
+   * Регистрирует соединение (синхронно, в порядке прихода `agent.connect`):
+   * побеждает самое новое, прежнее соединение воркера завершается.
+   */
   const register = (connection: Connection) =>
     Effect.gen(function* () {
-      const previous = byWorker.get(connection.info.workerId);
-      byWorker.set(connection.info.workerId, connection);
-      byClient.set(connection.clientId, connection.info.workerId);
-      if (previous !== undefined) {
-        if (byClient.get(previous.clientId) === previous.info.workerId)
-          byClient.delete(previous.clientId);
-        yield* Queue.end(previous.commands);
-      }
+      const { workerId } = connection.info;
+      const previous = byWorker.get(workerId);
+      // Сначала убрать маршрут прежнего соединения: у повторного connect по тому
+      // же сокету clientId совпадает, и удаление после set стёрло бы новый маршрут.
+      if (
+        previous !== undefined &&
+        byClient.get(previous.clientId) === workerId
+      )
+        byClient.delete(previous.clientId);
+      byWorker.set(workerId, connection);
+      byClient.set(connection.clientId, workerId);
+      if (previous !== undefined) yield* Queue.end(previous.commands);
     });
 
   /** Соединение закрыто: если оно ещё текущее — воркер отключён. */
   const unregister = (connection: Connection) =>
     Effect.gen(function* () {
+      if (!isCurrent(connection)) return;
       const { workerId } = connection.info;
-      if (byWorker.get(workerId)?.id !== connection.id) return;
       byWorker.delete(workerId);
       if (byClient.get(connection.clientId) === workerId)
         byClient.delete(connection.clientId);
+      // Подписчики не видели `Connected` этого воркера — нечего отключать.
+      if (!announced.delete(workerId)) return;
       yield* PubSub.publish(events, { _tag: "Disconnected", workerId });
       yield* Effect.logInfo("Agent disconnected", { workerId });
+    });
+
+  /**
+   * Upsert'ы `workers` по одному: соединение пишет строку, только если оно ещё
+   * текущее, поэтому вытесненное (более старое) соединение не перезапишет
+   * `publicIp`/`slots` более нового.
+   */
+  const upsertLock = yield* Semaphore.make(1);
+
+  /**
+   * Upsert `workers`, затем `Connected` — строка воркера уже есть (на неё ссылаются
+   * сессии). Вытесненное за это время соединение ничего не пишет и не публикует.
+   */
+  const announce = (
+    connection: Connection,
+    running: ReadonlyArray<RunningSession>,
+  ) =>
+    Effect.gen(function* () {
+      if (!isCurrent(connection)) return;
+      yield* upsertWorker(connection.info).pipe(Effect.orDie);
+      if (!isCurrent(connection)) return;
+      announced.add(connection.info.workerId);
+      yield* PubSub.publish(events, {
+        _tag: "Connected",
+        ...connection.info,
+        running,
+      });
+      yield* Effect.logInfo("Agent connected", {
+        workerId: connection.info.workerId,
+        running: running.length,
+      });
     });
 
   const connect: AgentHubShape["connect"] = (clientId, payload) =>
     Stream.unwrap(
       Effect.gen(function* () {
         const { running, ...info } = payload;
-        yield* upsertWorker(info).pipe(Effect.orDie);
         // Scope этого эффекта — время жизни потока: release срабатывает при обрыве
         // соединения (сервер прерывает поток) или замене более новым соединением.
         const connection = yield* Effect.acquireRelease(
@@ -159,19 +205,11 @@ const make = Effect.gen(function* () {
               commands: yield* Queue.unbounded<AgentCommand, Cause.Done>(),
             };
             yield* register(connection);
-            yield* PubSub.publish(events, {
-              _tag: "Connected",
-              ...info,
-              running,
-            });
-            yield* Effect.logInfo("Agent connected", {
-              workerId: info.workerId,
-              running: running.length,
-            });
             return connection;
           }),
           unregister,
         );
+        yield* upsertLock.withPermit(announce(connection, running));
         return Stream.fromQueue(connection.commands);
       }),
     );

@@ -6,6 +6,8 @@ import { type AgentCommand, type AgentConnect, AgentRpcs } from "@cg/rpc";
 import { BunHttpServer, BunSocket } from "@effect/platform-bun";
 import { eq } from "drizzle-orm";
 import {
+  ConfigProvider,
+  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -21,10 +23,10 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
-import { OrchestratorConfig } from "../src/config";
+import { OrchestratorConfig, orchestratorConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 
-const token = "test-agent-token";
+const token = "test-agent-token-0123456789abcdef";
 
 const TestConfig = Layer.succeed(OrchestratorConfig, {
   port: 0,
@@ -120,10 +122,15 @@ const hello = (workerId: string): AgentConnect => ({
   ],
 });
 
-/** Подключает агента: команды из потока `agent.connect` складываются в очередь. */
-const connectAgent = (payload: AgentConnect) =>
+type AgentClient = Effect.Success<typeof agentClient>;
+
+/**
+ * Подключает агента (новый WebSocket или уже открытый `client`): команды из
+ * потока `agent.connect` складываются в очередь.
+ */
+const connectAgent = (payload: AgentConnect, existing?: AgentClient) =>
   Effect.gen(function* () {
-    const client = yield* agentClient;
+    const client = existing ?? (yield* agentClient);
     const commands = yield* Queue.unbounded<AgentCommand>();
     const fiber = yield* client["agent.connect"](payload).pipe(
       Stream.runForEach((command) => Queue.offer(commands, command)),
@@ -355,4 +362,147 @@ describe("agent hub", () => {
         expect(stale._tag).toBe("Failure");
       }),
     ));
+
+  it("same socket re-connect keeps report routing", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const events = yield* hub.subscribe;
+        const first = yield* connectAgent(hello("w-same"));
+        yield* waitEvent(events, isTag("Connected", "w-same"));
+        const second = yield* connectAgent(hello("w-same"), first.client);
+        yield* waitEvent(events, isTag("Connected", "w-same"));
+        yield* Fiber.join(first.fiber).pipe(
+          Effect.timeout(Duration.seconds(5)),
+        );
+
+        yield* first.client["agent.report"]({
+          _tag: "Heartbeat",
+          sessionIds: ["s-same"],
+        });
+        const reported = yield* waitEvent(events, isTag("Report", "w-same"));
+        expect(reported.report).toEqual({
+          _tag: "Heartbeat",
+          sessionIds: ["s-same"],
+        });
+
+        const command: AgentCommand = { _tag: "StopSession", sessionId: "s" };
+        expect(yield* hub.send("w-same", command)).toBe(true);
+        expect(
+          yield* Queue.take(second.commands).pipe(
+            Effect.timeout(Duration.seconds(5)),
+          ),
+        ).toEqual(command);
+      }),
+    ));
+
+  it("newest connection stays current when an older connect is slower", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        const events = yield* hub.subscribe;
+        const older = { ...hello("w-race"), publicIp: "192.0.2.1", slots: 1 };
+        const newer = { ...hello("w-race"), publicIp: "192.0.2.2", slots: 2 };
+        yield* db
+          .insert(workers)
+          .values({ id: "w-race", publicIp: "192.0.2.0", slots: 1 });
+
+        // Блокировка строки воркера: upsert старшего соединения повисает в БД.
+        const locked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx
+                .select()
+                .from(workers)
+                .where(eq(workers.id, "w-race"))
+                .for("update");
+              yield* Deferred.succeed(locked, undefined);
+              yield* Deferred.await(release);
+            }),
+          )
+          .pipe(Effect.orDie, Effect.forkScoped);
+        yield* Deferred.await(locked);
+
+        /** Ждёт, пока текущим соединением воркера станет соединение с этим IP. */
+        const awaitCurrent = (publicIp: string) =>
+          Effect.gen(function* () {
+            while (hub.info("w-race")?.publicIp !== publicIp)
+              yield* Effect.sleep(Duration.millis(10));
+          }).pipe(Effect.timeout(Duration.seconds(5)), Effect.orDie);
+
+        const first = yield* connectAgent(older);
+        yield* awaitCurrent(older.publicIp);
+        const second = yield* connectAgent(newer);
+        yield* awaitCurrent(newer.publicIp);
+        yield* Deferred.succeed(release, undefined);
+
+        // Первое `Connected` — новое соединение; старое вытеснено, его поток закрыт.
+        const connected = yield* waitEvent(
+          events,
+          isTag("Connected", "w-race"),
+        );
+        expect(connected.publicIp).toBe(newer.publicIp);
+        yield* Fiber.join(first.fiber).pipe(
+          Effect.timeout(Duration.seconds(5)),
+        );
+        expect(hub.info("w-race")?.publicIp).toBe(newer.publicIp);
+
+        const [row] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-race"));
+        expect(row?.publicIp).toBe(newer.publicIp);
+        expect(row?.slots).toBe(2);
+
+        const command: AgentCommand = { _tag: "StopSession", sessionId: "s" };
+        expect(yield* hub.send("w-race", command)).toBe(true);
+        expect(
+          yield* Queue.take(second.commands).pipe(
+            Effect.timeout(Duration.seconds(5)),
+          ),
+        ).toEqual(command);
+      }),
+    ));
+});
+
+describe("config AGENT_TOKEN", () => {
+  const parse = (env: Record<string, string>) =>
+    Effect.runPromise(
+      orchestratorConfig
+        .parse(
+          ConfigProvider.fromUnknown({
+            DATABASE_URL: "postgres://unused",
+            ...env,
+          }),
+        )
+        .pipe(Effect.result),
+    );
+
+  it("rejects a missing, empty or short token", async () => {
+    for (const env of [
+      {},
+      { AGENT_TOKEN: "" },
+      { AGENT_TOKEN: "x".repeat(31) },
+    ]) {
+      const result = await parse(env);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure._tag).toBe("ConfigError");
+        if ("AGENT_TOKEN" in env)
+          expect(String(result.failure)).not.toContain(env.AGENT_TOKEN || "∅");
+      }
+    }
+  });
+
+  it("accepts a token of 32+ characters, port defaults to 3001", async () => {
+    const result = await parse({ AGENT_TOKEN: "a".repeat(64) });
+    expect(result._tag).toBe("Success");
+    if (result._tag === "Success") {
+      expect(Redacted.value(result.success.agentToken)).toBe("a".repeat(64));
+      expect(result.success.port).toBe(3001);
+    }
+  });
 });
