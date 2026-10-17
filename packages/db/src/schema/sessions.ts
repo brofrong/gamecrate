@@ -40,8 +40,10 @@ export const workers = pgTable("workers", {
 /**
  * Игровая сессия. `id` — uuid, генерируется приложением. Частичные уникальные
  * индексы гарантируют: одна активная сессия на пользователя, один активный
- * слот на воркере. Триггер `session_changed_notify` (ручная миграция)
- * шлёт `pg_notify('session_changed', NEW.id)` при INSERT/UPDATE.
+ * слот на воркере. Триггеры на `session_changed_notify` (ручные миграции)
+ * шлют `pg_notify('session_changed', NEW.id)` при INSERT и при UPDATE, который
+ * меняет state/state_since/stream_url/fail_reason/stop_requested_at/worker_id/
+ * slot/ended_at; heartbeat'ы (client_seen_at, last_input_at, agent_seen_at) — нет.
  */
 export const sessions = pgTable(
   "sessions",

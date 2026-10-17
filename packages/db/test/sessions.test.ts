@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { Effect, Exit, Queue } from "effect";
+import { Effect, Exit, Option, Queue } from "effect";
 import { Db, games, sessions, user, workers } from "../src/index";
 import { DbTest } from "./testDb";
 
@@ -125,6 +125,54 @@ describe("sessions", () => {
             Effect.timeout("2 seconds"),
           );
           expect(updateNotification.payload).toBe(id);
+        }).pipe(Effect.scoped);
+      }),
+    ));
+
+  it("heartbeat-only update does not notify, a state change does", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        yield* insertGame(db);
+        const id = crypto.randomUUID();
+
+        yield* Effect.gen(function* () {
+          const queue = yield* db.$client.listen("session_changed");
+          yield* db.insert(sessions).values({ id, userId: "u1", appId: 570 });
+          expect(
+            (yield* Queue.take(queue).pipe(Effect.timeout("2 seconds")))
+              .payload,
+          ).toBe(id);
+
+          // Heartbeat браузера и агента: только отметки времени.
+          const now = new Date();
+          yield* db
+            .update(sessions)
+            .set({ clientSeenAt: now, lastInputAt: now, agentSeenAt: now })
+            .where(eq(sessions.id, id));
+          // Тот же state ещё раз — значение не изменилось, уведомлять не о чем.
+          yield* db
+            .update(sessions)
+            .set({ state: "queued", agentSeenAt: new Date() })
+            .where(eq(sessions.id, id));
+          const silent = yield* Queue.take(queue).pipe(
+            Effect.timeoutOption("500 millis"),
+          );
+          expect(Option.isNone(silent)).toBe(true);
+
+          for (const patch of [
+            { state: "starting" as const },
+            { streamUrl: "http://cg-session-x:8080" },
+            { failReason: "x" },
+            { stopRequestedAt: new Date() },
+          ]) {
+            yield* db.update(sessions).set(patch).where(eq(sessions.id, id));
+            const notification = yield* Queue.take(queue).pipe(
+              Effect.timeout("2 seconds"),
+            );
+            expect(notification.payload).toBe(id);
+          }
         }).pipe(Effect.scoped);
       }),
     ));
