@@ -1,6 +1,12 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { LibraryEntry, SessionState, SessionView } from "@cg/rpc";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { IdlePrompt } from "../src/components/IdlePrompt";
 import {
   type LibraryPlay,
@@ -8,7 +14,14 @@ import {
 } from "../src/components/LibraryContent";
 import { Player } from "../src/components/Player";
 import { formatPlayed } from "../src/components/SessionStatus";
-import { gamepadsChanged, snapshotGamepads } from "../src/lib/inputActivity";
+import {
+  createGamepadWatcher,
+  GAMEPAD_POLL_MS,
+  type GamepadWindow,
+  gamepadsChanged,
+  snapshotGamepads,
+  useInputActivity,
+} from "../src/lib/inputActivity";
 
 const sessionId = "0b5c1a52-7f4e-4f1e-9a43-3c1d2e5f6a7b";
 
@@ -27,6 +40,19 @@ const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
   }) satisfies SessionView;
 
 const noop = () => {};
+
+const pad = (axes: number[], pressed: boolean[] = [false]) =>
+  ({
+    axes,
+    buttons: pressed.map((p) => ({ pressed: p, value: p ? 1 : 0 })),
+  }) as unknown as Gamepad;
+
+/** Окно с подменными геймпадами (страница или iframe стрима). */
+const padWindow = (
+  pads: () => ReadonlyArray<Gamepad | null>,
+): GamepadWindow => ({
+  navigator: { getGamepads: () => [...pads()] },
+});
 
 const renderPlayer = (
   v: SessionView,
@@ -291,11 +317,6 @@ describe("session", () => {
   });
 
   it("gamepad noise inside the dead zone is not input", () => {
-    const pad = (axes: number[], pressed: boolean[] = [false]) =>
-      ({
-        axes,
-        buttons: pressed.map((p) => ({ pressed: p, value: p ? 1 : 0 })),
-      }) as unknown as Gamepad;
     const rest = snapshotGamepads([pad([0.02, -0.03])]);
     expect(gamepadsChanged(rest, snapshotGamepads([pad([0.06, -0.08])]))).toBe(
       false,
@@ -310,5 +331,64 @@ describe("session", () => {
     expect(gamepadsChanged([], rest)).toBe(false);
     expect(gamepadsChanged(rest, [])).toBe(false);
     expect(gamepadsChanged(rest, snapshotGamepads([null]))).toBe(false);
+  });
+
+  it("gamepad input in the focused stream iframe counts, broken windows are skipped", () => {
+    // Фокус в iframe: снимок страницы застыл, свежие данные — только у iframe.
+    const page = [pad([0, 0])];
+    let frame = [pad([0, 0])];
+    const onInput = mock(() => {});
+    const watcher = createGamepadWatcher(onInput);
+    const pageWindow = padWindow(() => page);
+    const frameWindow = padWindow(() => frame);
+    watcher.poll([pageWindow, frameWindow]);
+    expect(onInput).not.toHaveBeenCalled();
+
+    frame = [pad([0, 0], [true])];
+    watcher.poll([pageWindow, frameWindow]);
+    expect(onInput).toHaveBeenCalledTimes(1);
+    watcher.poll([pageWindow, frameWindow]);
+    expect(onInput).toHaveBeenCalledTimes(1);
+
+    // Чужой origin (доступ к navigator бросает) и запрет Gamepad API — без ввода и без ошибок.
+    const foreign = {
+      get navigator(): GamepadWindow["navigator"] {
+        throw new DOMException("Blocked a frame", "SecurityError");
+      },
+    };
+    const blocked: GamepadWindow = {
+      navigator: {
+        getGamepads: () => {
+          throw new DOMException("Not allowed", "SecurityError");
+        },
+      },
+    };
+    expect(() =>
+      watcher.poll([pageWindow, foreign, blocked, null, undefined]),
+    ).not.toThrow();
+    expect(onInput).toHaveBeenCalledTimes(1);
+
+    // Новое окно (iframe перезагрузился) сначала даёт базовый снимок — не ввод.
+    const reloaded = padWindow(() => [pad([0.9, 0])]);
+    watcher.poll([pageWindow, reloaded]);
+    expect(onInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("useInputActivity polls gamepads of the attached iframe window", async () => {
+    let frame = [pad([0, 0])];
+    const fakeFrame = {
+      contentDocument: null,
+      contentWindow: padWindow(() => frame),
+    } as unknown as HTMLIFrameElement;
+    const { result, unmount } = renderHook(() => useInputActivity());
+    result.current.attachFrame(fakeFrame);
+    await Bun.sleep(GAMEPAD_POLL_MS * 2);
+    expect(result.current.ageMs()).toBeGreaterThanOrEqual(GAMEPAD_POLL_MS * 2);
+
+    frame = [pad([0, 0], [true])];
+    await waitFor(() =>
+      expect(result.current.ageMs()).toBeLessThan(GAMEPAD_POLL_MS * 2),
+    );
+    unmount();
   });
 });
