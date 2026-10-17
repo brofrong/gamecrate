@@ -1,26 +1,30 @@
-// `/library`: сетка игр пользователя, «Обновить» (синхронизация со Steam), шапка с выходом.
+// `/library`: сетка игр пользователя, «Обновить» (синхронизация со Steam), шапка с выходом,
+// запуск игры («Играть» → session.start → /session/$id) и «Вернуться в игру».
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { createRoute, Navigate } from "@tanstack/react-router";
+import { createRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { RefreshCw } from "lucide-react";
+import { Play, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { signInWithSteam } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
-import { LibraryContent } from "@/components/LibraryContent";
+import { type LibraryPlay, LibraryContent } from "@/components/LibraryContent";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useStalled } from "@/lib/useStalled";
 import { cn } from "@/lib/utils";
 import {
+  activeSessionAtom,
   errorTag,
   libraryAtom,
   meAtom,
   refreshLibraryArgs,
   refreshLibraryAtom,
   resultErrorTag,
+  startSessionArgs,
+  startSessionAtom,
 } from "@/rpc";
 import { rootRoute } from "./__root";
 
@@ -43,27 +47,72 @@ function LibraryPage() {
   const library = useAtomValue(libraryAtom);
   const reloadMe = useAtomRefresh(meAtom);
   const reloadLibrary = useAtomRefresh(libraryAtom);
+  const active = useAtomValue(activeSessionAtom);
+  const reloadActive = useAtomRefresh(activeSessionAtom);
   const refresh = useAtomSet(refreshLibraryAtom, { mode: "promiseExit" });
+  const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
+  const navigate = useNavigate();
   const [refreshing, setRefreshing] = useState(false);
+  const [startingAppId, setStartingAppId] = useState<number | null>(null);
   const [stalled, restartWait] = useStalled(
-    AsyncResult.isInitial(me) || AsyncResult.isInitial(library),
+    AsyncResult.isInitial(me) ||
+      AsyncResult.isInitial(library) ||
+      AsyncResult.isInitial(active),
   );
 
   if (
     resultErrorTag(me) === "Unauthorized" ||
-    resultErrorTag(library) === "Unauthorized"
+    resultErrorTag(library) === "Unauthorized" ||
+    resultErrorTag(active) === "Unauthorized"
   ) {
     return <Navigate to="/" />;
   }
 
+  const activeSession = AsyncResult.isSuccess(active)
+    ? active.value
+    : undefined;
+  const openSession = (id: string) =>
+    void navigate({ to: "/session/$id", params: { id } });
+
+  const onPlay = async (appId: number) => {
+    setStartingAppId(appId);
+    const exit = await start(startSessionArgs(appId));
+    setStartingAppId(null);
+    if (Exit.isSuccess(exit)) {
+      openSession(exit.value.id);
+      return;
+    }
+    const tag = errorTag(exit.cause);
+    if (tag === "GameNotOwned") {
+      toast.error("Эта игра не найдена в вашей библиотеке Steam");
+    } else if (tag === "Unauthorized") {
+      window.location.assign("/");
+    } else {
+      toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+    }
+  };
+
+  const play: LibraryPlay = {
+    active: activeSession,
+    startingAppId,
+    onPlay: (appId) => void onPlay(appId),
+    onResume: () => {
+      if (activeSession) openSession(activeSession.id);
+    },
+  };
+
   const user = AsyncResult.isSuccess(me) ? me.value : undefined;
   // Любая ошибка, кроме Unauthorized, или слишком долгое ожидание — сервер недоступен.
   const unreachable =
-    AsyncResult.isFailure(me) || AsyncResult.isFailure(library) || stalled;
+    AsyncResult.isFailure(me) ||
+    AsyncResult.isFailure(library) ||
+    AsyncResult.isFailure(active) ||
+    stalled;
   const retry = () => {
     restartWait();
     reloadMe();
     reloadLibrary();
+    reloadActive();
   };
 
   const onRefresh = async () => {
@@ -91,6 +140,12 @@ function LibraryPage() {
   return (
     <div className="min-h-dvh">
       <AppHeader user={user}>
+        {activeSession && (
+          <Button size="sm" onClick={() => openSession(activeSession.id)}>
+            <Play />
+            Вернуться в игру
+          </Button>
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -125,6 +180,7 @@ function LibraryPage() {
             view={library.value}
             onRefresh={() => void onRefresh()}
             refreshing={refreshing}
+            play={play}
           />
         ) : (
           <LibrarySkeleton />

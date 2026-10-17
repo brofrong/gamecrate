@@ -1,6 +1,7 @@
-// Карточка игры: вертикальная обложка 600×900, название, плашка ProtonDB, время в Steam, «Играть».
+// Карточка игры: вертикальная обложка 600×900, название, плашка ProtonDB, время в Steam,
+// «Играть» / «Вернуться в игру».
 import type { LibraryEntry } from "@cg/rpc";
-import { Clock, Gamepad2, Play } from "lucide-react";
+import { Clock, Gamepad2, LoaderCircle, Play } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { ProtonBadge } from "./ProtonBadge";
 
 /** Горизонтальная шапка Steam — запасная картинка, если у игры нет вертикальной обложки. */
@@ -59,24 +61,86 @@ function Cover({ game }: { game: LibraryEntry }) {
   );
 }
 
-export function GameCard({ game }: { game: LibraryEntry }) {
+/**
+ * Что делает кнопка карточки:
+ * - `play` — «Играть» (`pending` — эта игра уже запускается, `disabled` — запускается
+ *   другая или активная сессия ещё не известна);
+ * - `resume` — у этой игры активная сессия: «Вернуться в игру»;
+ * - `blocked` — активна сессия другой игры: «Играть» неактивна с подсказкой.
+ */
+export type CardAction =
+  | {
+      readonly kind: "play";
+      readonly pending: boolean;
+      readonly disabled: boolean;
+      readonly onPlay: () => void;
+    }
+  | { readonly kind: "resume"; readonly onResume: () => void }
+  | { readonly kind: "blocked" };
+
+function CardButton({ action }: { action: CardAction }) {
+  switch (action.kind) {
+    case "play":
+      return (
+        <Button
+          className="w-full"
+          disabled={action.pending || action.disabled}
+          onClick={action.onPlay}
+        >
+          {action.pending ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <Play />
+          )}
+          Играть
+        </Button>
+      );
+    case "resume":
+      return (
+        <Button className="w-full" onClick={action.onResume}>
+          <Play />
+          Вернуться в игру
+        </Button>
+      );
+    case "blocked":
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            {/* Отключённая кнопка не получает событий — подсказка висит на обёртке. */}
+            <span tabIndex={0} className="w-full rounded-md">
+              <Button disabled className="w-full">
+                <Play />
+                Играть
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>Сначала завершите текущую игру</TooltipContent>
+        </Tooltip>
+      );
+  }
+}
+
+export function GameCard({
+  game,
+  action,
+}: {
+  game: LibraryEntry;
+  action: CardAction;
+}) {
   return (
     <article className="group flex flex-col gap-2">
       <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-card shadow-lg ring-1 ring-white/5 transition group-hover:ring-white/20">
         <Cover game={game} />
-        <div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/80 to-transparent p-3 pt-10 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              {/* Отключённая кнопка не получает событий — подсказка висит на обёртке. */}
-              <span tabIndex={0} className="w-full rounded-md">
-                <Button disabled className="w-full">
-                  <Play />
-                  Играть
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>Скоро</TooltipContent>
-          </Tooltip>
+        <div
+          className={cn(
+            "absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/80 to-transparent p-3 pt-10 transition",
+            // Активную игру видно сразу, остальные кнопки — по наведению (на десктопе).
+            action.kind === "resume"
+              ? "opacity-100"
+              : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100",
+          )}
+        >
+          <CardButton action={action} />
         </div>
       </div>
       <div className="flex min-w-0 flex-col items-start gap-1.5 px-0.5">

@@ -1,13 +1,19 @@
 // Dev-сервер SPA: HTML-импорт Bun (Tailwind — через bunfig.toml [serve.static]).
-// `/api/*` и `/rpc` (WebSocket) проксируются на apps/api, чтобы браузер видел один origin
-// и cookie сессии Better Auth ходили и в HTTP, и в апгрейд сокета.
+// `/api/*`, `/rpc` (WebSocket) и `/stream/*` (стрим сессии: HTTP и WebSocket Selkies)
+// проксируются на apps/api, чтобы браузер видел один origin и cookie сессии Better Auth
+// ходили и в HTTP, и в апгрейд сокета (iframe стрима тоже должен быть same-origin).
 //   WEB_PORT — порт dev-сервера (по умолчанию 5173), API_URL — адрес api (http://localhost:3000).
 import index from "./src/index.html";
 
 const port = Number(Bun.env.WEB_PORT ?? 5173);
 const apiUrl = new URL(Bun.env.API_URL ?? "http://localhost:3000");
-const apiWsUrl = new URL("/rpc", apiUrl);
-apiWsUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+/** WebSocket-адрес api для пути (и query) запроса браузера. */
+const apiWsUrl = (request: Request) => {
+  const url = new URL(request.url);
+  const target = new URL(url.pathname + url.search, apiUrl);
+  target.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  return target;
+};
 
 /** HTTP-прокси на api; Host/Origin браузера сохраняются, редиректы отдаются браузеру как есть. */
 async function proxyHttp(request: Request): Promise<Response> {
@@ -37,6 +43,7 @@ async function proxyHttp(request: Request): Promise<Response> {
 type Frame = string | ArrayBuffer;
 
 type WsData = {
+  target: URL;
   headers: Record<string, string>;
   upstream?: WebSocket;
   queue: Array<Frame>;
@@ -63,6 +70,15 @@ const forwardedWsHeaders = (request: Request) => {
   return headers;
 };
 
+const upgrade = (request: Request, server: Bun.Server<WsData>) =>
+  server.upgrade(request, {
+    data: {
+      target: apiWsUrl(request),
+      headers: forwardedWsHeaders(request),
+      queue: [],
+    },
+  });
+
 const server = Bun.serve({
   port,
   // HMR выключен: dev-бандлер Bun 1.4.4 ломается на циклическом импорте в
@@ -73,17 +89,24 @@ const server = Bun.serve({
   routes: {
     "/api/*": proxyHttp,
     "/rpc": (request, server) =>
-      server.upgrade(request, {
-        data: { headers: forwardedWsHeaders(request), queue: [] },
-      })
+      upgrade(request, server)
         ? undefined
         : new Response("Ожидался WebSocket", { status: 426 }),
+    // Selkies: страница и ассеты по HTTP, сигналинг — WebSocket на том же префиксе.
+    "/stream/*": (request, server) =>
+      request.headers.get("upgrade")?.toLowerCase() === "websocket"
+        ? upgrade(request, server)
+          ? undefined
+          : new Response("Ожидался WebSocket", { status: 426 })
+        : proxyHttp(request),
     "/*": index,
   },
   websocket: {
     data: {} as WsData,
     open(ws) {
-      const upstream = new BunWebSocket(apiWsUrl, { headers: ws.data.headers });
+      const upstream = new BunWebSocket(ws.data.target, {
+        headers: ws.data.headers,
+      });
       upstream.binaryType = "arraybuffer";
       ws.data.upstream = upstream;
       upstream.addEventListener("open", () => {
