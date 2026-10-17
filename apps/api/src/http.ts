@@ -12,7 +12,7 @@ import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers } from "./auth/rpc";
-import { AppConfig } from "./config";
+import { AppConfig, type AppConfigValues } from "./config";
 import { LibraryRpcHandlers } from "./library/rpc";
 
 const HealthRoute = HttpRouter.add(
@@ -44,12 +44,48 @@ export const RpcHandlers = Layer.mergeAll(
   RpcMiddlewares,
 );
 
+/** Origin, которым разрешён WebSocket `/rpc`: origin `PUBLIC_URL` + `ALLOWED_ORIGINS`. */
+export const rpcAllowedOrigins = (
+  config: AppConfigValues,
+): ReadonlySet<string> =>
+  new Set([new URL(config.publicUrl).origin, ...config.allowedOrigins]);
+
+/**
+ * WebSocket-протокол RPC на `GET /rpc` с проверкой Origin на HTTP-апгрейде.
+ *
+ * Защита от cross-site WebSocket hijacking: cookie сессии SameSite=Lax уходит и с
+ * соседних поддоменов (*.brofrong.ru — тот же site), поэтому чужой Origin (или его
+ * отсутствие) → 403 до апгрейда. Проверять можно только здесь: заголовки RPC-сообщений
+ * контролирует клиент — RpcServer склеивает `upgradeHeaders.concat(message.headers)`,
+ * и клиент может подменить любой заголовок в каждом сообщении, так что AuthMiddleware
+ * не может доверять Origin.
+ */
+const RpcWebsocketProtocol = Layer.effect(
+  RpcServer.Protocol,
+  Effect.gen(function* () {
+    const { protocol, httpEffect } =
+      yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+    const router = yield* HttpRouter.HttpRouter;
+    const allowedOrigins = rpcAllowedOrigins(yield* AppConfig);
+
+    yield* router.add(
+      "GET",
+      "/rpc",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const origin = request.headers.origin;
+        if (origin === undefined || !allowedOrigins.has(origin))
+          return HttpServerResponse.text("Forbidden origin", { status: 403 });
+        return yield* httpEffect;
+      }),
+    );
+    return protocol;
+  }),
+);
+
 /** Effect RPC по WebSocket на `/rpc` (сериализация NDJSON). */
-const RpcRoute = RpcServer.layerHttp({
-  group: AppRpcs,
-  path: "/rpc",
-  protocol: "websocket",
-}).pipe(
+const RpcRoute = RpcServer.layer(AppRpcs).pipe(
+  Layer.provide(RpcWebsocketProtocol),
   Layer.provide(RpcHandlers),
   Layer.provide(RpcSerialization.layerNdjson),
 );

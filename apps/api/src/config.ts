@@ -14,6 +14,19 @@ export const appConfig = Config.all({
   pocketIdClientSecret: Config.Redacted("POCKET_ID_CLIENT_SECRET"),
   /** Группа Pocket ID, члены которой получают роль admin. */
   pocketIdAdminGroup: Config.String("POCKET_ID_ADMIN_GROUP"),
+  /**
+   * Дополнительные Origin для WebSocket `/rpc`, через запятую (dev: `http://localhost:5173`).
+   * Origin `PUBLIC_URL` разрешён всегда; без переменной — только он.
+   */
+  allowedOrigins: Config.String("ALLOWED_ORIGINS").pipe(
+    Config.map((value) =>
+      value
+        .split(",")
+        .map((origin) => origin.trim().replace(/\/+$/, ""))
+        .filter((origin) => origin.length > 0),
+    ),
+    Config.withDefault<ReadonlyArray<string>>([]),
+  ),
   /** Папка собранной SPA (`apps/web/dist`). */
   webDistDir: Config.String("WEB_DIST_DIR"),
 });

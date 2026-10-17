@@ -49,6 +49,7 @@ const fakeConfig = Layer.succeed(AppConfig, {
   pocketIdClientId: "unused",
   pocketIdClientSecret: Redacted.make("unused"),
   pocketIdAdminGroup: "cloud_gaming_admins",
+  allowedOrigins: [],
   webDistDir: "unused",
 });
 

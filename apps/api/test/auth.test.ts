@@ -1,18 +1,26 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DbTest } from "@cg/db/test";
 import { AdminRpcs, AuthRpcs, type CurrentUserShape } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
-import { Effect, Layer, Option, Redacted } from "effect";
-import { HttpRouter } from "effect/http";
+import {
+  ConfigProvider,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+} from "effect";
+import { HttpRouter, HttpServer } from "effect/http";
 import { RpcTest } from "effect/rpc";
 import { AdminRpcHandlers } from "../src/admin/rpc";
 import { BetterAuth, pocketIdRole } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
 import { AuthRpcHandlers } from "../src/auth/rpc";
-import { AppConfig } from "../src/config";
+import { AppConfig, appConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
@@ -95,6 +103,65 @@ describe("rpc auth", () => {
   });
 });
 
+/** Зависимости `HttpApp` без сессии; `webDistDir` — папка SPA. */
+const appDeps = (webDistDir: string) =>
+  Layer.mergeAll(
+    fakeAuth(null),
+    // Зависимости хендлеров library.* (в этих тестах не вызываются).
+    DbTest,
+    Layer.mock(SteamApi)({}),
+    Layer.mock(ProtonDb)({}),
+  ).pipe(
+    Layer.provideMerge(
+      Layer.succeed(AppConfig, {
+        port: 0,
+        publicUrl: "http://localhost:3000/app",
+        databaseUrl: Redacted.make("postgres://unused"),
+        steamApiKey: Redacted.make("unused"),
+        authSecret: Redacted.make("unused"),
+        pocketIdUrl: "https://sso.example.invalid",
+        pocketIdClientId: "unused",
+        pocketIdClientSecret: Redacted.make("unused"),
+        pocketIdAdminGroup: "cloud_gaming_admins",
+        allowedOrigins: ["http://localhost:5173"],
+        webDistDir,
+      }),
+    ),
+  );
+
+/** Заголовки апгрейда WebSocket на `/rpc` (как у браузера). */
+const upgradeHeaders = (origin?: string) => ({
+  connection: "Upgrade",
+  upgrade: "websocket",
+  "sec-websocket-version": "13",
+  "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+  ...(origin === undefined ? {} : { origin }),
+});
+
+/** Сырой апгрейд `/rpc` по TCP: возвращает статусную строку ответа сервера. */
+const rawUpgrade = (port: number, origin?: string) =>
+  new Promise<string>((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      const headers = Object.entries(upgradeHeaders(origin)).map(
+        ([name, value]) => `${name}: ${value}`,
+      );
+      socket.write(
+        [
+          "GET /rpc HTTP/1.1",
+          `host: 127.0.0.1:${port}`,
+          ...headers,
+          "",
+          "",
+        ].join("\r\n"),
+      );
+    });
+    socket.once("data", (data) => {
+      resolve(data.toString().split("\r\n")[0] ?? "");
+      socket.destroy();
+    });
+    socket.once("error", reject);
+  });
+
 describe("http", () => {
   let webDistDir: string;
   let app: ReturnType<typeof makeHandler>;
@@ -102,29 +169,7 @@ describe("http", () => {
   const makeHandler = (dir: string) =>
     HttpRouter.toWebHandler(
       HttpApp.pipe(
-        Layer.provide(fakeAuth(null)),
-        // Зависимости хендлеров library.* (в этих тестах не вызываются).
-        Layer.provide(
-          Layer.mergeAll(
-            DbTest,
-            Layer.mock(SteamApi)({}),
-            Layer.mock(ProtonDb)({}),
-          ),
-        ),
-        Layer.provide(
-          Layer.succeed(AppConfig, {
-            port: 0,
-            publicUrl: "http://localhost:3000",
-            databaseUrl: Redacted.make("postgres://unused"),
-            steamApiKey: Redacted.make("unused"),
-            authSecret: Redacted.make("unused"),
-            pocketIdUrl: "https://sso.example.invalid",
-            pocketIdClientId: "unused",
-            pocketIdClientSecret: Redacted.make("unused"),
-            pocketIdAdminGroup: "cloud_gaming_admins",
-            webDistDir: dir,
-          }),
-        ),
+        Layer.provide(appDeps(dir)),
         Layer.provide(BunHttpServer.layerHttpServices),
       ),
       { disableLogger: true },
@@ -161,5 +206,105 @@ describe("http", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("<p>spa</p>");
+  });
+
+  it("/rpc upgrade with a foreign Origin is 403", async () => {
+    const response = await app.handler(
+      new Request("http://localhost/rpc", {
+        headers: upgradeHeaders("https://evil.brofrong.ru"),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("/rpc upgrade without Origin is 403", async () => {
+    const response = await app.handler(
+      new Request("http://localhost/rpc", { headers: upgradeHeaders() }),
+    );
+    expect(response.status).toBe(403);
+  });
+});
+
+describe("rpc websocket origin (real server)", () => {
+  let webDistDir: string;
+  let runtime: ManagedRuntime.ManagedRuntime<HttpServer.HttpServer, unknown>;
+  let port: number;
+
+  beforeAll(async () => {
+    webDistDir = await mkdtemp(join(tmpdir(), "cg-web-"));
+    runtime = ManagedRuntime.make(
+      HttpRouter.serve(HttpApp, {
+        disableLogger: true,
+        disableListenLog: true,
+      }).pipe(
+        Layer.provide(appDeps(webDistDir)),
+        Layer.provideMerge(
+          BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 }),
+        ),
+      ),
+    );
+    const address = await runtime.runPromise(
+      HttpServer.HttpServer.useSync((server) => server.address),
+    );
+    if (!("port" in address)) throw new Error("expected a TCP address");
+    port = address.port;
+  });
+  afterAll(async () => {
+    await runtime.dispose();
+    await rm(webDistDir, { recursive: true, force: true });
+  });
+
+  it("origin of PUBLIC_URL upgrades (101)", async () => {
+    expect(await rawUpgrade(port, "http://localhost:3000")).toContain(" 101 ");
+  });
+
+  it("origin from ALLOWED_ORIGINS upgrades (101)", async () => {
+    expect(await rawUpgrade(port, "http://localhost:5173")).toContain(" 101 ");
+  });
+
+  it("foreign origin gets 403 and no upgrade", async () => {
+    expect(await rawUpgrade(port, "https://evil.brofrong.ru")).toContain(
+      " 403 ",
+    );
+  });
+
+  it("missing origin gets 403 and no upgrade", async () => {
+    expect(await rawUpgrade(port)).toContain(" 403 ");
+  });
+});
+
+describe("config ALLOWED_ORIGINS", () => {
+  const base = {
+    PUBLIC_URL: "https://game.brofrong.ru",
+    DATABASE_URL: "postgres://unused",
+    STEAM_API_KEY: "unused",
+    BETTER_AUTH_SECRET: "unused",
+    POCKET_ID_URL: "https://sso.example.invalid",
+    POCKET_ID_CLIENT_ID: "unused",
+    POCKET_ID_CLIENT_SECRET: "unused",
+    POCKET_ID_ADMIN_GROUP: "admins",
+    WEB_DIST_DIR: "unused",
+  };
+
+  it("defaults to no extra origins", async () => {
+    const config = await Effect.runPromise(
+      appConfig.parse(ConfigProvider.fromUnknown(base)),
+    );
+    expect(config.allowedOrigins).toEqual([]);
+  });
+
+  it("splits a comma-separated list", async () => {
+    const config = await Effect.runPromise(
+      appConfig.parse(
+        ConfigProvider.fromUnknown({
+          ...base,
+          ALLOWED_ORIGINS: " http://localhost:5173/ , https://a.example ,",
+        }),
+      ),
+    );
+    expect(config.allowedOrigins).toEqual([
+      "http://localhost:5173",
+      "https://a.example",
+    ]);
   });
 });
