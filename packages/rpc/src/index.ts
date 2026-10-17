@@ -4,6 +4,7 @@ import { AuthRpcs } from "./auth";
 
 export * from "./admin";
 export * from "./auth";
+export * from "./library";
 
 /** Все RPC-группы приложения; сервер обслуживает их на `/rpc`, SPA строит по ней клиента. */
 export const AppRpcs = AuthRpcs.merge(AdminRpcs);
