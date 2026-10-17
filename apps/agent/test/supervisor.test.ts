@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentCommand, AgentReport } from "@cg/rpc";
 import {
   Context,
+  Deferred,
   type Duration,
   Effect,
   Layer,
@@ -21,6 +22,7 @@ import {
 } from "../src/DockerClient";
 import {
   CLOUD_LOG,
+  commands,
   failReasons,
   GPU_FAILURE_LINE,
   SessionSupervisor,
@@ -58,10 +60,19 @@ const makeFake = () => {
     /** Контейнер исчез: exec отвечает 409. */
     gone: false,
     existing: [] as ContainerInfo[],
+    /** Ответы `inspect` по имени контейнера (нет — контейнера нет). */
+    inspected: {} as Record<string, ContainerInfo>,
+    /** Подменённый код выхода pgrep. */
+    pgrepExit: undefined as number | undefined,
+    /** Закрыт — `grep` журнала облака ждёт его открытия. */
+    cloudGate: undefined as Deferred.Deferred<void> | undefined,
+    /** Число любых обращений к DockerClient. */
+    dockerCalls: 0,
   };
   const shape: DockerClientShape = {
     createAndStart: (spec) =>
       Effect.suspend(() => {
+        state.dockerCalls++;
         state.calls.push(`create ${spec.name}`);
         if (state.failCreate)
           return Effect.fail(
@@ -76,20 +87,34 @@ const makeFake = () => {
       }),
     stop: (name, timeoutSec) =>
       Effect.sync(() => {
+        state.dockerCalls++;
         state.calls.push(`stop ${name} ${timeoutSec}`);
       }),
     remove: (name) =>
       Effect.sync(() => {
+        state.dockerCalls++;
         state.calls.push(`remove ${name}`);
       }),
-    logs: () => Effect.sync(() => state.logs),
+    inspect: (name) =>
+      Effect.sync(() => {
+        state.dockerCalls++;
+        state.calls.push(`inspect ${name}`);
+        return state.inspected[name];
+      }),
+    logs: () =>
+      Effect.sync(() => {
+        state.dockerCalls++;
+        return state.logs;
+      }),
     listByLabel: (label) =>
       Effect.sync(() => {
+        state.dockerCalls++;
         state.calls.push(`list ${label}`);
         return state.existing;
       }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
+        state.dockerCalls++;
         if (cmd[0] === "pkill")
           state.calls.push(`exec ${name} ${cmd.join(" ")}`);
         if (state.gone)
@@ -109,10 +134,10 @@ const makeFake = () => {
               stdout: "",
             });
           case "pgrep":
-            if (cmd.join(" ") !== "pgrep -f AppId=1794680")
+            if (cmd.join(" ") !== "pgrep -f AppId=1794680( |$)")
               return Effect.succeed({ exitCode: 2, stdout: "" });
             return Effect.succeed({
-              exitCode: state.game ? 0 : 1,
+              exitCode: state.pgrepExit ?? (state.game ? 0 : 1),
               stdout: state.game ? "42\n" : "",
             });
           case "grep":
@@ -122,11 +147,21 @@ const makeFake = () => {
               ["grep", "-cF", "Upload complete, result OK", CLOUD_LOG].join("|")
             )
               return Effect.succeed({ exitCode: 2, stdout: "" });
-            return Effect.succeed({
-              exitCode: state.cloud > 0 ? 0 : 1,
-              stdout: `${state.cloud}\n`,
-            });
+            return (
+              state.cloudGate === undefined
+                ? Effect.void
+                : Deferred.await(state.cloudGate)
+            ).pipe(
+              Effect.andThen(
+                Effect.sync(() => ({
+                  exitCode: state.cloud > 0 ? 0 : 1,
+                  stdout: `${state.cloud}\n`,
+                })),
+              ),
+            );
           case "pkill":
+            if (cmd.join(" ") !== "pkill -TERM -f AppId=1794680( |$)")
+              return Effect.succeed({ exitCode: 2, stdout: "" });
             state.game = false;
             return Effect.succeed({ exitCode: 0, stdout: "" });
           default:
@@ -386,7 +421,7 @@ describe("SessionSupervisor", () => {
         yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
         yield* h.tick("0 seconds");
         expect(h.fake.state.calls).toContain(
-          "exec cg-session-s1 pkill -TERM -f AppId=1794680",
+          "exec cg-session-s1 pkill -TERM -f AppId=1794680( |$)",
         );
         h.fake.state.cloud = 1;
         yield* h.tick("2 seconds");
@@ -463,15 +498,144 @@ describe("SessionSupervisor", () => {
     ));
 
   it("stop of an unknown session reports Stopped without cloud sync", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          for (const sessionId of ["nope", "foreign", "ours"])
+            yield* h.supervisor.handle({ _tag: "StopSession", sessionId });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual(
+            ["nope", "foreign", "ours"].map((sessionId) => ({
+              _tag: "Stopped",
+              sessionId,
+              cloudSynced: false,
+            })),
+          );
+          // Удаляется только контейнер с нашей меткой cg.session=<id>.
+          expect(h.fake.state.calls).toEqual([
+            "list cg.session",
+            "inspect cg-session-nope",
+            "inspect cg-session-foreign",
+            "inspect cg-session-ours",
+            "remove cg-session-ours",
+          ]);
+        }),
+      (fake) => {
+        fake.state.inspected = {
+          "cg-session-foreign": {
+            name: "cg-session-foreign",
+            labels: { "com.example": "x" },
+            running: true,
+          },
+          "cg-session-ours": {
+            name: "cg-session-ours",
+            labels: { "cg.session": "ours" },
+            running: false,
+          },
+        };
+      },
+    ));
+
+  it("invalid StartSession is rejected without touching Docker", () =>
     run((h) =>
       Effect.gen(function* () {
-        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "nope" });
+        const before = h.fake.state.dockerCalls;
+        const invalid: Array<Partial<typeof start>> = [
+          { sessionId: "../../x" },
+          { sessionId: "" },
+          { sessionId: "a".repeat(65) },
+          { userId: "u1:/etc" },
+          { userId: "u 1" },
+          { slot: 2 }, // slots = 2 → допустимы 0..1
+          { slot: -1, udpPort: 58999 },
+          { udpPort: 59002 }, // slot 1 → только 59001
+        ];
+        for (const patch of invalid)
+          yield* h.supervisor.handle({ ...start, ...patch });
         yield* h.tick("0 seconds");
+        expect(h.fake.state.dockerCalls).toBe(before);
+        expect(yield* h.drain).toEqual(
+          invalid.map((patch) => ({
+            _tag: "Failed",
+            sessionId: patch.sessionId ?? "s1",
+            reason: failReasons.invalidCommand,
+          })),
+        );
+        expect(yield* h.supervisor.snapshot).toEqual([]);
+        // Невалидный StopSession просто игнорируется.
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "a/b" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.dockerCalls).toBe(before);
+        expect(yield* h.drain).toEqual([]);
+      }),
+    ));
+
+  it("stop right while the game start is being recorded still closes the game and waits for the cloud", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        const gate = yield* Deferred.make<void>();
+        h.fake.state.cloudGate = gate;
+        h.fake.state.game = true;
+        // pgrep видит игру, база облака ещё считается (grep ждёт gate) — и тут StopSession.
+        yield* h.tick("5 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        yield* Deferred.succeed(gate, undefined);
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.calls).toContain(
+          "exec cg-session-s1 pkill -TERM -f AppId=1794680( |$)",
+        );
+        expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+        h.fake.state.cloud = 1;
+        yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([
-          { _tag: "Stopped", sessionId: "nope", cloudSynced: false },
+          { _tag: "GameState", sessionId: "s1", running: true },
+          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
         ]);
       }),
     ));
+
+  it("pgrep exit codes other than 0 and 1 keep the previous game state", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        yield* h.drain;
+        for (const code of [2, 3, 126, 127, -1]) {
+          h.fake.state.pgrepExit = code;
+          yield* h.tick("5 seconds");
+        }
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual(
+          [],
+        );
+        expect(h.fake.state.calls).not.toContain("stop cg-session-s1 15");
+        expect((yield* h.supervisor.snapshot)[0]?.gameRunning).toBe(true);
+        h.fake.state.pgrepExit = 1;
+        yield* h.tick("5 seconds");
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
+          { _tag: "GameState", sessionId: "s1", running: false },
+        ]);
+      }),
+    ));
+
+  it("game process pattern is anchored after the appId", () => {
+    expect(commands.game(10)).toEqual(["pgrep", "-f", "AppId=10( |$)"]);
+    expect(commands.closeGame(10)).toEqual([
+      "pkill",
+      "-TERM",
+      "-f",
+      "AppId=10( |$)",
+    ]);
+    // Тот же шаблон в ERE (procps) и в JS RegExp: проверяем на типичных строках.
+    const pattern = new RegExp(commands.game(10)[2] ?? "");
+    expect(pattern.test("reaper SteamLaunch AppId=10 -- /g/b.exe")).toBe(true);
+    expect(pattern.test("steam-launch-wrapper -- x AppId=10")).toBe(true);
+    expect(pattern.test("reaper SteamLaunch AppId=105 -- /g/a.exe")).toBe(
+      false,
+    );
+  });
 
   it("adopts labelled containers on startup", () =>
     run(

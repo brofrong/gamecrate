@@ -232,4 +232,32 @@ describe("DockerClient", () => {
       body: undefined,
     });
   });
+  it("inspect returns labels, a missing container is undefined", async () => {
+    respond = (key) =>
+      key === "GET /v1.47/containers/cg-session-a/json"
+        ? Response.json({
+            Name: "/cg-session-a",
+            Config: { Labels: { "cg.session": "a" } },
+            State: { Running: true },
+          })
+        : Response.json({ message: "No such container" }, { status: 404 });
+    expect(await run(docker.inspect("cg-session-a"))).toEqual({
+      name: "cg-session-a",
+      labels: { "cg.session": "a" },
+      running: true,
+    });
+    expect(await run(docker.inspect("cg-session-b"))).toBeUndefined();
+  });
+
+  it("does not follow redirects from the socket", async () => {
+    respond = (key) =>
+      key.startsWith("DELETE")
+        ? Response.redirect("http://docker/v1.47/elsewhere", 307)
+        : new Response(null, { status: 204 });
+    const error = await runError(docker.remove("cg-session-s1"));
+    expect(error._tag).toBe("DockerError");
+    expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "DELETE /v1.47/containers/cg-session-s1?force=true",
+    ]);
+  });
 });

@@ -48,7 +48,15 @@ export const failReasons = {
   gpuCapture: "На сервере не работает захват экрана GPU",
   containerGone: "Игровой сервер неожиданно остановился",
   stop: "Не удалось остановить игровой сервер",
+  invalidCommand: "Некорректная команда запуска сессии",
 } as const;
+
+/**
+ * Допустимый `sessionId`/`userId`: попадает в имя контейнера и тома и в пути
+ * Docker API, поэтому только `[A-Za-z0-9_-]`, не длиннее 64.
+ */
+const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+export const isValidId = (id: string) => ID_PATTERN.test(id);
 
 export const containerName = (sessionId: string) => `cg-session-${sessionId}`;
 export const streamUrlFor = (sessionId: string) =>
@@ -93,8 +101,15 @@ export const sessionSpec = (
   shmSizeBytes: SHM_SIZE_BYTES,
 });
 
+/**
+ * Шаблон процесса игры для `pgrep -f`/`pkill -f` (procps: расширенные регулярные
+ * выражения по командной строке через пробел). Якорь `( |$)`: `AppId=10` не
+ * совпадает с `AppId=105`.
+ */
+const gamePattern = (appId: number) => `AppId=${appId}( |$)`;
+
 /** Команды внутри контейнера (`docker exec`, без shell). */
-const commands = {
+export const commands = {
   /** Selkies отвечает: в образе есть curl; HTTP из агента в `cg-sessions` не ходит. */
   probe: [
     "curl",
@@ -106,8 +121,8 @@ const commands = {
     `http://localhost:${SELKIES_PORT}/api/status`,
   ],
   /** Напрямую, не через `sh -c`: иначе pgrep найдёт сам shell. */
-  game: (appId: number) => ["pgrep", "-f", `AppId=${appId}`],
-  closeGame: (appId: number) => ["pkill", "-TERM", "-f", `AppId=${appId}`],
+  game: (appId: number) => ["pgrep", "-f", gamePattern(appId)],
+  closeGame: (appId: number) => ["pkill", "-TERM", "-f", gamePattern(appId)],
   cloud: ["grep", "-cF", CLOUD_MARKER, CLOUD_LOG],
 } as const;
 
@@ -134,6 +149,11 @@ type Target = Pick<Session, "name" | "appId">;
 class Abort extends Data.TaggedError("Abort")<{
   readonly reason: string;
   readonly cause?: unknown;
+}> {}
+
+/** Проверка в контейнере не дала ответа (неожиданный код выхода). */
+class CheckFailed extends Data.TaggedError("CheckFailed")<{
+  readonly message: string;
 }> {}
 
 /** Контейнера больше нет (или он остановлен): exec отвечает 404/409. */
@@ -175,9 +195,18 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => 0),
     );
 
+  /** pgrep: 0 — игра идёт, 1 — нет; любой другой код — проверка не удалась. */
   const gameAlive = (target: Target) =>
     execAlive(target, commands.game(target.appId)).pipe(
-      Effect.map(({ exitCode }) => exitCode === 0),
+      Effect.flatMap(({ exitCode }) =>
+        exitCode === 0
+          ? Effect.succeed(true)
+          : exitCode === 1
+            ? Effect.succeed(false)
+            : Effect.fail(
+                new CheckFailed({ message: `pgrep exited with ${exitCode}` }),
+              ),
+      ),
     );
 
   /** Ждёт ответа Selkies; строка про GPU в логе или таймаут — `Abort`. */
@@ -216,7 +245,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       while (true) {
         const alive = yield* gameAlive(session).pipe(
-          Effect.catchTag("DockerError", (error) =>
+          Effect.catchTag(["DockerError", "CheckFailed"], (error) =>
             Effect.logWarning("Game check failed", {
               sessionId: session.sessionId,
               error: error.message,
@@ -224,17 +253,24 @@ const make = Effect.gen(function* () {
           ),
         );
         if (alive !== session.gameRunning) {
-          session.gameRunning = alive;
-          if (alive) session.cloudBaseline = yield* cloudCount(session);
-          yield* emit({
-            _tag: "GameState",
-            sessionId: session.sessionId,
-            running: alive,
-          });
+          // Состояние и отчёт — без точки прерывания между ними: StopSession в этот
+          // момент видит уже запущенную игру (и закроет её, и подождёт облако).
+          yield* Effect.uninterruptible(
+            Effect.suspend(() => {
+              session.gameRunning = alive;
+              return emit({
+                _tag: "GameState",
+                sessionId: session.sessionId,
+                running: alive,
+              });
+            }),
+          );
           yield* Effect.logInfo(alive ? "Game started" : "Game exited", {
             sessionId: session.sessionId,
           });
           if (!alive) return;
+          // Прервано остановкой — базу снимет finish (игра ещё идёт).
+          session.cloudBaseline = yield* cloudCount(session);
         }
         yield* Effect.sleep(GAME_POLL);
       }
@@ -268,6 +304,8 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       session.phase = "stopping";
       let cloudSynced = false;
+      if (session.gameRunning && session.cloudBaseline === undefined)
+        session.cloudBaseline = yield* cloudCount(session);
       if (session.cloudBaseline !== undefined) {
         if (session.gameRunning) {
           // StopSession посреди игры: закрыть игру штатно (SIGTERM), тогда Steam
@@ -370,8 +408,33 @@ const make = Effect.gen(function* () {
       return session;
     });
 
+  /** Почему команду запуска нельзя исполнять (`undefined` — можно). */
+  const invalidStart = (command: StartSession) => {
+    if (!isValidId(command.sessionId)) return "sessionId";
+    if (!isValidId(command.userId)) return "userId";
+    if (command.slot < 0 || command.slot >= config.slots) return "slot";
+    if (command.udpPort !== config.udpPortBase + command.slot) return "udpPort";
+    return undefined;
+  };
+
   const start = (command: StartSession) =>
     Effect.gen(function* () {
+      const invalid = invalidStart(command);
+      if (invalid !== undefined) {
+        // Docker не трогаем: значения уходят в имена, тома и пути API.
+        yield* Effect.logError("Rejected invalid StartSession", {
+          sessionId: command.sessionId,
+          field: invalid,
+          slot: command.slot,
+          udpPort: command.udpPort,
+        });
+        yield* emit({
+          _tag: "Failed",
+          sessionId: command.sessionId,
+          reason: failReasons.invalidCommand,
+        });
+        return;
+      }
       const known = sessions.get(command.sessionId);
       if (known !== undefined) {
         // Повтор StartSession (переотправка оркестратором): второй контейнер не
@@ -414,15 +477,34 @@ const make = Effect.gen(function* () {
 
   const stop = (sessionId: string) =>
     Effect.gen(function* () {
+      if (!isValidId(sessionId)) {
+        yield* Effect.logError(
+          "Ignored StopSession with an invalid sessionId",
+          {
+            sessionId,
+          },
+        );
+        return;
+      }
       const session = sessions.get(sessionId);
       if (session !== undefined) {
         yield* Deferred.succeed(session.stopRequested, undefined);
         return;
       }
-      // Неизвестная (уже остановленная) сессия: на всякий случай убрать
-      // контейнер с её именем и подтвердить остановку.
+      // Неизвестная (уже остановленная) сессия: убрать контейнер с её именем,
+      // только если он наш (метка cg.session=<id>), и подтвердить остановку.
+      const name = containerName(sessionId);
       yield* Effect.forkIn(
-        docker.remove(containerName(sessionId)).pipe(
+        docker.inspect(name).pipe(
+          Effect.flatMap((container) => {
+            if (container === undefined) return Effect.void;
+            if (container.labels["cg.session"] !== sessionId)
+              return Effect.logWarning(
+                "Not removing a container without our session label",
+                { sessionId, name },
+              );
+            return docker.remove(name);
+          }),
           Effect.catchTag("DockerError", (error) =>
             Effect.logWarning("Removing unknown session container failed", {
               sessionId,

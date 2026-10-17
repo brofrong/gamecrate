@@ -73,6 +73,10 @@ export interface DockerClientShape {
   /** `docker logs` целиком: stdout и stderr вперемешку, в порядке записи. */
   readonly logs: (name: string) => Effect.Effect<string, DockerError>;
   /** Все контейнеры (и остановленные) с меткой `label`. */
+  /** Контейнер по имени; нет такого — `undefined`. */
+  readonly inspect: (
+    name: string,
+  ) => Effect.Effect<ContainerInfo | undefined, DockerError>;
   readonly listByLabel: (
     label: string,
   ) => Effect.Effect<ReadonlyArray<ContainerInfo>, DockerError>;
@@ -143,6 +147,13 @@ const ContainerList = Schema.Array(
   }),
 );
 const IdResponse = Schema.Struct({ Id: Schema.String });
+const ContainerInspect = Schema.Struct({
+  Name: Schema.String,
+  Config: Schema.Struct({
+    Labels: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
+  }),
+  State: Schema.Struct({ Running: Schema.Boolean }),
+});
 const ExecInspect = Schema.Struct({ ExitCode: Schema.NullOr(Schema.Number) });
 
 /** Клиент Docker API на unix-сокете `socketPath`. */
@@ -167,6 +178,8 @@ export const make = (socketPath: string): DockerClientShape => {
           `http://docker/${DOCKER_API_VERSION}${path}`,
           {
             unix: socketPath,
+            // Ответ dockerd с редиректом — не наш dockerd: никуда не идти.
+            redirect: "error",
             method,
             signal,
             ...(options.body === undefined
@@ -296,6 +309,26 @@ export const make = (socketPath: string): DockerClientShape => {
         `${containerPath(name)}/logs?stdout=true&stderr=true`,
         { ok: [200] },
       ).pipe(Effect.map(({ bytes }) => demux(bytes).combined)),
+
+    inspect: (name) =>
+      request("inspect", "GET", `${containerPath(name)}/json`, {
+        ok: [200, 404],
+      }).pipe(
+        Effect.flatMap((response) =>
+          response.status === 404
+            ? Effect.succeed(undefined)
+            : json(
+                "inspect",
+                ContainerInspect,
+              )(response).pipe(
+                Effect.map((container) => ({
+                  name: container.Name.replace(/^\//, ""),
+                  labels: container.Config.Labels ?? {},
+                  running: container.State.Running,
+                })),
+              ),
+        ),
+      ),
 
     listByLabel: (label) =>
       request(
