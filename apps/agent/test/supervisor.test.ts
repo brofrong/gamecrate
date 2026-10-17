@@ -64,6 +64,8 @@ const makeFake = () => {
     inspected: {} as Record<string, ContainerInfo>,
     /** Подменённый код выхода pgrep. */
     pgrepExit: undefined as number | undefined,
+    /** Сбой подсчёта маркеров: `exit` — grep вышел с кодом 2, `docker` — exec упал. */
+    cloudFail: undefined as "exit" | "docker" | undefined,
     /** Закрыт — `grep` журнала облака ждёт его открытия. */
     cloudGate: undefined as Deferred.Deferred<void> | undefined,
     /** Число любых обращений к DockerClient. */
@@ -147,6 +149,12 @@ const makeFake = () => {
               ["grep", "-cF", "Upload complete, result OK", CLOUD_LOG].join("|")
             )
               return Effect.succeed({ exitCode: 2, stdout: "" });
+            if (state.cloudFail === "exit")
+              return Effect.succeed({ exitCode: 2, stdout: "" });
+            if (state.cloudFail === "docker")
+              return Effect.fail(
+                new DockerError({ operation: "exec", message: "timeout" }),
+              );
             return (
               state.cloudGate === undefined
                 ? Effect.void
@@ -680,4 +688,85 @@ describe("SessionSupervisor", () => {
         ];
       },
     ));
+
+  it("cloud upload during play is not taken for the final sync on game exit", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        // Steam выгрузил облако посреди игры (или при запуске) — это не итоговая выгрузка.
+        h.fake.state.cloud = 1;
+        yield* h.tick("5 seconds");
+        h.fake.state.game = false;
+        yield* h.tick("5 seconds");
+        expect(yield* h.drain).toEqual([
+          { _tag: "GameState", sessionId: "s1", running: true },
+          { _tag: "GameState", sessionId: "s1", running: false },
+        ]);
+        yield* h.tick("10 seconds");
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual(
+          [],
+        );
+        expect(h.fake.state.calls).not.toContain("stop cg-session-s1 15");
+        // Итоговая выгрузка после выхода — маркер вырос относительно последнего опроса.
+        h.fake.state.cloud = 2;
+        yield* h.tick("2 seconds");
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
+          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
+        ]);
+      }),
+    ));
+
+  it("stop mid-game takes the cloud baseline right before SIGTERM", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        yield* h.drain;
+        // Выгрузка посреди игры, между опросами игры: только база перед SIGTERM её учтёт.
+        h.fake.state.cloud = 1;
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.calls).toContain(
+          "exec cg-session-s1 pkill -TERM -f AppId=1794680( |$)",
+        );
+        yield* h.tick("58 seconds");
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual(
+          [],
+        );
+        yield* h.tick("4 seconds");
+        expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
+          { _tag: "Stopped", sessionId: "s1", cloudSynced: false },
+        ]);
+      }),
+    ));
+
+  for (const failure of ["exit", "docker"] as const)
+    it(`failed cloud count (${failure}) is unknown: full wait, cloudSynced false`, () =>
+      run((h) =>
+        Effect.gen(function* () {
+          h.fake.state.cloud = 5;
+          h.fake.state.cloudFail = failure;
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          // Подсчёт снова работает, но база неизвестна: 5 старых маркеров — не выгрузка.
+          h.fake.state.cloudFail = undefined;
+          yield* h.tick("2 seconds");
+          yield* h.tick("54 seconds");
+          expect(
+            (yield* h.drain).filter((r) => r._tag !== "Heartbeat"),
+          ).toEqual([]);
+          expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+          yield* h.tick("6 seconds");
+          expect(
+            (yield* h.drain).filter((r) => r._tag !== "Heartbeat"),
+          ).toEqual([{ _tag: "Stopped", sessionId: "s1", cloudSynced: false }]);
+        }),
+      ));
 });

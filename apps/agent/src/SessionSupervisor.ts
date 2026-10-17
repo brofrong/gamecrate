@@ -128,6 +128,9 @@ export const commands = {
 
 type Phase = "starting" | "ready" | "stopping";
 
+/** Число маркеров облака; `unknown` — подсчёт не удался (exec упал, grep вернул ошибку). */
+type CloudCount = number | "unknown";
+
 interface Session {
   readonly sessionId: string;
   readonly appId: number;
@@ -136,8 +139,12 @@ interface Session {
   readonly streamUrl: string;
   phase: Phase;
   gameRunning: boolean;
-  /** Число маркеров облака на момент запуска игры (игра не запускалась — нет). */
-  cloudBaseline: number | undefined;
+  /**
+   * Число маркеров облака при последнем опросе, где игра ещё шла, или перед
+   * SIGTERM при остановке (игра не запускалась — нет). Выгрузки во время игры
+   * (в т.ч. при её запуске) так не принимаются за итоговую.
+   */
+  cloudBaseline: CloudCount | undefined;
   /** Пришёл `StopSession`. */
   readonly stopRequested: Deferred.Deferred<void>;
 }
@@ -189,10 +196,19 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const cloudCount = (target: Target) =>
+  /** grep -c: 0 — есть совпадения, 1 — нет (stdout «0»); другое — ошибка (нет файла и т.п.). */
+  const cloudCount = (target: Target): Effect.Effect<CloudCount> =>
     exec(target, commands.cloud).pipe(
-      Effect.map(({ stdout }) => Number.parseInt(stdout.trim(), 10) || 0),
-      Effect.orElseSucceed(() => 0),
+      Effect.map(({ exitCode, stdout }): CloudCount => {
+        const count = Number(stdout.trim());
+        return (exitCode === 0 || exitCode === 1) &&
+          stdout.trim() !== "" &&
+          Number.isInteger(count) &&
+          count >= 0
+          ? count
+          : "unknown";
+      }),
+      Effect.orElseSucceed((): CloudCount => "unknown"),
     );
 
   /** pgrep: 0 — игра идёт, 1 — нет; любой другой код — проверка не удалась. */
@@ -269,18 +285,24 @@ const make = Effect.gen(function* () {
             sessionId: session.sessionId,
           });
           if (!alive) return;
-          // Прервано остановкой — базу снимет finish (игра ещё идёт).
-          session.cloudBaseline = yield* cloudCount(session);
         }
+        // Игра идёт: база облака — на этот опрос. Прервано остановкой — базу снимет
+        // finish прямо перед SIGTERM.
+        if (alive) session.cloudBaseline = yield* cloudCount(session);
         yield* Effect.sleep(GAME_POLL);
       }
     });
 
-  /** Маркер облака вырос относительно старта игры (ждём до CLOUD_TIMEOUT). */
-  const waitCloud = (session: Session, baseline: number) =>
+  /**
+   * Маркер облака вырос относительно базы (ждём до CLOUD_TIMEOUT). База неизвестна —
+   * сравнивать не с чем: ждём всё время (Steam успеет выгрузить) и сообщаем `false`.
+   */
+  const waitCloud = (session: Session, baseline: CloudCount) =>
     Effect.gen(function* () {
+      if (baseline === "unknown") return yield* Effect.never;
       while (true) {
-        if ((yield* cloudCount(session)) > baseline) return true;
+        const count = yield* cloudCount(session);
+        if (count !== "unknown" && count > baseline) return true;
         yield* Effect.sleep(CLOUD_POLL);
       }
     }).pipe(
@@ -304,23 +326,22 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       session.phase = "stopping";
       let cloudSynced = false;
-      if (session.gameRunning && session.cloudBaseline === undefined)
+      if (session.gameRunning) {
+        // StopSession посреди игры: база — прямо перед SIGTERM (всё выгруженное
+        // во время игры уже в ней), затем закрыть игру штатно, тогда Steam выгрузит
+        // сохранения («AC Exit»).
         session.cloudBaseline = yield* cloudCount(session);
-      if (session.cloudBaseline !== undefined) {
-        if (session.gameRunning) {
-          // StopSession посреди игры: закрыть игру штатно (SIGTERM), тогда Steam
-          // выгрузит сохранения («AC Exit»).
-          yield* exec(session, commands.closeGame(session.appId)).pipe(
-            Effect.catchTag("DockerError", (error) =>
-              Effect.logWarning("Closing the game failed", {
-                sessionId: session.sessionId,
-                error: error.message,
-              }),
-            ),
-          );
-        }
-        cloudSynced = yield* waitCloud(session, session.cloudBaseline);
+        yield* exec(session, commands.closeGame(session.appId)).pipe(
+          Effect.catchTag("DockerError", (error) =>
+            Effect.logWarning("Closing the game failed", {
+              sessionId: session.sessionId,
+              error: error.message,
+            }),
+          ),
+        );
       }
+      if (session.cloudBaseline !== undefined)
+        cloudSynced = yield* waitCloud(session, session.cloudBaseline);
       yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
         Effect.andThen(docker.remove(session.name)),
         Effect.mapError(
