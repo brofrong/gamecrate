@@ -63,8 +63,11 @@ export const makeAuth = (
       },
     },
     account: {
-      // Steam не отдаёт email: плагин генерирует синтетический.
-      accountLinking: { allowDifferentEmails: true },
+      // Привязка аккаунтов запрещена: Steam — для игроков, Pocket ID — для админов.
+      // Иначе Steam-вход в общий с админом user давал бы роль admin, а исключённый
+      // из группы админ сохранял бы её, входя через Steam. Отключает /steam/link
+      // (better-auth-steam), /link-social и неявную привязку по email.
+      accountLinking: { enabled: false },
     },
     databaseHooks: {
       ...hooks,
