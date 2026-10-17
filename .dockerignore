@@ -1,0 +1,15 @@
+# Docker build context = repo root (deploy/compose.yaml: build.context: ..).
+# Без этого файла `COPY . .` в deploy/Dockerfile тащит в слой образа всё дерево,
+# включая боевой .env на сервере (~/cloud-gaming/.env) — секреты попадали бы в образ.
+.env
+.env.*
+!.env.example
+
+.git
+node_modules
+**/node_modules
+.turbo
+**/dist
+.superpowers
+spike/nv
+*.tgz
