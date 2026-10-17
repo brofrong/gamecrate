@@ -169,6 +169,19 @@ export interface Transition {
 }
 
 /**
+ * Событие для `transition`: просто событие или событие с поправками —
+ * `snapshot` подменяет снимок для `decide`, `at` — момент для `decide`
+ * (по умолчанию `now`; `stateSince`/`endedAt` при записи всё равно `now`).
+ */
+export type Pick =
+  | LifecycleEvent
+  | {
+      readonly event: LifecycleEvent;
+      readonly snapshot?: Snapshot;
+      readonly at?: Date;
+    };
+
+/**
  * Шаг автомата для одной сессии, сериализованный по сессии: в транзакции
  * строка блокируется `FOR UPDATE`, снимок перечитывается под блокировкой,
  * `pick` выбирает событие по актуальной строке (`null` — ничего не делать),
@@ -178,7 +191,7 @@ export const transition = (
   sessionId: string,
   now: Date,
   sessionSettings: SessionSettings,
-  pick: (row: SessionRow, snapshot: Snapshot) => LifecycleEvent | null,
+  pick: (row: SessionRow, snapshot: Snapshot) => Pick | null,
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -187,9 +200,17 @@ export const transition = (
         const row = yield* lockSession(sessionId);
         if (row === undefined) return undefined;
         const snapshot = yield* snapshotOf(row);
-        const event = pick(row, snapshot);
-        if (event === null) return { row, decision: null } as Transition;
-        const decision = decide(snapshot, event, now, sessionSettings);
+        const picked = pick(row, snapshot);
+        if (picked === null) return { row, decision: null } as Transition;
+        const decision =
+          "event" in picked
+            ? decide(
+                picked.snapshot ?? snapshot,
+                picked.event,
+                picked.at ?? now,
+                sessionSettings,
+              )
+            : decide(snapshot, picked, now, sessionSettings);
         if (
           decision.state !== row.state ||
           decision.ops.length > 0 ||
@@ -203,12 +224,14 @@ export const transition = (
 
 /**
  * Heartbeat агента воркера: `agentSeenAt = now` у перечисленных активных сессий
- * этого воркера и продление `endedAt` их открытых отрезков до `now` (не назад).
+ * этого воркера и продление `endedAt` открытых отрезков до `now` (не назад) —
+ * только у тех из них, что в `gameAlive` (по умолчанию все перечисленные).
  */
 export const recordHeartbeat = (
   workerId: string,
   sessionIds: ReadonlyArray<string>,
   now: Date,
+  gameAlive: ReadonlyArray<string> = sessionIds,
 ) =>
   Effect.gen(function* () {
     if (sessionIds.length === 0) return;
@@ -224,16 +247,15 @@ export const recordHeartbeat = (
         ),
       )
       .returning({ id: sessions.id });
-    if (seen.length === 0) return;
+    const alive = new Set(gameAlive);
+    const extend = seen.map((s) => s.id).filter((id) => alive.has(id));
+    if (extend.length === 0) return;
     yield* db
       .update(playSegments)
       .set({ endedAt: sql`greatest(${playSegments.endedAt}, ${now})` })
       .where(
         and(
-          inArray(
-            playSegments.sessionId,
-            seen.map((s) => s.id),
-          ),
+          inArray(playSegments.sessionId, extend),
           eq(playSegments.open, true),
         ),
       );
@@ -282,7 +304,7 @@ export const activeOnWorker = (workerId: string) =>
       .select({
         id: sessions.id,
         state: sessions.state,
-        agentSeenAt: sessions.agentSeenAt,
+        stateSince: sessions.stateSince,
       })
       .from(sessions)
       .where(and(eq(sessions.workerId, workerId), isActive));

@@ -16,7 +16,7 @@ import {
   defaultSessionSettings,
   sessionSettingsKey,
 } from "@cg/rpc";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
 import {
   AgentHub,
@@ -27,18 +27,30 @@ import {
 import { failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import * as SessionRepo from "../src/SessionRepo";
-import { SessionRunner, lostOnRestartReason } from "../src/SessionRunner";
+import {
+  SessionRunner,
+  type SessionRunnerOptions,
+  lostOnRestartReason,
+} from "../src/SessionRunner";
 
 /** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
 const makeFakeHub = () => {
   const infos = new Map<string, WorkerInfo>();
   const sent: Array<{ workerId: string; command: AgentCommand }> = [];
-  const state = { dropSends: false };
+  const state: {
+    dropSends: boolean;
+    refuse: (workerId: string, command: AgentCommand) => boolean;
+  } = { dropSends: false, refuse: () => false };
   const events = Effect.runSync(PubSub.unbounded<AgentHubEvent>());
   const hub: AgentHubShape = {
     send: (workerId, command) =>
       Effect.sync(() => {
-        if (state.dropSends || !infos.has(workerId)) return false;
+        if (
+          state.dropSends ||
+          !infos.has(workerId) ||
+          state.refuse(workerId, command)
+        )
+          return false;
         sent.push({ workerId, command });
         return true;
       }),
@@ -55,13 +67,16 @@ type FakeHub = ReturnType<typeof makeFakeHub>;
 
 type Env = Db | AgentHub | SessionRunner | Scope.Scope;
 
-const run = <A, E>(body: (fake: FakeHub) => Effect.Effect<A, E, Env>) => {
+const run = <A, E>(
+  body: (fake: FakeHub) => Effect.Effect<A, E, Env>,
+  options: SessionRunnerOptions = {},
+) => {
   const fake = makeFakeHub();
   return Effect.runPromise(
     Effect.scoped(body(fake)).pipe(
       Effect.provideService(References.MinimumLogLevel, "Error"),
       Effect.provide(
-        SessionRunner.layerWithoutLoops.pipe(
+        SessionRunner.layerWithoutLoops(options).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
@@ -130,6 +145,32 @@ const insertSession = (values: {
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db.insert(sessions).values({ appId: 570, ...values });
+  });
+
+/** Открытый (или закрытый) отрезок сессии напрямую в БД. */
+const insertSegment = (values: {
+  sessionId: string;
+  userId: string;
+  startedAt: Date;
+  endedAt: Date;
+  billable?: boolean;
+  open?: boolean;
+}) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(playSegments)
+      .values({ appId: 570, billable: true, open: true, ...values });
+  });
+
+/** Браузер на месте: свежие `clientSeenAt`/`lastInputAt` у сессий. */
+const clientAlive = (ids: ReadonlyArray<string>, now: Date) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(sessions)
+      .set({ clientSeenAt: now, lastInputAt: now })
+      .where(inArray(sessions.id, [...ids]));
   });
 
 const sessionRow = (id: string) =>
@@ -765,6 +806,331 @@ describe("session repo", () => {
           endedAt: at(t0, 31),
           open: false,
         });
+      }),
+    ));
+});
+
+describe("fix round 1", () => {
+  it("orchestrator restart gives every agent a full timeout to reconnect", () => {
+    const started = new Date();
+    return run(
+      (fake) =>
+        Effect.gen(function* () {
+          const runner = yield* SessionRunner;
+          yield* seedUsers("u1", "u2");
+          yield* connectWorker(fake, "w1", 1);
+          yield* connectWorker(fake, "w2", 1);
+          // Перед простоем оркестратора: игра шла, последний heartbeat 10 мин назад.
+          for (const [id, userId, workerId] of [
+            ["s1", "u1", "w1"],
+            ["s2", "u2", "w2"],
+          ] as const) {
+            yield* insertSession({
+              id,
+              userId,
+              state: "playing",
+              workerId,
+              slot: 0,
+              stateSince: at(started, -1200),
+              agentSeenAt: at(started, -600),
+            });
+            yield* insertSegment({
+              sessionId: id,
+              userId,
+              startedAt: at(started, -1200),
+              endedAt: at(started, -600),
+            });
+          }
+          const both = ["s1", "s2"];
+
+          yield* clientAlive(both, at(started, 1));
+          yield* runner.tick(at(started, 1));
+          expect((yield* sessionRow("s1")).state).toBe("playing");
+          expect((yield* sessionRow("s2")).state).toBe("playing");
+
+          // w1 переподключился, игра идёт; w2 так и не вернулся.
+          yield* runner.handle(
+            connected("w1", [
+              {
+                sessionId: "s1",
+                slot: 0,
+                streamUrl: "http://cg-session-s1:8080",
+                gameRunning: true,
+              },
+            ]),
+            at(started, 20),
+          );
+          like(yield* sessionRow("s1"), {
+            state: "playing",
+            agentSeenAt: at(started, 20),
+          });
+          like(yield* segmentsOf("s1"), [
+            { endedAt: at(started, 20), open: true },
+          ]);
+
+          yield* clientAlive(both, at(started, 85));
+          yield* runner.tick(at(started, 85));
+          expect((yield* sessionRow("s1")).state).toBe("playing");
+          expect((yield* sessionRow("s2")).state).toBe("playing");
+
+          yield* clientAlive(both, at(started, 95));
+          yield* runner.tick(at(started, 95));
+          expect((yield* sessionRow("s1")).state).toBe("playing");
+          like(yield* sessionRow("s2"), {
+            state: "failed",
+            failReason: failReasons.agentLost,
+          });
+          // Простой оркестратора не оплачивается: отрезок — до последнего heartbeat'а.
+          like(yield* segmentsOf("s2"), [
+            { endedAt: at(started, -600), open: false },
+          ]);
+          expect(fake.sent).toEqual([]);
+        }),
+      { startedAt: started },
+    );
+  });
+
+  it("reconnect: grace by stateSince, stopping ends, exited game is not extended", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2", "u3", "u4", "u5");
+        yield* connectWorker(fake, "w1", 5);
+        // Назначена 2 с назад (heartbeat'а по ней ещё не было — agentSeenAt старый).
+        yield* insertSession({
+          id: "s-new",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: at(t0, -2),
+          agentSeenAt: at(t0, -120),
+        });
+        // В starting давно, heartbeat свежий, но агент о ней не знает.
+        yield* insertSession({
+          id: "s-stale",
+          userId: "u2",
+          state: "starting",
+          workerId: "w1",
+          slot: 1,
+          stateSince: at(t0, -60),
+          agentSeenAt: at(t0, -2),
+        });
+        // Контейнер гасился и за время обрыва погас.
+        yield* insertSession({
+          id: "s-stopping",
+          userId: "u3",
+          state: "stopping",
+          workerId: "w1",
+          slot: 2,
+          stateSince: at(t0, -30),
+          agentSeenAt: at(t0, -30),
+        });
+        // Игра шла, к переподключению закрылась (gameRunning=false).
+        yield* insertSession({
+          id: "s-exited",
+          userId: "u4",
+          state: "playing",
+          workerId: "w1",
+          slot: 3,
+          stateSince: at(t0, -300),
+          agentSeenAt: at(t0, -60),
+        });
+        yield* insertSegment({
+          sessionId: "s-exited",
+          userId: "u4",
+          startedAt: at(t0, -300),
+          endedAt: at(t0, -60),
+        });
+        // Игра ещё не запущена (gameRunning=false в starting).
+        yield* insertSession({
+          id: "s-loading",
+          userId: "u5",
+          state: "starting",
+          workerId: "w1",
+          slot: 4,
+          stateSince: at(t0, -40),
+          agentSeenAt: at(t0, -40),
+        });
+
+        const entry = (sessionId: string, slot: number) => ({
+          sessionId,
+          slot,
+          streamUrl: `http://cg-session-${sessionId}:8080`,
+          gameRunning: false,
+        });
+        yield* runner.handle(
+          connected("w1", [entry("s-exited", 3), entry("s-loading", 4)]),
+          t0,
+        );
+
+        expect((yield* sessionRow("s-new")).state).toBe("starting");
+        like(yield* sessionRow("s-stale"), {
+          state: "failed",
+          failReason: lostOnRestartReason,
+        });
+        like(yield* sessionRow("s-stopping"), {
+          state: "ended",
+          failReason: null,
+          endedAt: t0,
+        });
+        like(yield* sessionRow("s-exited"), {
+          state: "stopping",
+          agentSeenAt: t0,
+        });
+        like(yield* segmentsOf("s-exited"), [
+          { endedAt: at(t0, -60), open: false },
+        ]);
+        like(yield* sessionRow("s-loading"), {
+          state: "starting",
+          agentSeenAt: t0,
+          streamUrl: "http://cg-session-s-loading:8080",
+        });
+        // GameExited сам по себе контейнер не гасит; неизвестных сессий нет.
+        expect(fake.sent).toEqual([]);
+      }),
+    ));
+
+  it("heartbeat from another worker or for other sessions changes nothing", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* connectWorker(fake, "w2", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "playing",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSegment({
+          sessionId: "s1",
+          userId: "u1",
+          startedAt: t0,
+          endedAt: t0,
+        });
+
+        yield* runner.handle(
+          report("w2", { _tag: "Heartbeat", sessionIds: ["s1"] }),
+          at(t0, 10),
+        );
+        yield* runner.handle(
+          report("w1", { _tag: "Heartbeat", sessionIds: ["s-other"] }),
+          at(t0, 20),
+        );
+        like(yield* sessionRow("s1"), { agentSeenAt: t0 });
+        like(yield* segmentsOf("s1"), [{ endedAt: t0, open: true }]);
+
+        yield* runner.handle(
+          report("w1", { _tag: "Heartbeat", sessionIds: ["s1"] }),
+          at(t0, 30),
+        );
+        like(yield* sessionRow("s1"), { agentSeenAt: at(t0, 30) });
+        like(yield* segmentsOf("s1"), [{ endedAt: at(t0, 30) }]);
+      }),
+    ));
+
+  it("undelivered StartSession reverts only that session; delivered ones stay", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* connectWorker(fake, "w-b", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          createdAt: at(t0, -20),
+        });
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          createdAt: at(t0, -10),
+          stateSince: at(t0, -10),
+        });
+        fake.state.refuse = (workerId) => workerId === "w-b";
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s1"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+        like(yield* sessionRow("s2"), {
+          state: "queued",
+          workerId: null,
+          slot: null,
+          agentSeenAt: null,
+          stateSince: at(t0, -10),
+        });
+        expect(fake.sent.map((s) => s.command)).toMatchObject([
+          { _tag: "StartSession", sessionId: "s1" },
+        ]);
+
+        fake.state.refuse = () => false;
+        yield* Scheduler.tick(at(t0, 2));
+        like(yield* sessionRow("s2"), {
+          state: "starting",
+          workerId: "w-b",
+          slot: 0,
+        });
+      }),
+    ));
+
+  it("queued session with a stop request is ended, not started", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          clientSeenAt: t0,
+          stopRequestedAt: t0,
+        });
+
+        yield* Scheduler.tick(t0);
+        like(yield* sessionRow("s1"), { state: "queued", workerId: null });
+        expect(fake.sent).toEqual([]);
+
+        yield* runner.tick(at(t0, 1));
+        like(yield* sessionRow("s1"), { state: "ended", endedAt: at(t0, 1) });
+        expect(fake.sent).toEqual([]);
+      }),
+    ));
+
+  it("one scheduler pass places at most SCHEDULE_BATCH sessions", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const count = Scheduler.SCHEDULE_BATCH + 1;
+        const ids = Array.from({ length: count }, (_, i) => `q${i}`);
+        yield* seedUsers(...ids.map((id) => `u-${id}`));
+        yield* connectWorker(fake, "w1", count + 5);
+        for (const [i, id] of ids.entries())
+          yield* insertSession({
+            id,
+            userId: `u-${id}`,
+            createdAt: at(t0, i - count),
+          });
+
+        yield* Scheduler.tick(t0);
+        expect(fake.sent).toHaveLength(Scheduler.SCHEDULE_BATCH);
+        // Остаётся самая новая.
+        expect((yield* sessionRow(ids[count - 1] ?? "")).state).toBe("queued");
+        expect((yield* sessionRow("q0")).slot).toBe(0);
+
+        yield* Scheduler.tick(at(t0, 2));
+        expect(fake.sent).toHaveLength(count);
       }),
     ));
 });
