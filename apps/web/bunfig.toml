@@ -1,0 +1,12 @@
+[install]
+# Версии зависимостей пинуются точно (без ^/~) — см. Global Constraints.
+exact = true
+
+# Tailwind для dev-сервера (`dev.ts`, HTML-импорт Bun.serve).
+[serve.static]
+plugins = ["bun-plugin-tailwind"]
+
+# DOM (happy-dom) и очистка Testing Library для `bun test` (запуск из apps/web:
+# `bun run --cwd apps/web test`; из корня bunfig пакета не читается).
+[test]
+preload = ["./test/setup.ts"]
