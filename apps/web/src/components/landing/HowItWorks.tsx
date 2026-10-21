@@ -209,8 +209,8 @@ export function HowItWorks() {
             )}
 
             <Phase on={phase === 0}>
-              <div className="flex items-center gap-7 rounded-[20px] border border-brand-line bg-brand-card px-[30px] py-[26px]">
-                <div className="relative grid size-[150px] grid-cols-[repeat(15,1fr)] gap-px overflow-hidden rounded-[10px] bg-white p-2">
+              <div className="flex max-w-[92%] flex-wrap items-center justify-center gap-5 rounded-[20px] border border-brand-line bg-brand-card px-5 py-5 min-[600px]:flex-nowrap min-[600px]:gap-7 min-[600px]:px-[30px] min-[600px]:py-[26px]">
+                <div className="relative grid size-[120px] shrink-0 grid-cols-[repeat(15,1fr)] gap-px overflow-hidden rounded-[10px] bg-white p-2 min-[600px]:size-[150px]">
                   {QR_CELLS.map((dark, i) => (
                     <i
                       key={i}
@@ -228,7 +228,7 @@ export function HowItWorks() {
                   <h4 className="mb-2 text-xl font-bold tracking-[-0.02em]">
                     Войти через Steam
                   </h4>
-                  <p className="mb-3.5 max-w-[260px] text-sm leading-normal text-brand-muted">
+                  <p className="mb-3.5 max-w-[260px] text-sm leading-normal text-brand-muted max-[599px]:max-w-none">
                     Открой Steam на телефоне → Steam Guard → отсканируй.
                   </p>
                   <span
