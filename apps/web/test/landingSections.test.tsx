@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 mock.module("../src/auth", () => ({
   signInWithSteam: async () => ({ error: undefined }),
@@ -9,7 +9,9 @@ mock.module("../src/auth", () => ({
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");
-const { headerUrl, heroAppIds, platforms } =
+const { TechFlow } = await import("../src/components/landing/TechFlow");
+const { Hud } = await import("../src/components/landing/Hud");
+const { headerUrl, heroAppIds, platforms, techNotes } =
   await import("../src/components/landing/data");
 
 const stubMotion = (reduced: boolean) => {
@@ -50,5 +52,27 @@ describe("landing sections", () => {
     expect(screen.getByText("До 4K · 60 FPS")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Играть" })).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/бесплатно|4090/);
+  });
+
+  it("tech section renders text without canvas", () => {
+    stubMotion(true);
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    render(<TechFlow />);
+    expect(screen.getByRole("heading", { name: /GPU там/ })).toBeTruthy();
+    expect(screen.getByText("иллюстрация")).toBeTruthy();
+    for (const k of ["FPS", "FRAMETIME", "LATENCY", "BITRATE"]) {
+      expect(screen.getByText(k)).toBeTruthy();
+    }
+    for (const n of techNotes) expect(screen.getByText(n.title)).toBeTruthy();
+  });
+
+  it("hud updates values over time", async () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    render(<Hud />);
+    const first = screen.getByText(/Mbps/).textContent;
+    await waitFor(
+      () => expect(screen.getByText(/Mbps/).textContent).not.toBe(first),
+      { timeout: 1500 },
+    );
   });
 });

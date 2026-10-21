@@ -4,6 +4,7 @@ import { FinalCta } from "./FinalCta";
 import { Hero } from "./Hero";
 import { LandingFooter } from "./LandingFooter";
 import { LandingNav } from "./LandingNav";
+import { TechFlow } from "./TechFlow";
 
 export function LandingPage({ error }: { error: boolean }) {
   return (
@@ -11,6 +12,7 @@ export function LandingPage({ error }: { error: boolean }) {
       <LandingNav />
       <main>
         <Hero error={error} />
+        <TechFlow />
         <FinalCta />
       </main>
       <LandingFooter />
