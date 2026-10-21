@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
+import { cn } from "@/lib/utils";
 
 export type HudHandle = {
   /** Один тик цикла: `time` в мс, `boost` — добавка к задержке (курсор у вершины дуги). */
@@ -105,10 +106,13 @@ const drawSeries = (
 export function Hud({
   driven = false,
   ref,
+  className = "absolute top-0 left-0",
 }: {
   /** Тики приходят снаружи через `ref.tick`; своего интервала нет. */
   driven?: boolean;
   ref?: Ref<HudHandle>;
+  /** Позиционирование снаружи (по умолчанию — левый верхний угол родителя). */
+  className?: string;
 }) {
   const reduced = usePrefersReducedMotion();
   const [values, setValues] = useState(() => sample(0));
@@ -157,7 +161,12 @@ export function Hud({
   }, [driven, reduced]);
 
   return (
-    <div className="pointer-events-none absolute top-0 left-0 grid gap-2 font-mono text-xs min-[860px]:min-w-[250px]">
+    <div
+      className={cn(
+        "pointer-events-none grid gap-2 font-mono text-xs min-[860px]:min-w-[250px]",
+        className,
+      )}
+    >
       {STATS.map((stat) => (
         <div
           key={stat.key}

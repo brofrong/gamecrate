@@ -1,6 +1,7 @@
-// Секция «Технология»: сцена на canvas без рамки — слева дата-центр (стопки изометрических
-// контейнеров), справа устройство с «игрой», между ними поток частиц по дуге. Частицы
-// тянутся к курсору, сама дуга не двигается. Сверху слева — HUD, снизу — три заметки.
+// Секция «Технология»: сцена на canvas без рамки — слева облако (стопки изометрических
+// кубиков), справа устройство с «игрой» и геймпадом, между ними поток частиц по дуге.
+// Частицы обходят курсор, сама дуга не двигается. HUD живёт внутри экрана ноутбука
+// (DOM поверх canvas), снизу — три заметки.
 import { useCallback, useRef, useState } from "react";
 import {
   type CanvasSize,
@@ -29,6 +30,9 @@ type Anchors = {
   by: number;
   labelA: number;
   labelB: number;
+  /** Экран ноутбука в координатах сцены — сюда кладётся HUD. */
+  screen: { left: number; top: number; width: number; height: number };
+  narrow: boolean;
 };
 
 const PALETTE: ReadonlyArray<Rgb> = [
@@ -39,7 +43,7 @@ const PALETTE: ReadonlyArray<Rgb> = [
   [40, 160, 240],
 ];
 const PARTICLES = 600;
-const ATTRACT_RADIUS = 220;
+const AVOID_RADIUS = 160;
 const GLOW_RADIUS = 120;
 
 const makeParticles = (): Particle[] =>
@@ -121,20 +125,93 @@ const roundRect = (
   ctx.closePath();
 };
 
+const laptopSize = (narrow: boolean) =>
+  narrow ? { bw: 200, bh: 125 } : { bw: 320, bh: 200 };
+
 const anchorsFor = ({ width: W, height: H }: CanvasSize): Anchors => {
   const narrow = W < 760;
   const ax = narrow ? W * 0.2 : W * 0.22;
   const ay = H * 0.56;
-  const s = narrow ? 24 * (2 / 3) : 24;
-  const bh = narrow ? 112 : 188;
+  const s = narrow ? 16 : 24;
+  const { bw, bh } = laptopSize(narrow);
+  const bx = W * 0.72;
   return {
     ax,
     ay,
-    bx: W * 0.72,
+    bx,
     by: ay,
     labelA: ay + s * 1.1 + s * 3.2,
     labelB: ay + bh / 2 + 30,
+    screen: {
+      left: bx - bw / 2 + 8,
+      top: ay - bh / 2 + 8,
+      width: bw - 16,
+      height: bh - 16,
+    },
+    narrow,
   };
+};
+
+/** Частица обходит курсор: в радиусе AVOID_RADIUS её сносит от него, сильнее — ближе. */
+export const nudgeAwayFromCursor = (
+  p: { dx: number; dy: number },
+  px: number,
+  py: number,
+  cursor: Cursor,
+): void => {
+  if (!cursor.inside) return;
+  const ddx = cursor.x - (px + p.dx);
+  const ddy = cursor.y - (py + p.dy);
+  const d = Math.hypot(ddx, ddy);
+  if (d >= AVOID_RADIUS || d === 0) return;
+  const f = (1 - d / AVOID_RADIUS) * 0.9;
+  p.dx -= (ddx / d) * f * 3;
+  p.dy -= (ddy / d) * f * 3;
+};
+
+/** Геймпад: корпус, две рукоятки, крестовина, кнопки, стики. */
+const gamepad = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  k: number,
+) => {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(k, k);
+  ctx.fillStyle = "#10132a";
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
+  ctx.lineWidth = 1 / k;
+  ctx.beginPath();
+  ctx.ellipse(-26, 14, 13, 20, -0.35, 0, Math.PI * 2);
+  ctx.ellipse(26, 14, 13, 20, 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  roundRect(ctx, -40, -14, 80, 36, 12);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  ctx.fillRect(-29, -3, 14, 4);
+  ctx.fillRect(-24, -8, 4, 14);
+  const buttons: ReadonlyArray<[number, number, string]> = [
+    [24, -7, "#3ddc97"],
+    [30, -1, "#ffd166"],
+    [18, -1, "#3cc2ff"],
+    [24, 5, "#ff6b6b"],
+  ];
+  for (const [bx, by, col] of buttons) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(bx, by, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = "#23284a";
+  for (const sx of [-10, 10]) {
+    ctx.beginPath();
+    ctx.arc(sx, 12, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 };
 
 export const drawTechFlow = (
@@ -151,15 +228,7 @@ export const drawTechFlow = (
   const cy = ay - 120;
   ctx.clearRect(0, 0, W, H);
 
-  // Луч.
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.quadraticCurveTo(cx, cy, bx, by);
-  ctx.strokeStyle = "rgba(60,120,255,0.06)";
-  ctx.lineWidth = 110;
-  ctx.stroke();
-
-  // Частицы на дуге + притяжение к курсору.
+  // Частицы на дуге; обходят курсор.
   for (const p of parts) {
     p.p += p.sp;
     if (p.p > 1) {
@@ -178,16 +247,7 @@ export const drawTechFlow = (
     const spread = Math.sin(u * Math.PI);
     let px = x + nx * p.off * spread;
     let py = y + ny * p.off * spread;
-    if (cursor.inside) {
-      const ddx = cursor.x - (px + p.dx);
-      const ddy = cursor.y - (py + p.dy);
-      const d = Math.hypot(ddx, ddy);
-      if (d < ATTRACT_RADIUS && d > 0) {
-        const f = (1 - d / ATTRACT_RADIUS) * 0.9;
-        p.dx += (ddx / d) * f * 3;
-        p.dy += (ddy / d) * f * 3;
-      }
-    }
+    nudgeAwayFromCursor(p, px, py, cursor);
     p.dx *= 0.93;
     p.dy *= 0.93;
     px += p.dx;
@@ -200,7 +260,7 @@ export const drawTechFlow = (
     ctx.fillRect(px, py, p.sz + near * 1.5, p.sz + near * 1.5);
   }
 
-  // Дата-центр: стопки контейнеров.
+  // Облако: стопки кубиков.
   const s = narrow ? 16 : 24;
   const base = ay + s * 1.1;
   const stackColors: ReadonlyArray<Rgb> = [
@@ -226,15 +286,10 @@ export const drawTechFlow = (
   ctx.fillStyle = glow;
   ctx.fillRect(ax - 200, ay - 200, 400, 400);
 
-  // Устройство: ноутбук с «игрой» и телефон рядом.
-  const bw = narrow ? 180 : 300;
-  const bh = narrow ? 112 : 188;
+  // Устройство: ноутбук с «игрой» (HUD — DOM поверх экрана), телефон и геймпад рядом.
+  const { bw, bh } = laptopSize(narrow);
   ctx.save();
   ctx.translate(bx - bw / 2, by - bh / 2);
-  const tilt = cursor.inside
-    ? ((cursor.x - bx) / W) * 0.06
-    : Math.sin(t / 2000) * 0.015;
-  ctx.transform(1, tilt * 0.25, -tilt, 1, 0, 0);
   ctx.shadowColor = "rgba(58,108,255,0.35)";
   ctx.shadowBlur = 40;
   roundRect(ctx, 0, 0, bw, bh, 12);
@@ -244,8 +299,8 @@ export const drawTechFlow = (
   ctx.strokeStyle = "rgba(255,255,255,0.15)";
   ctx.stroke();
   const screen = ctx.createLinearGradient(0, 0, bw, bh);
-  screen.addColorStop(0, `hsl(${(t / 50) % 360},70%,42%)`);
-  screen.addColorStop(1, `hsl(${(t / 50 + 80) % 360},75%,22%)`);
+  screen.addColorStop(0, `hsl(${(t / 50) % 360},60%,28%)`);
+  screen.addColorStop(1, `hsl(${(t / 50 + 80) % 360},65%,14%)`);
   ctx.fillStyle = screen;
   roundRect(ctx, 8, 8, bw - 16, bh - 16, 8);
   ctx.fill();
@@ -255,16 +310,10 @@ export const drawTechFlow = (
   for (let i = 0; i < 7; i++) {
     const x = 8 + ((t / 10 + i * 55) % (bw - 16));
     const y = 24 + Math.sin(t / 280 + i) * 22 + i * 12;
-    ctx.fillStyle = "rgba(255,255,255,0.3)";
+    ctx.fillStyle = "rgba(255,255,255,0.18)";
     ctx.fillRect(x, y, 12, 12);
   }
   ctx.restore();
-  ctx.fillStyle = "rgba(0,0,0,0.5)";
-  roundRect(ctx, 14, 14, 74, 18, 4);
-  ctx.fill();
-  ctx.fillStyle = "#3ddc97";
-  ctx.font = '700 10px "JetBrains Mono Variable", monospace';
-  ctx.fillText("60 FPS · 14 ms", 19, 27);
   ctx.fillStyle = "#1a1f40";
   roundRect(ctx, -14, bh, bw + 28, 8, 4);
   ctx.fill();
@@ -277,6 +326,12 @@ export const drawTechFlow = (
   roundRect(ctx, bw + 26, bh * 0.3 + 6, bw * 0.2 - 8, bh * 0.75 - 12, 5);
   ctx.fill();
   ctx.restore();
+  gamepad(
+    ctx,
+    bx - bw / 2 - (narrow ? 34 : 56),
+    by + bh / 2 - (narrow ? 4 : 2),
+    narrow ? 0.7 : 1,
+  );
 
   // Насколько курсор близко к вершине дуги — добавка к «задержке» в HUD (0..6).
   return cursor.inside
@@ -317,7 +372,7 @@ export function TechFlow() {
   };
 
   return (
-    <section id="tech" className="relative pt-10 pb-[60px]">
+    <section id="tech" className="relative pt-[110px] pb-[60px]">
       <div className="mx-auto max-w-[1180px] px-7">
         <div className="mb-12 max-w-[680px]">
           <div className="mb-3.5 text-xs font-bold tracking-[0.16em] text-brand-cyan uppercase">
@@ -327,7 +382,7 @@ export function TechFlow() {
             GPU там. <span className="text-gradient">Игра здесь.</span>
           </h2>
           <p className="text-[17px] leading-[1.55] text-brand-muted">
-            Каждая игра запускается в своём контейнере на сервере с видеокартой.
+            Каждая игра запускается в своём облаке на сервере с видеокартой.
             Готовые кадры летят тебе по сети, а ввод летит обратно. Между ними —
             миллисекунды.
           </p>
@@ -342,11 +397,24 @@ export function TechFlow() {
             aria-hidden="true"
             className="absolute inset-0 block size-full"
           />
-          <Hud ref={hudRef} driven />
           {anchors && (
             <>
-              <FlowLabel x={anchors.ax} y={anchors.labelA} title="Дата-центр">
-                контейнеры с играми на серверах с GPU
+              <div
+                className="pointer-events-none absolute overflow-hidden rounded-lg"
+                style={anchors.screen}
+              >
+                <Hud
+                  ref={hudRef}
+                  driven
+                  className={
+                    anchors.narrow
+                      ? "absolute top-1.5 left-2 origin-top-left scale-[0.55]"
+                      : "absolute top-3 left-4"
+                  }
+                />
+              </div>
+              <FlowLabel x={anchors.ax} y={anchors.labelA} title="Облако">
+                твои игры на серверах с GPU
               </FlowLabel>
               <FlowLabel
                 x={anchors.bx + 20}
@@ -358,7 +426,7 @@ export function TechFlow() {
             </>
           )}
           <span className="pointer-events-none absolute right-0 bottom-0 text-xs text-brand-muted">
-            частицы тянутся к курсору
+            частицы обходят курсор
           </span>
         </div>
         <div className="mt-5 grid gap-[18px] min-[860px]:grid-cols-3">

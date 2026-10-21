@@ -16,7 +16,8 @@ mock.module("../src/auth", () => ({
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");
-const { TechFlow } = await import("../src/components/landing/TechFlow");
+const { TechFlow, nudgeAwayFromCursor } =
+  await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
 type HudHandle = import("../src/components/landing/Hud").HudHandle;
 const { HowItWorks } = await import("../src/components/landing/HowItWorks");
@@ -123,14 +124,13 @@ describe("landing sections", () => {
   });
 
   it("tech section renders text without canvas", () => {
+    // Без 2D-контекста нет сцены (и ноутбука с HUD внутри), но заголовок, подпись
+    // и заметки на месте, ошибок нет.
     stubMotion(true);
     HTMLCanvasElement.prototype.getContext = (() => null) as never;
     render(<TechFlow />);
     expect(screen.getByRole("heading", { name: /GPU там/ })).toBeTruthy();
-    expect(screen.getByText("иллюстрация")).toBeTruthy();
-    for (const k of ["FPS", "FRAMETIME", "LATENCY", "BITRATE"]) {
-      expect(screen.getByText(k)).toBeTruthy();
-    }
+    expect(screen.getByText("частицы обходят курсор")).toBeTruthy();
     for (const n of techNotes) expect(screen.getByText(n.title)).toBeTruthy();
   });
 
@@ -181,7 +181,7 @@ describe("landing sections", () => {
       expect(screen.getByRole("heading", { name: s.title })).toBeTruthy();
     }
     fireEvent.click(screen.getByRole("heading", { name: "Нажми Играть" }));
-    expect(screen.getByText("Поднимаем контейнер…")).toBeTruthy();
+    expect(screen.getByText("Поднимаем облако…")).toBeTruthy();
     expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
   });
 
@@ -224,5 +224,24 @@ describe("landing sections", () => {
       expect(screen.getByText(q)).toBeTruthy();
       expect(screen.getByText(a)).toBeTruthy();
     }
+  });
+
+  it("particles are pushed away from the cursor", () => {
+    const p = { dx: 0, dy: 0 };
+    nudgeAwayFromCursor(p, 100, 100, { x: 130, y: 100, inside: true });
+    expect(p.dx).toBeLessThan(0);
+    expect(Math.abs(p.dy)).toBeLessThan(1e-9);
+    const far = { dx: 0, dy: 0 };
+    nudgeAwayFromCursor(far, 100, 100, { x: 900, y: 100, inside: true });
+    expect(far.dx).toBe(0);
+  });
+
+  it("faq section is centered", () => {
+    render(<FaqChat />);
+    const h2 = screen.getByRole("heading", { name: "Обычно спрашивают" });
+    expect(h2.closest(".text-center")).toBeTruthy();
+    expect(
+      document.querySelector("[data-msg]")?.parentElement?.className,
+    ).toContain("mx-auto");
   });
 });

@@ -75,4 +75,10 @@ describe("landing", () => {
       expect(document.getElementById(id)).toBeTruthy();
     }
   });
+
+  it("landing says «облако», never «контейнер»", () => {
+    render(<LandingPage error={false} />);
+    expect(document.body.textContent).not.toMatch(/контейнер/i);
+    expect(document.body.textContent).toMatch(/облак/i);
+  });
 });

@@ -51,8 +51,8 @@ export function FaqChat() {
   return (
     <section id="faq" className="relative py-[110px]">
       <div className="mx-auto max-w-[1180px] px-7">
-        <SectionHead label="FAQ" title="Обычно спрашивают" />
-        <div ref={listRef} className="grid max-w-[720px] gap-3.5">
+        <SectionHead label="FAQ" title="Обычно спрашивают" align="center" />
+        <div ref={listRef} className="mx-auto grid max-w-[720px] gap-3.5">
           {messages.map((m, i) => (
             <div
               key={m.text}

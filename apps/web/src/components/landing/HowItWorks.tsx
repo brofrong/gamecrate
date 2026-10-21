@@ -113,7 +113,7 @@ export function HowItWorks() {
     ? "Запускаем стрим…"
     : cues.has("boot-gpu")
       ? "Выделяем GPU…"
-      : "Поднимаем контейнер…";
+      : "Поднимаем облако…";
 
   return (
     <section
