@@ -93,3 +93,107 @@ export const demoAppIds: ReadonlyArray<number> = [
   1245620, 1086940, 1091500, 1030300, 2767030, 553850, 2358720, 413150, 892970,
   2379780, 1903340, 105600,
 ];
+
+/** Пока true — над тарифами плашка «цены и цифры — предварительные». */
+export const PLANS_ARE_PLACEHOLDERS = true;
+
+export type Plan = {
+  name: string;
+  who: string;
+  hours: number;
+  priceRub: number;
+  perHourRub: number;
+  features: ReadonlyArray<{
+    text: string;
+    included: boolean;
+    gpu?: string;
+    strong?: boolean;
+  }>;
+  popular?: boolean;
+};
+
+/** Три тарифа по часам игры (цифры — заглушки до решения владельца). */
+export const plans: ReadonlyArray<Plan> = [
+  {
+    name: "Старт",
+    who: "Попробовать и поиграть по вечерам",
+    hours: 10,
+    priceRub: 490,
+    perHourRub: 49,
+    features: [
+      { text: "1080p · 60 FPS", included: true },
+      { text: "Общая очередь на сервер", included: true },
+      { text: "Стандартное железо", included: true, gpu: "RTX 3060" },
+      { text: "Без очереди", included: false },
+      { text: "4K и 120 FPS", included: false },
+    ],
+  },
+  {
+    name: "Про",
+    who: "Для тех, кто играет каждый день",
+    hours: 40,
+    priceRub: 1490,
+    perHourRub: 37,
+    popular: true,
+    features: [
+      { text: "1440p · 60 FPS", included: true },
+      {
+        text: "Без очереди — сервер всегда есть",
+        included: true,
+        strong: true,
+      },
+      { text: "Быстрое железо", included: true, gpu: "RTX 4070" },
+      { text: "Сессия до 8 часов", included: true },
+      { text: "4K и 120 FPS", included: false },
+    ],
+  },
+  {
+    name: "Ультра",
+    who: "Максимум, без компромиссов",
+    hours: 120,
+    priceRub: 3490,
+    perHourRub: 29,
+    features: [
+      { text: "4K · 120 FPS", included: true, strong: true },
+      { text: "Без очереди + приоритет", included: true },
+      { text: "Топовое железо", included: true, gpu: "RTX 4090" },
+      { text: "Сессия без лимита", included: true },
+      { text: "Ранний доступ к новым фичам", included: true },
+    ],
+  },
+];
+
+/** Ачивки; `season` — открывается только в сезонный ивент. */
+export const achievements: ReadonlyArray<{
+  emoji: string;
+  title: string;
+  text: string;
+  season?: string;
+}> = [
+  {
+    emoji: "🚀",
+    title: "Первый запуск",
+    text: "Запустил первую игру в облаке",
+  },
+  { emoji: "🏃", title: "Марафонец", text: "5 часов подряд, не выходя" },
+  { emoji: "🦉", title: "Ночная смена", text: "Играл после трёх ночи" },
+  {
+    emoji: "🔥",
+    title: "Феникс",
+    text: "Вернулся в сессию после обрыва связи",
+  },
+  { emoji: "📚", title: "Коллекционер", text: "Запустил 25 разных игр" },
+  { emoji: "💯", title: "Сотня", text: "100 часов на платформе" },
+  {
+    emoji: "💘",
+    title: "Настоящая любовь",
+    text: "14 февраля провёл с нами",
+    season: "Сезонная · февраль",
+  },
+  {
+    emoji: "🎃",
+    title: "Тыквенный час",
+    text: "Хоррор-марафон на Хэллоуин",
+    season: "Сезонная · октябрь",
+  },
+];

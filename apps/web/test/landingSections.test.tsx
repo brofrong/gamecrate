@@ -12,8 +12,17 @@ const { Hero } = await import("../src/components/landing/Hero");
 const { TechFlow } = await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
 const { HowItWorks } = await import("../src/components/landing/HowItWorks");
-const { headerUrl, heroAppIds, platforms, steps, techNotes } =
-  await import("../src/components/landing/data");
+const { Plans, formatRub } = await import("../src/components/landing/Plans");
+const { Achievements } = await import("../src/components/landing/Achievements");
+const {
+  achievements,
+  headerUrl,
+  heroAppIds,
+  plans,
+  platforms,
+  steps,
+  techNotes,
+} = await import("../src/components/landing/data");
 
 const stubMotion = (reduced: boolean) => {
   window.matchMedia = (() => ({
@@ -92,5 +101,24 @@ describe("landing sections", () => {
     stubMotion(true);
     render(<HowItWorks />);
     expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
+  });
+
+  it("plans show three tiers with placeholder badge", () => {
+    render(<Plans />);
+    expect(screen.getByText("цены и цифры — предварительные")).toBeTruthy();
+    for (const p of plans) {
+      expect(screen.getByRole("heading", { name: p.name })).toBeTruthy();
+    }
+    expect(screen.getByText("ПОПУЛЯРНЫЙ")).toBeTruthy();
+    expect(formatRub(1490)).toBe("1\u202f490\u00a0₽");
+    expect(formatRub(37)).toBe("37\u00a0₽");
+    expect(screen.getAllByRole("button", { name: "Выбрать" }).length).toBe(3);
+  });
+
+  it("achievements render eight cards, two seasonal locked", () => {
+    render(<Achievements />);
+    for (const a of achievements)
+      expect(screen.getByText(a.title)).toBeTruthy();
+    expect(screen.getAllByText(/Сезонная/).length).toBe(2);
   });
 });
