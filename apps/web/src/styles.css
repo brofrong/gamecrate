@@ -110,3 +110,38 @@
 @utility bg-brand-gradient {
   background: var(--brand-gradient);
 }
+
+/* Демо «Как это работает». */
+@keyframes gc-scan {
+  0%,
+  100% {
+    top: 6%;
+  }
+  50% {
+    top: 92%;
+  }
+}
+@keyframes gc-fill {
+  to {
+    width: 100%;
+  }
+}
+@keyframes gc-ripple {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(7);
+  }
+}
+@keyframes gc-game {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}

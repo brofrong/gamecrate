@@ -11,7 +11,8 @@ const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");
 const { TechFlow } = await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
-const { headerUrl, heroAppIds, platforms, techNotes } =
+const { HowItWorks } = await import("../src/components/landing/HowItWorks");
+const { headerUrl, heroAppIds, platforms, steps, techNotes } =
   await import("../src/components/landing/data");
 
 const stubMotion = (reduced: boolean) => {
@@ -74,5 +75,22 @@ describe("landing sections", () => {
       () => expect(screen.getByText(/Mbps/).textContent).not.toBe(first),
       { timeout: 1500 },
     );
+  });
+
+  it("how it works lists three steps and jumps on click", () => {
+    stubMotion(false);
+    render(<HowItWorks />);
+    for (const s of steps) {
+      expect(screen.getByRole("heading", { name: s.title })).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole("heading", { name: "Нажми Играть" }));
+    expect(screen.getByText("Поднимаем контейнер…")).toBeTruthy();
+    expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
+  });
+
+  it("reduced motion shows the final frame", () => {
+    stubMotion(true);
+    render(<HowItWorks />);
+    expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
   });
 });

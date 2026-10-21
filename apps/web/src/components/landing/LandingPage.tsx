@@ -2,6 +2,7 @@
 // `error` — Better Auth вернул `/?error=…` после неудачного входа через Steam.
 import { FinalCta } from "./FinalCta";
 import { Hero } from "./Hero";
+import { HowItWorks } from "./HowItWorks";
 import { LandingFooter } from "./LandingFooter";
 import { LandingNav } from "./LandingNav";
 import { TechFlow } from "./TechFlow";
@@ -13,6 +14,7 @@ export function LandingPage({ error }: { error: boolean }) {
       <main>
         <Hero error={error} />
         <TechFlow />
+        <HowItWorks />
         <FinalCta />
       </main>
       <LandingFooter />
