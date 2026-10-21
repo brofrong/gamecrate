@@ -8,8 +8,14 @@ import { rootRoute } from "./routes/__root";
 import { adminRoute } from "./routes/admin";
 import { indexRoute } from "./routes/index";
 import { libraryRoute } from "./routes/library";
+import { sessionRoute } from "./routes/session.$id";
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, adminRoute]);
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  libraryRoute,
+  sessionRoute,
+  adminRoute,
+]);
 
 const router = createRouter({ routeTree });
 

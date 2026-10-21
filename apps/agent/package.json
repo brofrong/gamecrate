@@ -1,0 +1,18 @@
+{
+  "name": "@cg/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file=../../.env --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "check": "bun check",
+    "lint": "bun lint src",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@cg/rpc": "workspace:*",
+    "@effect/platform-bun": "4.0.5",
+    "effect": "4.0.5"
+  }
+}

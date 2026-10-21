@@ -1,7 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { LibraryEntry, LibraryView } from "@cg/rpc";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { LibraryContent } from "../src/components/LibraryContent";
+import {
+  LibraryContent,
+  type LibraryPlay,
+} from "../src/components/LibraryContent";
 
 const game: LibraryEntry = {
   appId: 620,
@@ -17,9 +20,25 @@ const ready = (
   syncedAt: string | null = "2026-10-17T10:00:00.000Z",
 ): LibraryView => ({ _tag: "Ready", entries, syncedAt });
 
-const renderLibrary = (view: LibraryView, onRefresh = () => {}) =>
+const idlePlay: LibraryPlay = {
+  active: null,
+  startingAppId: null,
+  onPlay: () => {},
+  onResume: () => {},
+};
+
+const renderLibrary = (
+  view: LibraryView,
+  onRefresh = () => {},
+  play: LibraryPlay = idlePlay,
+) =>
   render(
-    <LibraryContent view={view} onRefresh={onRefresh} refreshing={false} />,
+    <LibraryContent
+      view={view}
+      onRefresh={onRefresh}
+      refreshing={false}
+      play={play}
+    />,
   );
 
 describe("library", () => {
@@ -58,12 +77,26 @@ describe("library", () => {
     expect(cover.getAttribute("src")).toBe(game.coverUrl);
   });
 
-  it("library play button is disabled with hint", async () => {
-    renderLibrary(ready([game]));
+  it("library play button starts the game", () => {
+    const onPlay = mock((_appId: number) => {});
+    renderLibrary(ready([game]), () => {}, { ...idlePlay, onPlay });
+    const play = screen.getByRole("button", { name: "Играть" });
+    expect((play as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(play);
+    expect(onPlay).toHaveBeenCalledWith(620);
+  });
+
+  it("library play waits for the active session and a pending start", () => {
+    const loading = renderLibrary(ready([game]), () => {}, {
+      ...idlePlay,
+      active: undefined,
+    });
     const play = screen.getByRole("button", { name: "Играть" });
     expect((play as HTMLButtonElement).disabled).toBe(true);
-    // Отключённая кнопка не получает событий — подсказка висит на обёртке.
-    fireEvent.focus(play.parentElement as HTMLElement);
-    expect((await screen.findAllByText("Скоро")).length).toBeGreaterThan(0);
+    loading.unmount();
+
+    renderLibrary(ready([game]), () => {}, { ...idlePlay, startingAppId: 620 });
+    const pending = screen.getByRole("button", { name: "Играть" });
+    expect((pending as HTMLButtonElement).disabled).toBe(true);
   });
 });

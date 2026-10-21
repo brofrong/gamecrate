@@ -1,8 +1,8 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
 import { AppRpcs } from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
-import { Cause, Layer, Option } from "effect";
-import { AsyncResult, AtomRpc } from "effect/reactivity";
+import { Cause, Effect, Layer, Option, Stream } from "effect";
+import { AsyncResult, Atom, AtomRpc } from "effect/reactivity";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 
 /** `ws(s)://<тот же хост>/rpc`: cookie сессии уходит с апгрейдом сам (same origin). */
@@ -40,6 +40,51 @@ export const refreshLibraryArgs = {
 
 /** Проверка доступа к `admin.*` (только роль admin). */
 export const adminPingAtom = Api.query("admin.ping", undefined);
+
+/** Ключ реактивности сессий: `session.start` перезапрашивает `session.active`. */
+const sessionKeys = ["session"] as const;
+
+/** Активная сессия пользователя (не `ended`/`failed`) или null. */
+export const activeSessionAtom = Api.query("session.active", undefined, {
+  reactivityKeys: sessionKeys,
+});
+
+/** Запустить игру (или получить уже активную сессию). */
+export const startSessionAtom = Api.mutation("session.start");
+export const startSessionArgs = (appId: number) =>
+  ({ payload: { appId }, reactivityKeys: sessionKeys }) as const;
+
+/**
+ * Поток `session.watch`: последнее представление сессии. Пока поток идёт — `Success`
+ * с `waiting`; после терминального состояния поток завершается — `Success` без `waiting`.
+ * Обрыв сокета — `Failure` (с прошлым значением): переподписка — `useAtomRefresh`.
+ * Атом не keepAlive: ушли со страницы — подписка отменяется.
+ */
+export const sessionWatchAtom = Atom.family((sessionId: string) =>
+  Api.runtime.atom(
+    Stream.unwrap(
+      Api.use((client) =>
+        Effect.succeed(client("session.watch", { sessionId })),
+      ),
+    ),
+  ),
+);
+
+/** Heartbeat страницы сессии (`inputAgeMs` — мс с последнего ввода). */
+export const heartbeatAtom = Api.mutation("session.heartbeat");
+
+/** Попросить остановить сессию («Выйти из игры»). */
+export const stopSessionAtom = Api.mutation("session.stop");
+
+/** Ключ реактивности настроек сессий в админке. */
+const settingsKeys = ["settings"] as const;
+
+export const sessionSettingsAtom = Api.query("admin.settings.get", undefined, {
+  reactivityKeys: settingsKeys,
+});
+export const updateSessionSettingsAtom = Api.mutation("admin.settings.update");
+export const updateSessionSettingsArgs = <A>(payload: A) =>
+  ({ payload, reactivityKeys: settingsKeys }) as const;
 
 /** `_tag` типизированной ошибки RPC (`Unauthorized`, `Forbidden`, `SteamUnavailable`, `RpcClientError`…). */
 export const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>

@@ -1,10 +1,15 @@
-// `/admin`: заглушка админки. Без сессии — вход через Pocket ID, игрок — «Нет доступа».
-import { useAtomValue } from "@effect/atom-react";
+// `/admin`: админка (проверка связи, «Настройки сессий»). Без сессии — вход через Pocket ID,
+// игрок — «Нет доступа».
+import type { SessionSettings } from "@cg/rpc";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { createRoute } from "@tanstack/react-router";
+import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import type * as React from "react";
+import { toast } from "sonner";
 import { signInWithPocketId } from "@/auth";
+import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { AppHeader } from "@/components/AppHeader";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
 import { Button } from "@/components/ui/button";
@@ -15,7 +20,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { adminPingAtom, meAtom, resultErrorTag } from "@/rpc";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  adminPingAtom,
+  errorTag,
+  meAtom,
+  resultErrorTag,
+  sessionSettingsAtom,
+  updateSessionSettingsArgs,
+  updateSessionSettingsAtom,
+} from "@/rpc";
 import { rootRoute } from "./__root";
 
 function PocketIdButton({ variant }: { variant?: "default" | "outline" }) {
@@ -61,6 +75,58 @@ function NoAccess() {
   );
 }
 
+/** Текст ошибки сохранения настроек по `_tag` ошибки RPC. */
+const saveError = (tag: string | undefined) =>
+  tag === "Forbidden" || tag === "Unauthorized"
+    ? "Нет прав на изменение настроек — войдите как администратор"
+    : "Не удалось сохранить настройки. Сервер отклонил значения или недоступен.";
+
+function SessionSettingsCard() {
+  const settings = useAtomValue(sessionSettingsAtom);
+  const update = useAtomSet(updateSessionSettingsAtom, {
+    mode: "promiseExit",
+  });
+
+  const onSubmit = async (value: SessionSettings) => {
+    const exit = await update(updateSessionSettingsArgs(value));
+    if (Exit.isSuccess(exit)) {
+      toast.success("Настройки сохранены");
+      return null;
+    }
+    return saveError(errorTag(exit.cause));
+  };
+
+  return (
+    <Card className="max-w-sm">
+      <CardHeader>
+        <CardTitle>Настройки сессий</CardTitle>
+        <CardDescription>
+          Применяются сразу, в том числе к идущим сессиям.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {AsyncResult.match(settings, {
+          onInitial: () => (
+            <div className="flex flex-col gap-3">
+              {Array.from({ length: 4 }, (_, i) => (
+                <Skeleton key={`settings-${i}`} className="h-14 w-full" />
+              ))}
+            </div>
+          ),
+          onFailure: () => (
+            <p className="text-sm text-destructive">
+              Не удалось загрузить настройки
+            </p>
+          ),
+          onSuccess: ({ value }) => (
+            <SessionSettingsForm initial={value} onSubmit={onSubmit} />
+          ),
+        })}
+      </CardContent>
+    </Card>
+  );
+}
+
 function AdminHome() {
   const me = useAtomValue(meAtom);
   const ping = useAtomValue(adminPingAtom);
@@ -88,6 +154,9 @@ function AdminHome() {
             </span>
           </CardContent>
         </Card>
+        <div className="mt-6">
+          <SessionSettingsCard />
+        </div>
       </main>
     </div>
   );

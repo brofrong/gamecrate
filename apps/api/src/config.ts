@@ -40,3 +40,12 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigValues>()(
   static readonly layer: Layer.Layer<AppConfig, Config.ConfigError> =
     Layer.effect(AppConfig, appConfig);
 }
+
+/**
+ * Origin, которым разрешены WebSocket `/rpc` и прокси стрима (WS-апгрейд и
+ * небезопасные методы): origin `PUBLIC_URL` + `ALLOWED_ORIGINS`.
+ */
+export const rpcAllowedOrigins = (
+  config: AppConfigValues,
+): ReadonlySet<string> =>
+  new Set([new URL(config.publicUrl).origin, ...config.allowedOrigins]);

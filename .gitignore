@@ -8,3 +8,4 @@ dist
 .turbo
 *.tgz
 .superpowers/
+images/session/nv/

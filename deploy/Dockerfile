@@ -1,5 +1,7 @@
-# Образ cg-api: ставит зависимости (включая патчи drizzle-orm и better-auth-steam из patches/),
-# собирает SPA (apps/web/dist), затем запускает api напрямую через bun (без транспиляции).
+# Образ приложения (тег cloud-gaming/cg-api): ставит зависимости (включая патчи drizzle-orm и
+# better-auth-steam из patches/), собирает SPA (apps/web/dist). Все сервисы запускаются напрямую
+# через bun из исходников (без транспиляции): по умолчанию api, а cg-orchestrator и cg-agent в
+# compose.yaml переопределяют `command` (apps/orchestrator/src/main.ts, apps/agent/src/main.ts).
 #
 # Собирается из корня репозитория: docker compose (см. compose.yaml) передаёт
 # context: .. — так Dockerfile видит apps/, packages/ и patches/.
@@ -11,7 +13,9 @@ WORKDIR /app
 # инвалидируется лишь при изменении зависимостей, а не исходников.
 COPY package.json bun.lock bunfig.toml ./
 COPY patches/ ./patches/
+COPY apps/agent/package.json apps/agent/package.json
 COPY apps/api/package.json apps/api/package.json
+COPY apps/orchestrator/package.json apps/orchestrator/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/rpc/package.json packages/rpc/package.json
@@ -23,8 +27,8 @@ RUN bun install --frozen-lockfile
 # Теперь остальной код (apps/*/src, packages/*/src, тесты, конфиги).
 COPY . .
 
-# Собирает apps/web/dist (turbo run build; у apps/api сборочного шага нет —
-# api запускается прямо из исходников через bun).
+# Собирает apps/web/dist (turbo run build; у api, оркестратора и агента сборочного шага нет —
+# они запускаются прямо из исходников через bun).
 RUN bun run build
 
 ENV PORT=3000 \
