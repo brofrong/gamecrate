@@ -7,7 +7,8 @@
     "dev": "bun dev.ts",
     "build": "bun build.ts",
     "check": "bun check",
-    "lint": "bun lint src test build.ts dev.ts",
+    "lint": "bun lint src test scripts build.ts dev.ts",
+    "brand-assets": "bun scripts/brand-assets.tsx",
     "test": "bun test"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "21.0.3",
+    "@resvg/resvg-js": "2.6.2",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@types/react": "19.3.0",

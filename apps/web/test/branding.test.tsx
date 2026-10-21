@@ -1,4 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { RouterProvider } from "@tanstack/react-router";
+import { render, screen } from "@testing-library/react";
+import { AppHeader } from "../src/components/AppHeader";
+import { testRouter } from "./router";
 
 const html = await Bun.file(
   new URL("../src/index.html", import.meta.url),
@@ -33,5 +37,38 @@ describe("branding", () => {
     expect(css).toContain("--brand-cyan: #3cc2ff");
     expect(css).toContain("--color-brand-cyan: var(--brand-cyan)");
     expect(css).not.toContain("googleapis");
+  });
+
+  it("brand assets exist and are svg", async () => {
+    for (const f of [
+      "logo-full.svg",
+      "logo-full-light.svg",
+      "logo-mark.svg",
+      "favicon.svg",
+    ]) {
+      const text = await Bun.file(
+        new URL(`../src/assets/brand/${f}`, import.meta.url),
+      ).text();
+      expect(text.startsWith("<svg")).toBe(true);
+      expect(text).toContain('xmlns="http://www.w3.org/2000/svg"');
+    }
+    expect(
+      await Bun.file(
+        new URL("../src/assets/brand/apple-touch-icon.png", import.meta.url),
+      ).exists(),
+    ).toBe(true);
+  });
+
+  it("index.html links the favicon", () => {
+    expect(html).toContain('href="./assets/brand/favicon.svg"');
+    expect(html).toContain('rel="apple-touch-icon"');
+  });
+
+  it("app header shows GameCrate", async () => {
+    render(
+      <RouterProvider router={testRouter(<AppHeader user={undefined} />)} />,
+    );
+    expect(await screen.findByText("GameCrate")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "GameCrate" })).toBeTruthy();
   });
 });
