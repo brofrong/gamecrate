@@ -99,3 +99,14 @@
     font-family: var(--font-sans);
   }
 }
+
+/* Лендинг: градиентный текст и фон бренда. */
+@utility text-gradient {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@utility bg-brand-gradient {
+  background: var(--brand-gradient);
+}
