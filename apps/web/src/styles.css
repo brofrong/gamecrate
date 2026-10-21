@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Шрифты бренда (Inter, JetBrains Mono) подключаются в `src/fonts.ts` через FontFace:
+   url() в CSS Bun инлайнит base64 целиком, а так файлы лежат в бандле отдельно. */
 
 /* Тема одна — тёмная: `<html class="dark">`, токены shadcn/ui (zinc) прямо в :root. */
 @custom-variant dark (&:is(.dark *));
@@ -25,6 +27,28 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.552 0.016 285.938);
+
+  /* Бренд GameCrate (лендинг, логотип). Токены shadcn выше не трогаем. */
+  --brand-bg: #05060f;
+  --brand-surface: #0a0d1c;
+  --brand-card: #0f1326;
+  --brand-line: rgba(255, 255, 255, 0.08);
+  --brand-cyan: #3cc2ff;
+  --brand-blue: #3a6cff;
+  --brand-violet: #5b2fff;
+  --brand-text: #f3f4ff;
+  --brand-muted: #8b90b8;
+  --brand-dim: #6d729a;
+  --brand-ok: #3ddc97;
+  --brand-warn: #ffd166;
+  --brand-gradient: linear-gradient(
+    135deg,
+    #3cc2ff 0%,
+    #3a6cff 50%,
+    #5b2fff 100%
+  );
+  --font-sans: "Inter Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
 }
 
 @theme inline {
@@ -50,6 +74,20 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-brand-bg: var(--brand-bg);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-card: var(--brand-card);
+  --color-brand-line: var(--brand-line);
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-violet: var(--brand-violet);
+  --color-brand-text: var(--brand-text);
+  --color-brand-muted: var(--brand-muted);
+  --color-brand-dim: var(--brand-dim);
+  --color-brand-ok: var(--brand-ok);
+  --color-brand-warn: var(--brand-warn);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
 }
 
 @layer base {
@@ -58,5 +96,52 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+}
+
+/* Лендинг: градиентный текст и фон бренда. */
+@utility text-gradient {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@utility bg-brand-gradient {
+  background: var(--brand-gradient);
+}
+
+/* Демо «Как это работает». */
+@keyframes gc-scan {
+  0%,
+  100% {
+    top: 6%;
+  }
+  50% {
+    top: 92%;
+  }
+}
+@keyframes gc-fill {
+  to {
+    width: 100%;
+  }
+}
+@keyframes gc-ripple {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(7);
+  }
+}
+@keyframes gc-game {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
   }
 }

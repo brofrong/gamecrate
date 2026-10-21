@@ -1,0 +1,228 @@
+import { describe, expect, it, mock } from "bun:test";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { createRef } from "react";
+
+mock.module("../src/auth", () => ({
+  signInWithSteam: async () => ({ error: undefined }),
+  signOut: async () => {},
+  signInWithPocketId: async () => {},
+}));
+
+const { CoverWall } = await import("../src/components/landing/CoverWall");
+const { Hero } = await import("../src/components/landing/Hero");
+const { TechFlow } = await import("../src/components/landing/TechFlow");
+const { Hud } = await import("../src/components/landing/Hud");
+type HudHandle = import("../src/components/landing/Hud").HudHandle;
+const { HowItWorks } = await import("../src/components/landing/HowItWorks");
+const { Plans, formatRub } = await import("../src/components/landing/Plans");
+const { FaqChat } = await import("../src/components/landing/FaqChat");
+const { Achievements } = await import("../src/components/landing/Achievements");
+const {
+  achievements,
+  faq,
+  headerUrl,
+  heroAppIds,
+  plans,
+  platforms,
+  steps,
+  techNotes,
+} = await import("../src/components/landing/data");
+
+// happy-dom объявляет IntersectionObserver, но не вызывает колбэк — подменяем
+// наблюдателем, который сразу сообщает «виден» (как в canvasLoop.test.tsx).
+class VisibleObserver {
+  constructor(private readonly cb: IntersectionObserverCallback) {}
+  observe(target: Element) {
+    this.cb(
+      [{ isIntersecting: true, target } as IntersectionObserverEntry],
+      this as never,
+    );
+  }
+  unobserve() {}
+  disconnect() {}
+}
+window.IntersectionObserver = VisibleObserver as never;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pointer = (type: string, pointerType: string) => {
+  const e = new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10 });
+  Object.defineProperty(e, "pointerType", { value: pointerType });
+  return e;
+};
+
+const stubMotion = (reduced: boolean) => {
+  window.matchMedia = (() => ({
+    matches: reduced,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as never;
+};
+
+describe("landing sections", () => {
+  it("cover falls back to header.jpg once, then stays dark", () => {
+    stubMotion(true);
+    render(<CoverWall rows={1} perRow={1} />);
+    const img = document.querySelector("img");
+    if (!img) throw new Error("no cover");
+    const fallback = headerUrl(heroAppIds[0] as number);
+    fireEvent.error(img);
+    expect(img.getAttribute("src")).toBe(fallback);
+    fireEvent.error(img);
+    expect(img.getAttribute("src")).toBe(fallback);
+    expect(img.closest("[data-failed]")).toBeTruthy();
+  });
+
+  it("rows drift when motion is allowed", async () => {
+    stubMotion(false);
+    render(<CoverWall rows={1} perRow={1} />);
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLElement>("[data-row]")?.style.transform,
+      ).not.toBe(""),
+    );
+  });
+
+  it("rows do not drift when motion is reduced", async () => {
+    stubMotion(true);
+    render(<CoverWall rows={2} perRow={2} />);
+    await sleep(120);
+    const rows = document.querySelectorAll<HTMLElement>("[data-row]");
+    expect(rows.length).toBe(2);
+    rows.forEach((row) => expect(row.style.transform).toBe(""));
+  });
+
+  it("mouse holds the row under the pointer, touch does not", () => {
+    stubMotion(false);
+    render(<CoverWall rows={1} perRow={1} />);
+    const row = document.querySelector<HTMLElement>("[data-row]");
+    if (!row) throw new Error("no row");
+    const section = row.parentElement?.parentElement;
+    if (!section) throw new Error("no section");
+    document.elementFromPoint = () => row;
+    section.dispatchEvent(pointer("pointermove", "touch"));
+    expect(row.classList.contains("hold")).toBe(false);
+    section.dispatchEvent(pointer("pointermove", "mouse"));
+    expect(row.classList.contains("hold")).toBe(true);
+    section.dispatchEvent(pointer("pointerleave", "mouse"));
+    expect(row.classList.contains("hold")).toBe(false);
+  });
+
+  it("hero renders platforms, perks and play button", () => {
+    stubMotion(true);
+    render(<Hero error={false} />);
+    for (const p of platforms) expect(screen.getByText(p)).toBeTruthy();
+    expect(screen.getByText("До 4K · 60 FPS")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Играть" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/бесплатно|4090/);
+  });
+
+  it("tech section renders text without canvas", () => {
+    stubMotion(true);
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    render(<TechFlow />);
+    expect(screen.getByRole("heading", { name: /GPU там/ })).toBeTruthy();
+    expect(screen.getByText("иллюстрация")).toBeTruthy();
+    for (const k of ["FPS", "FRAMETIME", "LATENCY", "BITRATE"]) {
+      expect(screen.getByText(k)).toBeTruthy();
+    }
+    for (const n of techNotes) expect(screen.getByText(n.title)).toBeTruthy();
+  });
+
+  it("hud stays still when driven without ticks or when motion is reduced", async () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    stubMotion(false);
+    const driven = render(<Hud driven />);
+    const a = screen.getByText(/Mbps/).textContent;
+    await sleep(300);
+    expect(screen.getByText(/Mbps/).textContent).toBe(a);
+    driven.unmount();
+    stubMotion(true);
+    render(<Hud />);
+    const b = screen.getByText(/Mbps/).textContent;
+    await sleep(300);
+    expect(screen.getByText(/Mbps/).textContent).toBe(b);
+  });
+
+  it("hud ticks when its driver calls tick", () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    const ref = createRef<HudHandle>();
+    render(<Hud ref={ref} driven />);
+    const texts = () =>
+      [...document.querySelectorAll(".tabular-nums")]
+        .map((e) => e.textContent)
+        .join("|");
+    const t0 = texts();
+    act(() => ref.current?.tick(0, 0));
+    act(() => ref.current?.tick(200, 6));
+    expect(texts()).not.toBe(t0);
+  });
+
+  it("hud updates values over time", async () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    stubMotion(false);
+    render(<Hud />);
+    const first = screen.getByText(/Mbps/).textContent;
+    await waitFor(
+      () => expect(screen.getByText(/Mbps/).textContent).not.toBe(first),
+      { timeout: 1500 },
+    );
+  });
+
+  it("how it works lists three steps and jumps on click", () => {
+    stubMotion(false);
+    render(<HowItWorks />);
+    for (const s of steps) {
+      expect(screen.getByRole("heading", { name: s.title })).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole("heading", { name: "Нажми Играть" }));
+    expect(screen.getByText("Поднимаем контейнер…")).toBeTruthy();
+    expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
+  });
+
+  it("reduced motion shows the final frame", () => {
+    stubMotion(true);
+    render(<HowItWorks />);
+    expect(document.querySelector("[data-active] h3")?.textContent).toBe(
+      "Нажми Играть",
+    );
+    expect(
+      document.querySelector('[aria-hidden="false"] .aspect-video'),
+    ).toBeTruthy();
+    expect(
+      document.querySelector('[aria-hidden="true"] .aspect-video'),
+    ).toBeNull();
+  });
+
+  it("plans show three tiers with placeholder badge", () => {
+    render(<Plans />);
+    expect(screen.getByText("цены и цифры — предварительные")).toBeTruthy();
+    for (const p of plans) {
+      expect(screen.getByRole("heading", { name: p.name })).toBeTruthy();
+    }
+    expect(screen.getByText("ПОПУЛЯРНЫЙ")).toBeTruthy();
+    expect(formatRub(1490)).toBe("1\u202f490\u00a0₽");
+    expect(formatRub(37)).toBe("37\u00a0₽");
+    expect(screen.getAllByRole("button", { name: "Выбрать" }).length).toBe(3);
+  });
+
+  it("achievements render eight cards, two seasonal locked", () => {
+    render(<Achievements />);
+    for (const a of achievements)
+      expect(screen.getByText(a.title)).toBeTruthy();
+    expect(screen.getAllByText(/Сезонная/).length).toBe(2);
+  });
+
+  it("faq renders all pairs", () => {
+    render(<FaqChat />);
+    for (const { q, a } of faq) {
+      expect(screen.getByText(q)).toBeTruthy();
+      expect(screen.getByText(a)).toBeTruthy();
+    }
+  });
+});

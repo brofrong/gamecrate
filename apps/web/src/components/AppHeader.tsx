@@ -1,9 +1,10 @@
 // Шапка для вошедшего пользователя: название, ссылки, аватар и «Выйти».
 import type { CurrentUserShape } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
-import { Gamepad2, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
 import type * as React from "react";
 import { signOut } from "@/auth";
+import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/button";
 
 export function AppHeader({
@@ -17,8 +18,8 @@ export function AppHeader({
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-screen-2xl items-center gap-4 px-4 sm:px-6">
         <Link to="/library" className="flex items-center gap-2 font-semibold">
-          <Gamepad2 className="size-5 text-primary" />
-          <span className="hidden sm:inline">Облачный гейминг</span>
+          <Logo iconOnly height={28} />
+          <span className="hidden sm:inline">GameCrate</span>
         </Link>
         {user?.role === "admin" && (
           <Link
