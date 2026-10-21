@@ -68,4 +68,11 @@ describe("landing", () => {
     expect(indexView(AsyncResult.initial(), true)).toBe("unreachable");
     expect(indexView(AsyncResult.initial(), false)).toBe("loading");
   });
+
+  it("landing has every section anchor", () => {
+    render(<LandingPage error={false} />);
+    for (const id of ["tech", "how", "plans", "ach", "faq"]) {
+      expect(document.getElementById(id)).toBeTruthy();
+    }
+  });
 });

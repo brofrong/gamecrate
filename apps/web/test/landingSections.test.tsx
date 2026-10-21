@@ -13,9 +13,11 @@ const { TechFlow } = await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
 const { HowItWorks } = await import("../src/components/landing/HowItWorks");
 const { Plans, formatRub } = await import("../src/components/landing/Plans");
+const { FaqChat } = await import("../src/components/landing/FaqChat");
 const { Achievements } = await import("../src/components/landing/Achievements");
 const {
   achievements,
+  faq,
   headerUrl,
   heroAppIds,
   plans,
@@ -120,5 +122,13 @@ describe("landing sections", () => {
     for (const a of achievements)
       expect(screen.getByText(a.title)).toBeTruthy();
     expect(screen.getAllByText(/Сезонная/).length).toBe(2);
+  });
+
+  it("faq renders all pairs", () => {
+    render(<FaqChat />);
+    for (const { q, a } of faq) {
+      expect(screen.getByText(q)).toBeTruthy();
+      expect(screen.getByText(a)).toBeTruthy();
+    }
   });
 });
