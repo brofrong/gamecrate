@@ -59,6 +59,16 @@ describe("branding", () => {
     ).toBe(true);
   });
 
+  it("favicon is the ring, the mark is the cube", async () => {
+    const read = (f: string) =>
+      Bun.file(new URL(`../src/assets/brand/${f}`, import.meta.url)).text();
+    const favicon = await read("favicon.svg");
+    const mark = await read("logo-mark.svg");
+    expect(favicon).not.toBe(mark);
+    expect(favicon).toContain('opacity="1"');
+    expect(mark).toContain('opacity="0"');
+  });
+
   it("index.html links the favicon", () => {
     expect(html).toContain('href="./assets/brand/favicon.svg"');
     expect(html).toContain('rel="apple-touch-icon"');

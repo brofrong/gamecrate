@@ -76,10 +76,9 @@ export function Logo({
     };
   }, [metrics, iconOnly]);
 
-  const frame = logoFrame(
-    iconOnly ? 1 : progress,
-    metrics ?? measured ?? DEFAULT_METRICS,
-  );
+  // iconOnly прячет надпись и фиксирует viewBox, но не прогресс: при 0 это кольцо
+  // (фавиконка, мелкие знаки < 32px), при 1 — GC-куб.
+  const frame = logoFrame(progress, metrics ?? measured ?? DEFAULT_METRICS);
   const viewBoxWidth = iconOnly ? MARK_WIDTH : frame.viewBoxWidth;
   const markId = `${id}-mark`;
   const gId = `${id}-g`;

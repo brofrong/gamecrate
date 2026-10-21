@@ -1,5 +1,12 @@
 import { describe, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { createRef } from "react";
 
 mock.module("../src/auth", () => ({
   signInWithSteam: async () => ({ error: undefined }),
@@ -11,6 +18,7 @@ const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");
 const { TechFlow } = await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
+type HudHandle = import("../src/components/landing/Hud").HudHandle;
 const { HowItWorks } = await import("../src/components/landing/HowItWorks");
 const { Plans, formatRub } = await import("../src/components/landing/Plans");
 const { FaqChat } = await import("../src/components/landing/FaqChat");
@@ -25,6 +33,28 @@ const {
   steps,
   techNotes,
 } = await import("../src/components/landing/data");
+
+// happy-dom объявляет IntersectionObserver, но не вызывает колбэк — подменяем
+// наблюдателем, который сразу сообщает «виден» (как в canvasLoop.test.tsx).
+class VisibleObserver {
+  constructor(private readonly cb: IntersectionObserverCallback) {}
+  observe(target: Element) {
+    this.cb(
+      [{ isIntersecting: true, target } as IntersectionObserverEntry],
+      this as never,
+    );
+  }
+  unobserve() {}
+  disconnect() {}
+}
+window.IntersectionObserver = VisibleObserver as never;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pointer = (type: string, pointerType: string) => {
+  const e = new MouseEvent(type, { bubbles: true, clientX: 10, clientY: 10 });
+  Object.defineProperty(e, "pointerType", { value: pointerType });
+  return e;
+};
 
 const stubMotion = (reduced: boolean) => {
   window.matchMedia = (() => ({
@@ -48,13 +78,39 @@ describe("landing sections", () => {
     expect(img.closest("[data-failed]")).toBeTruthy();
   });
 
+  it("rows drift when motion is allowed", async () => {
+    stubMotion(false);
+    render(<CoverWall rows={1} perRow={1} />);
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLElement>("[data-row]")?.style.transform,
+      ).not.toBe(""),
+    );
+  });
+
   it("rows do not drift when motion is reduced", async () => {
     stubMotion(true);
     render(<CoverWall rows={2} perRow={2} />);
-    await new Promise((r) => setTimeout(r, 60));
+    await sleep(120);
     const rows = document.querySelectorAll<HTMLElement>("[data-row]");
     expect(rows.length).toBe(2);
     rows.forEach((row) => expect(row.style.transform).toBe(""));
+  });
+
+  it("mouse holds the row under the pointer, touch does not", () => {
+    stubMotion(false);
+    render(<CoverWall rows={1} perRow={1} />);
+    const row = document.querySelector<HTMLElement>("[data-row]");
+    if (!row) throw new Error("no row");
+    const section = row.parentElement?.parentElement;
+    if (!section) throw new Error("no section");
+    document.elementFromPoint = () => row;
+    section.dispatchEvent(pointer("pointermove", "touch"));
+    expect(row.classList.contains("hold")).toBe(false);
+    section.dispatchEvent(pointer("pointermove", "mouse"));
+    expect(row.classList.contains("hold")).toBe(true);
+    section.dispatchEvent(pointer("pointerleave", "mouse"));
+    expect(row.classList.contains("hold")).toBe(false);
   });
 
   it("hero renders platforms, perks and play button", () => {
@@ -78,8 +134,38 @@ describe("landing sections", () => {
     for (const n of techNotes) expect(screen.getByText(n.title)).toBeTruthy();
   });
 
+  it("hud stays still when driven without ticks or when motion is reduced", async () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    stubMotion(false);
+    const driven = render(<Hud driven />);
+    const a = screen.getByText(/Mbps/).textContent;
+    await sleep(300);
+    expect(screen.getByText(/Mbps/).textContent).toBe(a);
+    driven.unmount();
+    stubMotion(true);
+    render(<Hud />);
+    const b = screen.getByText(/Mbps/).textContent;
+    await sleep(300);
+    expect(screen.getByText(/Mbps/).textContent).toBe(b);
+  });
+
+  it("hud ticks when its driver calls tick", () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    const ref = createRef<HudHandle>();
+    render(<Hud ref={ref} driven />);
+    const texts = () =>
+      [...document.querySelectorAll(".tabular-nums")]
+        .map((e) => e.textContent)
+        .join("|");
+    const t0 = texts();
+    act(() => ref.current?.tick(0, 0));
+    act(() => ref.current?.tick(200, 6));
+    expect(texts()).not.toBe(t0);
+  });
+
   it("hud updates values over time", async () => {
     HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    stubMotion(false);
     render(<Hud />);
     const first = screen.getByText(/Mbps/).textContent;
     await waitFor(
@@ -102,7 +188,15 @@ describe("landing sections", () => {
   it("reduced motion shows the final frame", () => {
     stubMotion(true);
     render(<HowItWorks />);
-    expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
+    expect(document.querySelector("[data-active] h3")?.textContent).toBe(
+      "Нажми Играть",
+    );
+    expect(
+      document.querySelector('[aria-hidden="false"] .aspect-video'),
+    ).toBeTruthy();
+    expect(
+      document.querySelector('[aria-hidden="true"] .aspect-video'),
+    ).toBeNull();
   });
 
   it("plans show three tiers with placeholder badge", () => {

@@ -9,6 +9,7 @@ import {
 import {
   DEFAULT_METRICS,
   fullWidth,
+  LEFT_BAND,
 } from "../src/components/brand/logo-geometry";
 import { Logo } from "../src/components/brand/Logo";
 import { useScrollProgress } from "../src/components/brand/useScrollProgress";
@@ -54,7 +55,19 @@ describe("logo", () => {
     stubMotion(true);
     const { result } = renderHook(() => useScrollProgress());
     scrollTo(300);
-    await waitFor(() => expect(result.current).toBe(1));
+    expect(result.current).toBe(1);
+  });
+
+  it("iconOnly keeps the ring at progress 0 and the cube at 1", () => {
+    const band = (el: HTMLElement) =>
+      el
+        .querySelector(`polygon[points="${LEFT_BAND}"]`)
+        ?.getAttribute("opacity");
+    const ring = render(<Logo iconOnly progress={0} />);
+    expect(band(ring.container)).toBe("1");
+    ring.unmount();
+    const cube = render(<Logo iconOnly progress={1} />);
+    expect(band(cube.container)).toBe("0");
   });
 
   it("scroll progress eases toward the target", async () => {

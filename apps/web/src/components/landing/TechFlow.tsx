@@ -8,7 +8,7 @@ import {
   useCanvasLoop,
 } from "@/lib/useCanvasLoop";
 import { techNotes } from "./data";
-import { Hud } from "./Hud";
+import { Hud, type HudHandle } from "./Hud";
 
 type Rgb = readonly [number, number, number];
 type Particle = {
@@ -289,7 +289,7 @@ export function TechFlow() {
   const cursor = useRef<Cursor>({ x: -9999, y: -9999, inside: false });
   const parts = useRef<Particle[] | null>(null);
   const [anchors, setAnchors] = useState<Anchors>();
-  const [boost, setBoost] = useState(0);
+  const hudRef = useRef<HudHandle>(null);
   const lastSize = useRef("");
 
   const draw = useCallback<DrawFrame>((ctx, size, t) => {
@@ -299,10 +299,8 @@ export function TechFlow() {
       setAnchors(anchorsFor(size));
     }
     parts.current ??= makeParticles();
-    const next = Math.round(
-      drawTechFlow(ctx, size, t, cursor.current, parts.current),
-    );
-    setBoost((prev) => (prev === next ? prev : next));
+    const boost = drawTechFlow(ctx, size, t, cursor.current, parts.current);
+    hudRef.current?.tick(t, boost);
   }, []);
   useCanvasLoop(canvasRef, draw);
 
@@ -344,7 +342,7 @@ export function TechFlow() {
             aria-hidden="true"
             className="absolute inset-0 block size-full"
           />
-          <Hud cursorBoost={boost} />
+          <Hud ref={hudRef} driven />
           {anchors && (
             <>
               <FlowLabel x={anchors.ax} y={anchors.labelA} title="Дата-центр">

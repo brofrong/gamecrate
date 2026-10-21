@@ -1,7 +1,21 @@
 // Геймерский HUD в секции «Технология»: FPS / FRAMETIME / LATENCY / BITRATE с мини-графиками.
-// Цифры — иллюстрация (случайные в правдоподобных пределах), обновляются раз в 120 мс.
+// Цифры — иллюстрация (случайные в правдоподобных пределах), не чаще раза в 120 мс.
+// В `driven`-режиме тики приходят от canvas-цикла секции (`ref.tick(time, boost)`), так что
+// HUD живёт только пока секция видна и без reduced motion; сам по себе — своим интервалом.
 // Без 2D-контекста (тесты) обновляется только текст.
-import { useEffect, useRef, useState } from "react";
+import {
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
+import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
+
+export type HudHandle = {
+  /** Один тик цикла: `time` в мс, `boost` — добавка к задержке (курсор у вершины дуги). */
+  tick: (time: number, boost?: number) => void;
+};
 
 const TICK_MS = 120;
 const POINTS = 60;
@@ -88,10 +102,17 @@ const drawSeries = (
   ctx.fill();
 };
 
-export function Hud({ cursorBoost = 0 }: { cursorBoost?: number }) {
+export function Hud({
+  driven = false,
+  ref,
+}: {
+  /** Тики приходят снаружи через `ref.tick`; своего интервала нет. */
+  driven?: boolean;
+  ref?: Ref<HudHandle>;
+}) {
+  const reduced = usePrefersReducedMotion();
   const [values, setValues] = useState(() => sample(0));
-  const boostRef = useRef(cursorBoost);
-  boostRef.current = cursorBoost;
+  const lastTick = useRef(-Infinity);
   const seriesRef = useRef<Record<Key, number[]>>({
     fps: [],
     ft: [],
@@ -105,19 +126,35 @@ export function Hud({ cursorBoost = 0 }: { cursorBoost?: number }) {
     br: null,
   });
 
+  const tick = (time: number, boost = 0) => {
+    if (time - lastTick.current < TICK_MS) return;
+    lastTick.current = time;
+    const next = sample(boost);
+    for (const stat of STATS) {
+      const s = seriesRef.current[stat.key];
+      s.push(next[stat.key]);
+      if (s.length > POINTS) s.shift();
+      drawSeries(canvasRefs.current[stat.key], s, stat);
+    }
+    setValues(next);
+  };
+  const tickRef = useRef(tick);
+  tickRef.current = tick;
+
+  useImperativeHandle(
+    ref,
+    () => ({ tick: (t, b) => tickRef.current(t, b) }),
+    [],
+  );
+
   useEffect(() => {
-    const timer = setInterval(() => {
-      const next = sample(boostRef.current);
-      for (const stat of STATS) {
-        const s = seriesRef.current[stat.key];
-        s.push(next[stat.key]);
-        if (s.length > POINTS) s.shift();
-        drawSeries(canvasRefs.current[stat.key], s, stat);
-      }
-      setValues(next);
-    }, TICK_MS);
+    if (driven || reduced) return;
+    const timer = setInterval(
+      () => tickRef.current(performance.now()),
+      TICK_MS,
+    );
     return () => clearInterval(timer);
-  }, []);
+  }, [driven, reduced]);
 
   return (
     <div className="pointer-events-none absolute top-0 left-0 grid gap-2 font-mono text-xs min-[860px]:min-w-[250px]">

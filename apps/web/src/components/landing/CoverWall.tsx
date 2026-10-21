@@ -98,15 +98,18 @@ export function CoverWall({
       rowEls.forEach((el, i) => el.classList.toggle("hold", i === index));
       heldRef.current = index;
     };
-    const onMove = (e: MouseEvent) => {
+    // Только мышь: на тач-устройствах браузер синтезирует move без leave, и ряд
+    // «залипал» бы после тапа.
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
       const row = document
         .elementFromPoint(e.clientX, e.clientY)
         ?.closest<HTMLElement>("[data-row]");
       setHeld(row ?? null);
     };
     const onLeave = () => setHeld(null);
-    section.addEventListener("mousemove", onMove);
-    section.addEventListener("mouseleave", onLeave);
+    section.addEventListener("pointermove", onMove);
+    section.addEventListener("pointerleave", onLeave);
 
     let observer: IntersectionObserver | undefined;
     if (visible) start();
@@ -125,8 +128,8 @@ export function CoverWall({
     return () => {
       stop();
       observer?.disconnect();
-      section.removeEventListener("mousemove", onMove);
-      section.removeEventListener("mouseleave", onLeave);
+      section.removeEventListener("pointermove", onMove);
+      section.removeEventListener("pointerleave", onLeave);
     };
   }, [reduced]);
 
