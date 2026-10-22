@@ -51,8 +51,11 @@ export interface SessionRunnerShape {
   readonly tick: (now: Date) => Effect.Effect<void>;
 }
 
-/** Сбой обработчика не должен ронять цикл: логируем (кроме прерывания). */
-const logFailure =
+/**
+ * Сбой обработчика не должен ронять цикл: логируем (кроме прерывания). Общий
+ * для фоновых циклов оркестратора (раннер, диспетчер установок).
+ */
+export const logFailure =
   (message: string, annotations: Record<string, unknown> = {}) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<void, never, R> =>
     effect.pipe(

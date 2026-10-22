@@ -706,6 +706,10 @@ describe("decide", () => {
     expect(
       decide(installing, { _tag: "InstallFinished" }, min(30), settings),
     ).toEqual(unchanged("queued"));
+    // Задачу отменили, пока сессия присоединялась, — ждать новую.
+    expect(
+      decide(installing, { _tag: "InstallCancelled" }, min(30), settings),
+    ).toEqual(unchanged("queued"));
     // Итоги установки вне installing ничего не меняют.
     for (const state of ["queued", "starting", "playing"] as const) {
       const s = snap(state, {}, min(1));

@@ -2,22 +2,23 @@
 // отменяет брошенные и валит потерянные; отчёты агентов об установке (прогресс,
 // итог) переводит в задачи и ждущие их сессии.
 import { Db } from "@cg/db";
-import {
-  Cause,
-  Context,
-  DateTime,
-  Effect,
-  Layer,
-  PubSub,
-  Schedule,
-} from "effect";
+import { Context, DateTime, Effect, Layer, PubSub, Schedule } from "effect";
 import { AgentHub, type AgentHubEvent } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
 import { AGENT_TIMEOUT_MS } from "./lifecycle";
-import { RECONCILE_GRACE_MS } from "./SessionRunner";
+import { logFailure, RECONCILE_GRACE_MS } from "./SessionRunner";
 
 /** Период диспетчера установок. */
 export const DISPATCH_INTERVAL = "2 seconds";
+
+/**
+ * Задача выдана перед самым переподключением агента и в его `installs` её нет:
+ * InstallGame мог прийти в новое соединение после снимка, а мог потеряться со
+ * старым. Ждём подтверждения (любой Install*-отчёт по задаче) столько от
+ * выдачи — первый InstallProgress бывает только после старта контейнера,
+ * восстановления профиля и входа Steam, это дольше `AGENT_TIMEOUT_MS`.
+ */
+export const DISPATCH_CONFIRM_MS = 5 * 60_000;
 
 /** Ошибки задач, которые ставит сам оркестратор (`install_jobs.error`). */
 export const installErrors = {
@@ -42,20 +43,6 @@ export interface InstallDispatcherOptions {
   readonly startedAt?: Date;
 }
 
-/** Сбой обработчика не должен ронять цикл: логируем (кроме прерывания). */
-const logFailure =
-  (message: string, annotations: Record<string, unknown> = {}) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<void, never, R> =>
-    effect.pipe(
-      Effect.asVoid,
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.interrupt
-          : Effect.logError(message, Cause.pretty(cause)),
-      ),
-      Effect.annotateLogs(annotations),
-    );
-
 const make = (options: InstallDispatcherOptions) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -73,12 +60,23 @@ const make = (options: InstallDispatcherOptions) =>
     const dispatchedAt = new Map<string, Date>();
     /**
      * Задачи, которых не было в `installs` переподключившегося агента: валим,
-     * если через `RECONCILE_GRACE_MS` они всё ещё `running` на нём — за это
-     * время доходят итоговые отчёты, перенесённые агентом через переподключение.
+     * если к `deadline` они всё ещё `running` на нём и агент о них не отчитался.
+     * Обычно `deadline` — через `RECONCILE_GRACE_MS` (за это время доходят
+     * итоговые отчёты, перенесённые через переподключение); только что
+     * выданные ждут `DISPATCH_CONFIRM_MS` от выдачи и при провале получают
+     * CancelInstall — вдруг агент всё-таки её выполняет.
      */
-    const missing = new Map<string, { workerId: string; since: Date }>();
-    /** CancelInstall доставлен в текущее соединение агента (jobId → workerId). */
-    const cancelSent = new Map<string, string>();
+    const missing = new Map<
+      string,
+      { workerId: string; deadline: Date; cancel: boolean }
+    >();
+    /**
+     * Брошенные `running`-задачи, которым мы запросили CancelInstall (до их
+     * итога); `delivered` — команда ушла в текущее соединение агента. Сессии,
+     * присоединившиеся к такой задаче, при её отменном итоге возвращаются в
+     * очередь, а не проваливаются.
+     */
+    const cancels = new Map<string, { workerId: string; delivered: boolean }>();
 
     const withDb = <A, E>(effect: Effect.Effect<A, E, Db>) =>
       Effect.provideService(effect, Db, db);
@@ -101,9 +99,8 @@ const make = (options: InstallDispatcherOptions) =>
 
     /**
      * Агент (пере)подключился. Наши `running`-задачи на нём, которых нет в
-     * `installs` (кроме только что выданных — InstallGame мог прийти в это же
-     * соединение после снимка), — под подозрением до конца сверки. Установки,
-     * которых мы на нём не ждём, отменяем: иначе агент занят чужой работой.
+     * `installs`, — под подозрением (`missing`). Установки, которых мы на нём не
+     * ждём, отменяем: иначе агент занят чужой работой.
      */
     const reconnected = (
       workerId: string,
@@ -112,8 +109,8 @@ const make = (options: InstallDispatcherOptions) =>
     ) =>
       Effect.gen(function* () {
         // Команды прежнего соединения могли потеряться; прежняя сверка устарела.
-        for (const [jobId, owner] of cancelSent)
-          if (owner === workerId) cancelSent.delete(jobId);
+        for (const entry of cancels.values())
+          if (entry.workerId === workerId) entry.delivered = false;
         for (const [jobId, entry] of missing)
           if (entry.workerId === workerId) missing.delete(jobId);
         const running = yield* withDb(InstallRepo.runningJobs(workerId));
@@ -121,12 +118,16 @@ const make = (options: InstallDispatcherOptions) =>
         for (const job of running) {
           if (live.has(job.id)) continue;
           const sent = dispatchedAt.get(job.id);
-          if (
+          const recent =
             sent !== undefined &&
-            now.getTime() - sent.getTime() < RECONCILE_GRACE_MS
-          )
-            continue;
-          missing.set(job.id, { workerId, since: now });
+            now.getTime() - sent.getTime() < RECONCILE_GRACE_MS;
+          missing.set(job.id, {
+            workerId,
+            deadline: recent
+              ? new Date(sent.getTime() + DISPATCH_CONFIRM_MS)
+              : new Date(now.getTime() + RECONCILE_GRACE_MS),
+            cancel: recent,
+          });
         }
         const ours = new Set(running.map((job) => job.id));
         for (const jobId of installs) {
@@ -151,6 +152,9 @@ const make = (options: InstallDispatcherOptions) =>
           }),
         );
       const { workerId, report } = event;
+      // Отчёт по задаче от её агента — задача у него есть.
+      if ("jobId" in report && missing.get(report.jobId)?.workerId === workerId)
+        missing.delete(report.jobId);
       const effect = (() => {
         switch (report._tag) {
           case "InstallProgress":
@@ -163,6 +167,7 @@ const make = (options: InstallDispatcherOptions) =>
               ),
             );
           case "InstallFinished":
+            cancels.delete(report.jobId);
             return withDb(
               InstallRepo.finish(
                 workerId,
@@ -179,18 +184,25 @@ const make = (options: InstallDispatcherOptions) =>
                 }),
               ),
             );
-          case "InstallFailed":
+          case "InstallFailed": {
+            // Итог задачи, которую мы отменили: успевшие присоединиться
+            // сессии не виноваты — обратно в очередь, за новой задачей.
+            const requeue = cancels.delete(report.jobId);
             return withDb(
-              InstallRepo.fail(report.jobId, report.reason, now, workerId),
+              InstallRepo.fail(report.jobId, report.reason, now, {
+                workerId,
+                requeueWaiters: requeue,
+              }),
             ).pipe(
               Effect.flatMap((waiters) =>
                 logFinished(report.jobId, waiters, {
                   workerId,
-                  result: "failed",
+                  result: requeue ? "cancelled" : "failed",
                   reason: report.reason,
                 }),
               ),
             );
+          }
           default:
             return Effect.void;
         }
@@ -203,31 +215,40 @@ const make = (options: InstallDispatcherOptions) =>
       );
     };
 
-    /** Задача потеряна агентом: `failed` (если всё ещё `running` на нём). */
-    const interrupt = (jobId: string, workerId: string, now: Date) =>
-      withDb(
-        InstallRepo.fail(jobId, installErrors.interrupted, now, workerId),
-      ).pipe(
-        Effect.flatMap((waiters) =>
-          waiters === undefined
-            ? Effect.void
-            : Effect.logWarning("Install job lost by its agent", {
-                jobId,
-                workerId,
-                sessions: waiters,
-              }),
-        ),
-        logFailure("Failing a lost install job failed", { jobId }),
-      );
+    /**
+     * Задача потеряна агентом: `failed` (если всё ещё `running` на нём);
+     * `cancel` — агенту ещё и CancelInstall, если она у него всё-таки идёт.
+     */
+    const interrupt = (
+      jobId: string,
+      workerId: string,
+      now: Date,
+      cancel = false,
+    ) =>
+      Effect.gen(function* () {
+        cancels.delete(jobId);
+        const waiters = yield* withDb(
+          InstallRepo.fail(jobId, installErrors.interrupted, now, { workerId }),
+        );
+        if (waiters === undefined) return;
+        yield* Effect.logWarning("Install job lost by its agent", {
+          jobId,
+          workerId,
+          sessions: waiters,
+        });
+        if (cancel) yield* hub.send(workerId, { _tag: "CancelInstall", jobId });
+      }).pipe(logFailure("Failing a lost install job failed", { jobId }));
 
     /** Ни одна сессия не ждёт задачу: `queued` — `failed`, `running` — CancelInstall. */
     const cancelAbandoned = Effect.gen(function* () {
-      const abandoned = yield* withDb(InstallRepo.abandonedJobs());
-      const ids = new Set(abandoned.map((job) => job.id));
-      for (const jobId of cancelSent.keys())
-        if (!ids.has(jobId)) cancelSent.delete(jobId);
-      for (const { id: jobId } of abandoned) {
-        if (cancelSent.has(jobId)) continue;
+      // Итог мог не дойти (задачу провалили иначе) — забываем завершённые.
+      const running = new Set(
+        (yield* withDb(InstallRepo.runningJobs())).map((job) => job.id),
+      );
+      for (const jobId of cancels.keys())
+        if (!running.has(jobId)) cancels.delete(jobId);
+      for (const { id: jobId } of yield* withDb(InstallRepo.abandonedJobs())) {
+        if (cancels.get(jobId)?.delivered) continue;
         const outcome = yield* withDb(
           InstallRepo.abandon(jobId, installErrors.cancelled),
         );
@@ -242,8 +263,8 @@ const make = (options: InstallDispatcherOptions) =>
           _tag: "CancelInstall",
           jobId,
         });
+        cancels.set(jobId, { workerId: outcome.workerId, delivered: sent });
         if (sent) {
-          cancelSent.set(jobId, outcome.workerId);
           yield* Effect.logInfo("CancelInstall sent", {
             jobId,
             workerId: outcome.workerId,
@@ -255,10 +276,10 @@ const make = (options: InstallDispatcherOptions) =>
     /** Потерянные задачи: не в `installs` после переподключения или агент молчит. */
     const failLost = (now: Date) =>
       Effect.gen(function* () {
-        for (const [jobId, { workerId, since }] of missing) {
-          if (now.getTime() - since.getTime() < RECONCILE_GRACE_MS) continue;
+        for (const [jobId, { workerId, deadline, cancel }] of missing) {
+          if (now.getTime() < deadline.getTime()) continue;
           missing.delete(jobId);
-          yield* interrupt(jobId, workerId, now);
+          yield* interrupt(jobId, workerId, now, cancel);
         }
         for (const job of yield* withDb(InstallRepo.runningJobs())) {
           const seen = lastSeen.get(job.workerId) ?? startedAt;

@@ -1,9 +1,12 @@
 // Задачи установки игр в БД: одна активная задача на appid, выдача агенту
 // gamestore, итоги установки и переходы ждущих её сессий — одной транзакцией.
 //
-// Порядок блокировок: строка задачи (`FOR UPDATE`), затем строки сессий. Так же
-// берёт блокировки планировщик (`Scheduler.placeOne` → `lockActiveJob`), поэтому
-// сессия не присоединится к задаче, которую в это же время завершают.
+// Блокировки: `Scheduler.placeOne` держит `queued`-сессию и затем берёт строку
+// активной задачи (`lockActiveJob`, `FOR UPDATE`); `finish`/`fail` берут строку
+// задачи и затем — `installing`-сессии, которые её ждут. Наборы строк сессий не
+// пересекаются (`queued` против `installing`), поэтому взаимной блокировки нет;
+// а общая строка задачи сериализует присоединение и итог: сессия не
+// присоединится к задаче, которую в это же время завершают.
 import {
   Db,
   gamestoreApps,
@@ -244,21 +247,31 @@ export const finish = (
   });
 
 /**
- * Задача провалилась (`InstallFailed` агента, агент её потерял или отмена до
- * выдачи): `failed` + `error`, ждущие сессии — `failed`. Только активная задача
- * (и, если задан `workerId`, только на этом агенте); иначе `undefined`.
+ * Задача провалилась (`InstallFailed` агента или агент её потерял): `failed` +
+ * `error`, ждущие сессии — `failed` (или `queued`, см. `requeueWaiters`).
+ * Только активная задача (и, если задан `workerId`, только на этом агенте);
+ * иначе `undefined`. Иначе — id сессий, которым отправлено событие.
  */
 export const fail = (
   jobId: string,
   error: string,
   now: Date,
-  workerId?: string,
+  options: {
+    /** Принимать итог только от этого агента. */
+    readonly workerId?: string;
+    /**
+     * Задачу отменили мы (её бросили все ждущие), а к ней успели
+     * присоединиться сессии: они возвращаются в `queued` (`InstallCancelled`)
+     * и получат новую задачу, а не проваливаются.
+     */
+    readonly requeueWaiters?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const job = yield* lockJob(jobId, workerId);
+        const job = yield* lockJob(jobId, options.workerId);
         if (job === undefined) return undefined;
         yield* db
           .update(installJobs)
@@ -266,7 +279,9 @@ export const fail = (
           .where(eq(installJobs.id, jobId));
         return yield* notifyWaiters(
           jobId,
-          { _tag: "InstallFailed", reason: error },
+          options.requeueWaiters === true
+            ? { _tag: "InstallCancelled" }
+            : { _tag: "InstallFailed", reason: error },
           now,
         );
       }),

@@ -1,7 +1,7 @@
 // Планировщик: раз в 2 с раздаёт сессии из очереди по свободным слотам
 // подключённых воркеров и отправляет агенту StartSession; сессии неустановленных
 // игр отправляет ждать установку (`installing`).
-import { Db, gamestoreApps, sessions, workers } from "@cg/db";
+import { Db, gamestoreApps, installJobs, sessions, workers } from "@cg/db";
 import type { ProfileRef } from "@cg/rpc";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
@@ -55,7 +55,18 @@ type Outcome =
 /** Игра сессии есть в общей библиотеке (подзапрос по внешней `sessions`). */
 const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId})`;
 
-/** Самая старая `queued`-сессия без запроса остановки под условием `where`. */
+/**
+ * У пользователя сессии нет активной (`queued`/`running`) задачи установки,
+ * которую качают его Steam-профилем. Иначе сессия ждёт в очереди её конца:
+ * профиль пользователя в каждый момент держит ровно один процесс (спека §6),
+ * иначе выгрузка установщика сделала бы выгрузку сессии устаревшей.
+ */
+const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${installJobs.userId} = ${sessions.userId} and ${installJobs.state} in ('queued', 'running'))`;
+
+/**
+ * Самая старая `queued`-сессия без запроса остановки, чей пользователь не
+ * владеет активной задачей установки (`ownerFree`), под условием `where`.
+ */
 const lockOldestQueued = (where: SQL) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -72,6 +83,7 @@ const lockOldestQueued = (where: SQL) =>
         and(
           eq(sessions.state, "queued"),
           isNull(sessions.stopRequestedAt),
+          ownerFree,
           where,
         ),
       )
@@ -115,7 +127,8 @@ const startInstall = (
 
 /**
  * Одна транзакция на одну сессию (`FOR UPDATE SKIP LOCKED`, `LIMIT 1`, без
- * запроса остановки). Сначала самая старая `queued`-сессия неустановленной
+ * запроса остановки, пользователь не владеет активной задачей установки).
+ * Сначала самая старая `queued`-сессия неустановленной
  * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
  * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
  * установленной игры: первый по `id` воркер из `candidates` со строкой в

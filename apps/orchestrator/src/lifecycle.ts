@@ -46,6 +46,8 @@ export type LifecycleEvent =
   | { _tag: "InstallFinished" }
   /** `reason` — техническая причина задачи (она в `install_jobs.error`). */
   | { _tag: "InstallFailed"; reason: string }
+  /** Задачу отменили, пока сессия к ней присоединялась: ждать новую. */
+  | { _tag: "InstallCancelled" }
   | { _tag: "Tick" };
 
 export type SegmentOp =
@@ -248,6 +250,7 @@ const onEvent = (
       return s.state === "queued" ? decision("installing") : keep;
 
     case "InstallFinished":
+    case "InstallCancelled":
       return s.state === "installing" ? decision("queued") : keep;
 
     case "InstallFailed":
