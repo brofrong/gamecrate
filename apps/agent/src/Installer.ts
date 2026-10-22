@@ -43,6 +43,7 @@ import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { isValidId } from "./ids";
 import {
   cleanup,
+  INSTALL_CLIENT_DIR,
   installLayers,
   mountsFor,
   type Overlays,
@@ -205,6 +206,12 @@ const isInstallDir = (name: string | undefined): name is string =>
 const MANIFEST_FILE = /^appmanifest_([1-9]\d{0,9})\.acf$/;
 
 const lstat = (path: string) => lstatSync(path, { throwIfNoEntry: false });
+
+/** Ошибка `Effect.try` из-за отсутствующего каталога (`ENOENT`). */
+const isMissing = (error: unknown) => {
+  const cause = (error as { cause?: unknown } | undefined)?.cause ?? error;
+  return (cause as { code?: unknown } | undefined)?.code === "ENOENT";
+};
 
 export interface Promotion {
   readonly appId: number;
@@ -672,10 +679,12 @@ const make = Effect.gen(function* () {
         });
         return yield* failed(command.jobId, installReasons.busy);
       }
-      // Игра качается в INSTALL_SCRATCH_DIR (та же ФС, что библиотека).
+      // Игра качается в INSTALL_SCRATCH_DIR (та же ФС, что библиотека), клиент
+      // Steam установщика пишет в SCRATCH_DIR: запас нужен на обеих ФС.
       const scratchRoot = Option.getOrElse(config.installScratchDir, () => "");
-      if (!(yield* hasFreeSpace(freeSpace, scratchRoot, config.minFreeGb)))
-        return yield* failed(command.jobId, installReasons.noSpace);
+      for (const dir of [scratchRoot, config.scratchDir])
+        if (!(yield* hasFreeSpace(freeSpace, dir, config.minFreeGb)))
+          return yield* failed(command.jobId, installReasons.noSpace);
       const job: Job = {
         jobId: command.jobId,
         appId: command.appId,
@@ -718,8 +727,10 @@ const make = Effect.gen(function* () {
 
   /**
    * Установки прошлого запуска агента не продолжаются: контейнеры `cg.install`,
-   * их тома и каталоги `<INSTALL_SCRATCH_DIR>/<jobId>` удаляются (оркестратор
-   * пометит задачи failed по `installs`).
+   * их тома и каталоги `<INSTALL_SCRATCH_DIR>/<jobId>` (apps) и
+   * `<SCRATCH_DIR>/.install/<jobId>` (клиент) удаляются (оркестратор пометит
+   * задачи failed по `installs`). Каталоги сессий `<SCRATCH_DIR>/<id>` не
+   * читаются и не трогаются.
    */
   const reconcile = Effect.gen(function* () {
     const ids = new Set<string>();
@@ -742,19 +753,27 @@ const make = Effect.gen(function* () {
       const id = volume.labels[INSTALL_LABEL] ?? "";
       if (isValidId(id)) ids.add(id);
     }
-    const root = Option.getOrElse(config.installScratchDir, () => "");
-    const dirs = yield* Effect.try(() =>
-      readdirSync(root, { withFileTypes: true }),
-    ).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Reading the install scratch dir failed", {
-          installScratchDir: root,
-          error: String(error),
-        }).pipe(Effect.as([])),
-      ),
-    );
-    for (const dir of dirs)
-      if (dir.isDirectory() && isValidId(dir.name)) ids.add(dir.name);
+    const roots = [
+      Option.getOrElse(config.installScratchDir, () => ""),
+      join(config.scratchDir, INSTALL_CLIENT_DIR),
+    ];
+    for (const root of roots) {
+      const dirs = yield* Effect.try(() =>
+        readdirSync(root, { withFileTypes: true }),
+      ).pipe(
+        Effect.catch((error) =>
+          (isMissing(error)
+            ? Effect.void
+            : Effect.logWarning("Reading an install scratch dir failed", {
+                dir: root,
+                error: String(error),
+              })
+          ).pipe(Effect.as([])),
+        ),
+      );
+      for (const dir of dirs)
+        if (dir.isDirectory() && isValidId(dir.name)) ids.add(dir.name);
+    }
     for (const id of ids) {
       yield* Effect.logInfo("Removing leftover install layers", { jobId: id });
       yield* cleanupLogged(installLayers(config, id));

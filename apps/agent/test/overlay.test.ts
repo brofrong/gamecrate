@@ -2,15 +2,23 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { AgentConfig } from "../src/config";
+import { isValidId } from "../src/ids";
 import {
   type ContainerSpec,
   DockerClient,
   type DockerClientShape,
   volumeBody,
 } from "../src/DockerClient";
-import { cleanup, layers, prepare, sessionLayers } from "../src/Overlay";
+import {
+  cleanup,
+  INSTALL_CLIENT_DIR,
+  installLayers,
+  layers,
+  prepare,
+  sessionLayers,
+} from "../src/Overlay";
 import { testConfig, unusedDocker } from "./fakes";
 
 let scratch: string;
@@ -73,9 +81,8 @@ describe("Overlay", () => {
     expect(sessionLayers(config(), "s1")).toEqual({
       id: "s1",
       prefix: "cg-s",
-      root: scratch,
-      dir: `${scratch}/s1`,
       labels: { "cg.session": "s1" },
+      scratch: [{ root: scratch, dir: `${scratch}/s1` }],
       client: {
         volume: "cg-s-s1-client",
         lower: "/raid/cloud-gaming/steam-client",
@@ -89,15 +96,103 @@ describe("Overlay", () => {
         work: `${scratch}/s1/apps/work`,
       },
     });
-    // Обобщённо: другой корень и префикс (установщик, Task 4).
-    const install = layers(config(), {
-      root: "/x/install",
-      prefix: "cg-i",
+    // Обобщённо: другие корни слоёв и префикс.
+    const custom = layers(config(), {
+      roots: { client: "/x/client", apps: "/x/install" },
+      prefix: "cg-x",
       id: "j1",
-      labels: { "cg.install": "j1" },
+      labels: { "cg.x": "j1" },
     });
-    expect(install.client.volume).toBe("cg-i-j1-client");
-    expect(install.apps.upper).toBe("/x/install/j1/apps/upper");
+    expect(custom.client.volume).toBe("cg-x-j1-client");
+    expect(custom.client.upper).toBe("/x/client/j1/client/upper");
+    expect(custom.apps.upper).toBe("/x/install/j1/apps/upper");
+    expect(custom.scratch).toEqual([
+      { root: "/x/client", dir: "/x/client/j1" },
+      { root: "/x/install", dir: "/x/install/j1" },
+    ]);
+  });
+
+  it("installLayers: client on SCRATCH_DIR/.install (NVMe), apps on INSTALL_SCRATCH_DIR (library FS)", () => {
+    expect(INSTALL_CLIENT_DIR).toBe(".install");
+    const install = join(scratch, "..", "install-scratch");
+    const cfg = testConfig({
+      scratchDir: scratch,
+      installScratchDir: Option.some(install),
+    });
+    expect(installLayers(cfg, "j1")).toEqual({
+      id: "j1",
+      prefix: "cg-i",
+      labels: { "cg.install": "j1" },
+      scratch: [
+        { root: `${scratch}/.install`, dir: `${scratch}/.install/j1` },
+        { root: install, dir: `${install}/j1` },
+      ],
+      client: {
+        volume: "cg-i-j1-client",
+        lower: "/raid/cloud-gaming/steam-client",
+        upper: `${scratch}/.install/j1/client/upper`,
+        work: `${scratch}/.install/j1/client/work`,
+      },
+      apps: {
+        volume: "cg-i-j1-apps",
+        lower: "/raid/cloud-gaming/library/steamapps",
+        upper: `${install}/j1/apps/upper`,
+        work: `${install}/j1/apps/work`,
+      },
+    });
+    // Каталог установщика под SCRATCH_DIR — не id сессии: уборка сессий его пропускает.
+    expect(isValidId(INSTALL_CLIENT_DIR)).toBe(false);
+    expect(() =>
+      installLayers(testConfig({ scratchDir: scratch }), "j1"),
+    ).toThrow("INSTALL_SCRATCH_DIR is not set");
+  });
+
+  it("cleanup of install layers removes both scratch dirs with one root helper", async () => {
+    const docker = makeDocker();
+    const install = mkdtempSync(join(tmpdir(), "cg-overlay-install-"));
+    try {
+      const overlays = installLayers(
+        testConfig({
+          scratchDir: scratch,
+          installScratchDir: Option.some(install),
+        }),
+        "j1",
+      );
+      mkdirSync(overlays.client.work, { recursive: true });
+      mkdirSync(overlays.apps.work, { recursive: true });
+      await run(cleanup(overlays), docker.shape);
+      expect(docker.calls).toEqual([
+        "removeVolume cg-i-j1-client",
+        "removeVolume cg-i-j1-apps",
+        "remove cg-i-j1-cleanup",
+        "create cg-i-j1-cleanup",
+        "start cg-i-j1-cleanup",
+        "wait cg-i-j1-cleanup",
+        "remove cg-i-j1-cleanup",
+      ]);
+      expect(docker.created[0]?.binds).toEqual([
+        `${scratch}/.install:${scratch}/.install`,
+        `${install}:${install}`,
+      ]);
+      expect(docker.created[0]?.entrypoint).toEqual([
+        "rm",
+        "-rf",
+        `${scratch}/.install/j1`,
+        `${install}/j1`,
+      ]);
+      // Только один из каталогов есть — удаляется только он.
+      const only = makeDocker();
+      rmSync(join(scratch, ".install", "j1"), { recursive: true });
+      await run(cleanup(overlays), only.shape);
+      expect(only.created[0]?.entrypoint).toEqual([
+        "rm",
+        "-rf",
+        `${install}/j1`,
+      ]);
+      expect(only.created[0]?.binds).toEqual([`${install}:${install}`]);
+    } finally {
+      rmSync(install, { recursive: true, force: true });
+    }
   });
 
   it("layers rejects ids and prefixes that could escape the scratch root", () => {
@@ -105,7 +200,7 @@ describe("Overlay", () => {
       expect(() => sessionLayers(config(), id)).toThrow("invalid overlay id");
     expect(() =>
       layers(config(), {
-        root: scratch,
+        roots: { client: scratch, apps: scratch },
         prefix: "cg/s",
         id: "j1",
         labels: {},
@@ -115,7 +210,10 @@ describe("Overlay", () => {
 
   it("cleanup refuses a hand-made layer set outside its root", async () => {
     const docker = makeDocker();
-    const forged = { ...sessionLayers(config(), "s1"), dir: "/" };
+    const forged = {
+      ...sessionLayers(config(), "s1"),
+      scratch: [{ root: scratch, dir: "/" }],
+    };
     const error = await Effect.runPromise(
       Effect.flip(cleanup(forged)).pipe(
         Effect.provide(
@@ -127,6 +225,30 @@ describe("Overlay", () => {
       ),
     );
     expect(error._tag).toBe("OverlayError");
+    expect(docker.calls).toEqual([]);
+    // Подделан только второй каталог (установщик) — тоже отказ до любых вызовов.
+    const install = installLayers(
+      testConfig({
+        scratchDir: scratch,
+        installScratchDir: Option.some("/x/install"),
+      }),
+      "j1",
+    );
+    const forgedInstall = {
+      ...install,
+      scratch: [install.scratch[0], { root: "/x/install", dir: "/x" }],
+    };
+    const error2 = await Effect.runPromise(
+      Effect.flip(cleanup(forgedInstall as typeof install)).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(DockerClient, docker.shape),
+            Layer.succeed(AgentConfig, config()),
+          ),
+        ),
+      ),
+    );
+    expect(error2._tag).toBe("OverlayError");
     expect(docker.calls).toEqual([]);
   });
 

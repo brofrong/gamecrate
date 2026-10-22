@@ -81,8 +81,9 @@ Lower overlay `~/.local/share/Steam` сессий и установщиков �
 
 Тот же образ и те же GPU, права, `/dev/input`, GBM, сеть `cg-sessions`, но контейнер
 `cg-install-<jobId>`: `CG_MODE=install`, без `CG_APP_ID` и без UDP-порта, метки
-`cg.install=<jobId>`, `cg.app`, `cg.user`; тома `cg-i-<jobId>-client`/`cg-i-<jobId>-apps` с upper в
-`INSTALL_SCRATCH_DIR/<jobId>` (та же ФС, что `LIBRARY_DIR`). Профиль пользователя кладётся как у
+`cg.install=<jobId>`, `cg.app`, `cg.user`; тома `cg-i-<jobId>-client` с upper в
+`SCRATCH_DIR/.install/<jobId>` (NVMe) и `cg-i-<jobId>-apps` с upper в `INSTALL_SCRATCH_DIR/<jobId>`
+(та же ФС, что `LIBRARY_DIR`). Профиль пользователя кладётся как у
 сессии, а в `steamapps` до старта — заготовка `appmanifest_<appId>.acf` со `StateFlags 1026`
 (1000:1000, 0644): Steam сам ставит игру и её зависимости. Агент читает манифест `docker exec cat`,
 по `StateFlags 4` сохраняет профиль, удаляет контейнер и тома и переносит `rename` из upper в

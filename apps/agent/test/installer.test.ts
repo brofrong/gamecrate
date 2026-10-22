@@ -82,14 +82,19 @@ const makeFake = () => {
   const library = join(root, "library");
   const lower = join(library, "steamapps");
   const installScratch = join(root, "install");
+  const scratch = join(root, "scratch");
   mkdirSync(join(lower, "common"), { recursive: true });
   mkdirSync(installScratch);
-  mkdirSync(join(root, "scratch"));
+  mkdirSync(scratch);
   const state = {
     root,
     library,
     lower,
     installScratch,
+    /** SCRATCH_DIR (NVMe): там слой клиента установщика, `.install/<jobId>`. */
+    scratch,
+    /** `remove` этого контейнера падает (контейнер остаётся, тома смонтированы). */
+    failRemove: undefined as string | undefined,
     calls: [] as string[],
     dockerCalls: 0,
     created: [] as ContainerSpec[],
@@ -141,15 +146,28 @@ const makeFake = () => {
     wait: (name) =>
       Effect.sync(() => {
         record(`wait ${name}`);
-        // Помощник очистки: `rm -rf <путь>` от root.
+        // Помощник очистки: `rm -rf <путь>…` от root.
         const entrypoint = specs.get(name)?.entrypoint ?? [];
-        if (entrypoint[0] === "rm" && entrypoint[2] !== undefined)
-          rmSync(entrypoint[2], { recursive: true, force: true });
+        if (entrypoint[0] === "rm")
+          for (const path of entrypoint.slice(2))
+            rmSync(path, { recursive: true, force: true });
         return 0;
       }),
     stop: (name, timeoutSec) =>
       Effect.sync(() => record(`stop ${name} ${timeoutSec}`)),
-    remove: (name) => Effect.sync(() => record(`remove ${name}`)),
+    remove: (name) =>
+      Effect.suspend(() => {
+        record(`remove ${name}`);
+        return name === state.failRemove
+          ? Effect.fail(
+              new DockerError({
+                operation: "remove",
+                status: 500,
+                message: "device or resource busy",
+              }),
+            )
+          : Effect.void;
+      }),
     listByLabel: (label) =>
       Effect.sync(() => {
         record(`list ${label}`);
@@ -290,6 +308,16 @@ const write = (base: string, files: Record<string, string>) => {
 const upperOf = (fake: Fake, jobId = "j1") =>
   join(fake.state.installScratch, jobId, "apps", "upper");
 
+/** upper слоя клиента Steam установки `jobId` — на SCRATCH_DIR (NVMe). */
+const clientUpperOf = (fake: Fake, jobId = "j1") =>
+  join(fake.state.scratch, ".install", jobId, "client", "upper");
+
+/** Есть ли каталоги слоёв установки: [клиент на SCRATCH_DIR, apps на INSTALL_SCRATCH_DIR]. */
+const layerDirsExist = (fake: Fake, jobId = "j1") => [
+  existsSync(join(fake.state.scratch, ".install", jobId)),
+  existsSync(join(fake.state.installScratch, jobId)),
+];
+
 interface Harness {
   readonly fake: Fake;
   readonly installer: InstallerShape;
@@ -318,7 +346,7 @@ const run = (
             testConfig({
               roles: ["worker", "gamestore"],
               libraryDir: fake.state.library,
-              scratchDir: join(fake.state.root, "scratch"),
+              scratchDir: fake.state.scratch,
               installScratchDir: Option.some(fake.state.installScratch),
               ...options.config,
             }),
@@ -424,12 +452,24 @@ describe("Installer", () => {
           `putArchive cg-install-j1 ${STEAMAPPS}`,
           "start cg-install-j1",
         ]);
-        // Upper/work установки — в INSTALL_SCRATCH_DIR, а не в scratch сессий.
-        for (const layer of ["client", "apps"])
-          for (const dir of ["upper", "work"])
-            expect(
-              existsSync(join(h.fake.state.installScratch, "j1", layer, dir)),
-            ).toBe(true);
+        // Слой клиента Steam — на SCRATCH_DIR (NVMe: pressure-vessel копирует
+        // рантайм с fsync), в подкаталоге `.install`, который не id сессии;
+        // слой steamapps — в INSTALL_SCRATCH_DIR (ФС библиотеки, перенос `rename`).
+        for (const dir of ["upper", "work"]) {
+          expect(
+            existsSync(join(h.fake.state.scratch, ".install", "j1", "client", dir)),
+          ).toBe(true);
+          expect(
+            existsSync(join(h.fake.state.installScratch, "j1", "apps", dir)),
+          ).toBe(true);
+          expect(
+            existsSync(join(h.fake.state.installScratch, "j1", "client", dir)),
+          ).toBe(false);
+          expect(
+            existsSync(join(h.fake.state.scratch, ".install", "j1", "apps", dir)),
+          ).toBe(false);
+        }
+        expect(readdirSync(h.fake.state.scratch)).toEqual([".install"]);
         expect(h.fake.state.created).toEqual([
           {
             name: "cg-install-j1",
@@ -526,6 +566,13 @@ describe("Installer", () => {
         yield* h.installer.install(install);
         yield* h.tick("0 seconds");
         steamInstalls(h.fake);
+        // Рантайм pressure-vessel и прочее Steam пишет в upper клиента: в
+        // библиотеку оттуда не переносится ничего, даже похожее на игру.
+        write(clientUpperOf(h.fake), {
+          "ubuntu12_64/steam-runtime-sniper/run": "rt",
+          "steamapps/appmanifest_42.acf": installed(42, "Ghost"),
+          "steamapps/common/Ghost/x": "x",
+        });
         yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([
           {
@@ -579,7 +626,17 @@ describe("Installer", () => {
             "common/SteamLinuxRuntime_sniper/run=runtime",
           ].sort(),
         );
-        expect(existsSync(join(h.fake.state.installScratch, "j1"))).toBe(false);
+        // Оба каталога слоёв убраны одним помощником.
+        expect(layerDirsExist(h.fake)).toEqual([false, false]);
+        expect(
+          h.fake.state.created.find((spec) => spec.name === "cg-i-j1-cleanup")
+            ?.entrypoint,
+        ).toEqual([
+          "rm",
+          "-rf",
+          join(h.fake.state.scratch, ".install", "j1"),
+          join(h.fake.state.installScratch, "j1"),
+        ]);
       }),
     ));
 
@@ -701,7 +758,7 @@ describe("Installer", () => {
         );
         expect(h.fake.state.calls).not.toContain("store.put u1");
         expect(tree(h.fake.state.lower)).toEqual(before);
-        expect(existsSync(join(h.fake.state.installScratch, "j1"))).toBe(false);
+        expect(layerDirsExist(h.fake)).toEqual([false, false]);
         expect(h.installer.running()).toEqual([]);
       }),
     ));
@@ -831,6 +888,18 @@ describe("Installer", () => {
             "bad name",
             "note.txt",
           ]);
+          // Слои клиента установок на SCRATCH_DIR тоже убраны (и того, чей
+          // каталог остался только там), постороннее в `.install` — нет.
+          expect(calls).toContain("removeVolume cg-i-nvme-client");
+          expect(
+            readdirSync(join(h.fake.state.scratch, ".install")).sort(),
+          ).toEqual(["bad name", "note.txt"]);
+          // Слои сессий в SCRATCH_DIR установщик не трогает никогда.
+          expect(readdirSync(h.fake.state.scratch).sort()).toEqual([
+            ".install",
+            "s-live",
+          ]);
+          expect(calls.filter((call) => call.includes("s-live"))).toEqual([]);
           expect(tree(h.fake.state.lower)).toEqual([
             "common/",
             "common/Kept/",
@@ -858,7 +927,37 @@ describe("Installer", () => {
             "bad name/x": "x",
             "note.txt": "x",
           });
+          write(join(fake.state.scratch, ".install"), {
+            "old/client/upper/x": "x",
+            "nvme/client/upper/x": "x",
+            "bad name/x": "x",
+            "note.txt": "x",
+          });
+          write(fake.state.scratch, { "s-live/client/upper/x": "x" });
           write(fake.state.lower, { "common/Kept/x": "1" });
+        },
+      },
+    ));
+
+  it("installer container that cannot be removed keeps both layer dirs", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          yield* h.installer.cancel("j1");
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.cancelled)]);
+          // Тома ещё смонтированы контейнером: ни тома, ни каталоги не трогаем.
+          expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual([
+            "remove cg-install-j1",
+          ]);
+          expect(layerDirsExist(h.fake)).toEqual([true, true]);
+          expect(h.installer.running()).toEqual([]);
+        }),
+      {
+        setup: (fake) => {
+          fake.state.failRemove = "cg-install-j1";
         },
       },
     ));
@@ -875,6 +974,16 @@ describe("Installer", () => {
           expect(h.fake.disk.checked).toEqual([h.fake.state.installScratch]);
           expect(h.fake.state.dockerCalls).toBe(before);
           expect(h.installer.running()).toEqual([]);
+          // Слой клиента — на SCRATCH_DIR: место проверяется и там.
+          h.fake.disk.checked.length = 0;
+          h.fake.disk.freeBytes = 1024 * 1024 * 1024 * 1024;
+          yield* h.installer.install({ ...install, jobId: "j2" });
+          yield* h.tick("0 seconds");
+          expect(h.fake.disk.checked).toEqual([
+            h.fake.state.installScratch,
+            h.fake.state.scratch,
+          ]);
+          expect(h.installer.running()).toEqual(["j2"]);
         }),
       {
         setup: (fake) => {
@@ -914,6 +1023,7 @@ describe("Installer", () => {
         expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
           removedWithScratch,
         );
+        expect(layerDirsExist(h.fake)).toEqual([false, false]);
         expect(h.fake.state.calls).not.toContain("store.put u1");
         expect(h.installer.running()).toEqual([]);
         // Неизвестная задача: Docker не трогаем, отвечаем сбоем.
@@ -992,7 +1102,7 @@ describe("Installer", () => {
         expect(yield* h.drain).toEqual([failed(installReasons.promote)]);
         // Зависимость тоже не перенесена: при сбое библиотека не меняется.
         expect(tree(h.fake.state.lower)).toEqual(["common/"]);
-        expect(existsSync(join(h.fake.state.installScratch, "j1"))).toBe(false);
+        expect(layerDirsExist(h.fake)).toEqual([false, false]);
       }),
     ));
 

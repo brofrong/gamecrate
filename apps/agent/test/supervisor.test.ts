@@ -1568,6 +1568,20 @@ describe("SessionSupervisor", () => {
           expect(calls).not.toContain("remove cg-session-kept");
           // Посторонние каталоги в scratch не трогаются.
           expect(calls).not.toContain("removeVolume cg-s-not an id-client");
+          // Слой клиента установщика (`<SCRATCH_DIR>/.install/<jobId>`) — не
+          // сессия: его убирает только Installer.
+          expect(calls.filter((call) => call.includes(".install"))).toEqual([]);
+          expect(calls.filter((call) => call.includes("cg-s-j1"))).toEqual([]);
+          expect(
+            h.fake.state.created.filter((spec) =>
+              spec.entrypoint?.some((arg) => arg.includes(".install")),
+            ),
+          ).toEqual([]);
+          expect(
+            existsSync(
+              join(h.fake.state.scratch, ".install", "j1", "client", "upper"),
+            ),
+          ).toBe(true);
           // Забытые помощники убраны.
           expect(calls).toContain("remove cg-session-x-import");
           expect(yield* h.supervisor.snapshot).toEqual([]);
@@ -1579,6 +1593,9 @@ describe("SessionSupervisor", () => {
         });
         mkdirSync(join(scratch, "kept", "apps", "upper"), { recursive: true });
         mkdirSync(join(scratch, "not an id"), { recursive: true });
+        mkdirSync(join(scratch, ".install", "j1", "client", "upper"), {
+          recursive: true,
+        });
         fake.state.labelledVolumes = [
           { name: "cg-s-gone-client", labels: { "cg.session": "gone" } },
           { name: "cg-s-gone-apps", labels: { "cg.session": "gone" } },

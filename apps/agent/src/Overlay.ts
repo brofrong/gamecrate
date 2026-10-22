@@ -1,9 +1,10 @@
 // Overlay-тома дома Steam: `client` (lower — чистый клиент Steam) монтируется на
 // `~/.local/share/Steam`, `apps` (lower — общая библиотека) — на
 // `~/.local/share/Steam/steamapps`. Запись контейнера попадает только в upper:
-// `<root>/<id>/{client,apps}/{upper,work}`. Тома собирает dockerd (`local`,
-// `type=overlay`), sudo не нужен. Сессии — `sessionLayers`, установщик —
-// `installLayers`.
+// `<root слоя>/<id>/{client,apps}/{upper,work}`. Тома собирает dockerd (`local`,
+// `type=overlay`), sudo не нужен. Сессии — `sessionLayers` (оба слоя в
+// `SCRATCH_DIR`), установщик — `installLayers` (клиент в
+// `SCRATCH_DIR/.install`, apps в `INSTALL_SCRATCH_DIR`).
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Effect, Option, Schema } from "effect";
@@ -29,32 +30,47 @@ export interface Layer {
   readonly work: string;
 }
 
+/** Каталог слоёв `id` под одним корнем scratch. */
+export interface ScratchDir {
+  /** Корень scratch (bind помощника очистки). */
+  readonly root: string;
+  /** Каталог слоёв этого `id`: ровно `<root>/<id>`. */
+  readonly dir: string;
+}
+
 export interface Overlays {
   readonly id: string;
   readonly prefix: string;
-  /** Корень scratch (bind помощника очистки). */
-  readonly root: string;
-  /** Каталог слоёв этого `id`: `<root>/<id>`. */
-  readonly dir: string;
   /** Метки томов (по ним агент находит осиротевшие тома). */
   readonly labels: Readonly<Record<string, string>>;
+  /** Каталоги слоёв (без повторов): их удаляет `removeScratch`. */
+  readonly scratch: ReadonlyArray<ScratchDir>;
   readonly client: Layer;
   readonly apps: Layer;
 }
+
+/**
+ * Подкаталог `SCRATCH_DIR` со слоями клиента Steam установщиков:
+ * `<SCRATCH_DIR>/.install/<jobId>/client`. Имя — не `isValidId` (точка), поэтому
+ * уборка слоёв сессий, которая берёт из `SCRATCH_DIR` только каталоги-id, его
+ * не видит; убирает его только Installer.
+ */
+export const INSTALL_CLIENT_DIR = ".install";
 
 /** Цели монтирования слоёв в доме контейнера. */
 export const STEAM_DIR = "/home/ubuntu/.local/share/Steam";
 export const STEAMAPPS_DIR = `${STEAM_DIR}/steamapps`;
 
 /**
- * Слои `id` под `root` с томами `<prefix>-<id>-client|apps`. `id` и `prefix` —
- * по правилу `isValidId` (иначе исключение — ошибка вызывающего): из них
- * строятся имена томов и каталог, который `cleanup` удаляет от root.
+ * Слои `id` с томами `<prefix>-<id>-client|apps`; слой `name` — в
+ * `<roots[name]>/<id>/<name>/{upper,work}`. `id` и `prefix` — по правилу
+ * `isValidId` (иначе исключение — ошибка вызывающего): из них строятся имена
+ * томов и каталоги, которые `cleanup` удаляет от root.
  */
 export const layers = (
   config: AgentConfigValues,
   options: {
-    readonly root: string;
+    readonly roots: { readonly client: string; readonly apps: string };
     readonly prefix: string;
     readonly id: string;
     readonly labels: Readonly<Record<string, string>>;
@@ -66,44 +82,55 @@ export const layers = (
     throw new Error(
       `invalid overlay prefix: ${JSON.stringify(options.prefix)}`,
     );
-  const dir = join(options.root, options.id);
-  const layer = (name: "client" | "apps", lower: string): Layer => ({
-    volume: `${options.prefix}-${options.id}-${name}`,
-    lower,
-    upper: join(dir, name, "upper"),
-    work: join(dir, name, "work"),
-  });
+  const layer = (name: "client" | "apps", lower: string): Layer => {
+    const dir = join(options.roots[name], options.id);
+    return {
+      volume: `${options.prefix}-${options.id}-${name}`,
+      lower,
+      upper: join(dir, name, "upper"),
+      work: join(dir, name, "work"),
+    };
+  };
+  const scratch: Array<ScratchDir> = [];
+  for (const root of [options.roots.client, options.roots.apps])
+    if (!scratch.some((entry) => entry.root === root))
+      scratch.push({ root, dir: join(root, options.id) });
   return {
     id: options.id,
     prefix: options.prefix,
-    root: options.root,
-    dir,
     labels: options.labels,
+    scratch,
     client: layer("client", config.steamClientDir),
     apps: layer("apps", join(config.libraryDir, "steamapps")),
   };
 };
 
-/** Слои сессии: тома `cg-s-<id>-*`, scratch `<SCRATCH_DIR>/<id>`. */
+/** Слои сессии: тома `cg-s-<id>-*`, scratch `<SCRATCH_DIR>/<id>` (NVMe). */
 export const sessionLayers = (config: AgentConfigValues, sessionId: string) =>
   layers(config, {
-    root: config.scratchDir,
+    roots: { client: config.scratchDir, apps: config.scratchDir },
     prefix: "cg-s",
     id: sessionId,
     labels: { "cg.session": sessionId },
   });
 
 /**
- * Слои установки (роль `gamestore`): тома `cg-i-<jobId>-*`, scratch
- * `<INSTALL_SCRATCH_DIR>/<jobId>`. Без `INSTALL_SCRATCH_DIR` — исключение
- * (конфиг роли gamestore его требует).
+ * Слои установки (роль `gamestore`): тома `cg-i-<jobId>-*`. Клиент Steam — в
+ * `<SCRATCH_DIR>/.install/<jobId>` (NVMe: pressure-vessel при старте копирует в
+ * upper клиента ~300 МБ рантайма мелкими файлами с fsync, на RAID это часы);
+ * `steamapps` — в `<INSTALL_SCRATCH_DIR>/<jobId>` (ФС библиотеки: готовая игра
+ * переносится `rename`). Без `INSTALL_SCRATCH_DIR` — исключение (конфиг роли
+ * gamestore его требует).
  */
 export const installLayers = (config: AgentConfigValues, jobId: string) =>
   layers(config, {
-    root: Option.getOrThrowWith(
-      config.installScratchDir,
-      () => new Error("INSTALL_SCRATCH_DIR is not set"),
-    ),
+    roots: {
+      client: join(config.scratchDir, INSTALL_CLIENT_DIR),
+      apps: Option.getOrThrowWith(
+        config.installScratchDir,
+        () => new Error("INSTALL_SCRATCH_DIR is not set"),
+      ),
+    },
     prefix: "cg-i",
     id: jobId,
     labels: { "cg.install": jobId },
@@ -148,12 +175,16 @@ export const prepare = (overlays: Overlays) =>
 const ownDir = (overlays: Overlays) =>
   isValidId(overlays.id) &&
   isValidId(overlays.prefix) &&
-  overlays.dir === join(overlays.root, overlays.id)
+  overlays.scratch.length > 0 &&
+  overlays.scratch.every(
+    ({ root, dir }) =>
+      root.startsWith("/") && root !== "/" && dir === join(root, overlays.id),
+  )
     ? Effect.void
     : Effect.fail(
         new OverlayError({
           operation: "cleanup",
-          message: `refusing to clean ${JSON.stringify(overlays.dir)}`,
+          message: `refusing to clean ${JSON.stringify(overlays.scratch.map((entry) => entry.dir))}`,
         }),
       );
 
@@ -171,29 +202,30 @@ export const removeVolumes = (overlays: Overlays) =>
   });
 
 /**
- * Удаляет каталог `<root>/<id>` (тома уже удалены) — помощником от root:
- * `work/work` ядро создаёт от root с правами 000, агенту (uid 1000) его не
- * удалить. Монтируется весь `root`, а не `<root>/<id>`: точку монтирования `rm`
- * не удалил бы.
+ * Удаляет каталоги `<root>/<id>` (тома уже удалены) — одним помощником от
+ * root: `work/work` ядро создаёт от root с правами 000, агенту (uid 1000) его
+ * не удалить. Монтируются корни целиком, а не `<root>/<id>`: точку монтирования
+ * `rm` не удалил бы. Каталогов нет — помощник не запускается.
  */
 export const removeScratch = (overlays: Overlays) =>
   Effect.gen(function* () {
     yield* ownDir(overlays);
     const config = yield* AgentConfig;
-    if (!existsSync(overlays.dir)) return;
+    const present = overlays.scratch.filter(({ dir }) => existsSync(dir));
+    if (present.length === 0) return;
     yield* runHelper(
       helperSpec(config, {
         name: `${overlays.prefix}-${overlays.id}-cleanup`,
         kind: "cleanup",
         user: "0",
-        entrypoint: ["rm", "-rf", overlays.dir],
-        binds: [`${overlays.root}:${overlays.root}`],
+        entrypoint: ["rm", "-rf", ...present.map(({ dir }) => dir)],
+        binds: present.map(({ root }) => `${root}:${root}`),
       }),
       Effect.void,
     ).pipe(Effect.mapError(fromDocker("removeScratch")));
   });
 
-/** Тома, затем scratch (`removeVolumes` → `removeScratch`); каталог проверяется до любых вызовов. */
+/** Тома, затем scratch (`removeVolumes` → `removeScratch`); каталоги проверяются до любых вызовов. */
 export const cleanup = (overlays: Overlays) =>
   Effect.gen(function* () {
     yield* ownDir(overlays);

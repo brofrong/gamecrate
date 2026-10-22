@@ -54,8 +54,8 @@
   | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
   | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf` и `steamapps/common/<игра>`; lower сессий |
   | `STEAM_CLIENT_DIR=/raid/cloud-gaming/steam-client`       | шаблон клиента Steam (`build-steam-client.sh`), внутри пустой `steamapps/`; lower сессий  |
-  | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work установщиков; та же ФС, что библиотека (перенос `rename`)                      |
-  | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`; после сессии пусто               |
+  | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
+  | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
 
   В `cg-agent` они смонтированы по тем же путям: `CG_DATA_DIR` (`/raid/cloud-gaming`) — **одним**
   bind (перенос `rename` между двумя bind даже одной ФС невозможен — `EXDEV`) и `SCRATCH_DIR` —
@@ -78,7 +78,9 @@
   (lower — шаблон клиента и библиотека, upper — `SCRATCH_DIR/<id>`). `docker compose up/down` их не
   трогает; агент после перезапуска подхватывает живые по метке `cg.session`.
 - Установщики `cg-install-<jobId>` (роль `gamestore`, метка `cg.install`): тот же образ, без
-  UDP-порта, тома `cg-i-<jobId>-*` с upper в `INSTALL_SCRATCH_DIR/<jobId>`. Steam ставит игру,
+  UDP-порта, тома `cg-i-<jobId>-*`: upper клиента Steam — в `SCRATCH_DIR/.install/<jobId>` (NVMe:
+  pressure-vessel при старте копирует туда рантайм мелкими файлами с fsync, на RAID Steam не
+  успевает запуститься), upper `steamapps` — в `INSTALL_SCRATCH_DIR/<jobId>`. Steam ставит игру,
   агент переносит новые приложения в библиотеку и удаляет контейнер и слои. Установки, прерванные
   перезапуском агента, не продолжаются: агент убирает их остатки при старте.
 - Права в контейнере сессии: агент создаёт его с `--security-opt no-new-privileges:true` (в
@@ -337,7 +339,7 @@ ssh brofrong 'docker ps -a --filter label=cg.session --filter status=exited --fo
 
 Слои сессий (`SCRATCH_DIR`, корневая ФС общего сервера) и установок (`INSTALL_SCRATCH_DIR`, ФС
 библиотеки) пишутся на общие диски. Перед каждым `StartSession` агент проверяет свободное место на
-ФС `SCRATCH_DIR`, перед каждой установкой — на ФС `INSTALL_SCRATCH_DIR` (`statfs`, место для
+ФС `SCRATCH_DIR`, перед каждой установкой — на ФС `INSTALL_SCRATCH_DIR` и `SCRATCH_DIR` (`statfs`, место для
 непривилегированного пользователя). Меньше `MIN_FREE_GB` ГиБ (по умолчанию 20, переменная в
 `.env`) — запуск отклоняется: пользователь видит «На сервере закончилось место» (у установки —
 «Не удалось установить игру», у задачи в `install_jobs.error` — «На сервере закончилось место»), в
