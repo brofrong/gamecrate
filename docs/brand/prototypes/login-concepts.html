@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>GameCrate — 5 концепций страницы входа</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#05060f; --bg2:#0a0d1c; --card:#0f1326; --fg:#f3f4ff; --muted:#8b90b8; --line:rgba(255,255,255,0.08);
+    --c1:#3cc2ff; --c2:#3a6cff; --c3:#5b2fff; --ok:#3ddc97; --warn:#ffd166; --grad:linear-gradient(135deg,#3cc2ff,#3a6cff 50%,#5b2fff); }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:Inter,system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1180px; margin:0 auto; padding:40px 28px 80px; }
+  h1 { font-size:34px; letter-spacing:-0.03em; margin:0 0 8px; }
+  .sub { color:var(--muted); margin:0 0 36px; line-height:1.5; }
+  .concept { margin-bottom:56px; }
+  .concept h2 { font-size:20px; margin:0 0 4px; display:flex; align-items:center; gap:12px; }
+  .concept h2 .n { font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--c1); letter-spacing:.14em; }
+  .concept p.d { color:var(--muted); margin:0 0 14px; font-size:14px; line-height:1.5; }
+  .screen { position:relative; height:600px; border-radius:22px; overflow:hidden; border:1px solid var(--line); background:var(--bg2); display:grid; grid-template-columns:1fr 440px; }
+  .left { position:relative; overflow:hidden; }
+  .right { position:relative; display:flex; align-items:center; justify-content:center; padding:36px; border-left:1px solid var(--line); background:rgba(5,6,15,0.55); backdrop-filter:blur(10px); }
+  .panel { width:100%; max-width:340px; }
+  .panel h3 { margin:0 0 6px; font-size:24px; letter-spacing:-0.03em; }
+  .panel .hint { color:var(--muted); font-size:13px; margin:0 0 20px; }
+  .prov { display:grid; gap:8px; margin-bottom:16px; }
+  .btn { display:flex; align-items:center; gap:10px; height:42px; padding:0 14px; border-radius:11px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.05); color:var(--fg); font:600 14px Inter; cursor:pointer; transition:transform .15s, background .2s, border-color .2s; }
+  .btn:hover { transform:translateY(-1px); background:rgba(255,255,255,0.09); border-color:rgba(60,194,255,0.4); }
+  .btn i { width:20px; height:20px; border-radius:6px; display:inline-flex; align-items:center; justify-content:center; font-style:normal; font-size:11px; font-weight:800; }
+  .btn.ya i { background:#fc3f1d; color:#fff } .btn.go i { background:#fff; color:#4285f4 } .btn.tg i { background:#29a9eb; color:#fff }
+  .or { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; margin:0 0 12px; }
+  .or::before,.or::after { content:""; flex:1; height:1px; background:var(--line); }
+  .inp { width:100%; height:42px; border-radius:11px; border:1px solid rgba(255,255,255,0.12); background:#0b0e1f; color:var(--fg); padding:0 14px; font:500 14px Inter; margin-bottom:8px; outline:none; transition:border-color .2s, box-shadow .2s; }
+  .inp:focus { border-color:var(--c1); box-shadow:0 0 0 3px rgba(60,194,255,0.18); }
+  .go { width:100%; height:44px; border:0; border-radius:11px; background:var(--grad); color:#fff; font:700 15px Inter; cursor:pointer; box-shadow:0 10px 30px rgba(60,110,255,0.35); margin-top:4px; }
+  .foot { font-size:12.5px; color:var(--muted); margin:14px 0 0; } .foot a { color:var(--c1); text-decoration:none; }
+  .brand { position:absolute; left:24px; top:22px; display:flex; align-items:center; gap:9px; font-weight:800; font-size:15px; z-index:5; }
+  .brand b { width:26px; height:28px; display:block; background:var(--grad); clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%); }
+  .pick { margin-top:12px; display:flex; align-items:center; gap:12px; }
+  .pick button { height:40px; padding:0 18px; border-radius:10px; border:1px solid rgba(60,194,255,0.4); background:rgba(60,194,255,0.08); color:var(--fg); font:600 14px Inter; cursor:pointer; }
+  .pick button.selected { background:var(--grad); border-color:transparent; }
+  .pick span { color:var(--muted); font-size:13px; }
+  @media (max-width:900px){ .screen{grid-template-columns:1fr; height:auto} .left{height:360px} }
+
+  /* A — экран загрузки */
+  .a-left { background:radial-gradient(ellipse at 30% 40%, rgba(58,108,255,0.18), transparent 60%), #06081a; }
+  .a-left canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .a-ui { position:absolute; left:40px; right:40px; bottom:48px; }
+  .a-ui .lvl { font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.16em; color:var(--c1); margin-bottom:8px; }
+  .a-ui h4 { margin:0 0 14px; font-size:30px; letter-spacing:-0.03em; }
+  .a-bar { height:8px; border-radius:6px; background:rgba(255,255,255,0.08); overflow:hidden; }
+  .a-bar i { display:block; height:100%; width:12%; background:var(--grad); transition:width .5s cubic-bezier(.4,0,.2,1); box-shadow:0 0 20px rgba(60,194,255,0.6); }
+  .a-ui .pct { display:flex; justify-content:space-between; font-family:"JetBrains Mono",monospace; font-size:12px; color:var(--muted); margin-top:8px; }
+  .a-tip { position:absolute; left:40px; top:80px; max-width:420px; color:#c8cbe8; font-size:15px; line-height:1.5; opacity:0; transition:opacity .6s; }
+  .a-tip.on { opacity:1 } .a-tip b { color:var(--warn); }
+
+  /* B — напарник */
+  .b-left { background:radial-gradient(circle at 50% 60%, rgba(91,47,255,0.22), transparent 55%), #080a1c; display:flex; align-items:center; justify-content:center; }
+  .b-left svg { width:380px; height:380px; filter:drop-shadow(0 30px 60px rgba(0,0,0,.6)); }
+  .b-say { position:absolute; top:70px; left:50%; transform:translateX(-50%); background:var(--card); border:1px solid var(--line); border-radius:16px; padding:10px 16px; font-size:14px; white-space:nowrap; transition:opacity .3s; }
+  .b-say::after { content:""; position:absolute; left:50%; bottom:-7px; width:12px; height:12px; background:var(--card); border-right:1px solid var(--line); border-bottom:1px solid var(--line); transform:translateX(-50%) rotate(45deg); }
+  .b-eye { transition:transform .15s; } .b-lid { transition:transform .25s; transform-origin:center; transform:scaleY(0); }
+  .b-hand { transition:transform .35s cubic-bezier(.4,0,.2,1); }
+  .b-left.shy .b-lid { transform:scaleY(1); } .b-left.shy .b-hand.l { transform:translate(70px,-120px) rotate(-20deg); } .b-left.shy .b-hand.r { transform:translate(-70px,-120px) rotate(20deg); }
+
+  /* C — сборка куба */
+  .c-left { background:radial-gradient(circle at 50% 50%, rgba(60,194,255,0.14), transparent 55%), #070918; }
+  .c-left canvas { position:absolute; inset:0; width:100%; height:100%; }
+  .c-cap { position:absolute; left:40px; bottom:44px; }
+  .c-cap .k { font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.16em; color:var(--c1); } .c-cap h4 { margin:6px 0 0; font-size:26px; letter-spacing:-0.03em; }
+  .c-steps { position:absolute; right:30px; top:30px; display:grid; gap:8px; font-family:"JetBrains Mono",monospace; font-size:11px; color:var(--muted); }
+  .c-steps span { display:flex; align-items:center; gap:8px; } .c-steps span::before { content:""; width:8px; height:8px; border-radius:2px; background:rgba(255,255,255,0.12); }
+  .c-steps span.on { color:var(--fg); } .c-steps span.on::before { background:var(--ok); box-shadow:0 0 10px var(--ok); }
+
+  /* D — консоль */
+  .d-left { background:#03040c; font-family:"JetBrains Mono",monospace; }
+  .d-left::after { content:""; position:absolute; inset:0; background:repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px); pointer-events:none; }
+  .d-left::before { content:""; position:absolute; inset:-20%; background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.75)); pointer-events:none; z-index:1; }
+  .d-term { position:absolute; left:40px; top:70px; right:40px; bottom:40px; font-size:13px; line-height:1.7; color:#9fe8c5; text-shadow:0 0 8px rgba(61,220,151,.5); white-space:pre-wrap; overflow:hidden; }
+  .d-term .dim { color:#4f6d60 } .d-term .hi { color:#3cc2ff; text-shadow:0 0 8px rgba(60,194,255,.6) } .d-term .w { color:#ffd166 }
+  .d-cur { display:inline-block; width:8px; height:15px; background:#9fe8c5; vertical-align:-2px; animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0 } }
+  .d-glitch { animation:glitch 6s infinite; } @keyframes glitch { 0%,96%,100%{transform:none} 97%{transform:translate(2px,-1px) skewX(2deg)} 98%{transform:translate(-2px,1px)} }
+
+  /* E — выбор класса */
+  .e-left { background:radial-gradient(ellipse at 50% 100%, rgba(58,108,255,0.25), transparent 60%), #07091a; display:flex; flex-direction:column; align-items:center; justify-content:center; perspective:1200px; }
+  .e-title { position:absolute; top:70px; left:0; right:0; text-align:center; }
+  .e-title .k { font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.16em; color:var(--c1); } .e-title h4 { margin:6px 0 0; font-size:26px; letter-spacing:-0.03em; }
+  .e-ring { position:relative; width:220px; height:300px; transform-style:preserve-3d; transition:transform .8s cubic-bezier(.4,0,.2,1); }
+  .e-card { position:absolute; inset:0; border-radius:18px; border:1px solid rgba(255,255,255,0.14); background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02)), var(--card); padding:18px; backface-visibility:hidden; box-shadow:0 30px 60px rgba(0,0,0,.6); transition:box-shadow .3s; cursor:pointer; }
+  .e-card.on { box-shadow:0 30px 60px rgba(0,0,0,.6), 0 0 0 2px var(--c1), 0 0 40px rgba(60,194,255,.35); }
+  .e-card .ic { width:54px; height:54px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:20px; margin-bottom:14px; }
+  .e-card h5 { margin:0 0 4px; font-size:18px; letter-spacing:-0.02em; } .e-card p { margin:0 0 14px; color:var(--muted); font-size:12.5px; line-height:1.4; }
+  .e-stat { display:grid; grid-template-columns:70px 1fr; gap:6px; align-items:center; font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--muted); margin-bottom:6px; }
+  .e-stat b { height:5px; border-radius:3px; background:rgba(255,255,255,0.08); overflow:hidden; display:block; } .e-stat b i { display:block; height:100%; background:var(--grad); width:var(--v); }
+  .e-dots { position:absolute; bottom:44px; display:flex; gap:8px; } .e-dots i { width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,0.18); } .e-dots i.on { background:var(--c1); }
+  .e-nav { position:absolute; top:50%; width:36px; height:36px; border-radius:50%; border:1px solid var(--line); background:rgba(255,255,255,0.06); color:var(--fg); cursor:pointer; display:flex; align-items:center; justify-content:center; transform:translateY(-50%); }
+  .e-nav.l{left:40px} .e-nav.r{right:40px}
+  .panel .btn.pulse { animation:pulse 1.2s ease-in-out infinite; border-color:var(--c1); } @keyframes pulse { 50% { box-shadow:0 0 0 6px rgba(60,194,255,0.15) } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Страница входа — 5 концепций</h1>
+  <p class="sub">Везде одна и та же правая панель: Яндекс · Google · Telegram и своя почта с паролем. Отличается левая половина — живая, реагирует на то, что ты делаешь в форме. Попробуй печатать в полях и наводить на кнопки. Внизу каждой — «Выбрать».</p>
+
+  <!-- A -->
+  <section class="concept" id="secA">
+    <h2><span class="n">01</span>Экран загрузки</h2>
+    <p class="d">Вход как загрузка уровня: слева прогресс-бар и подсказки «из игры». Бар заполняется по мере заполнения формы, при нажатии «Войти» — доходит до 100% и «уровень запускается».</p>
+    <div class="screen">
+      <div class="left a-left">
+        <div class="brand"><b></b>GameCrate</div>
+        <canvas id="aC"></canvas>
+        <div class="a-tip on" id="aTip"><b>Подсказка:</b> сейвы живут в Steam Cloud — начал на ноутбуке, продолжил с телефона.</div>
+        <div class="a-ui">
+          <div class="lvl">LOADING · LEVEL 1</div>
+          <h4>Подключаем твоё облако</h4>
+          <div class="a-bar"><i id="aBar"></i></div>
+          <div class="pct"><span id="aStage">инициализация…</span><span id="aPct">12%</span></div>
+        </div>
+      </div>
+      <div class="right"><div class="panel" data-form="a"></div></div>
+    </div>
+    <div class="pick"><button data-choice="A" onclick="toggleSelect(this)">Выбрать 01</button><span>экран загрузки</span></div>
+  </section>
+
+  <!-- B -->
+  <section class="concept" id="secB">
+    <h2><span class="n">02</span>Напарник</h2>
+    <p class="d">Слева живой персонаж-маскот. Следит глазами за курсором и за тем, что ты печатаешь, а когда ты вводишь пароль — закрывает глаза руками. Реплики меняются по шагам.</p>
+    <div class="screen">
+      <div class="left b-left" id="bLeft">
+        <div class="brand"><b></b>GameCrate</div>
+        <div class="b-say" id="bSay">Привет! Заходи, игры уже греются.</div>
+        <svg viewBox="0 0 400 400" id="bSvg">
+          <defs><linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3cc2ff"/><stop offset=".5" stop-color="#3a6cff"/><stop offset="1" stop-color="#5b2fff"/></linearGradient></defs>
+          <g id="bBody"><polygon points="200,60 330,135 330,285 200,360 70,285 70,135" fill="url(#bg1)"/>
+            <polygon points="200,60 330,135 200,210 70,135" fill="#000" opacity=".12"/>
+            <polygon points="200,210 330,135 330,285 200,360" fill="#000" opacity=".3"/>
+            <g id="bFace">
+              <g class="b-eye" id="bEyeL"><ellipse cx="160" cy="190" rx="26" ry="34" fill="#0b0e1f"/><circle cx="166" cy="196" r="10" fill="#fff"/><circle cx="170" cy="192" r="3" fill="#0b0e1f"/></g>
+              <g class="b-eye" id="bEyeR"><ellipse cx="240" cy="190" rx="26" ry="34" fill="#0b0e1f"/><circle cx="246" cy="196" r="10" fill="#fff"/><circle cx="250" cy="192" r="3" fill="#0b0e1f"/></g>
+              <rect class="b-lid" x="130" y="150" width="60" height="80" rx="26" fill="url(#bg1)"/><rect class="b-lid" x="210" y="150" width="60" height="80" rx="26" fill="url(#bg1)"/>
+              <path id="bMouth" d="M175 265 q25 22 50 0" stroke="#0b0e1f" stroke-width="7" fill="none" stroke-linecap="round"/>
+            </g>
+            <g class="b-hand l"><circle cx="60" cy="330" r="34" fill="#2c3ff2"/><circle cx="60" cy="330" r="34" fill="#000" opacity=".25"/></g>
+            <g class="b-hand r"><circle cx="340" cy="330" r="34" fill="#2c3ff2"/><circle cx="340" cy="330" r="34" fill="#000" opacity=".25"/></g>
+          </g>
+        </svg>
+      </div>
+      <div class="right"><div class="panel" data-form="b"></div></div>
+    </div>
+    <div class="pick"><button data-choice="B" onclick="toggleSelect(this)">Выбрать 02</button><span>напарник</span></div>
+  </section>
+
+  <!-- C -->
+  <section class="concept" id="secC">
+    <h2><span class="n">03</span>Сборка куба</h2>
+    <p class="d">Логотип в деле: слева изометрические кубики-облака летают в беспорядке. Каждый шаг формы ставит слой на место, «Войти» собирает GC-куб и зажигает его. Наведение на способы входа подсвечивает кубики цветом сервиса.</p>
+    <div class="screen">
+      <div class="left c-left">
+        <div class="brand"><b></b>GameCrate</div>
+        <canvas id="cC"></canvas>
+        <div class="c-steps"><span id="cs0" class="on">учётка</span><span id="cs1">пароль</span><span id="cs2">облако</span></div>
+        <div class="c-cap"><div class="k">ASSEMBLING</div><h4 id="cCap">Твоё облако собирается</h4></div>
+      </div>
+      <div class="right"><div class="panel" data-form="c"></div></div>
+    </div>
+    <div class="pick"><button data-choice="C" onclick="toggleSelect(this)">Выбрать 03</button><span>сборка куба</span></div>
+  </section>
+
+  <!-- D -->
+  <section class="concept" id="secD">
+    <h2><span class="n">04</span>Консоль</h2>
+    <p class="d">Ретро-терминал на CRT: лог загрузки «GameCrate OS» печатается сам, отвечает на твои действия (эхо логина, проверка пароля, выбор провайдера), сканлайны и редкий глитч. Для тех, кто любит хакерскую эстетику.</p>
+    <div class="screen">
+      <div class="left d-left">
+        <div class="brand"><b></b>GameCrate</div>
+        <div class="d-term d-glitch" id="dTerm"></div>
+      </div>
+      <div class="right"><div class="panel" data-form="d"></div></div>
+    </div>
+    <div class="pick"><button data-choice="D" onclick="toggleSelect(this)">Выбрать 04</button><span>консоль</span></div>
+  </section>
+
+  <!-- E -->
+  <section class="concept" id="secE">
+    <h2><span class="n">05</span>Выбор класса</h2>
+    <p class="d">Способы входа как классы персонажей в RPG: карусель 3D-карточек со «статами» (скорость, безопасность, уведомления). Крутишь карусель — подсвечивается кнопка справа; карта «Своя учётка» раскрывает почту и пароль.</p>
+    <div class="screen">
+      <div class="left e-left">
+        <div class="brand"><b></b>GameCrate</div>
+        <div class="e-title"><div class="k">SELECT YOUR CLASS</div><h4>Как ты заходишь?</h4></div>
+        <div class="e-nav l" onclick="eRot(-1)">‹</div><div class="e-nav r" onclick="eRot(1)">›</div>
+        <div class="e-ring" id="eRing"></div>
+        <div class="e-dots" id="eDots"></div>
+      </div>
+      <div class="right"><div class="panel" data-form="e"></div></div>
+    </div>
+    <div class="pick"><button data-choice="E" onclick="toggleSelect(this)">Выбрать 05</button><span>выбор класса</span></div>
+  </section>
+</div>
+
+<script>
+// ---------- общая панель ----------
+const panelHTML = (k) => `
+  <h3>Войти в GameCrate</h3>
+  <p class="hint">Один аккаунт — потом привяжешь Steam и остальное.</p>
+  <div class="prov">
+    <button class="btn ya" data-p="ya"><i>Я</i>Войти через Яндекс</button>
+    <button class="btn go" data-p="go"><i>G</i>Войти через Google</button>
+    <button class="btn tg" data-p="tg"><i>✈</i>Войти через Telegram</button>
+  </div>
+  <div class="or">или по почте</div>
+  <input class="inp" data-f="email" placeholder="почта">
+  <input class="inp" data-f="pass" type="password" placeholder="пароль">
+  <button class="go" data-go>Войти</button>
+  <p class="foot">Нет аккаунта? <a href="#">Создать</a> · <a href="#">Забыл пароль</a></p>`;
+document.querySelectorAll('.panel').forEach(p => p.innerHTML = panelHTML(p.dataset.form));
+const panel = k => document.querySelector(`.panel[data-form="${k}"]`);
+const bind = (k, h) => { const p = panel(k);
+  p.querySelectorAll('.inp').forEach(i => { i.addEventListener('input', () => h.input?.(i.dataset.f, i.value)); i.addEventListener('focus', () => h.focus?.(i.dataset.f)); i.addEventListener('blur', () => h.focus?.(null)); });
+  p.querySelectorAll('.btn').forEach(b => { b.addEventListener('mouseenter', () => h.prov?.(b.dataset.p)); b.addEventListener('mouseleave', () => h.prov?.(null)); b.addEventListener('click', e => { e.preventDefault(); h.go?.(b.dataset.p); }); });
+  p.querySelector('[data-go]').addEventListener('click', () => h.go?.('email'));
+};
+const fit = (c) => { const r = c.parentElement.getBoundingClientRect(); c.width = r.width * devicePixelRatio; c.height = r.height * devicePixelRatio; const x = c.getContext('2d'); x.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); return [x, r.width, r.height]; };
+
+// ---------- A: экран загрузки ----------
+(() => {
+  const c = document.getElementById('aC'); let [ctx, W, H] = fit(c); addEventListener('resize', () => [ctx, W, H] = fit(c));
+  const dots = Array.from({length: 90}, () => ({x: Math.random(), y: Math.random(), s: 2 + Math.random()*4, v: 0.02 + Math.random()*0.06, a: Math.random()*6}));
+  const bar = document.getElementById('aBar'), pct = document.getElementById('aPct'), stage = document.getElementById('aStage'), tip = document.getElementById('aTip');
+  const tips = ['<b>Подсказка:</b> сейвы живут в Steam Cloud — начал на ноутбуке, продолжил с телефона.', '<b>Подсказка:</b> ряд обложек на главной останавливается, если навести мышь. Проверь.', '<b>Подсказка:</b> облако живёт ещё пару минут после обрыва связи — успеешь вернуться.', '<b>Подсказка:</b> ачивка «Ночная смена» выдаётся после трёх ночи. Мы не осуждаем.'];
+  let ti = 0; setInterval(() => { tip.classList.remove('on'); setTimeout(() => { ti = (ti+1) % tips.length; tip.innerHTML = tips[ti]; tip.classList.add('on'); }, 600); }, 4200);
+  let target = 12, cur = 12, filled = {email: false, pass: false}, hover = false, boot = false;
+  const set = () => { target = boot ? 100 : 12 + (filled.email ? 30 : 0) + (filled.pass ? 30 : 0) + (hover ? 14 : 0); stage.textContent = boot ? 'запускаем уровень' : filled.pass ? 'проверяем пароль' : filled.email ? 'нашли игрока' : 'инициализация…'; };
+  bind('a', { input: (f, v) => { filled[f] = v.length > (f === 'pass' ? 3 : 2); set(); }, prov: p => { hover = !!p; set(); }, go: () => { boot = true; set(); setTimeout(() => { boot = false; set(); }, 2500); } });
+  (function loop(t) { cur += (target - cur) * 0.08; bar.style.width = cur + '%'; pct.textContent = Math.round(cur) + '%';
+    ctx.clearRect(0,0,W,H); for (const d of dots) { d.y -= d.v/100 * (0.5 + cur/60); if (d.y < -0.05) { d.y = 1.05; d.x = Math.random(); } const al = 0.25 + 0.5*Math.abs(Math.sin(t/700 + d.a)); ctx.fillStyle = `rgba(60,194,255,${al})`; ctx.fillRect(d.x*W, d.y*H, d.s, d.s); }
+    requestAnimationFrame(loop); })(0);
+})();
+
+// ---------- B: напарник ----------
+(() => {
+  const left = document.getElementById('bLeft'), say = document.getElementById('bSay'), mouth = document.getElementById('bMouth');
+  const eyes = [document.getElementById('bEyeL'), document.getElementById('bEyeR')];
+  let look = {x: 0, y: 0};
+  const screen = left.parentElement;
+  screen.addEventListener('mousemove', e => { const r = left.getBoundingClientRect(); look = {x: Math.max(-1, Math.min(1, (e.clientX - (r.left + r.width/2)) / (r.width/2))), y: Math.max(-1, Math.min(1, (e.clientY - (r.top + r.height/2)) / (r.height/2)))}; eyes.forEach(g => g.style.transform = `translate(${look.x*8}px, ${look.y*6}px)`); });
+  const talk = (t, happy) => { say.textContent = t; mouth.setAttribute('d', happy ? 'M172 262 q28 30 56 0' : 'M178 268 q22 12 44 0'); };
+  bind('b', { focus: f => { left.classList.toggle('shy', f === 'pass'); if (f === 'pass') talk('Не подглядываю, честно 🙈', false); else if (f === 'email') talk('Какую почту ты используешь?', true); else talk('Заходи, игры уже греются.', true); },
+    input: (f, v) => { if (f === 'email' && v.includes('@')) talk(`${v.split('@')[0]}, звучит как ник!`, true); },
+    prov: p => { if (p) talk({ya: 'Яндекс — ок, быстро.', go: 'Google? Классика.', tg: 'Telegram — без паролей вообще.'}[p], true); },
+    go: () => { talk('Поехали! GPU уже твой.', true); left.classList.remove('shy'); } });
+})();
+
+// ---------- C: сборка куба ----------
+(() => {
+  const c = document.getElementById('cC'); let [ctx, W, H] = fit(c); addEventListener('resize', () => [ctx, W, H] = fit(c));
+  const cap = document.getElementById('cCap');
+  const PAL = [[60,194,255],[58,108,255],[91,47,255],[80,70,230]];
+  let level = 0, tint = null, lit = 0;
+  // 27 кубиков 3×3×3; позиция «дома» и позиция «в полёте»
+  const cubes = []; for (let i=0;i<3;i++) for (let j=0;j<3;j++) for (let k=0;k<3;k++) cubes.push({i,j,k, fx: (Math.random()-0.5)*520, fy: (Math.random()-0.5)*420, ph: Math.random()*6, col: PAL[(i+j+k)%4], x:0,y:0});
+  const cube = (x,y,s,col,a) => { const h=s*0.5; ctx.globalAlpha=a; ctx.beginPath(); ctx.moveTo(x,y-h); ctx.lineTo(x+s,y-h*1.5); ctx.lineTo(x,y-h*2); ctx.lineTo(x-s,y-h*1.5); ctx.closePath(); ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x-s,y-h*1.5); ctx.lineTo(x,y-h); ctx.lineTo(x,y); ctx.lineTo(x-s,y-h*0.5); ctx.closePath(); ctx.fillStyle=`rgb(${col[0]*0.6|0},${col[1]*0.6|0},${col[2]*0.7|0})`; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x+s,y-h*1.5); ctx.lineTo(x,y-h); ctx.lineTo(x,y); ctx.lineTo(x+s,y-h*0.5); ctx.closePath(); ctx.fillStyle=`rgb(${col[0]*0.4|0},${col[1]*0.4|0},${col[2]*0.55|0})`; ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.14)'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x-s,y-h*1.5); ctx.lineTo(x,y-h); ctx.lineTo(x+s,y-h*1.5); ctx.moveTo(x,y-h); ctx.lineTo(x,y); ctx.stroke(); ctx.globalAlpha=1; };
+  const steps = [document.getElementById('cs0'), document.getElementById('cs1'), document.getElementById('cs2')];
+  const setLevel = (l) => { level = l; steps.forEach((s,i) => s.classList.toggle('on', i <= l)); cap.textContent = ['Твоё облако собирается', 'Почти готово…', 'Облако собрано. Поехали!'][l]; };
+  bind('c', { input: (f, v) => { if (f === 'email') setLevel(v.length > 2 ? 1 : 0); if (f === 'pass' && v.length > 3) setLevel(2); },
+    prov: p => { tint = p ? {ya: [252,63,29], go: [66,133,244], tg: [41,169,235]}[p] : null; },
+    go: () => { setLevel(2); lit = 1; setTimeout(() => lit = 0, 2500); } });
+  (function loop(t) { ctx.clearRect(0,0,W,H); const s = 34, cx = W/2, cy = H/2 + 60;
+    const home = level >= 2 ? 27 : level === 1 ? 18 : 9;
+    const order = cubes.slice().sort((a,b) => (a.i+a.j+a.k) - (b.i+b.j+b.k));
+    order.forEach((q, n) => { const hx = cx + (q.i - q.j) * s, hy = cy + (q.i + q.j) * s * 0.5 - q.k * s; const atHome = n < home;
+      const tx = atHome ? hx : cx + q.fx + Math.sin(t/900 + q.ph)*14, ty = atHome ? hy : cy - 60 + q.fy + Math.cos(t/1100 + q.ph)*14;
+      q.x += (tx - q.x) * 0.06; q.y += (ty - q.y) * 0.06; const col = tint ? tint : q.col; const glow = lit ? 0.6 + 0.4*Math.sin(t/120) : 1;
+      cube(q.x, q.y, s, col, atHome ? glow : 0.45 + 0.2*Math.sin(t/500 + q.ph)); });
+    if (lit) { const g = ctx.createRadialGradient(cx, cy - 40, 0, cx, cy - 40, 260); g.addColorStop(0, 'rgba(60,194,255,0.35)'); g.addColorStop(1, 'rgba(60,194,255,0)'); ctx.fillStyle = g; ctx.fillRect(0,0,W,H); }
+    requestAnimationFrame(loop); })(0);
+})();
+
+// ---------- D: консоль ----------
+(() => {
+  const term = document.getElementById('dTerm'); let lines = []; let queue = []; let typing = false;
+  const render = () => { term.innerHTML = lines.join('\n') + '<span class="d-cur"></span>'; term.scrollTop = term.scrollHeight; };
+  const push = (html, delay = 18) => new Promise(res => { queue.push({html, delay, res}); if (!typing) next(); });
+  const next = () => { const it = queue.shift(); if (!it) { typing = false; return; } typing = true; const plain = it.html; let i = 0; lines.push('');
+    const tick = () => { i++; lines[lines.length-1] = plain.replace(/<[^>]+>/g, '').slice(0, i) ? plain : plain; lines[lines.length-1] = sliceHTML(plain, i); render(); if (i < stripLen(plain)) setTimeout(tick, it.delay); else { if (lines.length > 16) lines.shift(); it.res(); next(); } }; tick(); };
+  const stripLen = h => h.replace(/<[^>]+>/g, '').length;
+  const sliceHTML = (h, n) => { let out = '', count = 0, inTag = false; for (const ch of h) { if (ch === '<') inTag = true; if (inTag) { out += ch; if (ch === '>') inTag = false; continue; } if (count < n) { out += ch; count++; } } return out; };
+  (async () => { await push('<span class="hi">GAMECRATE OS</span> v0.4.1 — console', 30); await push('<span class="dim">> mounting steam library …</span> ok'); await push('<span class="dim">> allocating gpu slot …</span> ok (RTX, 1 of 8)'); await push('<span class="dim">> warming containers …</span> ok'); await push('<span class="w">> awaiting login</span>'); })();
+  let echo = -1;
+  bind('d', { input: (f, v) => { if (f === 'email') { const l = `<span class="dim">> user:</span> ${v.replace(/</g,'&lt;')}`; if (echo >= 0 && lines[echo]?.startsWith('<span class="dim">> user:')) { lines[echo] = l; render(); } else { lines.push(l); echo = lines.length - 1; render(); } }
+      if (f === 'pass') { const l = `<span class="dim">> pass:</span> ${'•'.repeat(v.length)}`; const idx = lines.findIndex(x => x.startsWith('<span class="dim">> pass:')); if (idx >= 0) lines[idx] = l; else lines.push(l); render(); } },
+    prov: p => { if (p) push(`<span class="dim">> provider</span> ${ {ya:'yandex', go:'google', tg:'telegram'}[p] } <span class="dim">ready</span>`, 8); },
+    go: async (p) => { await push('<span class="dim">> verifying …</span>', 40); await push('<span class="hi">> welcome back, player.</span> launching library_', 24); } });
+})();
+
+// ---------- E: выбор класса ----------
+(() => {
+  const ring = document.getElementById('eRing'), dots = document.getElementById('eDots');
+  const cls = [
+    {k:'ya', name:'Яндекс', ic:'Я', bg:'#fc3f1d', fg:'#fff', d:'Быстрый вход для тех, кто уже в экосистеме.', st:[['скорость',95],['защита',80],['уведомл.',55]]},
+    {k:'go', name:'Google', ic:'G', bg:'#fff', fg:'#4285f4', d:'Классика. Один клик, если залогинен в Chrome.', st:[['скорость',90],['защита',90],['уведомл.',40]]},
+    {k:'tg', name:'Telegram', ic:'✈', bg:'#29a9eb', fg:'#fff', d:'Без пароля вообще: подтверждаешь в чате. Туда же придут уведомления о сессии.', st:[['скорость',85],['защита',85],['уведомл.',100]]},
+    {k:'email', name:'Своя учётка', ic:'@', bg:'linear-gradient(135deg,#3cc2ff,#5b2fff)', fg:'#fff', d:'Почта и пароль. Ни от кого не зависишь.', st:[['скорость',60],['защита',75],['уведомл.',70]]},
+  ];
+  const N = cls.length, R = 300; let idx = 0;
+  ring.innerHTML = cls.map((c, i) => `<div class="e-card" data-k="${c.k}" style="transform:rotateY(${i*360/N}deg) translateZ(${R}px)" onclick="eSel(${i})">
+    <div class="ic" style="background:${c.bg};color:${c.fg}">${c.ic}</div><h5>${c.name}</h5><p>${c.d}</p>${c.st.map(([n,v]) => `<div class="e-stat">${n}<b><i style="--v:${v}%"></i></b></div>`).join('')}</div>`).join('');
+  dots.innerHTML = cls.map(() => '<i></i>').join('');
+  const p = panel('e');
+  const apply = () => { ring.style.transform = `translateZ(-${R}px) rotateY(${-idx*360/N}deg)`; [...ring.children].forEach((c, i) => c.classList.toggle('on', i === ((idx % N) + N) % N)); [...dots.children].forEach((d, i) => d.classList.toggle('on', i === ((idx % N) + N) % N));
+    const k = cls[((idx % N) + N) % N].k; p.querySelectorAll('.btn').forEach(b => b.classList.toggle('pulse', b.dataset.p === k)); p.querySelectorAll('.inp, [data-go], .or').forEach(el => el.style.opacity = k === 'email' ? 1 : 0.45); };
+  window.eRot = d => { idx += d; apply(); }; window.eSel = i => { idx = i; apply(); };
+  apply(); let auto = setInterval(() => eRot(1), 3500); ring.parentElement.addEventListener('mouseenter', () => clearInterval(auto)); ring.parentElement.addEventListener('mouseleave', () => auto = setInterval(() => eRot(1), 3500));
+  bind('e', { prov: () => {}, focus: f => { if (f) { idx = 3; apply(); } } });
+})();
+</script>
+</body>
+</html>
