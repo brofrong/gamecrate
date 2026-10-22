@@ -26,6 +26,9 @@ const libraryKeys = ["library"] as const;
 /** Пользователь сессии; `Unauthorized` — не вошёл. */
 export const meAtom = Api.query("auth.me", undefined);
 
+/** Какие способы входа включены на сервере — доступно без сессии. */
+export const providersAtom = Api.query("auth.providers", undefined);
+
 /** Библиотека из БД (сервер сам синхронизирует её при первом обращении). */
 export const libraryAtom = Api.query("library.list", undefined, {
   reactivityKeys: libraryKeys,

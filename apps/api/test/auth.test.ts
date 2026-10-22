@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { AdminRpcs, AuthRpcs, type CurrentUserShape } from "@cg/rpc";
+import {
+  AdminRpcs,
+  AuthRpcs,
+  type CurrentUserShape,
+  PublicAuthRpcs,
+} from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import {
   ConfigProvider,
@@ -20,8 +25,8 @@ import { RpcTest } from "effect/rpc";
 import { AdminRpcHandlers } from "../src/admin/rpc";
 import { BetterAuth, pocketIdRole } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
-import { AuthRpcHandlers } from "../src/auth/rpc";
-import { AppConfig, appConfig } from "../src/config";
+import { AuthRpcHandlers, PublicAuthRpcHandlers } from "../src/auth/rpc";
+import { AppConfig, type AppConfigValues, appConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
@@ -32,6 +37,8 @@ const player: CurrentUserShape = {
   image: null,
   role: "player",
   steamId: "76561197960287930",
+  email: "ivan@example.com",
+  emailVerified: true,
 };
 const admin: CurrentUserShape = {
   id: "u-admin",
@@ -39,6 +46,8 @@ const admin: CurrentUserShape = {
   image: null,
   role: "admin",
   steamId: null,
+  email: "admin@example.com",
+  emailVerified: true,
 };
 
 /** Better Auth-заглушка: сессия — заданный пользователь (или её нет). */
@@ -104,6 +113,86 @@ describe("rpc auth", () => {
       }).pipe(Effect.scoped, Effect.provide(rpcLayer(player))),
     );
     expect(me).toEqual(player);
+  });
+
+  it("auth.me returns email fields", async () => {
+    const me = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* RpcTest.makeClient(AuthRpcs);
+        return yield* client["auth.me"]();
+      }).pipe(Effect.scoped, Effect.provide(rpcLayer(player))),
+    );
+    expect(me.email).toBe("ivan@example.com");
+    expect(me.emailVerified).toBe(true);
+  });
+});
+
+/** Конфиг для `PublicAuthRpcHandlers`: значения, кроме провайдеров, не важны. */
+const providersConfig = (
+  overrides: Partial<AppConfigValues>,
+): AppConfigValues => ({
+  port: 0,
+  publicUrl: "http://localhost:3000/app",
+  databaseUrl: Redacted.make("postgres://unused"),
+  steamApiKey: Redacted.make("unused"),
+  authSecret: Redacted.make("unused"),
+  pocketIdUrl: "https://sso.example.invalid",
+  pocketIdClientId: "unused",
+  pocketIdClientSecret: Redacted.make("unused"),
+  pocketIdAdminGroup: "cloud_gaming_admins",
+  allowedOrigins: [],
+  webDistDir: "unused",
+  smtpUrl: Redacted.make("log://"),
+  mailFrom: "GameCrate <test@example.com>",
+  google: Option.none(),
+  yandex: Option.none(),
+  telegram: Option.none(),
+  ...overrides,
+});
+
+describe("rpc auth.providers", () => {
+  it("reflects config", async () => {
+    const config = providersConfig({
+      google: Option.some({
+        clientId: "g-id",
+        clientSecret: Redacted.make("g-secret"),
+      }),
+      yandex: Option.none(),
+      telegram: Option.some({
+        botToken: Redacted.make("123456:ABC"),
+        botUsername: "gamecrate_bot",
+      }),
+    });
+    const layer = PublicAuthRpcHandlers.pipe(
+      Layer.provide(Layer.succeed(AppConfig, config)),
+    );
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* RpcTest.makeClient(PublicAuthRpcs);
+        return yield* client["auth.providers"]();
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+    expect(result).toEqual({
+      google: true,
+      yandex: false,
+      pocketId: true,
+      telegram: { botId: "123456", botUsername: "gamecrate_bot" },
+    });
+  });
+
+  // Нет сессии (fakeAuth(null)) — RPC без AuthMiddleware, Unauthorized не возникает.
+  it("works without a session", async () => {
+    const layer = Layer.mergeAll(PublicAuthRpcHandlers, RpcMiddlewares).pipe(
+      Layer.provide(fakeAuth(null)),
+      Layer.provide(Layer.succeed(AppConfig, providersConfig({}))),
+    );
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* RpcTest.makeClient(PublicAuthRpcs);
+        return yield* client["auth.providers"]();
+      }).pipe(Effect.scoped, Effect.provide(layer), Effect.result),
+    );
+    expect(result._tag).toBe("Success");
   });
 });
 

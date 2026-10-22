@@ -30,6 +30,8 @@ const steamUser: CurrentUserShape = {
   image: null,
   role: "player",
   steamId: "76561197960287930",
+  email: null,
+  emailVerified: false,
 };
 
 type Game = { appId: number; name: string; playtimeMinutes: number };

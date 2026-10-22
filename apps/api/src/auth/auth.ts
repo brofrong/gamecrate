@@ -1,7 +1,7 @@
 // Better Auth: вход через Steam (OpenID) и Pocket ID (OIDC), роли пользователей.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
 import { account, type Db, session, user, verification } from "@cg/db";
-import type { CurrentUserShape, Role } from "@cg/rpc";
+import { type CurrentUserShape, isSyntheticEmail, type Role } from "@cg/rpc";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
@@ -181,6 +181,8 @@ export class BetterAuth extends Context.Service<
               image: u.image ?? null,
               role: u.role === "admin" ? "admin" : "player",
               steamId: u.steamId ?? null,
+              email: isSyntheticEmail(u.email) ? null : u.email,
+              emailVerified: u.emailVerified,
             })),
           ),
         ),

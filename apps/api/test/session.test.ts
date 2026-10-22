@@ -38,6 +38,8 @@ const player = (id: string): CurrentUserShape => ({
   image: null,
   role: "player",
   steamId: null,
+  email: null,
+  emailVerified: false,
 });
 const alice = player("u-alice");
 const bob = player("u-bob");

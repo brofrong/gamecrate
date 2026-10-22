@@ -22,6 +22,8 @@ const admin: CurrentUserShape = {
   image: null,
   role: "admin",
   steamId: null,
+  email: "admin@example.com",
+  emailVerified: true,
 };
 const player: CurrentUserShape = { ...admin, id: "u-player", role: "player" };
 
@@ -121,12 +123,10 @@ describe("admin.settings", () => {
     const read = await run(
       Effect.gen(function* () {
         const db = yield* Db;
-        yield* db
-          .insert(settings)
-          .values({
-            key: sessionSettingsKey,
-            value: { idleWarningMinutes: 0 },
-          });
+        yield* db.insert(settings).values({
+          key: sessionSettingsKey,
+          value: { idleWarningMinutes: 0 },
+        });
         return yield* (yield* client)["admin.settings.get"]();
       }),
     );

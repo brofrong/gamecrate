@@ -21,6 +21,8 @@ const user: CurrentUserShape = {
   image: null,
   role: "player",
   steamId: "7656",
+  email: null,
+  emailVerified: false,
 };
 
 describe("landing", () => {

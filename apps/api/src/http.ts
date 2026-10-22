@@ -12,7 +12,7 @@ import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
-import { AuthRpcHandlers } from "./auth/rpc";
+import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
 import { AppConfig, rpcAllowedOrigins } from "./config";
 import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
@@ -43,6 +43,7 @@ const AuthRoute = HttpRouter.use((router) =>
 /** Хендлеры всех RPC-групп `AppRpcs` и мидлвары. Новая группа: добавить её хендлеры сюда. */
 export const RpcHandlers = Layer.mergeAll(
   AuthRpcHandlers,
+  PublicAuthRpcHandlers,
   AdminRpcHandlers,
   LibraryRpcHandlers,
   SessionRpcHandlers.pipe(Layer.provide(SessionEvents.layer)),

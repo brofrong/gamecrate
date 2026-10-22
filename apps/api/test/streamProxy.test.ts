@@ -24,6 +24,8 @@ const player = (id: string): CurrentUserShape => ({
   image: null,
   role: "player",
   steamId: null,
+  email: null,
+  emailVerified: false,
 });
 const users: Record<string, CurrentUserShape> = {
   "sid=carol": player("u-carol"),
