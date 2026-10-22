@@ -1,11 +1,19 @@
-// Привязка аккаунтов отключена: Steam-вход не должен давать роль admin через общий user.
+// Привязка аккаунтов включена (Task 3): Steam — только привязка (Task 4), правило
+// последнего способа входа при отвязке, роль Pocket ID при привязке/отвязке.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { migrationsFolder, session, user } from "@cg/db";
+import { account, migrationsFolder, session, user } from "@cg/db";
 import { SQL } from "bun";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
 import { Option, Redacted } from "effect";
 import { type Auth, makeAuth } from "../src/auth/auth";
+import {
+  fakeSteamFetch,
+  steamId,
+  steamOpenIdUrl,
+  steamResponseParams,
+} from "./steamFixtures";
 
 const secret = "test-secret-test-secret-test-secret-0123";
 const origin = "http://localhost:3000";
@@ -37,7 +45,9 @@ const signCookie = async (value: string) => {
 let admin: SQL;
 let db: SQL;
 let auth: Auth;
-let cookie: string;
+let adminCookie: string;
+let mailCookie: string;
+const realFetch = globalThis.fetch;
 
 beforeAll(async () => {
   admin = new SQL(serverUrl);
@@ -45,11 +55,15 @@ beforeAll(async () => {
   db = new SQL(databaseUrl);
   const orm = drizzle({ client: db });
   await migrate(orm, { migrationsFolder });
-  // Админ Pocket ID с активной сессией.
+
+  // Админ Pocket ID с активной сессией — подтверждённая настоящая почта (нужно
+  // для теста "отвязка pocket-id" ниже: без неё отвязка последнего способа входа
+  // была бы запрещена).
   await orm.insert(user).values({
     id: "u-admin",
     name: "Админ",
     email: "admin@example.com",
+    emailVerified: true,
     role: "admin",
   });
   await orm.insert(session).values({
@@ -59,7 +73,53 @@ beforeAll(async () => {
     expiresAt: new Date(Date.now() + 3_600_000),
     updatedAt: new Date(),
   });
-  cookie = `better-auth.session_token=${await signCookie("admin-session-token")}`;
+  await orm.insert(account).values({
+    id: "acc-admin-pocket-id",
+    accountId: "pocket-id-sub-admin",
+    providerId: "pocket-id",
+    userId: "u-admin",
+    updatedAt: new Date(),
+  });
+
+  // Игрок с почтой (Google) и уже привязанным Steam — для правила последнего
+  // способа входа. Steam-аккаунт здесь никак не связан со steamId из
+  // steamFixtures (используется только в «уже привязан другому» ниже).
+  await orm.insert(user).values({
+    id: "u-mail",
+    name: "Ivan",
+    email: "ivan@example.com",
+    emailVerified: true,
+  });
+  await orm.insert(session).values({
+    id: "s-mail",
+    token: "mail-session-token",
+    userId: "u-mail",
+    expiresAt: new Date(Date.now() + 3_600_000),
+    updatedAt: new Date(),
+  });
+  await orm.insert(account).values([
+    {
+      id: "acc-mail-google",
+      accountId: "google-sub-mail",
+      providerId: "google",
+      userId: "u-mail",
+      updatedAt: new Date(),
+    },
+    {
+      id: "acc-mail-steam",
+      accountId: "76500000000000001",
+      providerId: "steam-openid",
+      userId: "u-mail",
+      updatedAt: new Date(),
+    },
+  ]);
+
+  adminCookie = `better-auth.session_token=${await signCookie("admin-session-token")}`;
+  mailCookie = `better-auth.session_token=${await signCookie("mail-session-token")}`;
+
+  globalThis.fetch = Object.assign(fakeSteamFetch, {
+    preconnect: realFetch.preconnect,
+  });
   auth = makeAuth({
     port: 0,
     publicUrl: origin,
@@ -81,30 +141,225 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  globalThis.fetch = realFetch;
   await db?.close();
   await admin?.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
   await admin?.close();
 });
 
-describe("account linking", () => {
-  it("session cookie is valid (precondition)", async () => {
-    const result = await auth.api.getSession({
-      headers: new Headers({ cookie }),
-    });
-    expect(result?.user.id).toBe("u-admin");
-  });
+/** `/steam/link` → url Steam, `openid.return_to` и cookie для последующего callback. */
+const steamLink = async (cookie: string, body: Record<string, unknown>) => {
+  const response = await auth.handler(
+    new Request(`${origin}/api/auth/steam/link`, {
+      method: "POST",
+      headers: { cookie, origin, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  const parsed = (await response.json()) as { url?: string; code?: string };
+  return { response, ...parsed };
+};
 
-  it("steam link is rejected for a signed-in admin", async () => {
+describe("account linking", () => {
+  it("steam login endpoint is gone", async () => {
     const response = await auth.handler(
-      new Request(`${origin}/api/auth/steam/link`, {
+      new Request(`${origin}/api/auth/steam/login`, {
         method: "POST",
-        headers: { cookie, origin, "content-type": "application/json" },
-        body: JSON.stringify({ callbackURL: "/admin" }),
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({}),
       }),
     );
-    const body = (await response.json()) as { code?: string; url?: string };
+    const body = (await response.json()) as { code?: string };
+    expect(response.status).toBe(404);
+    expect(body.code).toBe("STEAM_LOGIN_DISABLED");
+  });
+
+  it("steam link is allowed for a signed-in admin", async () => {
+    const { response, url } = await steamLink(adminCookie, {
+      callbackURL: "/admin",
+    });
+    expect(response.status).toBe(200);
+    expect(url?.startsWith(steamOpenIdUrl)).toBe(true);
+  });
+
+  it("steam link callback sets steamId on the current user", async () => {
+    const { response: link, url } = await steamLink(adminCookie, {
+      callbackURL: "/profile",
+    });
+    expect(link.status).toBe(200);
+    if (!url) throw new Error("no url");
+    const returnTo = new URL(url).searchParams.get("openid.return_to");
+    if (returnTo === null) throw new Error("no openid.return_to");
+    const extraCookie = link.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    const cookie = [adminCookie, extraCookie].filter(Boolean).join("; ");
+
+    const callback = await auth.handler(
+      new Request(`${returnTo}&${steamResponseParams(returnTo)}`, {
+        headers: { cookie },
+      }),
+    );
+
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toBe("/profile");
+
+    const orm = drizzle({ client: db });
+    const [updatedUser] = await orm
+      .select({ steamId: user.steamId })
+      .from(user)
+      .where(eq(user.id, "u-admin"));
+    expect(updatedUser?.steamId).toBe(steamId);
+
+    const [linkedAccount] = await orm
+      .select({ userId: account.userId })
+      .from(account)
+      .where(eq(account.accountId, steamId));
+    expect(linkedAccount?.userId).toBe("u-admin");
+  });
+
+  it("steam already linked to another user is refused", async () => {
+    const { response: link, url } = await steamLink(mailCookie, {
+      callbackURL: "/profile",
+      errorCallbackURL: "/link-error",
+    });
+    expect(link.status).toBe(200);
+    if (!url) throw new Error("no url");
+    const returnTo = new URL(url).searchParams.get("openid.return_to");
+    if (returnTo === null) throw new Error("no openid.return_to");
+    const extraCookie = link.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    const cookie = [mailCookie, extraCookie].filter(Boolean).join("; ");
+
+    const callback = await auth.handler(
+      new Request(`${returnTo}&${steamResponseParams(returnTo)}`, {
+        headers: { cookie },
+      }),
+    );
+
+    expect(callback.status).toBe(302);
+    const location = callback.headers.get("location") ?? "";
+    expect(location.startsWith("/link-error")).toBe(true);
+    expect(new URL(location, origin).searchParams.get("error")).toBe(
+      "STEAM_ACCOUNT_ALREADY_LINKED",
+    );
+
+    const [mailUser] = await drizzle({ client: db })
+      .select({ steamId: user.steamId })
+      .from(user)
+      .where(eq(user.id, "u-mail"));
+    expect(mailUser?.steamId).toBeNull();
+  });
+
+  it("unlinking the last login-capable method is refused", async () => {
+    await drizzle({ client: db })
+      .update(user)
+      .set({ emailVerified: false })
+      .where(eq(user.id, "u-mail"));
+
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: mailCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          accountId: "acc-mail-google",
+          providerId: "google",
+        }),
+      }),
+    );
+    const body = (await response.json()) as { code?: string };
     expect(response.status).toBe(400);
-    expect(body.code).toBe("STEAM_ACCOUNT_LINKING_DISABLED");
-    expect(body.url).toBeUndefined();
+    expect(body.code).toBe("LAST_LOGIN_METHOD");
+
+    const [stillThere] = await drizzle({ client: db })
+      .select({ id: account.id })
+      .from(account)
+      .where(eq(account.id, "acc-mail-google"));
+    expect(stillThere?.id).toBe("acc-mail-google");
+  });
+
+  it("unlinking steam is allowed even when it is the only other account", async () => {
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: mailCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          accountId: "acc-mail-steam",
+          providerId: "steam-openid",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    const orm = drizzle({ client: db });
+    const [removed] = await orm
+      .select({ id: account.id })
+      .from(account)
+      .where(eq(account.id, "acc-mail-steam"));
+    expect(removed).toBeUndefined();
+
+    const [mailUser] = await orm
+      .select({ steamId: user.steamId })
+      .from(user)
+      .where(eq(user.id, "u-mail"));
+    expect(mailUser?.steamId).toBeNull();
+  });
+
+  it("verified email keeps google unlinkable", async () => {
+    await drizzle({ client: db })
+      .update(user)
+      .set({ emailVerified: true })
+      .where(eq(user.id, "u-mail"));
+
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: mailCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          accountId: "acc-mail-google",
+          providerId: "google",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("unlinking pocket id resets role to player", async () => {
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: adminCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          accountId: "acc-admin-pocket-id",
+          providerId: "pocket-id",
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    const [updatedAdmin] = await drizzle({ client: db })
+      .select({ role: user.role })
+      .from(user)
+      .where(eq(user.id, "u-admin"));
+    expect(updatedAdmin?.role).toBe("player");
   });
 });

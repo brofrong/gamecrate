@@ -18,6 +18,7 @@ import { Mailer, type Mail } from "../mail/Mailer";
 import { changeEmailCodeMail, loginCodeMail } from "../mail/templates";
 import type { ProtonDb } from "../steam/ProtonDb";
 import type { SteamApi } from "../steam/SteamApi";
+import { authHooks } from "./hooks";
 import { yandexProvider } from "./yandex";
 
 /** Роль пользователя Pocket ID по claim `groups`. */
@@ -33,9 +34,10 @@ const groupsClaim = (groups: unknown): ReadonlyArray<string> | undefined =>
 
 /**
  * Роль, вычисленная из профиля Pocket ID в текущем запросе Better Auth.
- * Пишется в `mapProfileToUser`, читается хуком создания сессии того же запроса.
+ * Пишется в `mapProfileToUser`, читается хуком создания сессии того же запроса
+ * (вход) и `after`-хуком `/callback/:id` в `./hooks` (привязка).
  */
-const pocketIdRoleState = defineRequestState<Role | null>(() => null);
+export const pocketIdRoleState = defineRequestState<Role | null>(() => null);
 
 export interface MakeAuthOptions {
   /**
@@ -48,6 +50,13 @@ export interface MakeAuthOptions {
    * письмо ошибкой — `BetterAuth.layer` передаёт настоящую отправку через `Mailer`.
    */
   readonly sendMail?: (mail: Mail) => Promise<void>;
+  /**
+   * Запуск синхронизации библиотеки после успешной привязки Steam
+   * (`authHooks`, `after` на `/steam/callback`). По умолчанию ничего не делает;
+   * `BetterAuth.layer` передаёт тот же `startSync`, что и `librarySyncHooks`
+   * использует для входа.
+   */
+  readonly onSteamLinked?: ((userId: string) => void) | undefined;
 }
 
 export const makeAuth = (
@@ -124,6 +133,11 @@ export const makeAuth = (
         },
       },
     },
+    hooks: authHooks({
+      db,
+      adminGroup: config.pocketIdAdminGroup,
+      onSteamLinked: options.onSteamLinked,
+    }),
     plugins: [
       steamOpenID({ apiKey: Redacted.value(config.steamApiKey) }),
       genericOAuth({
@@ -243,7 +257,8 @@ export class BetterAuth extends Context.Service<
   });
 
   /**
-   * Вход через Steam запускает фоновую синхронизацию библиотеки (`librarySyncHooks`).
+   * Вход через Steam и привязка Steam (`authHooks`, `after` на `/steam/callback`)
+   * запускают одну и ту же фоновую синхронизацию библиотеки (`startSync`).
    * Письма (коды входа и смены почты) идут через `Mailer`: `sendMail` прогоняет
    * `mailer.send` через рантайм слоя (`FiberSet.makeRuntimePromise`), чтобы Better
    * Auth мог `await`-ить отправку и получить отказавший `MailError` как rejection.
@@ -261,10 +276,17 @@ export class BetterAuth extends Context.Service<
       const sendMail = (mail: Mail) => runPromise(mailer.send(mail));
       // Синхронизации живут в scope слоя (срок работы сервера), а не запроса входа.
       const runFork = yield* FiberSet.makeRuntime<Db | SteamApi | ProtonDb>();
-      const databaseHooks = librarySyncHooks((userId) => {
+      const startSync = (userId: string) => {
         runFork(syncOnLogin(userId));
-      });
-      return BetterAuth.fromAuth(makeAuth(config, { databaseHooks, sendMail }));
+      };
+      const databaseHooks = librarySyncHooks(startSync);
+      return BetterAuth.fromAuth(
+        makeAuth(config, {
+          databaseHooks,
+          sendMail,
+          onSteamLinked: startSync,
+        }),
+      );
     }),
   );
 }

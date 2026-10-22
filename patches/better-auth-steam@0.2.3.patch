@@ -1,5 +1,5 @@
 diff --git a/dist/index.js b/dist/index.js
-index 3c9f80296fc28f4c32aff64891a0545c94f09143..da63af80197d80b9d374f38621bcf1d4b885653a 100644
+index 3c9f80296fc28f4c32aff64891a0545c94f09143..07013a060d2e792b93007784429de2fcf2c3bec8 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -327,8 +327,8 @@ var steamOpenID = (options) => {
@@ -32,3 +32,18 @@ index 3c9f80296fc28f4c32aff64891a0545c94f09143..da63af80197d80b9d374f38621bcf1d4
            const url = buildSteamAuthorizationURL(callbackEndpoint, realm, state);
            ctx.setHeader("Location", url);
            return ctx.json({
+@@ -532,10 +531,10 @@ var steamOpenID = (options) => {
+             }
+             let existingAccount;
+             try {
+-              existingAccount = await ctx.context.internalAdapter.findAccountByProviderId(
+-                steamId,
+-                PROVIDER_ID
+-              );
++              existingAccount = await ctx.context.internalAdapter.findAccountByKey({
++                providerId: PROVIDER_ID,
++                accountId: steamId
++              });
+             } catch (error) {
+               ctx.context.logger.error(
+                 "The plugin could not check the Steam account owner.",
