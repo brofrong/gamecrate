@@ -36,7 +36,7 @@
   `ws://cg-orchestrator:3001/agent`. Смонтирован `/var/run/docker.sock`; процесс — пользователь
   `1000` (bun) с дополнительной группой владельца сокета (`DOCKER_GID`, `deploy.sh` берёт её из
   `stat -c %g /var/run/docker.sock`, на brofrong `995`), без `privileged`. Healthcheck нет (нет HTTP):
-  связь видна в логе оркестратора и в `workers.last_seen_at`. `mem_limit` 512m (профиль сжимается и шифруется в памяти). Роли
+  связь видна в логе оркестратора и в `workers.last_seen_at`. `mem_limit` 1g (профиль до 200 МиБ сжимается и шифруется в памяти целиком). Роли
   `ROLES=worker,gamestore`: сессии и установка игр в общую библиотеку. Стартует после
   `cg-rustfs` (healthy).
   Переменные (значения по умолчанию в `compose.yaml` — для brofrong; переопределяются в `.env`):

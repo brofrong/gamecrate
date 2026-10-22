@@ -160,7 +160,7 @@ services:
         target: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
         bind:
           create_host_path: false
-    mem_limit: 512m # профиль сжимается и шифруется в памяти целиком (profile/codec.ts)
+    mem_limit: 1g # профиль (до 200 МиБ) сжимается и шифруется в памяти целиком (profile/codec.ts)
     logging: *logging
     networks:
       - cg
