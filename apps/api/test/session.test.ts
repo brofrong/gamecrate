@@ -467,11 +467,18 @@ describe("session rpc", () => {
           .set({ bytesDownloaded: null, bytesTotal: null })
           .where(eq(installJobs.id, jobId));
         const unknownTotal = yield* rpc["session.active"]();
-        return { installing, unknownTotal };
+        // Steam иногда докачивает больше заявленного (зависимости) — не больше 100.
+        yield* db
+          .update(installJobs)
+          .set({ bytesDownloaded: 150, bytesTotal: 100 })
+          .where(eq(installJobs.id, jobId));
+        const overshoot = yield* rpc["session.active"]();
+        return { installing, unknownTotal, overshoot };
       }),
     );
     expect(result.installing?.installPercent).toBe(34);
     expect(result.unknownTotal?.installPercent).toBe(0);
+    expect(result.overshoot?.installPercent).toBe(100);
   });
 
   it("installPercent is null outside installing", async () => {

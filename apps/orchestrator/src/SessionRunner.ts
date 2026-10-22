@@ -317,12 +317,24 @@ const make = (options: SessionRunnerOptions) =>
                 return withDb(
                   SessionRepo.recordHeartbeat(workerId, report.sessionIds, now),
                 );
-              case "Stopped":
-                return step(
-                  report.sessionId,
-                  now,
-                  fromWorker(workerId, { _tag: "StopFinished" }),
+              case "Stopped": {
+                // Профиль не сохранён: агент оставил контейнер со слоями
+                // (`profile-unsaved`) — нужен разбор вручную (deploy/README.md).
+                let userId: string | undefined;
+                return step(report.sessionId, now, (row) => {
+                  userId = row.userId;
+                  return fromWorker(workerId, { _tag: "StopFinished" })(row);
+                }).pipe(
+                  Effect.tap(() =>
+                    report.profileSaved
+                      ? Effect.void
+                      : Effect.logWarning(
+                          "Session profile not saved (profile-unsaved on the agent)",
+                          { sessionId: report.sessionId, userId, workerId },
+                        ),
+                  ),
                 );
+              }
               case "Failed":
                 return step(
                   report.sessionId,

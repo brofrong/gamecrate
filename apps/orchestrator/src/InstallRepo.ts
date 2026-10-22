@@ -15,7 +15,7 @@ import {
   sessions,
   workers,
 } from "@cg/db";
-import type { ProfileRef } from "@cg/rpc";
+import { type ProfileRef, steamLoginRequiredReason } from "@cg/rpc";
 import { and, asc, eq, inArray, notExists } from "drizzle-orm";
 import { Effect } from "effect";
 import type { LifecycleEvent } from "./lifecycle";
@@ -200,14 +200,25 @@ const waitersOf = (jobId: string) =>
     return rows.map((r) => r.id);
   });
 
-/** Событие автомата каждой сессии, всё ещё ждущей задачу `jobId`. */
-const notifyWaiters = (jobId: string, event: LifecycleEvent, now: Date) =>
+/**
+ * Событие автомата каждой сессии, всё ещё ждущей задачу `jobId` (`event` —
+ * событие или функция от строки сессии).
+ */
+const notifyWaiters = (
+  jobId: string,
+  event: LifecycleEvent | ((row: SessionRepo.SessionRow) => LifecycleEvent),
+  now: Date,
+) =>
   Effect.gen(function* () {
     const settings = yield* SessionRepo.loadSettings();
     const waiters = yield* waitersOf(jobId);
     for (const sessionId of waiters)
       yield* SessionRepo.transition(sessionId, now, settings, (row) =>
-        row.state === "installing" && row.installJobId === jobId ? event : null,
+        row.state === "installing" && row.installJobId === jobId
+          ? typeof event === "function"
+            ? event(row)
+            : event
+          : null,
       );
     return waiters;
   });
@@ -248,7 +259,8 @@ export const finish = (
 
 /**
  * Задача провалилась (`InstallFailed` агента или агент её потерял): `failed` +
- * `error`, ждущие сессии — `failed` (или `queued`, см. `requeueWaiters`).
+ * `error`, ждущие сессии — `failed` (или `queued`, см. `requeueWaiters`);
+ * `steamLoginRequiredReason` владелец задачи видит как есть.
  * Только активная задача (и, если задан `workerId`, только на этом агенте);
  * иначе `undefined`. Иначе — id сессий, которым отправлено событие.
  */
@@ -277,11 +289,18 @@ export const fail = (
           .update(installJobs)
           .set({ state: "failed", error })
           .where(eq(installJobs.id, jobId));
+        // Нужен вход в Steam — это про профиль владельца задачи: ему причина
+        // как есть, остальным ждущим — общая (их профиль ни при чём).
         return yield* notifyWaiters(
           jobId,
           options.requeueWaiters === true
             ? { _tag: "InstallCancelled" }
-            : { _tag: "InstallFailed", reason: error },
+            : (row) => ({
+                _tag: "InstallFailed",
+                reason: error,
+                ...(error === steamLoginRequiredReason &&
+                  row.userId === job.userId && { userReason: error }),
+              }),
           now,
         );
       }),

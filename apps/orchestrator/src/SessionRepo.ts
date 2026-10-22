@@ -16,6 +16,7 @@ import {
   SessionSettings,
   sessionSettingsKey,
   sessionStreamUrl,
+  withSessionSettingsDefaults,
 } from "@cg/rpc";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
@@ -39,7 +40,8 @@ const decodeSettings = Schema.decodeUnknownEffect(SessionSettings);
 
 /**
  * Настройки сессий из `settings["session"]`. Записи нет — значения по умолчанию;
- * значение не проходит схему (или БД недоступна) — тоже по умолчанию, с
+ * недостающие поля (запись прежней версии) — дополняются значениями по
+ * умолчанию; значение не проходит схему (или БД недоступна) — тоже по умолчанию, с
  * предупреждением в логе.
  */
 export const loadSettings = (): Effect.Effect<SessionSettings, never, Db> =>
@@ -53,7 +55,7 @@ export const loadSettings = (): Effect.Effect<SessionSettings, never, Db> =>
       yield* Effect.logDebug("Session settings not set, using defaults");
       return defaultSessionSettings;
     }
-    return yield* decodeSettings(row.value);
+    return yield* decodeSettings(withSessionSettingsDefaults(row.value));
   }).pipe(
     Effect.catch((error) =>
       Effect.as(

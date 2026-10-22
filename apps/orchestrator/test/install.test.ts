@@ -10,7 +10,12 @@ import {
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import type { AgentCommand, AgentReport, AgentRoles } from "@cg/rpc";
+import {
+  type AgentCommand,
+  type AgentReport,
+  type AgentRoles,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
 import {
@@ -426,6 +431,45 @@ describe("install jobs", () => {
         ]);
         yield* dispatcher.tick(at(t0, 6));
         expect(installCommands(fake)).toHaveLength(1);
+      }),
+    ));
+
+  it("owner without a Steam login sees the login hint, other waiters the generic reason", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { userId: "u1", state: "running" });
+
+        const failedAt = at(t0, 30);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: steamLoginRequiredReason,
+          }),
+          failedAt,
+        );
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: steamLoginRequiredReason,
+        });
+        like(yield* sessionRow("s1"), {
+          state: "failed",
+          failReason: steamLoginRequiredReason,
+        });
+        // Чужой профиль u2 тут ни при чём: ему — общая причина.
+        like(yield* sessionRow("s2"), {
+          state: "failed",
+          failReason: failReasons.installFailed,
+        });
       }),
     ));
 

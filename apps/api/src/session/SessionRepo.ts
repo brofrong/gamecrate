@@ -66,7 +66,8 @@ const selectSessions = (where: SQL | undefined) =>
 
 /**
  * Процент установки: `bytesDownloaded`/`bytesTotal` задачи установки, `0` пока
- * `bytesTotal` не пришёл (ещё 0 или неизвестен) — не деление на 0. Только в
+ * `bytesTotal` не пришёл (ещё 0 или неизвестен) — не деление на 0; всегда в
+ * 0..100 (скачано бывает больше заявленного). Только в
  * `installing`: `installJobId` не очищается после установки (история), поэтому
  * в других состояниях процент не считаем.
  */
@@ -77,7 +78,8 @@ const installPercentOf = (
 ): number | null => {
   if (state !== "installing") return null;
   if (bytesTotal === null || bytesTotal === 0) return 0;
-  return Math.floor((100 * (bytesDownloaded ?? 0)) / bytesTotal);
+  const percent = Math.floor((100 * (bytesDownloaded ?? 0)) / bytesTotal);
+  return Math.min(100, Math.max(0, percent));
 };
 
 /**

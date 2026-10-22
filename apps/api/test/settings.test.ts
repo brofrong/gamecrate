@@ -134,6 +134,28 @@ describe("admin.settings", () => {
     expect(read).toEqual(defaultSessionSettings);
   });
 
+  it("MVP-2 stored row without installTimeoutMinutes keeps its timers", async () => {
+    const mvp2 = {
+      idleWarningMinutes: 30,
+      idleGraceMinutes: 5,
+      disconnectGraceMinutes: 10,
+      startTimeoutMinutes: 20,
+    };
+    const read = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* db
+          .insert(settings)
+          .values({ key: sessionSettingsKey, value: mvp2 });
+        return yield* (yield* client)["admin.settings.get"]();
+      }),
+    );
+    expect(read).toEqual({
+      ...mvp2,
+      installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
+    });
+  });
+
   it("player cannot call admin.settings.update", async () => {
     const result = await run(
       Effect.gen(function* () {

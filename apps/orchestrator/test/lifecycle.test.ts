@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { SessionState } from "@cg/db";
-import { type SessionSettings, defaultSessionSettings } from "@cg/rpc";
+import {
+  type SessionSettings,
+  defaultSessionSettings,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import {
   AGENT_TIMEOUT_MS,
   CLIENT_TIMEOUT_MS,
@@ -691,6 +695,19 @@ describe("decide", () => {
         settings,
       ),
     ).toEqual(failed("Не удалось установить игру"));
+    // Причина для пользователя (нужен вход в Steam) — показывается как есть.
+    expect(
+      decide(
+        s,
+        {
+          _tag: "InstallFailed",
+          reason: steamLoginRequiredReason,
+          userReason: steamLoginRequiredReason,
+        },
+        min(1),
+        settings,
+      ),
+    ).toEqual(failed(steamLoginRequiredReason));
     // Остановка без контейнера, ожидание не оплачивается.
     expect(decide(s, { _tag: "UserStop" }, min(1), settings)).toEqual(
       unchanged("ended"),

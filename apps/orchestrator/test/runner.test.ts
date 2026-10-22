@@ -18,7 +18,15 @@ import {
   sessionSettingsKey,
 } from "@cg/rpc";
 import { asc, eq, inArray } from "drizzle-orm";
-import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
+import {
+  Effect,
+  Layer,
+  Logger,
+  PubSub,
+  References,
+  type Scope,
+  Stream,
+} from "effect";
 import {
   AgentHub,
   type AgentHubEvent,
@@ -483,6 +491,58 @@ describe("session runner", () => {
       }),
     ));
 
+  it("Stopped with profileSaved false logs a warning with session and user", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 2);
+        for (const id of ["s1", "s2"])
+          yield* insertSession({
+            id,
+            userId: id === "s1" ? "u1" : "u2",
+            state: "stopping",
+            workerId: "w1",
+            slot: id === "s1" ? 0 : 1,
+            stateSince: t0,
+          });
+        const logged: Array<{ level: string; message: unknown }> = [];
+        const capture = Logger.make(({ logLevel, message }) => {
+          logged.push({ level: logLevel, message });
+        });
+        const stopped = (sessionId: string, profileSaved: boolean) =>
+          runner
+            .handle(
+              report("w1", {
+                _tag: "Stopped",
+                sessionId,
+                cloudSynced: true,
+                profileSaved,
+              }),
+              at(t0, 5),
+            )
+            .pipe(
+              Effect.provide(Logger.layer([capture])),
+              Effect.provideService(References.MinimumLogLevel, "Warn"),
+            );
+        yield* stopped("s1", true);
+        expect(logged).toEqual([]);
+        yield* stopped("s2", false);
+        expect(logged).toEqual([
+          {
+            level: "Warn",
+            message: [
+              "Session profile not saved (profile-unsaved on the agent)",
+              { sessionId: "s2", userId: "u2", workerId: "w1" },
+            ],
+          },
+        ]);
+        // Сессия при этом штатно завершается.
+        like(yield* sessionRow("s2"), { state: "ended" });
+      }),
+    ));
+
   it("lost agent fails session and closes segment at last heartbeat", () =>
     run((fake) =>
       Effect.gen(function* () {
@@ -599,6 +659,26 @@ describe("session runner", () => {
         like(yield* sessionRow("s1"), {
           state: "idle_warning",
           stateSince: at(t0, 185),
+        });
+      }),
+    ));
+
+  it("MVP-2 settings row without installTimeoutMinutes keeps its timers", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const mvp2 = {
+          idleWarningMinutes: 30,
+          idleGraceMinutes: 5,
+          disconnectGraceMinutes: 10,
+          startTimeoutMinutes: 20,
+        };
+        yield* db
+          .insert(settings)
+          .values({ key: sessionSettingsKey, value: mvp2 });
+        expect(yield* SessionRepo.loadSettings()).toEqual({
+          ...mvp2,
+          installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
         });
       }),
     ));

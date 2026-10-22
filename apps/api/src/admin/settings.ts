@@ -5,6 +5,7 @@ import {
   defaultSessionSettings,
   SessionSettings,
   sessionSettingsKey,
+  withSessionSettingsDefaults,
 } from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
@@ -12,7 +13,8 @@ import { Effect, Schema } from "effect";
 const decodeSettings = Schema.decodeUnknownEffect(SessionSettings);
 
 /**
- * Настройки сессий. Записи нет — значения по умолчанию; запись не проходит
+ * Настройки сессий. Записи нет — значения по умолчанию; недостающие поля
+ * (запись прежней версии) — дополняются значениями по умолчанию; запись не проходит
  * схему — тоже по умолчанию, с предупреждением в логе. Ошибки БД — дефекты.
  */
 export const loadSessionSettings: Effect.Effect<SessionSettings, never, Db> =
@@ -24,7 +26,7 @@ export const loadSessionSettings: Effect.Effect<SessionSettings, never, Db> =
       .where(eq(settings.key, sessionSettingsKey))
       .pipe(Effect.orDie);
     if (row === undefined) return defaultSessionSettings;
-    return yield* decodeSettings(row.value).pipe(
+    return yield* decodeSettings(withSessionSettingsDefaults(row.value)).pipe(
       Effect.catch((error) =>
         Effect.as(
           Effect.logWarning(

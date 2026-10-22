@@ -40,3 +40,14 @@ export const defaultSessionSettings: SessionSettings = {
   startTimeoutMinutes: 15,
   installTimeoutMinutes: 180,
 };
+
+/**
+ * Дополняет сохранённое значение недостающими полями по умолчанию перед
+ * декодированием: запись прежней версии (например, MVP-2 без
+ * `installTimeoutMinutes`) сохраняет заданные администратором таймеры, а не
+ * откатывается целиком к значениям по умолчанию. Не объект — как есть.
+ */
+export const withSessionSettingsDefaults = (value: unknown): unknown =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? { ...defaultSessionSettings, ...value }
+    : value;

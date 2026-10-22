@@ -44,8 +44,12 @@ export type LifecycleEvent =
   | { _tag: "Failed"; reason: string }
   | { _tag: "InstallStarted" }
   | { _tag: "InstallFinished" }
-  /** `reason` — техническая причина задачи (она в `install_jobs.error`). */
-  | { _tag: "InstallFailed"; reason: string }
+  /**
+   * `reason` — техническая причина задачи (она в `install_jobs.error`);
+   * `userReason` — причина, которую нужно показать пользователю как есть (иначе
+   * общая `failReasons.installFailed`).
+   */
+  | { _tag: "InstallFailed"; reason: string; userReason?: string }
   /** Задачу отменили, пока сессия к ней присоединялась: ждать новую. */
   | { _tag: "InstallCancelled" }
   | { _tag: "Tick" };
@@ -255,7 +259,12 @@ const onEvent = (
 
     case "InstallFailed":
       return s.state === "installing"
-        ? decision("failed", [], null, failReasons.installFailed)
+        ? decision(
+            "failed",
+            [],
+            null,
+            e.userReason ?? failReasons.installFailed,
+          )
         : keep;
 
     case "GameExited":
