@@ -59,6 +59,7 @@ const custom: SessionSettings = {
   idleGraceMinutes: 5,
   disconnectGraceMinutes: 10,
   startTimeoutMinutes: 20,
+  installTimeoutMinutes: 45,
 };
 
 describe("admin.settings", () => {
@@ -89,6 +90,7 @@ describe("admin.settings", () => {
           idleGraceMinutes: 1,
           disconnectGraceMinutes: 60,
           startTimeoutMinutes: 5,
+          installTimeoutMinutes: 10,
         });
         return {
           initial,
@@ -114,6 +116,7 @@ describe("admin.settings", () => {
       idleGraceMinutes: 1,
       disconnectGraceMinutes: 60,
       startTimeoutMinutes: 5,
+      installTimeoutMinutes: 10,
     });
   });
 
@@ -121,12 +124,10 @@ describe("admin.settings", () => {
     const read = await run(
       Effect.gen(function* () {
         const db = yield* Db;
-        yield* db
-          .insert(settings)
-          .values({
-            key: sessionSettingsKey,
-            value: { idleWarningMinutes: 0 },
-          });
+        yield* db.insert(settings).values({
+          key: sessionSettingsKey,
+          value: { idleWarningMinutes: 0 },
+        });
         return yield* (yield* client)["admin.settings.get"]();
       }),
     );

@@ -193,7 +193,13 @@ const make = Effect.gen(function* () {
   const connect: AgentHubShape["connect"] = (clientId, payload) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const { running, ...info } = payload;
+        // Task 4/5: roles/installs пока не используются (InstallDispatcher).
+        const {
+          running,
+          roles: _roles,
+          installs: _installs,
+          ...info
+        } = payload;
         // Scope этого эффекта — время жизни потока: release срабатывает при обрыве
         // соединения (сервер прерывает поток) или замене более новым соединением.
         const connection = yield* Effect.acquireRelease(

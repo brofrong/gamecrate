@@ -12,12 +12,14 @@ import {
 } from "drizzle-orm/pg-core";
 import { games } from "./library";
 import { user } from "./auth";
+import { installJobs } from "./gamestore";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
 
 /** Состояния сессии (точные строки по спеке). Активная сессия — не `ended`/`failed`. */
 export const sessionStates = [
   "queued",
+  "installing",
   "starting",
   "playing",
   "idle_warning",
@@ -58,6 +60,9 @@ export const sessions = pgTable(
     state: text("state", { enum: sessionStates }).notNull().default("queued"),
     workerId: text("worker_id").references(() => workers.id),
     slot: integer("slot"),
+    // Активная задача установки игры в `installing` (Task 5); id не очищается
+    // после установки — последняя задача сессии остаётся для истории.
+    installJobId: text("install_job_id").references(() => installJobs.id),
     // Внутренний адрес Selkies в сети cg-sessions, напр. http://cg-session-<id>:8080.
     streamUrl: text("stream_url"),
     failReason: text("fail_reason"),

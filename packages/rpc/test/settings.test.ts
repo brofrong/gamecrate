@@ -24,4 +24,20 @@ describe("SessionSettings", () => {
       }),
     ).toThrow();
   });
+
+  it("installTimeoutMinutes defaults to 180 and rejects 9 and 721", () => {
+    expect(defaultSessionSettings.installTimeoutMinutes).toBe(180);
+    expect(() =>
+      Schema.decodeUnknownSync(SessionSettings)({
+        ...defaultSessionSettings,
+        installTimeoutMinutes: 9,
+      }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(SessionSettings)({
+        ...defaultSessionSettings,
+        installTimeoutMinutes: 721,
+      }),
+    ).toThrow();
+  });
 });

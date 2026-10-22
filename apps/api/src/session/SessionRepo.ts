@@ -104,6 +104,8 @@ const toView = (row: SessionWithGame) =>
       streamReady: row.streamUrl !== null,
       failReason: row.failReason,
       idleDeadline,
+      // Task 6: вычислить процент из bytesDownloaded/bytesTotal задачи установки.
+      installPercent: null,
       playedSeconds: yield* playedSeconds(row.id, now),
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;

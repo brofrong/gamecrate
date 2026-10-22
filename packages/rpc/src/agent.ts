@@ -57,9 +57,17 @@ export const isSessionStreamUrl = (
   }
 };
 
+/** Роли агента: `worker` — сессии, `gamestore` — установка игр в общую библиотеку. */
+export const AgentRoles = Schema.Array(
+  Schema.Literals(["worker", "gamestore"]),
+);
+export type AgentRoles = typeof AgentRoles.Type;
+
 /**
  * Подключение агента. `workerId` — имя воркера из конфига агента; слот `i`
  * на воркере — UDP-порт `udpPortBase + i`, публичный IP — `publicIp`.
+ * `installs` — id задач установки, чьи контейнеры у агента ещё живы (роль
+ * `gamestore`; снимок для переподключения, как `running` для сессий).
  */
 export const AgentConnect = Schema.Struct({
   workerId: Schema.String,
@@ -69,10 +77,25 @@ export const AgentConnect = Schema.Struct({
     Schema.isBetween({ minimum: 1, maximum: 65535 }),
   ),
   running: Schema.Array(RunningSession),
+  roles: AgentRoles,
+  installs: Schema.Array(Schema.String),
 });
 export type AgentConnect = typeof AgentConnect.Type;
 
-/** Команда оркестратора агенту: поднять контейнер сессии или погасить его. */
+/**
+ * Ссылка на объект профиля пользователя в `profiles` — передаётся агенту,
+ * чтобы он собрал дом сессии/установки из актуальной версии (спека §6).
+ */
+export const ProfileRef = Schema.Struct({
+  version: Schema.Int,
+  objectKey: Schema.String,
+});
+export type ProfileRef = typeof ProfileRef.Type;
+
+/**
+ * Команда оркестратора агенту: поднять или погасить контейнер сессии,
+ * запустить или отменить установку игры в общую библиотеку (роль `gamestore`).
+ */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
     sessionId: Schema.String,
@@ -80,15 +103,24 @@ export const AgentCommand = Schema.Union([
     appId: Schema.Int,
     slot: NonNegativeInt,
     udpPort: Schema.Int,
+    profile: Schema.NullOr(ProfileRef),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
+  Schema.TaggedStruct("InstallGame", {
+    jobId: Schema.String,
+    appId: Schema.Int,
+    userId: Schema.String,
+    profile: Schema.NullOr(ProfileRef),
+  }),
+  Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
 ]);
 export type AgentCommand = typeof AgentCommand.Type;
 
 /**
  * Отчёт агента: стрим готов (`streamUrl` — внутренний адрес Selkies), состояние
- * процесса игры, heartbeat со списком живых сессий, контейнер остановлен
- * (`cloudSynced` — Steam Cloud успел синхронизироваться), сбой с причиной.
+ * процесса игры, heartbeat со списком живых сессий, прогресс/итог установки,
+ * контейнер остановлен (`cloudSynced` — Steam Cloud успел синхронизироваться,
+ * `profileSaved` — профиль выгружен и принят), сбой с причиной.
  */
 export const AgentReport = Schema.Union([
   Schema.TaggedStruct("StreamReady", {
@@ -100,9 +132,24 @@ export const AgentReport = Schema.Union([
     running: Schema.Boolean,
   }),
   Schema.TaggedStruct("Heartbeat", { sessionIds: Schema.Array(Schema.String) }),
+  Schema.TaggedStruct("InstallProgress", {
+    jobId: Schema.String,
+    bytesDownloaded: NonNegativeInt,
+    bytesTotal: NonNegativeInt,
+  }),
+  Schema.TaggedStruct("InstallFinished", {
+    jobId: Schema.String,
+    sizeBytes: NonNegativeInt,
+    buildId: Schema.String,
+  }),
+  Schema.TaggedStruct("InstallFailed", {
+    jobId: Schema.String,
+    reason: Schema.String,
+  }),
   Schema.TaggedStruct("Stopped", {
     sessionId: Schema.String,
     cloudSynced: Schema.Boolean,
+    profileSaved: Schema.Boolean,
   }),
   Schema.TaggedStruct("Failed", {
     sessionId: Schema.String,
@@ -111,17 +158,31 @@ export const AgentReport = Schema.Union([
 ]);
 export type AgentReport = typeof AgentReport.Type;
 
-/** `agent.report` пришёл по соединению, на котором нет активного `agent.connect`. */
+/** `agent.report`/`agent.profileCommit` пришёл по соединению без активного `agent.connect`. */
 export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
   "AgentNotConnected",
   {},
 ) {}
 
 /**
+ * Выгрузка новой версии профиля пользователя. `baseVersion` — версия, от
+ * которой агент отталкивался (`null` — профиля ещё не было); принимается,
+ * только если она совпадает с текущей версией в `profiles` (устаревшая
+ * базовая версия отклоняется — спека §6).
+ */
+export const ProfileCommit = Schema.Struct({
+  userId: Schema.String,
+  baseVersion: Schema.NullOr(Schema.Int),
+  objectKey: Schema.String,
+  sizeBytes: NonNegativeInt,
+});
+export type ProfileCommit = typeof ProfileCommit.Type;
+
+/**
  * `agent.connect` — поток команд воркеру; жизнь соединения агента = жизнь этого
  * потока (обрыв → воркер отключён; поток завершился сам — подключился более новый
- * агент с тем же `workerId`). `agent.report` — отчёт по тому же WebSocket, на
- * котором открыт `agent.connect`.
+ * агент с тем же `workerId`). `agent.report` и `agent.profileCommit` — по тому же
+ * WebSocket, на котором открыт `agent.connect`.
  */
 export const AgentRpcs = RpcGroup.make(
   Rpc.make("agent.connect", {
@@ -131,6 +192,12 @@ export const AgentRpcs = RpcGroup.make(
   }),
   Rpc.make("agent.report", {
     payload: AgentReport,
+    error: AgentNotConnected,
+  }),
+  // Task 5: оркестратор проверяет baseVersion и upsert'ит `profiles`.
+  Rpc.make("agent.profileCommit", {
+    payload: ProfileCommit,
+    success: Schema.Struct({ accepted: Schema.Boolean }),
     error: AgentNotConnected,
   }),
 );

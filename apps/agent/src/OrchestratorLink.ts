@@ -66,6 +66,10 @@ export const run = Effect.gen(function* () {
       slots: config.slots,
       udpPortBase: config.udpPortBase,
       running: yield* supervisor.snapshot,
+      // Task 4: роль gamestore и список живых установок (конфиг агента пока
+      // не знает про роли — этот агент всегда "worker" без установок).
+      roles: ["worker"],
+      installs: [],
     };
     yield* Effect.logInfo("Connecting to orchestrator", {
       url: config.orchestratorUrl,
@@ -74,9 +78,9 @@ export const run = Effect.gen(function* () {
 
     const commands = client["agent.connect"](payload).pipe(
       Stream.runForEach((command) =>
+        // Task 4: InstallGame/CancelInstall не несут sessionId — лог общий по тегу.
         Effect.logInfo("Command received", {
           command: command._tag,
-          sessionId: command.sessionId,
         }).pipe(Effect.andThen(supervisor.handle(command))),
       ),
     );

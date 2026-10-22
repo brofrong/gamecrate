@@ -120,6 +120,8 @@ const hello = (workerId: string): AgentConnect => ({
       gameRunning: true,
     },
   ],
+  roles: ["worker"],
+  installs: [],
 });
 
 type AgentClient = Effect.Success<typeof agentClient>;
@@ -215,6 +217,7 @@ describe("agent hub", () => {
           appId: 620,
           slot: 0,
           udpPort: 59000,
+          profile: null,
         };
         expect(yield* hub.send("w-connect", command)).toBe(true);
         const received = yield* Queue.take(commands).pipe(

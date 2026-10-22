@@ -329,6 +329,11 @@ const make = (options: SessionRunnerOptions) =>
                     reason: report.reason,
                   }),
                 );
+              case "InstallProgress":
+              case "InstallFinished":
+              case "InstallFailed":
+                // Task 5: InstallDispatcher обрабатывает прогресс и итог установки.
+                return Effect.void;
             }
           })();
           return effect.pipe(

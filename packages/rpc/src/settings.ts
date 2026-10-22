@@ -11,6 +11,7 @@ export const sessionSettingsKey = "session";
  * - `idleGraceMinutes` — время ответить на предупреждение (1–30 мин).
  * - `disconnectGraceMinutes` — ожидание возврата после отключения (1–60 мин).
  * - `startTimeoutMinutes` — таймаут запуска сессии (5–60 мин).
+ * - `installTimeoutMinutes` — таймаут установки игры в `installing` (10–720 мин).
  */
 export const SessionSettings = Schema.Struct({
   idleWarningMinutes: Schema.Int.check(
@@ -25,6 +26,9 @@ export const SessionSettings = Schema.Struct({
   startTimeoutMinutes: Schema.Int.check(
     Schema.isBetween({ minimum: 5, maximum: 60 }),
   ),
+  installTimeoutMinutes: Schema.Int.check(
+    Schema.isBetween({ minimum: 10, maximum: 720 }),
+  ),
 });
 export type SessionSettings = typeof SessionSettings.Type;
 
@@ -34,4 +38,5 @@ export const defaultSessionSettings: SessionSettings = {
   idleGraceMinutes: 2,
   disconnectGraceMinutes: 5,
   startTimeoutMinutes: 15,
+  installTimeoutMinutes: 180,
 };

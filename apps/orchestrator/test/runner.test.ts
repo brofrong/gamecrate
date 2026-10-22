@@ -264,6 +264,7 @@ describe("scheduler", () => {
               appId: 570,
               slot: 1,
               udpPort: 59001,
+              profile: null,
             },
           },
           {
@@ -275,6 +276,7 @@ describe("scheduler", () => {
               appId: 570,
               slot: 0,
               udpPort: 59000,
+              profile: null,
             },
           },
         ]);
@@ -455,7 +457,12 @@ describe("session runner", () => {
         ]);
 
         yield* runner.handle(
-          report("w1", { _tag: "Stopped", sessionId: "s1", cloudSynced: true }),
+          report("w1", {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          }),
           at(t0, 70),
         );
         like(yield* sessionRow("s1"), {
@@ -718,7 +725,12 @@ describe("session runner", () => {
         expect((yield* sessionRow("s1")).state).toBe("stopping");
 
         yield* runner.handle(
-          report("w1", { _tag: "Stopped", sessionId: "s1", cloudSynced: true }),
+          report("w1", {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          }),
           at(t0, 25),
         );
         expect((yield* sessionRow("s1")).state).toBe("ended");

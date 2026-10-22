@@ -156,6 +156,8 @@ export const tick = (now: Date) =>
         appId: session.appId,
         slot,
         udpPort,
+        // Task 5: передать профиль пользователя из `profiles`.
+        profile: null,
       });
       if (sent) {
         placed++;

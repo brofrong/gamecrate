@@ -57,7 +57,8 @@ describe("session settings form", () => {
       idleGraceMinutes: 3,
       disconnectGraceMinutes: 5,
       startTimeoutMinutes: 20,
-    });
+      // Task 6: installTimeoutMinutes не редактируется этой формой — её ещё нет в `fields`.
+    } as SessionSettings);
     expect(screen.queryByText(/Целое число от/)).toBeNull();
   });
 

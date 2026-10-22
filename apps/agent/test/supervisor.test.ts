@@ -230,6 +230,7 @@ const start: Extract<AgentCommand, { _tag: "StartSession" }> = {
   appId: 1794680,
   slot: 1,
   udpPort: 59001,
+  profile: null,
 };
 
 const streamUrl = "http://cg-session-s1:8080";
@@ -422,7 +423,12 @@ describe("SessionSupervisor", () => {
         h.fake.state.cloud = 4;
         yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          },
         ]);
         const calls = h.fake.state.calls;
         expect(calls.slice(calls.indexOf("stop cg-session-s1 15"))).toEqual([
@@ -446,7 +452,12 @@ describe("SessionSupervisor", () => {
         expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
         yield* h.tick("6 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: false },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: false,
+          },
         ]);
         expect(h.fake.state.calls).toContain("remove cg-session-s1");
       }),
@@ -467,7 +478,12 @@ describe("SessionSupervisor", () => {
         h.fake.state.cloud = 1;
         yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          },
         ]);
       }),
     ));
@@ -479,7 +495,12 @@ describe("SessionSupervisor", () => {
         yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
         yield* h.tick("0 seconds");
         expect(yield* h.drain).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: false },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: false,
+          },
         ]);
         expect(h.fake.state.calls).toContain("remove cg-session-s1");
       }),
@@ -550,6 +571,7 @@ describe("SessionSupervisor", () => {
               _tag: "Stopped",
               sessionId,
               cloudSynced: false,
+              profileSaved: false,
             })),
           );
           // Удаляется только контейнер с нашей меткой cg.session=<id>.
@@ -632,7 +654,12 @@ describe("SessionSupervisor", () => {
         yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          },
         ]);
       }),
     ));
@@ -701,7 +728,12 @@ describe("SessionSupervisor", () => {
           yield* h.tick("2 seconds");
           expect(yield* h.drain).toEqual([
             { _tag: "GameState", sessionId: "a", running: false },
-            { _tag: "Stopped", sessionId: "a", cloudSynced: true },
+            {
+              _tag: "Stopped",
+              sessionId: "a",
+              cloudSynced: true,
+              profileSaved: false,
+            },
           ]);
         }),
       (fake) => {
@@ -746,7 +778,12 @@ describe("SessionSupervisor", () => {
         h.fake.state.cloud = 2;
         yield* h.tick("2 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: true },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          },
         ]);
       }),
     ));
@@ -771,7 +808,12 @@ describe("SessionSupervisor", () => {
         );
         yield* h.tick("4 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
-          { _tag: "Stopped", sessionId: "s1", cloudSynced: false },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: false,
+          },
         ]);
       }),
     ));
@@ -799,7 +841,14 @@ describe("SessionSupervisor", () => {
           yield* h.tick("6 seconds");
           expect(
             (yield* h.drain).filter((r) => r._tag !== "Heartbeat"),
-          ).toEqual([{ _tag: "Stopped", sessionId: "s1", cloudSynced: false }]);
+          ).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: false,
+            },
+          ]);
         }),
       ));
 });

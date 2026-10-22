@@ -9,6 +9,7 @@ import { AuthMiddleware } from "./auth";
  */
 export const SessionState = Schema.Literals([
   "queued",
+  "installing",
   "starting",
   "playing",
   "idle_warning",
@@ -30,6 +31,7 @@ const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
  * - `streamReady` — стрим поднят: его можно открыть по `/stream/<id>/`.
  * - `failReason` — причина `failed` (для показа пользователю).
  * - `idleDeadline` — ISO 8601 времени автозакрытия в `idle_warning`, иначе null.
+ * - `installPercent` — процент установки игры, только в `installing`, иначе null.
  * - `playedSeconds` — игровое время сессии (сумма billable-отрезков, открытый — до текущего момента).
  * - `createdAt` — ISO 8601.
  */
@@ -41,6 +43,9 @@ export const SessionView = Schema.Struct({
   streamReady: Schema.Boolean,
   failReason: Schema.NullOr(Schema.String),
   idleDeadline: Schema.NullOr(Schema.String),
+  installPercent: Schema.NullOr(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  ),
   playedSeconds: NonNegativeInt,
   createdAt: Schema.String,
 });

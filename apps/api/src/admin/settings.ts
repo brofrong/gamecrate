@@ -49,6 +49,7 @@ export const saveSessionSettings = (
       idleGraceMinutes: value.idleGraceMinutes,
       disconnectGraceMinutes: value.disconnectGraceMinutes,
       startTimeoutMinutes: value.startTimeoutMinutes,
+      installTimeoutMinutes: value.installTimeoutMinutes,
     };
     yield* db
       .insert(settings)

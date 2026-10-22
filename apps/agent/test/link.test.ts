@@ -65,6 +65,8 @@ const Handlers = AgentRpcs.toLayer(
           server.reports.push(report);
           return Effect.void;
         }),
+      // Task 5: оркестратор проверяет baseVersion и upsert'ит `profiles`.
+      "agent.profileCommit": () => Effect.succeed({ accepted: false }),
     }),
   ),
 );
@@ -177,6 +179,8 @@ describe("OrchestratorLink", () => {
               gameRunning: true,
             },
           ],
+          roles: ["worker"],
+          installs: [],
         });
 
         const start: AgentCommand = {
@@ -186,6 +190,7 @@ describe("OrchestratorLink", () => {
           appId: 1,
           slot: 0,
           udpPort: 59000,
+          profile: null,
         };
         yield* Queue.offer(server.streams[0]!, start);
         yield* waitUntil(() => handled.length === 1);
@@ -209,6 +214,7 @@ describe("OrchestratorLink", () => {
           _tag: "Stopped",
           sessionId: "s1",
           cloudSynced: true,
+          profileSaved: false,
         });
         yield* waitUntil(() => server.connects.length === 2);
         yield* waitUntil(() => server.reports.length === 4);
@@ -216,6 +222,7 @@ describe("OrchestratorLink", () => {
           _tag: "Stopped",
           sessionId: "s1",
           cloudSynced: true,
+          profileSaved: false,
         });
 
         // Поток команд завершился сам (вытеснен) — тоже переподключение.

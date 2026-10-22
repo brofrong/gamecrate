@@ -43,6 +43,8 @@ const toValues = (settings: SessionSettings): Values => ({
   idleGraceMinutes: String(settings.idleGraceMinutes),
   disconnectGraceMinutes: String(settings.disconnectGraceMinutes),
   startTimeoutMinutes: String(settings.startTimeoutMinutes),
+  // Task 6: добавить поле «Таймаут установки, мин» в форму (`fields`).
+  installTimeoutMinutes: String(settings.installTimeoutMinutes),
 });
 
 /** Проверить все поля: настройки или ошибки по полям. */
@@ -59,7 +61,8 @@ const validate = (
   }
   return Object.keys(errors).length > 0
     ? { errors }
-    : { settings: parsed as SessionSettings };
+    : // Task 6: добавить installTimeoutMinutes в `fields`, иначе он не редактируется.
+      { settings: parsed as SessionSettings };
 };
 
 export function SessionSettingsForm({

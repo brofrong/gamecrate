@@ -64,6 +64,8 @@ export const AgentRpcHandlers = AgentRpcs.toLayer(
         "agent.connect": (payload, { client }) =>
           hub.connect(client.id, payload),
         "agent.report": (report, { client }) => hub.report(client.id, report),
+        // Task 5: проверка baseVersion и upsert `profiles`.
+        "agent.profileCommit": () => Effect.succeed({ accepted: false }),
       }),
     ),
   ),

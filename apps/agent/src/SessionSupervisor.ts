@@ -370,6 +370,8 @@ const make = Effect.gen(function* () {
         _tag: "Stopped",
         sessionId: session.sessionId,
         cloudSynced,
+        // Task 3: сохранение профиля в RustFS — пока всегда false.
+        profileSaved: false,
       });
       yield* Effect.logInfo("Session stopped", {
         sessionId: session.sessionId,
@@ -550,7 +552,13 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.andThen(
-            emit({ _tag: "Stopped", sessionId, cloudSynced: false }),
+            // Task 3: сохранение профиля в RustFS — пока всегда false.
+            emit({
+              _tag: "Stopped",
+              sessionId,
+              cloudSynced: false,
+              profileSaved: false,
+            }),
           ),
         ),
         scope,
@@ -615,10 +623,19 @@ const make = Effect.gen(function* () {
   );
 
   return {
-    handle: (command) =>
-      command._tag === "StartSession"
-        ? start(command)
-        : stop(command.sessionId),
+    handle: (command) => {
+      switch (command._tag) {
+        case "StartSession":
+          return start(command);
+        case "StopSession":
+          return stop(command.sessionId);
+        case "InstallGame":
+        case "CancelInstall":
+          // Task 4: обрабатывает Installer (роль gamestore); этот агент
+          // подключается с roles: ["worker"] и такие команды не получает.
+          return Effect.void;
+      }
+    },
     snapshot: Effect.sync(() =>
       [...sessions.values()].map((session) => ({
         sessionId: session.sessionId,

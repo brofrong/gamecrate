@@ -425,6 +425,7 @@ describe("session rpc", () => {
             idleGraceMinutes: 3,
             disconnectGraceMinutes: 5,
             startTimeoutMinutes: 15,
+            installTimeoutMinutes: 180,
           },
         });
         const rpc = yield* client;
