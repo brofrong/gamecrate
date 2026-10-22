@@ -109,10 +109,14 @@ describe("email otp sign-in", () => {
     ).toBe(true);
 
     const [created] = await drizzle({ client: db })
-      .select({ emailVerified: user.emailVerified })
+      .select({ emailVerified: user.emailVerified, name: user.name })
       .from(user)
       .where(eq(user.email, email));
     expect(created?.emailVerified).toBe(true);
+    // emailOTP не спрашивает имя — Better Auth создаёт пользователя с
+    // `name: ""`; `databaseHooks.user.create.before` в `auth.ts` подставляет
+    // локальную часть почты, чтобы в шапке/профиле не было пустого имени.
+    expect(created?.name).toBe("ivan");
   });
 
   it("second sign-in with the same email reuses the user", async () => {

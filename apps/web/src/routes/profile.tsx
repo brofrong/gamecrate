@@ -13,6 +13,7 @@ import {
   unlinkProvider,
 } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
+import { AccountSummary } from "@/components/profile/AccountSummary";
 import { EmailSection } from "@/components/profile/EmailSection";
 import {
   type LinkedAccount,
@@ -122,6 +123,7 @@ function ProfilePage() {
           <ServerUnreachable onRetry={retry} />
         ) : user !== undefined ? (
           <div className="grid gap-8">
+            <AccountSummary user={user} />
             <EmailSection user={user} onChanged={reloadMe} />
             {providers !== undefined && accounts !== null && (
               <LoginMethods

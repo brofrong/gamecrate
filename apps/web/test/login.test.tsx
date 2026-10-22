@@ -321,4 +321,35 @@ describe("login panel", () => {
     expect(loginNext({ next: "/profile" })).toBe("/profile");
     expect(loginNext({})).toBe("/library");
   });
+
+  it("hides the email divider when no provider buttons are configured", () => {
+    render(
+      <LoginPanel
+        providers={{
+          google: false,
+          yandex: false,
+          pocketId: true,
+          telegram: null,
+        }}
+        next="/library"
+        onLevel={noop}
+        onTint={noop}
+        onLit={noop}
+      />,
+    );
+    expect(screen.queryByText("или по почте")).toBeNull();
+  });
+
+  it("shows the email divider when a provider button is configured", () => {
+    render(
+      <LoginPanel
+        providers={providers}
+        next="/library"
+        onLevel={noop}
+        onTint={noop}
+        onLit={noop}
+      />,
+    );
+    expect(screen.getByText("или по почте")).toBeTruthy();
+  });
 });

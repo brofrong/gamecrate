@@ -6,6 +6,7 @@ import type * as React from "react";
 import { signOut } from "@/auth";
 import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/button";
+import { avatarInitial } from "@/lib/accountDisplay";
 
 export function AppHeader({
   user,
@@ -34,6 +35,7 @@ export function AppHeader({
           {user && (
             <Link
               to="/profile"
+              aria-label="Профиль"
               className="flex items-center gap-2 rounded-md hover:opacity-80"
             >
               {user.image ? (
@@ -44,7 +46,7 @@ export function AppHeader({
                 />
               ) : (
                 <div className="flex size-8 items-center justify-center rounded-full bg-muted text-sm">
-                  {user.name.slice(0, 1).toUpperCase()}
+                  {avatarInitial(user)}
                 </div>
               )}
               <span className="hidden max-w-40 truncate text-sm md:inline">

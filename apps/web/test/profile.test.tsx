@@ -16,6 +16,7 @@ import {
 import { RouterProvider } from "@tanstack/react-router";
 import * as auth from "../src/auth";
 import { AppHeader } from "../src/components/AppHeader";
+import { AccountSummary } from "../src/components/profile/AccountSummary";
 import { EmailSection } from "../src/components/profile/EmailSection";
 import {
   type LinkedAccount,
@@ -207,9 +208,53 @@ describe("EmailSection", () => {
 });
 
 describe("AppHeader", () => {
-  it("header links the avatar to /profile", async () => {
+  it("header links the avatar to /profile with an accessible name", async () => {
     render(<RouterProvider router={testRouter(<AppHeader user={user} />)} />);
-    const link = await screen.findByRole("link", { name: /Gamer/ });
+    const link = await screen.findByRole("link", { name: "Профиль" });
     expect(link.getAttribute("href")).toBe("/profile");
+  });
+
+  it("falls back to the email initial when name is empty", async () => {
+    render(
+      <RouterProvider
+        router={testRouter(
+          <AppHeader user={{ ...user, name: "", email: "ivan@example.com" }} />,
+        )}
+      />,
+    );
+    expect(await screen.findByText("I")).toBeTruthy();
+  });
+
+  it("falls back to ? when both name and email are empty", async () => {
+    render(
+      <RouterProvider
+        router={testRouter(
+          <AppHeader user={{ ...user, name: "", email: null }} />,
+        )}
+      />,
+    );
+    expect(await screen.findByText("?")).toBeTruthy();
+  });
+});
+
+describe("AccountSummary", () => {
+  it("shows the avatar initial and name", () => {
+    render(<AccountSummary user={user} />);
+    expect(screen.getByText("Gamer")).toBeTruthy();
+    expect(screen.getByText("G")).toBeTruthy();
+  });
+
+  it("falls back to the email local part when name is empty", () => {
+    render(
+      <AccountSummary
+        user={{ ...user, name: "", email: "ivan@example.com" }}
+      />,
+    );
+    expect(screen.getByText("ivan")).toBeTruthy();
+  });
+
+  it("falls back to ? when both name and email are empty", () => {
+    render(<AccountSummary user={{ ...user, name: "", email: null }} />);
+    expect(screen.getAllByText("?")).toHaveLength(2);
   });
 });

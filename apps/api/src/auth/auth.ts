@@ -113,6 +113,35 @@ export const makeAuth = (
       : {}),
     databaseHooks: {
       ...hooks,
+      user: {
+        ...hooks.user,
+        create: {
+          ...hooks.user?.create,
+          before: async (newUser, context) => {
+            // Внешний хук (из слоя) выполняется первым — наш дефолт имени
+            // накладывается на его результат, а не подменяет его.
+            const result = await hooks.user?.create?.before?.(newUser, context);
+            if (result === false) return false;
+            const overrideData =
+              result && typeof result === "object" && "data" in result
+                ? result.data
+                : undefined;
+            const name = overrideData?.name ?? newUser.name;
+            // Код на почту (emailOTP) не спрашивает имя — Better Auth создаёт
+            // пользователя с `name: ""`. Провайдеры (Telegram/Steam/OAuth) своё
+            // имя уже проставляют, их сюда не заносит.
+            if (typeof name === "string" && name.trim().length === 0) {
+              const email = overrideData?.email ?? newUser.email;
+              const localPart =
+                typeof email === "string" ? email.split("@")[0] : undefined;
+              if (localPart) {
+                return { data: { ...overrideData, name: localPart } };
+              }
+            }
+            return result;
+          },
+        },
+      },
       session: {
         ...hooks.session,
         create: {
@@ -187,7 +216,11 @@ export const makeAuth = (
           }),
       }),
       ...(Option.isSome(config.telegram)
-        ? [telegramPlugin({ botToken: Redacted.value(config.telegram.value.botToken) })]
+        ? [
+            telegramPlugin({
+              botToken: Redacted.value(config.telegram.value.botToken),
+            }),
+          ]
         : []),
     ],
   });

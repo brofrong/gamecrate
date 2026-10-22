@@ -152,6 +152,11 @@ export function LoginPanel({
     );
   }
 
+  // Разделитель «или по почте» имеет смысл только когда выше есть хотя бы одна
+  // кнопка провайдера (pocketId сюда не входит — это отдельная «Вход для команды»).
+  const hasProviderButtons = Boolean(
+    providers.google || providers.yandex || providers.telegram,
+  );
   const canResend = now >= (step.kind === "code" ? step.resendAt : 0);
   const remaining =
     step.kind === "code"
@@ -172,11 +177,13 @@ export function LoginPanel({
             onHover={onTint}
             pending={pending}
           />
-          <div className="flex items-center gap-3 text-xs text-brand-muted">
-            <span className="h-px flex-1 bg-brand-line" />
-            или по почте
-            <span className="h-px flex-1 bg-brand-line" />
-          </div>
+          {hasProviderButtons && (
+            <div className="flex items-center gap-3 text-xs text-brand-muted">
+              <span className="h-px flex-1 bg-brand-line" />
+              или по почте
+              <span className="h-px flex-1 bg-brand-line" />
+            </div>
+          )}
           <form
             className="grid gap-2.5"
             onSubmit={(e) => {
