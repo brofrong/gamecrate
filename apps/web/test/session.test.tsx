@@ -130,6 +130,17 @@ describe("session", () => {
     expect(streamFrame(stopping.container)).toBeNull();
     stopping.unmount();
 
+    const installing = renderPlayer(
+      view("installing", { streamReady: false, installPercent: 34 }),
+    );
+    expect(screen.getByText("Устанавливаем игру")).toBeTruthy();
+    expect(screen.getByText("34 %")).toBeTruthy();
+    expect(
+      screen.getByText("Время установки не входит в игровое"),
+    ).toBeTruthy();
+    expect(streamFrame(installing.container)).toBeNull();
+    installing.unmount();
+
     const onLibrary = mock(() => {});
     const ended = renderPlayer(view("ended", { playedSeconds: 4320 }), {
       onLibrary,
@@ -149,6 +160,26 @@ describe("session", () => {
     expect(screen.getByText("Сервер с игрой перестал отвечать")).toBeTruthy();
     expect(screen.getByRole("button", { name: "В библиотеку" })).toBeTruthy();
     expect(streamFrame(failed.container)).toBeNull();
+  });
+
+  it("installing screen shows the percent, the not-billed note and cancels via the same stop action", () => {
+    const onExit = mock(() => {});
+    renderPlayer(
+      view("installing", { streamReady: false, installPercent: 34 }),
+      { onExit },
+    );
+    expect(screen.getByText("Устанавливаем игру")).toBeTruthy();
+    expect(screen.getByText("34 %")).toBeTruthy();
+    expect(
+      screen.getByText("Время установки не входит в игровое"),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it("installing with an unknown total shows 0 %", () => {
+    renderPlayer(view("installing", { streamReady: false, installPercent: 0 }));
+    expect(screen.getByText("0 %")).toBeTruthy();
   });
 
   it("ended shows played time in hours and minutes", () => {

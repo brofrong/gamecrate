@@ -14,6 +14,7 @@ const fields: ReadonlyArray<{ key: Key; label: string }> = [
   { key: "idleGraceMinutes", label: "Время на ответ, мин" },
   { key: "disconnectGraceMinutes", label: "Ожидание после отключения, мин" },
   { key: "startTimeoutMinutes", label: "Таймаут запуска, мин" },
+  { key: "installTimeoutMinutes", label: "Таймаут установки, мин" },
 ];
 
 type Bounds = { readonly minimum?: number; readonly maximum?: number };
@@ -43,15 +44,13 @@ const toValues = (settings: SessionSettings): Values => ({
   idleGraceMinutes: String(settings.idleGraceMinutes),
   disconnectGraceMinutes: String(settings.disconnectGraceMinutes),
   startTimeoutMinutes: String(settings.startTimeoutMinutes),
-  // Task 6: добавить поле «Таймаут установки, мин» в форму (`fields`).
   installTimeoutMinutes: String(settings.installTimeoutMinutes),
 });
 
 /**
  * Проверить все поля: настройки или ошибки по полям. Начинает с `initial`
- * (загруженные настройки), поэтому поля, которых нет в `fields` — сейчас
- * `installTimeoutMinutes`, Task 6 добавит его в форму — доезжают до сервера
- * неизменными, а не пропадают из сохраняемого значения.
+ * (загруженные настройки), поэтому поля, которых нет в `fields`, доезжают до
+ * сервера неизменными, а не пропадают из сохраняемого значения.
  */
 const validate = (
   initial: SessionSettings,

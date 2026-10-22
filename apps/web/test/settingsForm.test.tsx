@@ -21,6 +21,7 @@ describe("session settings form", () => {
     expect(field("Время на ответ, мин").value).toBe("2");
     expect(field("Ожидание после отключения, мин").value).toBe("5");
     expect(field("Таймаут запуска, мин").value).toBe("15");
+    expect(field("Таймаут установки, мин").value).toBe("180");
 
     fireEvent.change(field("Простой до предупреждения, мин"), {
       target: { value: "121" },
@@ -57,11 +58,33 @@ describe("session settings form", () => {
       idleGraceMinutes: 3,
       disconnectGraceMinutes: 5,
       startTimeoutMinutes: 20,
-      // Не редактируется этой формой (Task 6 добавит поле в `fields`), но
-      // должен доехать до сервера как есть, а не пропасть из сохранённого значения.
       installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
     });
     expect(screen.queryByText(/Целое число от/)).toBeNull();
+  });
+
+  it("settings form rejects install timeout 9", async () => {
+    const onSubmit = mock(
+      async (_settings: SessionSettings): Promise<string | null> => null,
+    );
+    render(
+      <SessionSettingsForm
+        initial={defaultSessionSettings}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(field("Таймаут установки, мин"), {
+      target: { value: "9" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    expect(await screen.findByText("Целое число от 10 до 720")).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(field("Таймаут установки, мин"), {
+      target: { value: "180" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
   });
 
   it("settings form shows the server error", async () => {

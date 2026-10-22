@@ -108,7 +108,7 @@ function SessionSettingsCard() {
         {AsyncResult.match(settings, {
           onInitial: () => (
             <div className="flex flex-col gap-3">
-              {Array.from({ length: 4 }, (_, i) => (
+              {Array.from({ length: 5 }, (_, i) => (
                 <Skeleton key={`settings-${i}`} className="h-14 w-full" />
               ))}
             </div>

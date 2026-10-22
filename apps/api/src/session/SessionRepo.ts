@@ -3,6 +3,7 @@
 import {
   Db,
   games,
+  installJobs,
   playSegments,
   type SessionState as DbSessionState,
   sessions,
@@ -23,7 +24,7 @@ const terminalStates: Array<DbSessionState> = ["ended", "failed"];
 /** Условие «сессия активна» (не `ended`/`failed`). */
 const isActive = notInArray(sessions.state, terminalStates);
 
-/** Строка сессии вместе с названием игры. */
+/** Строка сессии вместе с названием игры и байтами её задачи установки (если есть). */
 const sessionWithGame = {
   id: sessions.id,
   userId: sessions.userId,
@@ -34,6 +35,8 @@ const sessionWithGame = {
   failReason: sessions.failReason,
   stateSince: sessions.stateSince,
   createdAt: sessions.createdAt,
+  installBytesDownloaded: installJobs.bytesDownloaded,
+  installBytesTotal: installJobs.bytesTotal,
 };
 
 type SessionWithGame = {
@@ -45,6 +48,8 @@ type SessionWithGame = {
   readonly failReason: string | null;
   readonly stateSince: Date;
   readonly createdAt: Date;
+  readonly installBytesDownloaded: number | null;
+  readonly installBytesTotal: number | null;
 };
 
 /** Сессии с названием игры, отобранные по `where`. */
@@ -55,8 +60,25 @@ const selectSessions = (where: SQL | undefined) =>
       .select(sessionWithGame)
       .from(sessions)
       .innerJoin(games, eq(sessions.appId, games.appId))
+      .leftJoin(installJobs, eq(sessions.installJobId, installJobs.id))
       .where(where);
   });
+
+/**
+ * Процент установки: `bytesDownloaded`/`bytesTotal` задачи установки, `0` пока
+ * `bytesTotal` не пришёл (ещё 0 или неизвестен) — не деление на 0. Только в
+ * `installing`: `installJobId` не очищается после установки (история), поэтому
+ * в других состояниях процент не считаем.
+ */
+const installPercentOf = (
+  state: DbSessionState,
+  bytesDownloaded: number | null,
+  bytesTotal: number | null,
+): number | null => {
+  if (state !== "installing") return null;
+  if (bytesTotal === null || bytesTotal === 0) return 0;
+  return Math.floor((100 * (bytesDownloaded ?? 0)) / bytesTotal);
+};
 
 /**
  * Игровое время сессии в секундах: сумма billable-отрезков, открытый — до `now`
@@ -104,8 +126,11 @@ const toView = (row: SessionWithGame) =>
       streamReady: row.streamUrl !== null,
       failReason: row.failReason,
       idleDeadline,
-      // Task 6: вычислить процент из bytesDownloaded/bytesTotal задачи установки.
-      installPercent: null,
+      installPercent: installPercentOf(
+        row.state,
+        row.installBytesDownloaded,
+        row.installBytesTotal,
+      ),
       playedSeconds: yield* playedSeconds(row.id, now),
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;

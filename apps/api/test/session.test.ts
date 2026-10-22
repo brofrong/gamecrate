@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   Db,
   games,
+  installJobs,
   playSegments,
   sessions,
   settings,
@@ -441,6 +442,66 @@ describe("session rpc", () => {
     expect(result.warning?.idleDeadline).toBe("2026-10-17T10:03:00.000Z");
     expect(result.playing?.idleDeadline).toBeNull();
   });
+
+  it("session view reports installPercent 34 for 34 of 100 bytes", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const db = yield* Db;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const jobId = crypto.randomUUID();
+        yield* db.insert(installJobs).values({
+          id: jobId,
+          appId: 10,
+          userId: alice.id,
+          state: "running",
+          bytesDownloaded: 34,
+          bytesTotal: 100,
+        });
+        yield* setSession(id, { state: "installing", installJobId: jobId });
+        const installing = yield* rpc["session.active"]();
+        // bytesTotal неизвестен (ещё не пришёл от Steam) — 0, не деление на 0.
+        yield* db
+          .update(installJobs)
+          .set({ bytesDownloaded: null, bytesTotal: null })
+          .where(eq(installJobs.id, jobId));
+        const unknownTotal = yield* rpc["session.active"]();
+        return { installing, unknownTotal };
+      }),
+    );
+    expect(result.installing?.installPercent).toBe(34);
+    expect(result.unknownTotal?.installPercent).toBe(0);
+  });
+
+  it("installPercent is null outside installing", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const db = yield* Db;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const queued = yield* rpc["session.active"]();
+        const jobId = crypto.randomUUID();
+        yield* db.insert(installJobs).values({
+          id: jobId,
+          appId: 10,
+          userId: alice.id,
+          state: "done",
+          bytesDownloaded: 100,
+          bytesTotal: 100,
+        });
+        // Задача установки уже отмечена на сессии, но сессия перешла дальше —
+        // installJobId не очищается (история), а installPercent — только в installing.
+        yield* setSession(id, { state: "starting", installJobId: jobId });
+        const starting = yield* rpc["session.active"]();
+        return { queued, starting };
+      }),
+    );
+    expect(result.queued?.installPercent).toBeNull();
+    expect(result.starting?.installPercent).toBeNull();
+  });
+
   it("malformed session ids are SessionNotFound without touching the db", async () => {
     const result = await run(
       Effect.gen(function* () {

@@ -62,13 +62,31 @@ function Played({ seconds }: { seconds: number }) {
   return <p className="text-sm">{`Вы играли ${formatPlayed(seconds)}`}</p>;
 }
 
+/** Полоса прогресса установки: простой залитый div — отдельного компонента в проекте нет. */
+function InstallProgress({ percent }: { percent: number }) {
+  return (
+    <div className="flex w-64 flex-col items-center gap-2">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-primary transition-all"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="text-sm font-medium">{`${percent} %`}</p>
+    </div>
+  );
+}
+
 /** Состояние сессии, когда стрим не показан. */
 export function SessionStatus({
   view,
   onLibrary,
+  onExit,
 }: {
   view: SessionView;
   onLibrary: () => void;
+  /** «Отменить» в `installing` — тот же `session.stop`, что и выход из игры. */
+  onExit: () => void;
 }) {
   const { gameName } = view;
   switch (view.state) {
@@ -79,6 +97,20 @@ export function SessionStatus({
           title="Ждём свободный сервер…"
           gameName={gameName}
         />
+      );
+    case "installing":
+      return (
+        <StatusScreen
+          icon={spinner}
+          title="Устанавливаем игру"
+          gameName={gameName}
+        >
+          <InstallProgress percent={view.installPercent ?? 0} />
+          <Reason text="Время установки не входит в игровое" />
+          <Button variant="outline" onClick={onExit}>
+            Отменить
+          </Button>
+        </StatusScreen>
       );
     case "starting":
       return (

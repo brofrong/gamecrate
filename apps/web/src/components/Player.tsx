@@ -128,7 +128,7 @@ export function Player({
   onFrameLoad?: (frame: HTMLIFrameElement) => void;
 }) {
   if (!showsStream(view)) {
-    return <SessionStatus view={view} onLibrary={onLibrary} />;
+    return <SessionStatus view={view} onLibrary={onLibrary} onExit={onExit} />;
   }
 
   // Порядок детей постоянный: iframe первым и без условий — React не пересоздаёт его
