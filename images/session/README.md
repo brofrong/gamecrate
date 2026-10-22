@@ -7,13 +7,27 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
 ## Файлы
 
 - `Dockerfile` — 32-битные библиотеки NVIDIA версии драйвера хоста (Steam 32-битный, toolkit их не
-  прокидывает), постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт.
+  прокидывает), постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт, скрипты профиля;
+  каталоги `~/.local/share/Steam/steamapps` и `~/.steam` (с родителями) заранее, владелец `ubuntu`.
 - `cg-launch` — `steam -silent -applaunch "$CG_APP_ID"`; пустой `CG_APP_ID` — ничего не делает,
   не число — ошибка (exit 1). Запускает игру не больше одного раза за жизнь контейнера: замок
   `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`); если Plasma
   перезапустится и автостарт сработает снова — `[cg-launch] already launched …, skipping`.
 - `cg-launch.desktop` → `/etc/xdg/autostart/`: KDE запускает `cg-launch` внутри сессии Plasma,
   где есть `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит геймпад, спека §7.3).
+- `cg-profile-pack` — профиль из `$HOME` в `/tmp/cg-profile.tar` (GNU tar, записи 1000:1000) по
+  whitelist: `.local/share/Steam/config` (без `htmlcache`, `avatarcache`), `.local/share/Steam/local.vdf`,
+  `.local/share/Steam/userdata`, `.steam/registry.vdf`, `.config`, всё в `.local/share` кроме `Steam`,
+  `steamapps/compatdata/*/pfx/drive_c/users/steamuser` и `…/pfx/user.reg` (сохранения и реестр
+  Proton), `steamapps/common/Steam Controller Configs`. Несуществующие пути пропускаются. Перед путями —
+  записи всех каталогов-родителей (от `.local`/`.steam`): иначе при распаковке Docker создаёт их от
+  root, и Steam молча выходит (`bin_steam.sh: ln: Permission denied`). `--list` — только напечатать
+  записи. Агент зовёт его `docker exec` при остановке и как entrypoint помощника импорта старого тома.
+- `cg-steam-shutdown` — `steam -shutdown` в окружении сессии Plasma (переменные из
+  `/proc/<plasmashell>/environ`: `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`,
+  `DBUS_SESSION_BUS_ADDRESS`, `HOME`, `USER`, `LD_PRELOAD`, `XAUTHORITY`, `XDG_SESSION_TYPE`; без
+  `XAUTHORITY` — «Unable to open X11 display»), ждёт выхода `ubuntu12_32/steam` до 30 с. Клиент не
+  запущен — 0; не вышел или нет Plasma — 1.
 - `.dockerignore` — в контекст сборки идут только эти файлы и `nv/x/32/`.
 
 ## Сборка
@@ -34,8 +48,10 @@ rsync этого каталога в `~/cg-session-image` на воркере, �
 | `CG_APP_ID`                   | appid игры для автозапуска                                                                                                                                                                          |
 | `SELKIES_WEBRTC_UDP_MUX_PORT` | UDP-порт слота, публикуется наружу 1:1 (`-p P:P/udp`)                                                                                                                                               |
 | `SELKIES_WEBRTC_PUBLIC_IP`    | публичный IP воркера                                                                                                                                                                                |
-| том на `/home/ubuntu`         | дом пользователя: вход Steam, игры, сохранения                                                                                                                                                      |
-| метка                         | `cg.session=<sessionId>`                                                                                                                                                                            |
+| дом `/home/ubuntu`            | слой контейнера; профиль (вход Steam, сохранения) агент кладёт архивом в созданный контейнер до старта (`PUT /containers/{id}/archive`), при остановке снимает `cg-profile-pack`                    |
+| том `cg-s-<id>-client`        | overlay (lower — чистый клиент Steam `STEAM_CLIENT_DIR`, upper — `SCRATCH_DIR/<id>/client`) на `/home/ubuntu/.local/share/Steam`                                                                    |
+| том `cg-s-<id>-apps`          | overlay (lower — библиотека `LIBRARY_DIR/steamapps`, upper — `SCRATCH_DIR/<id>/apps`) на `/home/ubuntu/.local/share/Steam/steamapps`                                                                |
+| метки                         | `cg.session=<sessionId>`, `cg.slot`, `cg.app`, `cg.user=<userId>`, `cg.base-version` (версия профиля, из которой собран дом; пусто — профиля не было)                                               |
 | сеть                          | `cg-sessions` (bridge); веб-порт 8080 наружу не публикуется                                                                                                                                         |
 | GPU                           | `--runtime nvidia --gpus all --shm-size 2g`                                                                                                                                                         |
 | права                         | `--security-opt no-new-privileges:true`: setuid (`sudo-root`, `su`, `pkexec`) не поднимает права; базовый образ без него даёт `ubuntu` root (`NOPASSWD: ALL`)                                       |

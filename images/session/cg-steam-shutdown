@@ -1,0 +1,43 @@
+#!/bin/bash
+# Штатно закрыть клиент Steam перед снятием профиля (агент: `docker exec`): `steam -shutdown`
+# в окружении сессии Plasma (как у cg-launch) и ожидание выхода клиента до 30 с.
+# Клиент не запущен — сразу 0. Не вышел за 30 с или нет сессии Plasma — 1 (агент только
+# предупреждает в логе и всё равно снимает профиль).
+#
+# `docker exec` идёт без окружения сессии: без DISPLAY/XAUTHORITY Steam падает с «Unable to open
+# X11 display», поэтому переменные берутся из /proc/<plasmashell>/environ.
+set -u
+
+timeout_sec=30
+
+# Процесс клиента: …/ubuntu12_32/steam (не steam-runtime, не steamwebhelper). pgrep не находит сам
+# себя, а командная строка этого скрипта шаблона не содержит.
+client_running() { pgrep -f 'ubuntu12_32/steam( |$)' >/dev/null; }
+
+if ! client_running; then
+  exit 0
+fi
+
+plasma=$(pgrep -f plasmashell | head -1)
+if [ -z "${plasma}" ] || [ ! -r "/proc/${plasma}/environ" ]; then
+  echo "[cg-steam-shutdown] no Plasma session, cannot reach Steam" >&2
+  exit 1
+fi
+while IFS= read -r -d '' var; do
+  case "${var}" in
+    DISPLAY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
+      USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
+      export "${var?}"
+      ;;
+  esac
+done <"/proc/${plasma}/environ"
+
+# В фоне и без наших stdout/stderr: `docker exec` иначе ждал бы закрытия потоков.
+steam -shutdown </dev/null >/dev/null 2>&1 &
+
+for ((i = 0; i < timeout_sec; i++)); do
+  client_running || exit 0
+  sleep 1
+done
+echo "[cg-steam-shutdown] Steam did not exit in ${timeout_sec} s" >&2
+exit 1

@@ -1,6 +1,7 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
 // (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды из
-// потока передаёт SessionSupervisor, его отчёты отправляет по одному, по порядку.
+// потока передаёт SessionSupervisor, его отчёты отправляет по одному, по порядку;
+// на время соединения через него идут `agent.profileCommit` (ProfileCommitter).
 // Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
 // переподключение с паузой 1 → 30 с.
 import { type AgentConnect, type AgentReport, AgentRpcs } from "@cg/rpc";
@@ -18,6 +19,7 @@ import {
 } from "effect";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentConfig } from "./config";
+import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { SessionSupervisor } from "./SessionSupervisor";
 
 export const RECONNECT_MIN = Duration.seconds(1);
@@ -36,6 +38,7 @@ export const nextDelay = (delay: Duration.Duration) =>
 export const run = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const supervisor = yield* SessionSupervisor;
+  const committer = yield* ProfileCommitter;
   const protocol = RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
       BunSocket.layerWebSocket(config.orchestratorUrl, {
@@ -57,6 +60,9 @@ export const run = Effect.gen(function* () {
     const context = yield* Layer.build(protocol);
     const client = yield* RpcClient.make(AgentRpcs).pipe(
       Effect.provideContext(context),
+    );
+    yield* committer.attach((payload) =>
+      client["agent.profileCommit"](payload),
     );
     const buffered = yield* Queue.clear(supervisor.reports);
     carry.push(...buffered.filter(isTerminal));
@@ -126,5 +132,8 @@ export const run = Effect.gen(function* () {
 });
 
 /** Фоновое соединение с оркестратором на всё время жизни слоя. */
-export const layer: Layer.Layer<never, never, AgentConfig | SessionSupervisor> =
-  Layer.effectDiscard(run.pipe(Effect.forkScoped));
+export const layer: Layer.Layer<
+  never,
+  never,
+  AgentConfig | SessionSupervisor | ProfileCommitter
+> = Layer.effectDiscard(run.pipe(Effect.forkScoped));

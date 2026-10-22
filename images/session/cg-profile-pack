@@ -1,0 +1,83 @@
+#!/bin/bash
+# Профиль пользователя из дома ($HOME, по умолчанию /home/ubuntu) → /tmp/cg-profile.tar (GNU tar,
+# владелец записей uid/gid 1000). Агент зовёт его `docker exec` в контейнере сессии перед остановкой
+# и как entrypoint помощника импорта старого тома cg-home-<userId> (том read-only на /home/ubuntu).
+#
+# Состав (whitelist, несуществующие пути пропускаются):
+#   .local/share/Steam/config (без htmlcache, avatarcache), .local/share/Steam/local.vdf,
+#   .local/share/Steam/userdata, .steam/registry.vdf, .config, всё в .local/share кроме Steam,
+#   .local/share/Steam/steamapps/compatdata/*/pfx/drive_c/users/steamuser (сохранения Proton),
+#   .local/share/Steam/steamapps/compatdata/*/pfx/user.reg,
+#   .local/share/Steam/steamapps/common/Steam Controller Configs (раскладки).
+#
+# Перед путями в архив идут записи всех каталогов-родителей (от .local/.steam вниз): иначе при
+# распаковке (`PUT /containers/{id}/archive`) Docker создаёт недостающих родителей от root, и Steam
+# молча выходит (`bin_steam.sh: ln: Permission denied`).
+#
+# --list — только напечатать записи архива по порядку (по одной на строку), архив не писать.
+set -euo pipefail
+shopt -s nullglob dotglob
+
+out=/tmp/cg-profile.tar
+steam=.local/share/Steam
+
+cd "${HOME:-/home/ubuntu}"
+
+# Каталоги-родители пути, от верхнего вниз: a/b/c → a, a/b.
+emit_parents() {
+  local rest=$1 acc=""
+  while [[ ${rest} == */* ]]; do
+    acc="${acc:+${acc}/}${rest%%/*}"
+    rest="${rest#*/}"
+    printf '%s\n' "${acc}"
+  done
+}
+
+# Путь из whitelist: родители, сам путь и всё под ним (find печатает каталог раньше содержимого),
+# кроме кешей Steam.
+emit() {
+  local path=$1
+  [ -e "${path}" ] || [ -L "${path}" ] || return 0
+  emit_parents "${path}"
+  find "${path}" \( -path "${steam}/config/htmlcache" -o -path "${steam}/config/avatarcache" \) \
+    -prune -o -print
+}
+
+entries() {
+  local path
+  emit "${steam}/config"
+  emit "${steam}/local.vdf"
+  emit "${steam}/userdata"
+  emit .steam/registry.vdf
+  emit .config
+  for path in .local/share/*; do
+    [ "${path}" = "${steam}" ] || emit "${path}"
+  done
+  for path in "${steam}"/steamapps/compatdata/*/pfx; do
+    emit "${path}/drive_c/users/steamuser"
+    emit "${path}/user.reg"
+  done
+  emit "${steam}/steamapps/common/Steam Controller Configs"
+}
+
+# Каждая запись один раз (общие родители), порядок первого появления.
+unique() { awk '!seen[$0]++'; }
+
+if [ "${1:-}" = "--list" ]; then
+  entries | unique
+  exit 0
+fi
+
+rm -f "${out}" "${out}.partial"
+status=0
+# --no-recursion: в архиве ровно наш список (каталоги — отдельными записями, содержимое уже в нём).
+# Код 1 у GNU tar — «файл изменился при чтении» (Plasma пишет в .config): архив годен.
+entries | unique | tar --create --file "${out}.partial" --no-recursion \
+  --verbatim-files-from --no-unquote --files-from=- \
+  --numeric-owner --owner=+1000 --group=+1000 \
+  --ignore-failed-read --warning=no-file-changed --warning=no-file-removed || status=$?
+if [ "${status}" -gt 1 ]; then
+  echo "[cg-profile-pack] tar failed with ${status}" >&2
+  exit "${status}"
+fi
+mv "${out}.partial" "${out}"

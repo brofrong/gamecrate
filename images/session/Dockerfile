@@ -8,7 +8,9 @@
 #   CG_APP_ID                     appid игры для автозапуска (пусто — только рабочий стол)
 #   SELKIES_WEBRTC_UDP_MUX_PORT   UDP-порт слота (публикуется наружу 1:1)
 #   SELKIES_WEBRTC_PUBLIC_IP      публичный IP воркера
-# Дом пользователя (вход Steam, игры, сохранения) — том на /home/ubuntu.
+# Дом пользователя — слой контейнера; ~/.local/share/Steam (клиент Steam) и
+# ~/.local/share/Steam/steamapps (библиотека) — overlay-тома сессии; профиль (вход Steam, сохранения)
+# агент кладёт в созданный контейнер до старта и снимает cg-profile-pack при остановке.
 # На Debian в контейнер пробрасывается GBM-бэкенд NVIDIA (libnvidia-allocator), см. README.md.
 FROM ghcr.io/selkies-project/selkies-egl-desktop:26.04
 ARG NV_VER=550.163.01
@@ -37,6 +39,20 @@ RUN ldconfig && ls -l /usr/lib/i386-linux-gnu/libGLX_nvidia.so.0
 # Selkies, без него Steam не видит геймпад.
 COPY --chmod=0755 cg-launch /usr/local/bin/cg-launch
 COPY --chmod=0644 cg-launch.desktop /etc/xdg/autostart/cg-launch.desktop
+
+# Профиль: снятие (cg-profile-pack) и штатное закрытие Steam перед ним (cg-steam-shutdown) —
+# агент зовёт их `docker exec`.
+COPY --chmod=0755 cg-profile-pack cg-steam-shutdown /usr/local/bin/
+
+# Каталоги дома заранее, владелец ubuntu: недостающие точки монтирования и родителей записей архива
+# профиля Docker создаёт от root, и Steam молча выходит (`bin_steam.sh: ln: Permission denied`).
+# install -d даёт владельца только последнему каталогу пути — родители перечислены по одному.
+RUN install -d -o 1000 -g 1000 \
+      /home/ubuntu/.local \
+      /home/ubuntu/.local/share \
+      /home/ubuntu/.local/share/Steam \
+      /home/ubuntu/.local/share/Steam/steamapps \
+      /home/ubuntu/.steam
 
 # Постоянные настройки Selkies (спека §9). Слотовые SELKIES_WEBRTC_UDP_MUX_PORT и
 # SELKIES_WEBRTC_PUBLIC_IP задаёт агент при создании контейнера.

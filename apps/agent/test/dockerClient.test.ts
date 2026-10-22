@@ -13,6 +13,7 @@ interface Recorded {
   readonly method: string;
   readonly path: string;
   readonly body: unknown;
+  readonly contentType: string | null;
 }
 
 /** Кадр мультиплексированного потока Docker (stdout=1, stderr=2). */
@@ -38,11 +39,19 @@ beforeAll(() => {
     unix,
     async fetch(request) {
       const url = new URL(request.url);
-      const text = await request.text();
+      const contentType = request.headers.get("content-type");
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      const text = new TextDecoder().decode(bytes);
       recorded.push({
         method: request.method,
         path: url.pathname + url.search,
-        body: text === "" ? undefined : JSON.parse(text),
+        body:
+          contentType === "application/x-tar"
+            ? bytes
+            : text === ""
+              ? undefined
+              : JSON.parse(text),
+        contentType,
       });
       return respond(`${request.method} ${url.pathname}${url.search}`);
     },
@@ -70,7 +79,15 @@ const spec: ContainerSpec = {
   labels: { "cg.session": "s1", "cg.slot": "1", "cg.app": "1794680" },
   network: "cg-sessions",
   udpPorts: [59001],
-  binds: ["cg-home-u1:/home/ubuntu", "/lib/a.so:/usr/lib/b.so:ro"],
+  binds: ["/lib/a.so:/usr/lib/b.so:ro"],
+  mounts: [
+    { volume: "cg-s-s1-client", target: "/home/ubuntu/.local/share/Steam" },
+    {
+      volume: "cg-home-u1",
+      target: "/home/ubuntu",
+      readOnly: true,
+    },
+  ],
   runtime: "nvidia",
   gpus: true,
   shmSizeBytes: 2147483648,
@@ -98,7 +115,21 @@ describe("DockerClient", () => {
         Runtime: "nvidia",
         DeviceRequests: [{ Driver: "", Count: -1, Capabilities: [["gpu"]] }],
         ShmSize: 2147483648,
-        Binds: ["cg-home-u1:/home/ubuntu", "/lib/a.so:/usr/lib/b.so:ro"],
+        Binds: ["/lib/a.so:/usr/lib/b.so:ro"],
+        Mounts: [
+          {
+            Type: "volume",
+            Source: "cg-s-s1-client",
+            Target: "/home/ubuntu/.local/share/Steam",
+            ReadOnly: false,
+          },
+          {
+            Type: "volume",
+            Source: "cg-home-u1",
+            Target: "/home/ubuntu",
+            ReadOnly: true,
+          },
+        ],
         PortBindings: { "59001/udp": [{ HostIp: "", HostPort: "59001" }] },
         NetworkMode: "cg-sessions",
         RestartPolicy: { Name: "no" },
@@ -234,6 +265,7 @@ describe("DockerClient", () => {
       method: "DELETE",
       path: "/v1.47/containers/cg-session-s1?force=true",
       body: undefined,
+      contentType: null,
     });
   });
   it("inspect returns labels, a missing container is undefined", async () => {
@@ -263,5 +295,141 @@ describe("DockerClient", () => {
     expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
       "DELETE /v1.47/containers/cg-session-s1?force=true",
     ]);
+  });
+  it("create does not start; entrypoint, cmd and user go into the body", async () => {
+    respond = (key) =>
+      key.startsWith("POST /v1.47/containers/create")
+        ? Response.json({ Id: "h1" }, { status: 201 })
+        : new Response(null, { status: 204 });
+    const helper: ContainerSpec = {
+      ...spec,
+      name: "cg-import-s1",
+      network: "none",
+      udpPorts: [],
+      gpus: false,
+      entrypoint: ["/usr/local/bin/cg-profile-pack"],
+      cmd: ["--list"],
+      user: "1000",
+    };
+    expect(await run(docker.create(helper))).toBe("h1");
+    expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "POST /v1.47/containers/create?name=cg-import-s1",
+    ]);
+    const body = recorded[0]?.body as Record<string, unknown>;
+    expect(body.Entrypoint).toEqual(["/usr/local/bin/cg-profile-pack"]);
+    expect(body.Cmd).toEqual(["--list"]);
+    expect(body.User).toBe("1000");
+    expect(body.NetworkingConfig).toEqual({
+      EndpointsConfig: { none: {} },
+    });
+    // Без entrypoint/cmd/user — ключей нет (остаются значения образа).
+    await run(docker.create(spec));
+    expect(Object.keys(recorded[0]?.body as object)).not.toContain(
+      "Entrypoint",
+    );
+    expect(Object.keys(recorded[0]?.body as object)).not.toContain("User");
+  });
+
+  it("start and wait", async () => {
+    respond = (key) =>
+      key === "POST /v1.47/containers/cg-import-s1/wait"
+        ? Response.json({ StatusCode: 3 })
+        : new Response(null, { status: 204 });
+    await run(docker.start("cg-import-s1"));
+    expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "POST /v1.47/containers/cg-import-s1/start",
+    ]);
+    expect(await run(docker.wait("cg-import-s1"))).toBe(3);
+  });
+
+  it("createVolume posts an overlay local volume", async () => {
+    respond = () => Response.json({ Name: "cg-s-s1-apps" }, { status: 201 });
+    await run(
+      docker.createVolume({
+        name: "cg-s-s1-apps",
+        labels: { "cg.session": "s1" },
+        overlay: { lower: "/l", upper: "/u", work: "/w" },
+      }),
+    );
+    expect(recorded).toEqual([
+      {
+        method: "POST",
+        path: "/v1.47/volumes/create",
+        body: {
+          Name: "cg-s-s1-apps",
+          Driver: "local",
+          DriverOpts: {
+            type: "overlay",
+            device: "overlay",
+            o: "lowerdir=/l,upperdir=/u,workdir=/w",
+          },
+          Labels: { "cg.session": "s1" },
+        },
+        contentType: "application/json",
+      },
+    ]);
+  });
+
+  it("removeVolume treats a missing volume as done, a volume in use is an error", async () => {
+    respond = (key) =>
+      key === "DELETE /v1.47/volumes/gone"
+        ? Response.json({ message: "no such volume" }, { status: 404 })
+        : Response.json({ message: "volume is in use" }, { status: 409 });
+    await run(docker.removeVolume("gone"));
+    const error = await runError(docker.removeVolume("busy"));
+    expect(error.status).toBe(409);
+    expect(recorded[0]?.path).toBe("/v1.47/volumes/busy");
+  });
+
+  it("volumeExists and listVolumes", async () => {
+    respond = (key) => {
+      if (key === "GET /v1.47/volumes/cg-home-u1")
+        return Response.json({ Name: "cg-home-u1" });
+      if (key.startsWith("GET /v1.47/volumes?"))
+        return Response.json({
+          Volumes: [
+            { Name: "cg-s-a-client", Labels: { "cg.session": "a" } },
+            { Name: "cg-s-a-apps", Labels: null },
+          ],
+          Warnings: null,
+        });
+      return Response.json({ message: "no such volume" }, { status: 404 });
+    };
+    expect(await run(docker.volumeExists("cg-home-u1"))).toBe(true);
+    expect(await run(docker.volumeExists("cg-home-u2"))).toBe(false);
+    expect(await run(docker.listVolumes("cg.session"))).toEqual([
+      { name: "cg-s-a-client", labels: { "cg.session": "a" } },
+      { name: "cg-s-a-apps", labels: {} },
+    ]);
+    const url = new URL(`http://docker${recorded[0]?.path}`);
+    expect(url.pathname).toBe("/v1.47/volumes");
+    expect(JSON.parse(url.searchParams.get("filters") ?? "")).toEqual({
+      label: ["cg.session"],
+    });
+  });
+
+  it("putArchive uploads a tar, getArchive downloads one", async () => {
+    const tar = new Uint8Array([1, 2, 3, 0, 255]);
+    respond = (key) =>
+      key.startsWith("GET")
+        ? new Response(new Uint8Array([9, 8, 7]), {
+            headers: { "content-type": "application/x-tar" },
+          })
+        : new Response(null, { status: 200 });
+    await run(docker.putArchive("cg-session-s1", "/home/ubuntu", tar));
+    expect(recorded).toEqual([
+      {
+        method: "PUT",
+        path: "/v1.47/containers/cg-session-s1/archive?path=%2Fhome%2Fubuntu",
+        body: tar,
+        contentType: "application/x-tar",
+      },
+    ]);
+    expect(
+      await run(docker.getArchive("cg-import-s1", "/tmp/cg-profile.tar")),
+    ).toEqual(new Uint8Array([9, 8, 7]));
+    expect(recorded[0]?.path).toBe(
+      "/v1.47/containers/cg-import-s1/archive?path=%2Ftmp%2Fcg-profile.tar",
+    );
   });
 });

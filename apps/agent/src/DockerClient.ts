@@ -1,5 +1,6 @@
 // Клиент Docker Engine API (v1.47) поверх unix-сокета: `fetch(url, { unix })` Bun.
-// Только то, что нужно агенту: контейнеры сессий, exec, логи, список по метке.
+// Только то, что нужно агенту: контейнеры сессий и помощников, exec, логи,
+// список по метке, overlay-тома, архивы файлов контейнера (профиль).
 import { Context, Duration, Effect, Layer, Schema } from "effect";
 import { AgentConfig } from "./config";
 
@@ -22,7 +23,14 @@ export class DockerError extends Schema.TaggedError<DockerError>()(
   },
 ) {}
 
-/** Что создаёт `createAndStart` (переводится в тело `POST /containers/create`). */
+/** Именованный том в контейнере (`HostConfig.Mounts`, `Type: volume`). */
+export interface VolumeMount {
+  readonly volume: string;
+  readonly target: string;
+  readonly readOnly?: boolean;
+}
+
+/** Что создаёт `create` (переводится в тело `POST /containers/create`). */
 export interface ContainerSpec {
   readonly name: string;
   readonly image: string;
@@ -32,8 +40,10 @@ export interface ContainerSpec {
   readonly network: string;
   /** UDP-порты, публикуемые наружу 1:1 (`-p P:P/udp`). */
   readonly udpPorts: ReadonlyArray<number>;
-  /** `-v`: именованные тома и bind-монты, `источник:цель[:ro]`. */
+  /** `-v`: bind-монты, `источник:цель[:ro]`. */
   readonly binds: ReadonlyArray<string>;
+  /** `--mount type=volume`: именованные тома (в т.ч. вложенные один в другой). */
+  readonly mounts: ReadonlyArray<VolumeMount>;
   /** `--runtime`. */
   readonly runtime: string;
   /** `--gpus all`. */
@@ -43,6 +53,31 @@ export interface ContainerSpec {
   readonly securityOpt: ReadonlyArray<string>;
   /** `--tmpfs`: точка монтирования → опции (`mode=1777,size=64k`). */
   readonly tmpfs: Readonly<Record<string, string>>;
+  /** `--entrypoint` (нет — entrypoint образа). */
+  readonly entrypoint?: ReadonlyArray<string>;
+  /** Аргументы entrypoint (нет — `CMD` образа). */
+  readonly cmd?: ReadonlyArray<string>;
+  /** `--user` (нет — `USER` образа). */
+  readonly user?: string;
+}
+
+/**
+ * Том `local` с драйвером overlay: `upper`/`work` должны существовать заранее и
+ * лежать на одной ФС; монтирует его сам dockerd (sudo не нужен).
+ */
+export interface OverlayVolumeSpec {
+  readonly name: string;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly overlay: {
+    readonly lower: string;
+    readonly upper: string;
+    readonly work: string;
+  };
+}
+
+export interface VolumeInfo {
+  readonly name: string;
+  readonly labels: Readonly<Record<string, string>>;
 }
 
 export interface ContainerInfo {
@@ -58,10 +93,16 @@ export interface ExecResult {
 }
 
 export interface DockerClientShape {
+  /** Создать контейнер, не запуская; id контейнера. */
+  readonly create: (spec: ContainerSpec) => Effect.Effect<string, DockerError>;
+  /** Запустить созданный контейнер; уже запущен — успех. */
+  readonly start: (name: string) => Effect.Effect<void, DockerError>;
   /** Создать и запустить контейнер; id контейнера. Старт не удался — созданный удаляется. */
   readonly createAndStart: (
     spec: ContainerSpec,
   ) => Effect.Effect<string, DockerError>;
+  /** Дождаться выхода контейнера (до 10 мин); код выхода. */
+  readonly wait: (name: string) => Effect.Effect<number, DockerError>;
   /** `docker stop -t`; уже остановлен или нет такого — успех. */
   readonly stop: (
     name: string,
@@ -76,14 +117,40 @@ export interface DockerClientShape {
   ) => Effect.Effect<ExecResult, DockerError>;
   /** `docker logs` целиком: stdout и stderr вперемешку, в порядке записи. */
   readonly logs: (name: string) => Effect.Effect<string, DockerError>;
-  /** Все контейнеры (и остановленные) с меткой `label`. */
   /** Контейнер по имени; нет такого — `undefined`. */
   readonly inspect: (
     name: string,
   ) => Effect.Effect<ContainerInfo | undefined, DockerError>;
+  /** Все контейнеры (и остановленные) с меткой `label`. */
   readonly listByLabel: (
     label: string,
   ) => Effect.Effect<ReadonlyArray<ContainerInfo>, DockerError>;
+  /** `POST /volumes/create`: overlay-том `local`. */
+  readonly createVolume: (
+    spec: OverlayVolumeSpec,
+  ) => Effect.Effect<void, DockerError>;
+  /** `docker volume rm`; нет такого — успех, используется контейнером — ошибка (409). */
+  readonly removeVolume: (name: string) => Effect.Effect<void, DockerError>;
+  readonly volumeExists: (name: string) => Effect.Effect<boolean, DockerError>;
+  /** Тома с меткой `label`. */
+  readonly listVolumes: (
+    label: string,
+  ) => Effect.Effect<ReadonlyArray<VolumeInfo>, DockerError>;
+  /**
+   * `PUT /containers/{id}/archive`: распаковать tar в каталог `path` контейнера
+   * (можно в созданный, ещё не запущенный). Владелец файлов — из заголовков tar;
+   * недостающих родителей записей Docker создаёт от root.
+   */
+  readonly putArchive: (
+    name: string,
+    path: string,
+    tar: Uint8Array,
+  ) => Effect.Effect<void, DockerError>;
+  /** `GET /containers/{id}/archive`: tar с `path` (и в остановленном контейнере). */
+  readonly getArchive: (
+    name: string,
+    path: string,
+  ) => Effect.Effect<Uint8Array, DockerError>;
 }
 
 /** Тело `POST /containers/create` для спецификации. */
@@ -101,6 +168,12 @@ export const createBody = (spec: ContainerSpec) => {
         : [],
       ShmSize: spec.shmSizeBytes,
       Binds: spec.binds,
+      Mounts: spec.mounts.map((mount) => ({
+        Type: "volume",
+        Source: mount.volume,
+        Target: mount.target,
+        ReadOnly: mount.readOnly ?? false,
+      })),
       PortBindings: Object.fromEntries(
         ports.map(([key, port]) => [
           key,
@@ -113,8 +186,23 @@ export const createBody = (spec: ContainerSpec) => {
       Tmpfs: spec.tmpfs,
     },
     NetworkingConfig: { EndpointsConfig: { [spec.network]: {} } },
+    ...(spec.entrypoint === undefined ? {} : { Entrypoint: spec.entrypoint }),
+    ...(spec.cmd === undefined ? {} : { Cmd: spec.cmd }),
+    ...(spec.user === undefined ? {} : { User: spec.user }),
   };
 };
+
+/** Тело `POST /volumes/create` для overlay-тома. */
+export const volumeBody = (spec: OverlayVolumeSpec) => ({
+  Name: spec.name,
+  Driver: "local",
+  DriverOpts: {
+    type: "overlay",
+    device: "overlay",
+    o: `lowerdir=${spec.overlay.lower},upperdir=${spec.overlay.upper},workdir=${spec.overlay.work}`,
+  },
+  Labels: spec.labels,
+});
 
 /**
  * Разбор мультиплексированного потока Docker (exec/logs без TTY): кадры
@@ -161,6 +249,20 @@ const ContainerInspect = Schema.Struct({
   State: Schema.Struct({ Running: Schema.Boolean }),
 });
 const ExecInspect = Schema.Struct({ ExitCode: Schema.NullOr(Schema.Number) });
+const WaitResponse = Schema.Struct({ StatusCode: Schema.Number });
+const VolumeList = Schema.Struct({
+  Volumes: Schema.NullOr(
+    Schema.Array(
+      Schema.Struct({
+        Name: Schema.String,
+        Labels: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
+      }),
+    ),
+  ),
+});
+
+/** Сколько ждать выхода контейнера-помощника (`wait`). */
+const WAIT_TIMEOUT = Duration.minutes(10);
 
 /** Клиент Docker API на unix-сокете `socketPath`. */
 export const make = (socketPath: string): DockerClientShape => {
@@ -170,10 +272,12 @@ export const make = (socketPath: string): DockerClientShape => {
    */
   const request = (
     operation: string,
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     options: {
       readonly body?: unknown;
+      /** Тело-tar (`application/x-tar`) вместо JSON. */
+      readonly tar?: Uint8Array;
       readonly ok?: ReadonlyArray<number>;
       readonly timeout?: Duration.Duration;
     } = {},
@@ -188,12 +292,18 @@ export const make = (socketPath: string): DockerClientShape => {
             redirect: "error",
             method,
             signal,
-            ...(options.body === undefined
-              ? {}
-              : {
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify(options.body),
-                }),
+            ...(options.tar !== undefined
+              ? {
+                  headers: { "content-type": "application/x-tar" },
+                  // Копия на ArrayBuffer: BodyInit не принимает SharedArrayBuffer.
+                  body: new Uint8Array(options.tar),
+                }
+              : options.body === undefined
+                ? {}
+                : {
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(options.body),
+                  }),
           },
         );
         const bytes = new Uint8Array(await response.arrayBuffer());
@@ -264,20 +374,47 @@ export const make = (socketPath: string): DockerClientShape => {
       ok: [200, 204, 404],
     }).pipe(Effect.asVoid);
 
+  const create: DockerClientShape["create"] = (spec) =>
+    request(
+      "create",
+      "POST",
+      `/containers/create?name=${encodeURIComponent(spec.name)}`,
+      { body: createBody(spec) },
+    ).pipe(
+      Effect.flatMap(json("create", IdResponse)),
+      Effect.map(({ Id }) => Id),
+    );
+
+  const start: DockerClientShape["start"] = (name) =>
+    request("start", "POST", `${containerPath(name)}/start`, {
+      ok: [204, 304],
+    }).pipe(Effect.asVoid);
+
+  const volumePath = (name: string) => `/volumes/${encodeURIComponent(name)}`;
+  const archivePath = (name: string, path: string) =>
+    `${containerPath(name)}/archive?path=${encodeURIComponent(path)}`;
+
   return {
+    create,
+    start,
+
     createAndStart: (spec) =>
       Effect.gen(function* () {
-        const { Id } = yield* request(
-          "create",
-          "POST",
-          `/containers/create?name=${encodeURIComponent(spec.name)}`,
-          { body: createBody(spec) },
-        ).pipe(Effect.flatMap(json("create", IdResponse)));
-        yield* request("start", "POST", `${containerPath(Id)}/start`, {
-          ok: [204, 304],
-        }).pipe(Effect.tapError(() => remove(Id).pipe(Effect.ignore)));
-        return Id;
+        const id = yield* create(spec);
+        yield* start(id).pipe(
+          Effect.tapError(() => remove(id).pipe(Effect.ignore)),
+        );
+        return id;
       }),
+
+    wait: (name) =>
+      request("wait", "POST", `${containerPath(name)}/wait`, {
+        ok: [200],
+        timeout: WAIT_TIMEOUT,
+      }).pipe(
+        Effect.flatMap(json("wait", WaitResponse)),
+        Effect.map(({ StatusCode }) => StatusCode),
+      ),
 
     stop: (name, timeoutSec) =>
       request("stop", "POST", `${containerPath(name)}/stop?t=${timeoutSec}`, {
@@ -354,6 +491,48 @@ export const make = (socketPath: string): DockerClientShape => {
           })),
         ),
       ),
+
+    createVolume: (spec) =>
+      request("createVolume", "POST", "/volumes/create", {
+        body: volumeBody(spec),
+      }).pipe(Effect.asVoid),
+
+    removeVolume: (name) =>
+      request("removeVolume", "DELETE", volumePath(name), {
+        ok: [204, 404],
+      }).pipe(Effect.asVoid),
+
+    volumeExists: (name) =>
+      request("volumeExists", "GET", volumePath(name), {
+        ok: [200, 404],
+      }).pipe(Effect.map(({ status }) => status === 200)),
+
+    listVolumes: (label) =>
+      request(
+        "listVolumes",
+        "GET",
+        `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [label] }))}`,
+        { ok: [200] },
+      ).pipe(
+        Effect.flatMap(json("listVolumes", VolumeList)),
+        Effect.map(({ Volumes }) =>
+          (Volumes ?? []).map((volume) => ({
+            name: volume.Name,
+            labels: volume.Labels ?? {},
+          })),
+        ),
+      ),
+
+    putArchive: (name, path, tar) =>
+      request("putArchive", "PUT", archivePath(name, path), {
+        tar,
+        ok: [200],
+      }).pipe(Effect.asVoid),
+
+    getArchive: (name, path) =>
+      request("getArchive", "GET", archivePath(name, path), {
+        ok: [200],
+      }).pipe(Effect.map(({ bytes }) => bytes)),
   };
 };
 

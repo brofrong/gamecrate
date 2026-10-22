@@ -1,8 +1,16 @@
 // SessionSupervisor: контейнеры сессий на воркере. По команде оркестратора
-// создаёт контейнер, ждёт Selkies, следит за процессом игры, при остановке ждёт
-// выгрузку облака Steam и гасит контейнер. Отчёты складывает в очередь `reports`
+// готовит overlay-слои, создаёт контейнер, кладёт в него профиль пользователя и
+// запускает, ждёт Selkies, следит за процессом игры; при остановке ждёт выгрузку
+// облака Steam, сохраняет профиль и убирает контейнер со слоями (профиль не
+// сохранён — контейнер со слоями остаётся). Отчёты складывает в очередь `reports`
 // (их по порядку отправляет OrchestratorLink).
-import type { AgentCommand, AgentReport, RunningSession } from "@cg/rpc";
+import { readdirSync } from "node:fs";
+import type {
+  AgentCommand,
+  AgentReport,
+  ProfileRef,
+  RunningSession,
+} from "@cg/rpc";
 import {
   Context,
   Data,
@@ -12,6 +20,7 @@ import {
   Layer,
   Option,
   Queue,
+  Result,
 } from "effect";
 import { randomBytes } from "node:crypto";
 import { AgentConfig, type AgentConfigValues } from "./config";
@@ -20,6 +29,17 @@ import {
   DockerClient,
   type DockerError,
 } from "./DockerClient";
+import { HELPER_LABEL } from "./Helper";
+import {
+  cleanup,
+  mountsFor,
+  type Overlays,
+  prepare,
+  sessionLayers,
+} from "./Overlay";
+import { restoreProfile, saveProfile } from "./profile/HomeProfile";
+import type { ProfileCommitter } from "./profile/ProfileCommitter";
+import type { ProfileStore } from "./profile/ProfileStore";
 
 /** Журнал облака Steam в доме пользователя (контракт образа). */
 export const CLOUD_LOG = "/home/ubuntu/.local/share/Steam/logs/cloud_log.txt";
@@ -50,6 +70,7 @@ export const failReasons = {
   containerGone: "Игровой сервер неожиданно остановился",
   stop: "Не удалось остановить игровой сервер",
   invalidCommand: "Некорректная команда запуска сессии",
+  profileRestore: "Не удалось загрузить профиль пользователя",
 } as const;
 
 /**
@@ -65,6 +86,26 @@ export const streamUrlFor = (sessionId: string) =>
 
 type StartSession = Extract<AgentCommand, { _tag: "StartSession" }>;
 
+/**
+ * Метки контейнера сессии с пользователем и базовой версией профиля (пусто —
+ * профиля не было): по ним подхваченная после перезапуска агента сессия
+ * сохраняет профиль так же, как начатая этим агентом.
+ */
+export const USER_LABEL = "cg.user";
+export const BASE_VERSION_LABEL = "cg.base-version";
+
+const formatBaseVersion = (version: number | null) =>
+  version === null ? "" : String(version);
+
+/** Значение метки базовой версии; `undefined` — метки нет или она испорчена. */
+const parseBaseVersion = (
+  label: string | undefined,
+): number | null | undefined => {
+  if (label === undefined) return undefined;
+  if (label === "") return null;
+  return /^-?\d{1,15}$/.test(label) ? Number(label) : undefined;
+};
+
 /** Куда Debian-хосту пробрасывать `libnvidia-allocator` (GBM-бэкенд NVIDIA). */
 const GBM_TARGETS = [
   "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1",
@@ -79,7 +120,10 @@ const GBM_TARGETS = [
  */
 export const sessionPassword = () => randomBytes(24).toString("base64url");
 
-/** Контейнер сессии для `StartSession` (как ручной запуск из Task 5). */
+/**
+ * Контейнер сессии для `StartSession`: дом — слой контейнера, клиент Steam и
+ * библиотека — overlay-тома сессии (`sessionLayers`), профиль кладётся до старта.
+ */
 export const sessionSpec = (
   config: AgentConfigValues,
   command: StartSession,
@@ -97,16 +141,16 @@ export const sessionSpec = (
     "cg.session": command.sessionId,
     "cg.slot": String(command.slot),
     "cg.app": String(command.appId),
+    [USER_LABEL]: command.userId,
+    [BASE_VERSION_LABEL]: formatBaseVersion(command.profile?.version ?? null),
   },
   network: config.sessionNetwork,
   udpPorts: [command.udpPort],
-  binds: [
-    `cg-home-${command.userId}:/home/ubuntu`,
-    ...Option.match(config.gbmAllocatorPath, {
-      onNone: () => [],
-      onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
-    }),
-  ],
+  binds: Option.match(config.gbmAllocatorPath, {
+    onNone: () => [],
+    onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
+  }),
+  mounts: mountsFor(sessionLayers(config, command.sessionId)),
   runtime: "nvidia",
   gpus: true,
   shmSizeBytes: SHM_SIZE_BYTES,
@@ -150,10 +194,19 @@ type CloudCount = number | "unknown";
 
 interface Session {
   readonly sessionId: string;
+  readonly userId: string;
+  /** Версия профиля, из которой собран дом (`null` — профиля не было). */
+  readonly baseVersion: number | null;
   readonly appId: number;
   readonly slot: number;
   readonly name: string;
+  readonly overlays: Overlays;
   readonly streamUrl: string;
+  /**
+   * Контейнер создан этой сессией (или подхвачен). Нет — `create` не удался,
+   * возможно из-за чужого или остановленного контейнера с тем же именем: его не трогаем.
+   */
+  created: boolean;
   phase: Phase;
   gameRunning: boolean;
   /**
@@ -169,10 +222,15 @@ interface Session {
 /** Контейнер, в котором выполняются проверки. */
 type Target = Pick<Session, "name" | "appId">;
 
-/** Сессию нельзя продолжать: убрать контейнер и сообщить `Failed`. */
+/**
+ * Сессию нельзя продолжать: убрать контейнер со слоями и сообщить `Failed`.
+ * `keep` — в upper-слоях могут быть несохранённые данные игры: контейнер только
+ * остановить, ни его, ни слои не удалять.
+ */
 class Abort extends Data.TaggedError("Abort")<{
   readonly reason: string;
   readonly cause?: unknown;
+  readonly keep?: boolean;
 }> {}
 
 /** Проверка в контейнере не дала ответа (неожиданный код выхода). */
@@ -197,6 +255,17 @@ const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
   const scope = yield* Effect.scope;
+  const services = yield* Effect.context<
+    AgentConfig | DockerClient | ProfileStore | ProfileCommitter
+  >();
+  /** Профиль и слои — функции на сервисах агента (их же использует установщик). */
+  const withServices = <A, E>(
+    effect: Effect.Effect<
+      A,
+      E,
+      AgentConfig | DockerClient | ProfileStore | ProfileCommitter
+    >,
+  ) => Effect.provideContext(effect, services);
   const sessions = new Map<string, Session>();
   const reports = yield* Queue.unbounded<AgentReport>();
   const emit = (report: AgentReport) =>
@@ -338,7 +407,25 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  /** Остановка: облако (если игра шла) → stop → remove → `Stopped`. */
+  /** Убрать слои; не вышло — только лог (при старте агента уберутся как осиротевшие). */
+  const cleanupLogged = (overlays: Overlays) =>
+    cleanup(overlays).pipe(
+      withServices,
+      Effect.catchTag("OverlayError", (error) =>
+        Effect.logWarning("Removing session layers failed", {
+          id: overlays.id,
+          operation: error.operation,
+          error: error.message,
+        }),
+      ),
+    );
+
+  /**
+   * Остановка: облако (если игра шла) → профиль → stop → remove → слои →
+   * `Stopped`. Профиль не сохранён — контейнер только останавливается и вместе
+   * со слоями остаётся (`profile-unsaved` в логе), следующая сессия получит
+   * предыдущую версию профиля.
+   */
   const finish = (session: Session) =>
     Effect.gen(function* () {
       session.phase = "stopping";
@@ -359,42 +446,103 @@ const make = Effect.gen(function* () {
       }
       if (session.cloudBaseline !== undefined)
         cloudSynced = yield* waitCloud(session, session.cloudBaseline);
-      yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
-        Effect.andThen(docker.remove(session.name)),
-        Effect.mapError(
-          (cause) => new Abort({ reason: failReasons.stop, cause }),
-        ),
-      );
+      const saved = yield* saveProfile({
+        container: session.name,
+        userId: session.userId,
+        baseVersion: session.baseVersion,
+      }).pipe(withServices, Effect.result);
+      if (Result.isFailure(saved)) {
+        yield* Effect.logError("profile-unsaved", {
+          sessionId: session.sessionId,
+          userId: session.userId,
+          container: session.name,
+          stage: saved.failure.stage,
+          error: saved.failure.message,
+        });
+        yield* docker
+          .stop(session.name, STOP_TIMEOUT_SEC)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new Abort({ reason: failReasons.stop, cause, keep: true }),
+            ),
+          );
+      } else {
+        yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
+          Effect.andThen(docker.remove(session.name)),
+          Effect.mapError(
+            (cause) =>
+              new Abort({ reason: failReasons.stop, cause, keep: false }),
+          ),
+        );
+        yield* cleanupLogged(session.overlays);
+      }
+      const profileSaved = Result.isSuccess(saved) && saved.success;
       sessions.delete(session.sessionId);
       yield* emit({
         _tag: "Stopped",
         sessionId: session.sessionId,
         cloudSynced,
-        // Task 3: сохранение профиля в RustFS — пока всегда false.
-        profileSaved: false,
+        profileSaved,
       });
       yield* Effect.logInfo("Session stopped", {
         sessionId: session.sessionId,
         cloudSynced,
+        profileSaved,
       });
     });
 
-  /** Сбой: контейнер убрать (слот и UDP-порт свободны), затем `Failed`. */
+  /**
+   * Сбой: контейнер и слои убрать (слот и UDP-порт свободны), затем `Failed`.
+   * После готовности стрима пользователь мог играть: такой контейнер (если не
+   * сказано иное) только останавливается и остаётся вместе со слоями.
+   */
   const fail = (session: Session, abort: Abort) =>
     Effect.gen(function* () {
+      const keep = abort.keep ?? session.phase !== "starting";
       yield* Effect.logError("Session failed", {
         sessionId: session.sessionId,
         reason: abort.reason,
         cause: abort.cause,
       });
-      yield* docker.remove(session.name).pipe(
-        Effect.catchTag("DockerError", (error) =>
-          Effect.logError("Removing failed session container failed", {
-            sessionId: session.sessionId,
-            error: error.message,
-          }),
-        ),
-      );
+      if (keep) {
+        yield* Effect.logError("profile-unsaved", {
+          sessionId: session.sessionId,
+          userId: session.userId,
+          container: session.name,
+        });
+        yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
+          Effect.catchTag("DockerError", (error) =>
+            Effect.logError("Stopping failed session container failed", {
+              sessionId: session.sessionId,
+              error: error.message,
+            }),
+          ),
+        );
+      } else if (session.created) {
+        const removed = yield* docker.remove(session.name).pipe(
+          Effect.as(true),
+          Effect.catchTag("DockerError", (error) =>
+            Effect.logError("Removing failed session container failed", {
+              sessionId: session.sessionId,
+              error: error.message,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (removed) yield* cleanupLogged(session.overlays);
+      } else {
+        // Слои убираем, только если контейнера с этим именем нет вовсе: иначе
+        // они его (например, остановленного с несохранённым профилем).
+        const existing = yield* docker
+          .inspect(session.name)
+          .pipe(Effect.orElseSucceed(() => "unknown" as const));
+        if (existing === undefined) yield* cleanupLogged(session.overlays);
+        else
+          yield* Effect.logWarning(
+            "Leaving a container this session did not create",
+            { sessionId: session.sessionId, name: session.name },
+          );
+      }
       sessions.delete(session.sessionId);
       yield* emit({
         _tag: "Failed",
@@ -403,22 +551,49 @@ const make = Effect.gen(function* () {
       });
     });
 
-  /** Жизнь сессии: [создание] → готовность Selkies → игра → остановка. */
-  const lifecycle = (session: Session, spec: ContainerSpec | undefined) =>
+  /** Новый контейнер: слои → create → профиль → start. */
+  const launch = (
+    session: Session,
+    spec: ContainerSpec,
+    profile: ProfileRef | null,
+  ) =>
     Effect.gen(function* () {
-      if (spec !== undefined) {
-        yield* docker
-          .createAndStart(spec)
-          .pipe(
-            Effect.mapError(
-              (cause) => new Abort({ reason: failReasons.dockerStart, cause }),
-            ),
-          );
-        yield* Effect.logInfo("Session container started", {
-          sessionId: session.sessionId,
-          slot: session.slot,
-        });
-      }
+      const dockerStart = (cause: unknown) =>
+        new Abort({ reason: failReasons.dockerStart, cause });
+      yield* prepare(session.overlays).pipe(
+        withServices,
+        Effect.mapError(dockerStart),
+      );
+      yield* docker.create(spec).pipe(Effect.mapError(dockerStart));
+      session.created = true;
+      const from = yield* restoreProfile({
+        container: session.name,
+        userId: session.userId,
+        profile,
+      }).pipe(
+        withServices,
+        Effect.mapError(
+          (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
+        ),
+      );
+      yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
+      yield* Effect.logInfo("Session container started", {
+        sessionId: session.sessionId,
+        slot: session.slot,
+        profile: from,
+      });
+    });
+
+  /** Жизнь сессии: [создание] → готовность Selkies → игра → остановка. */
+  const lifecycle = (
+    session: Session,
+    launchWith:
+      | { readonly spec: ContainerSpec; readonly profile: ProfileRef | null }
+      | undefined,
+  ) =>
+    Effect.gen(function* () {
+      if (launchWith !== undefined)
+        yield* launch(session, launchWith.spec, launchWith.profile);
       const ready = yield* untilStop(session, waitReady(session));
       if (ready.stopped) return yield* finish(session);
       session.phase = "ready";
@@ -432,13 +607,18 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.catchTag("Abort", (abort) => fail(session, abort)));
 
   const register = (
-    fields: Pick<Session, "sessionId" | "appId" | "slot" | "name"> &
-      Partial<Pick<Session, "gameRunning" | "cloudBaseline">>,
+    fields: Pick<
+      Session,
+      "sessionId" | "userId" | "baseVersion" | "appId" | "slot" | "name"
+    > &
+      Partial<Pick<Session, "created" | "gameRunning" | "cloudBaseline">>,
   ) =>
     Effect.gen(function* () {
       const session: Session = {
         ...fields,
+        overlays: sessionLayers(config, fields.sessionId),
         streamUrl: streamUrlFor(fields.sessionId),
+        created: fields.created ?? false,
         phase: "starting",
         gameRunning: fields.gameRunning ?? false,
         cloudBaseline: fields.cloudBaseline,
@@ -499,6 +679,8 @@ const make = Effect.gen(function* () {
       }
       const session = yield* register({
         sessionId: command.sessionId,
+        userId: command.userId,
+        baseVersion: command.profile?.version ?? null,
         appId: command.appId,
         slot: command.slot,
         name: containerName(command.sessionId),
@@ -508,9 +690,13 @@ const make = Effect.gen(function* () {
         slot: command.slot,
         udpPort: command.udpPort,
         appId: command.appId,
+        profileVersion: command.profile?.version ?? null,
       });
       yield* Effect.forkIn(
-        lifecycle(session, sessionSpec(config, command, sessionPassword())),
+        lifecycle(session, {
+          spec: sessionSpec(config, command, sessionPassword()),
+          profile: command.profile,
+        }),
         scope,
       );
     });
@@ -531,8 +717,10 @@ const make = Effect.gen(function* () {
         yield* Deferred.succeed(session.stopRequested, undefined);
         return;
       }
-      // Неизвестная (уже остановленная) сессия: убрать контейнер с её именем,
-      // только если он наш (метка cg.session=<id>), и подтвердить остановку.
+      // Неизвестная (уже остановленная) сессия: убрать запущенный контейнер с её
+      // именем вместе со слоями, только если он наш (метка cg.session=<id>), и
+      // подтвердить остановку. Остановленный не трогаем: в его слоях может быть
+      // несохранённый профиль.
       const name = containerName(sessionId);
       yield* Effect.forkIn(
         docker.inspect(name).pipe(
@@ -543,7 +731,16 @@ const make = Effect.gen(function* () {
                 "Not removing a container without our session label",
                 { sessionId, name },
               );
-            return docker.remove(name);
+            if (!container.running)
+              return Effect.logWarning(
+                "Keeping a stopped session container (profile-unsaved)",
+                { sessionId, name },
+              );
+            return docker
+              .remove(name)
+              .pipe(
+                Effect.andThen(cleanupLogged(sessionLayers(config, sessionId))),
+              );
           }),
           Effect.catchTag("DockerError", (error) =>
             Effect.logWarning("Removing unknown session container failed", {
@@ -552,7 +749,6 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.andThen(
-            // Task 3: сохранение профиля в RustFS — пока всегда false.
             emit({
               _tag: "Stopped",
               sessionId,
@@ -565,19 +761,37 @@ const make = Effect.gen(function* () {
       );
     });
 
-  /** Контейнеры, пережившие перезапуск агента: живые подхватить, прочие убрать. */
+  /**
+   * Контейнеры, пережившие перезапуск агента: живые подхватить, живые чужие или
+   * испорченные убрать. Остановленные не удаляются никогда: в их слоях —
+   * несохранённый профиль (`profile-unsaved`).
+   */
   const adopt = Effect.gen(function* () {
     const containers = yield* docker.listByLabel("cg.session");
     for (const container of containers) {
       const sessionId = container.labels["cg.session"] ?? "";
+      const userId = container.labels[USER_LABEL] ?? "";
+      const baseVersion = parseBaseVersion(
+        container.labels[BASE_VERSION_LABEL],
+      );
       const slot = Number(container.labels["cg.slot"]);
       const appId = Number(container.labels["cg.app"]);
+      if (!container.running) {
+        yield* Effect.logWarning(
+          "Keeping stopped session container (profile-unsaved)",
+          { name: container.name, sessionId },
+        );
+        continue;
+      }
       const valid =
-        sessionId !== "" && Number.isInteger(slot) && Number.isInteger(appId);
-      if (!container.running || !valid || sessions.has(sessionId)) {
+        isValidId(sessionId) &&
+        isValidId(userId) &&
+        baseVersion !== undefined &&
+        Number.isInteger(slot) &&
+        Number.isInteger(appId);
+      if (!valid || sessions.has(sessionId) || baseVersion === undefined) {
         yield* Effect.logInfo("Removing leftover session container", {
           name: container.name,
-          running: container.running,
         });
         yield* docker.remove(container.name).pipe(
           Effect.catchTag("DockerError", (error) =>
@@ -595,9 +809,12 @@ const make = Effect.gen(function* () {
       );
       const session = yield* register({
         sessionId,
+        userId,
+        baseVersion,
         appId,
         slot,
         name: container.name,
+        created: true,
         gameRunning,
         cloudBaseline: gameRunning ? yield* cloudCount(target) : undefined,
       });
@@ -609,7 +826,54 @@ const make = Effect.gen(function* () {
       yield* Effect.forkIn(lifecycle(session, undefined), scope);
     }
   });
+
+  /** Помощники (`cg.helper`) прошлого запуска агента: одноразовые, убрать. */
+  const removeHelpers = Effect.gen(function* () {
+    for (const helper of yield* docker.listByLabel(HELPER_LABEL))
+      yield* docker.remove(helper.name).pipe(
+        Effect.catchTag("DockerError", (error) =>
+          Effect.logWarning("Removing leftover helper failed", {
+            name: helper.name,
+            error: error.message,
+          }),
+        ),
+      );
+  });
+
+  /**
+   * Слои сессий (тома `cg-s-<id>-*` и `<SCRATCH_DIR>/<id>`), у которых контейнера
+   * `cg-session-<id>` нет вовсе. Слои остановленного контейнера — его, не трогаются.
+   */
+  const removeOrphanLayers = Effect.gen(function* () {
+    const ids = new Set<string>();
+    for (const volume of yield* docker.listVolumes("cg.session")) {
+      const id = volume.labels["cg.session"] ?? "";
+      if (isValidId(id)) ids.add(id);
+    }
+    const dirs = yield* Effect.try(() =>
+      readdirSync(config.scratchDir, { withFileTypes: true }),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Reading the scratch dir failed", {
+          scratchDir: config.scratchDir,
+          error: String(error),
+        }).pipe(Effect.as([])),
+      ),
+    );
+    for (const dir of dirs)
+      if (dir.isDirectory() && isValidId(dir.name)) ids.add(dir.name);
+    for (const id of ids) {
+      if ((yield* docker.inspect(containerName(id))) !== undefined) continue;
+      yield* Effect.logInfo("Removing orphan session layers", {
+        sessionId: id,
+      });
+      yield* cleanupLogged(sessionLayers(config, id));
+    }
+  });
+
   yield* adopt;
+  yield* removeHelpers;
+  yield* removeOrphanLayers;
 
   // Heartbeat: все живые сессии, включая создаваемые и останавливаемые.
   yield* Effect.sleep(HEARTBEAT_INTERVAL).pipe(
@@ -653,12 +917,13 @@ export class SessionSupervisor extends Context.Service<
   SessionSupervisorShape
 >()("@cg/agent/SessionSupervisor") {
   /**
-   * Подхватывает контейнеры с меткой `cg.session` при старте (Docker недоступен —
-   * ошибка слоя) и запускает heartbeat.
+   * Подхватывает контейнеры с меткой `cg.session` при старте, убирает забытых
+   * помощников и осиротевшие слои (Docker недоступен — ошибка слоя), запускает
+   * heartbeat.
    */
   static readonly layer: Layer.Layer<
     SessionSupervisor,
     DockerError,
-    AgentConfig | DockerClient
+    AgentConfig | DockerClient | ProfileStore | ProfileCommitter
   > = Layer.effect(SessionSupervisor, make);
 }

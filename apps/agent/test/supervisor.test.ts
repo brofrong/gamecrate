@@ -1,18 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentCommand, AgentReport } from "@cg/rpc";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AgentCommand, AgentReport, ProfileCommit } from "@cg/rpc";
 import {
   Context,
   Deferred,
   type Duration,
   Effect,
   Layer,
-  Option,
   Queue,
-  Redacted,
   References,
 } from "effect";
 import { TestClock } from "effect/testing";
-import { AgentConfig, type AgentConfigValues } from "../src/config";
+import { AgentConfig } from "../src/config";
 import {
   type ContainerInfo,
   type ContainerSpec,
@@ -21,6 +22,11 @@ import {
   type DockerClientShape,
 } from "../src/DockerClient";
 import {
+  ProfileCommitError,
+  ProfileCommitter,
+} from "../src/profile/ProfileCommitter";
+import { ProfileStore, ProfileStoreError } from "../src/profile/ProfileStore";
+import {
   CLOUD_LOG,
   commands,
   failReasons,
@@ -28,30 +34,15 @@ import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { tarOfFile, testConfig, unusedDocker } from "./fakes";
 
-const config: AgentConfigValues = {
-  workerId: "w1",
-  orchestratorUrl: "ws://orchestrator:3001/agent",
-  agentToken: Redacted.make("x".repeat(32)),
-  publicIp: "203.0.113.7",
-  slots: 2,
-  udpPortBase: 59000,
-  sessionImage: "cg-session:550.163.01",
-  sessionNetwork: "cg-sessions",
-  s3Endpoint: "http://cg-rustfs:9000",
-  s3Bucket: "cg-profiles",
-  s3AccessKey: Redacted.make("test-access-key"),
-  s3SecretKey: Redacted.make("test-secret-key"),
-  profileKey: Redacted.make(Buffer.from(new Uint8Array(32)).toString("base64")),
-  gbmAllocatorPath: Option.some(
-    "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01",
-  ),
-  dockerSocket: "/var/run/docker.sock",
-};
+const bytes = (text: string) => new TextEncoder().encode(text);
 
-/** Фейковый dockerd: состояние контейнеров и журнал вызовов. */
+/** Фейковый dockerd, хранилище профилей и оркестратор: состояние и общий журнал вызовов. */
 const makeFake = () => {
+  const scratch = mkdtempSync(join(tmpdir(), "cg-supervisor-"));
   const state = {
+    scratch,
     calls: [] as string[],
     created: [] as ContainerSpec[],
     /** Selkies отвечает на /api/status. */
@@ -65,6 +56,8 @@ const makeFake = () => {
     /** Контейнер исчез: exec отвечает 409. */
     gone: false,
     existing: [] as ContainerInfo[],
+    /** Контейнеры-помощники (`cg.helper`), оставшиеся с прошлого запуска. */
+    helpers: [] as ContainerInfo[],
     /** Ответы `inspect` по имени контейнера (нет — контейнера нет). */
     inspected: {} as Record<string, ContainerInfo>,
     /** Подменённый код выхода pgrep. */
@@ -75,13 +68,39 @@ const makeFake = () => {
     cloudGate: undefined as Deferred.Deferred<void> | undefined,
     /** Число любых обращений к DockerClient. */
     dockerCalls: 0,
+    /** Тома, которые есть в dockerd (`volumeExists`). */
+    volumes: [] as string[],
+    /** Тома с метками для `listVolumes`. */
+    labelledVolumes: [] as Array<{
+      name: string;
+      labels: Record<string, string>;
+    }>,
+    /** Архивы, положенные в контейнеры (`putArchive`). */
+    put: [] as Array<{ container: string; path: string; tar: Uint8Array }>,
+    /** Что пакует cg-profile-pack в контейнере сессии и в помощнике импорта. */
+    packed: bytes("session-home-tar"),
+    legacy: bytes("legacy-home-tar"),
+    packExit: 0,
+    /** Объекты профилей в хранилище (расшифрованные tar). */
+    profiles: { "profiles/u1/v7.cgp": bytes("profile-v7-tar") } as Record<
+      string,
+      Uint8Array
+    >,
+    uploaded: [] as Array<{ userId: string; tar: Uint8Array }>,
+    putFail: false,
+    commits: [] as ProfileCommit[],
+    commit: "accept" as "accept" | "reject" | "fail",
   };
-  const shape: DockerClientShape = {
-    createAndStart: (spec) =>
+  const record = (call: string) => {
+    state.dockerCalls++;
+    state.calls.push(call);
+  };
+  const docker: DockerClientShape = {
+    ...unusedDocker,
+    create: (spec) =>
       Effect.suspend(() => {
-        state.dockerCalls++;
-        state.calls.push(`create ${spec.name}`);
-        if (state.failCreate)
+        record(`create ${spec.name}`);
+        if (state.failCreate && spec.name.startsWith("cg-session-"))
           return Effect.fail(
             new DockerError({
               operation: "create",
@@ -92,21 +111,22 @@ const makeFake = () => {
         state.created.push(spec);
         return Effect.succeed(`id-${spec.name}`);
       }),
+    start: (name) => Effect.sync(() => record(`start ${name}`)),
+    wait: (name) =>
+      Effect.sync(() => {
+        record(`wait ${name}`);
+        return 0;
+      }),
     stop: (name, timeoutSec) =>
-      Effect.sync(() => {
-        state.dockerCalls++;
-        state.calls.push(`stop ${name} ${timeoutSec}`);
-      }),
-    remove: (name) =>
-      Effect.sync(() => {
-        state.dockerCalls++;
-        state.calls.push(`remove ${name}`);
-      }),
+      Effect.sync(() => record(`stop ${name} ${timeoutSec}`)),
+    remove: (name) => Effect.sync(() => record(`remove ${name}`)),
     inspect: (name) =>
       Effect.sync(() => {
-        state.dockerCalls++;
-        state.calls.push(`inspect ${name}`);
-        return state.inspected[name];
+        record(`inspect ${name}`);
+        return (
+          state.inspected[name] ??
+          state.existing.find((container) => container.name === name)
+        );
       }),
     logs: () =>
       Effect.sync(() => {
@@ -115,14 +135,39 @@ const makeFake = () => {
       }),
     listByLabel: (label) =>
       Effect.sync(() => {
-        state.dockerCalls++;
-        state.calls.push(`list ${label}`);
-        return state.existing;
+        record(`list ${label}`);
+        return label === "cg.helper" ? state.helpers : state.existing;
+      }),
+    createVolume: (volume) =>
+      Effect.sync(() => record(`createVolume ${volume.name}`)),
+    removeVolume: (name) => Effect.sync(() => record(`removeVolume ${name}`)),
+    volumeExists: (name) =>
+      Effect.sync(() => {
+        record(`volumeExists ${name}`);
+        return state.volumes.includes(name);
+      }),
+    listVolumes: (label) =>
+      Effect.sync(() => {
+        record(`listVolumes ${label}`);
+        return state.labelledVolumes;
+      }),
+    putArchive: (container, path, tar) =>
+      Effect.sync(() => {
+        record(`putArchive ${container} ${path}`);
+        state.put.push({ container, path, tar });
+      }),
+    getArchive: (container, path) =>
+      Effect.sync(() => {
+        record(`getArchive ${container} ${path}`);
+        return tarOfFile(
+          "cg-profile.tar",
+          container.endsWith("-import") ? state.legacy : state.packed,
+        );
       }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
         state.dockerCalls++;
-        if (cmd[0] === "pkill")
+        if (cmd[0] === "pkill" || cmd[0]?.startsWith("/usr/local/bin/cg-"))
           state.calls.push(`exec ${name} ${cmd.join(" ")}`);
         if (state.gone)
           return Effect.fail(
@@ -177,12 +222,59 @@ const makeFake = () => {
               return Effect.succeed({ exitCode: 2, stdout: "" });
             state.game = false;
             return Effect.succeed({ exitCode: 0, stdout: "" });
+          case "/usr/local/bin/cg-steam-shutdown":
+            return Effect.succeed({ exitCode: 0, stdout: "" });
+          case "/usr/local/bin/cg-profile-pack":
+            return Effect.succeed({ exitCode: state.packExit, stdout: "" });
           default:
             return Effect.succeed({ exitCode: 127, stdout: "" });
         }
       }),
   };
-  return { state, shape };
+  const store = ProfileStore.of({
+    get: (objectKey) =>
+      Effect.suspend(() => {
+        state.calls.push(`store.get ${objectKey}`);
+        const tar = state.profiles[objectKey];
+        return tar === undefined
+          ? Effect.fail(
+              new ProfileStoreError({ operation: "get", message: "NoSuchKey" }),
+            )
+          : Effect.succeed(tar);
+      }),
+    put: (userId, tar) =>
+      Effect.suspend(() => {
+        state.calls.push(`store.put ${userId}`);
+        if (state.putFail)
+          return Effect.fail(
+            new ProfileStoreError({
+              operation: "put",
+              message: "connection refused",
+            }),
+          );
+        state.uploaded.push({ userId, tar });
+        return Effect.succeed({
+          objectKey: `profiles/${userId}/new.cgp`,
+          sizeBytes: tar.length + 32,
+        });
+      }),
+    remove: (objectKey) =>
+      Effect.sync(() => void state.calls.push(`store.remove ${objectKey}`)),
+  });
+  const committer = ProfileCommitter.of({
+    commit: (payload) =>
+      Effect.suspend(() => {
+        state.calls.push(`commit ${payload.objectKey}`);
+        state.commits.push(payload);
+        if (state.commit === "fail")
+          return Effect.fail(
+            new ProfileCommitError({ message: "orchestrator unreachable" }),
+          );
+        return Effect.succeed(state.commit === "accept");
+      }),
+    attach: () => Effect.void,
+  });
+  return { state, docker, store, committer };
 };
 
 type Fake = ReturnType<typeof makeFake>;
@@ -195,7 +287,7 @@ interface Harness {
   readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
 }
 
-/** Супервизор на фейковом Docker и TestClock; `setup` готовит фейк до старта. */
+/** Супервизор на фейках и TestClock; `setup` готовит фейк до старта. */
 const run = (
   body: (h: Harness) => Effect.Effect<void, unknown>,
   setup: (fake: Fake) => void = () => {},
@@ -205,8 +297,15 @@ const run = (
   const program = Effect.gen(function* () {
     const context = yield* Layer.build(
       SessionSupervisor.layer.pipe(
-        Layer.provide(Layer.succeed(DockerClient, fake.shape)),
-        Layer.provide(Layer.succeed(AgentConfig, config)),
+        Layer.provide(Layer.succeed(DockerClient, fake.docker)),
+        Layer.provide(Layer.succeed(ProfileStore, fake.store)),
+        Layer.provide(Layer.succeed(ProfileCommitter, fake.committer)),
+        Layer.provide(
+          Layer.succeed(
+            AgentConfig,
+            testConfig({ scratchDir: fake.state.scratch }),
+          ),
+        ),
       ),
     );
     const supervisor = Context.get(context, SessionSupervisor);
@@ -224,9 +323,31 @@ const run = (
       Effect.scoped,
       Effect.provide(TestClock.layer()),
       Effect.provideService(References.MinimumLogLevel, "None"),
+      Effect.ensuring(
+        Effect.sync(() =>
+          rmSync(fake.state.scratch, { recursive: true, force: true }),
+        ),
+      ),
     ),
   );
 };
+
+/** Вызовы после первого `from` (включительно). */
+const callsFrom = (fake: Fake, from: string) =>
+  fake.state.calls.slice(fake.state.calls.indexOf(from));
+
+/** Остановка контейнера сессии `id` с сохранённым профилем: удалить его и слои. */
+const removedWithLayers = (id: string) => [
+  `stop cg-session-${id} 15`,
+  `remove cg-session-${id}`,
+  `removeVolume cg-s-${id}-client`,
+  `removeVolume cg-s-${id}-apps`,
+  `remove cg-s-${id}-cleanup`,
+  `create cg-s-${id}-cleanup`,
+  `start cg-s-${id}-cleanup`,
+  `wait cg-s-${id}-cleanup`,
+  `remove cg-s-${id}-cleanup`,
+];
 
 const start: Extract<AgentCommand, { _tag: "StartSession" }> = {
   _tag: "StartSession",
@@ -251,7 +372,7 @@ const startReady = (h: Harness) =>
   });
 
 describe("SessionSupervisor", () => {
-  it("start creates container with slot port, labels, volume and env", () =>
+  it("start creates container with slot port, labels, overlay mounts and env", () =>
     run((h) =>
       Effect.gen(function* () {
         yield* h.supervisor.handle(start);
@@ -267,13 +388,29 @@ describe("SessionSupervisor", () => {
             SELKIES_WEBRTC_PUBLIC_IP: "203.0.113.7",
             PASSWD: expect.any(String),
           },
-          labels: { "cg.session": "s1", "cg.slot": "1", "cg.app": "1794680" },
+          labels: {
+            "cg.session": "s1",
+            "cg.slot": "1",
+            "cg.app": "1794680",
+            "cg.user": "u1",
+            "cg.base-version": "",
+          },
           network: "cg-sessions",
           udpPorts: [59001],
+          // Тома дома cg-home-* больше нет: клиент Steam и библиотека — overlay-тома сессии.
           binds: [
-            "cg-home-u1:/home/ubuntu",
             "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1:ro",
             "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so:ro",
+          ],
+          mounts: [
+            {
+              volume: "cg-s-s1-client",
+              target: "/home/ubuntu/.local/share/Steam",
+            },
+            {
+              volume: "cg-s-s1-apps",
+              target: "/home/ubuntu/.local/share/Steam/steamapps",
+            },
           ],
           runtime: "nvidia",
           gpus: true,
@@ -432,14 +569,12 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: true,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
-        const calls = h.fake.state.calls;
-        expect(calls.slice(calls.indexOf("stop cg-session-s1 15"))).toEqual([
-          "stop cg-session-s1 15",
-          "remove cg-session-s1",
-        ]);
+        expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual(
+          removedWithLayers("s1"),
+        );
         expect(yield* h.supervisor.snapshot).toEqual([]);
       }),
     ));
@@ -461,7 +596,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: false,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
         expect(h.fake.state.calls).toContain("remove cg-session-s1");
@@ -487,7 +622,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: true,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
       }),
@@ -504,7 +639,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: false,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
         expect(h.fake.state.calls).toContain("remove cg-session-s1");
@@ -525,9 +660,46 @@ describe("SessionSupervisor", () => {
             },
           ]);
           expect(yield* h.supervisor.snapshot).toEqual([]);
+          // Контейнер не создан, другого с этим именем нет — слои убираются.
+          expect(callsFrom(h.fake, "inspect cg-session-s1")).toEqual([
+            "inspect cg-session-s1",
+            ...removedWithLayers("s1").slice(2),
+          ]);
+          expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
         }),
       (fake) => {
         fake.state.failCreate = true;
+      },
+    ));
+
+  it("failed create never removes an existing container of that name", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Failed",
+              sessionId: "s1",
+              reason: failReasons.dockerStart,
+            },
+          ]);
+          // Остановленный контейнер с несохранённым профилем и его слои целы.
+          const calls = h.fake.state.calls;
+          expect(calls).not.toContain("remove cg-session-s1");
+          expect(calls).not.toContain("removeVolume cg-s-s1-client");
+          expect(calls).not.toContain("create cg-s-s1-cleanup");
+        }),
+      (fake) => {
+        fake.state.failCreate = true;
+        fake.state.inspected = {
+          "cg-session-s1": {
+            name: "cg-session-s1",
+            labels: { "cg.session": "s1" },
+            running: false,
+          },
+        };
       },
     ));
 
@@ -544,6 +716,10 @@ describe("SessionSupervisor", () => {
             reason: failReasons.containerGone,
           },
         ]);
+        // Upper-слои с игрой этой сессии не теряются: контейнер и тома остаются.
+        expect(h.fake.state.calls).toContain("stop cg-session-s1 15");
+        expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+        expect(h.fake.state.calls).not.toContain("removeVolume cg-s-s1-client");
       }),
     ));
 
@@ -568,24 +744,28 @@ describe("SessionSupervisor", () => {
     run(
       (h) =>
         Effect.gen(function* () {
-          for (const sessionId of ["nope", "foreign", "ours"])
+          for (const sessionId of ["nope", "foreign", "ours", "kept"]) {
             yield* h.supervisor.handle({ _tag: "StopSession", sessionId });
-          yield* h.tick("0 seconds");
+            yield* h.tick("0 seconds");
+          }
           expect(yield* h.drain).toEqual(
-            ["nope", "foreign", "ours"].map((sessionId) => ({
+            ["nope", "foreign", "ours", "kept"].map((sessionId) => ({
               _tag: "Stopped",
               sessionId,
               cloudSynced: false,
               profileSaved: false,
             })),
           );
-          // Удаляется только контейнер с нашей меткой cg.session=<id>.
-          expect(h.fake.state.calls).toEqual([
-            "list cg.session",
+          // Удаляется только запущенный контейнер с нашей меткой cg.session=<id>
+          // (вместе со слоями); остановленный хранит несохранённый профиль.
+          expect(callsFrom(h.fake, "inspect cg-session-nope")).toEqual([
             "inspect cg-session-nope",
             "inspect cg-session-foreign",
             "inspect cg-session-ours",
             "remove cg-session-ours",
+            "removeVolume cg-s-ours-client",
+            "removeVolume cg-s-ours-apps",
+            "inspect cg-session-kept",
           ]);
         }),
       (fake) => {
@@ -598,6 +778,11 @@ describe("SessionSupervisor", () => {
           "cg-session-ours": {
             name: "cg-session-ours",
             labels: { "cg.session": "ours" },
+            running: true,
+          },
+          "cg-session-kept": {
+            name: "cg-session-kept",
+            labels: { "cg.session": "kept" },
             running: false,
           },
         };
@@ -663,7 +848,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: true,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
       }),
@@ -715,7 +900,9 @@ describe("SessionSupervisor", () => {
       (h) =>
         Effect.gen(function* () {
           expect(h.fake.state.calls).toContain("list cg.session");
-          expect(h.fake.state.calls).toContain("remove cg-session-old");
+          // Остановленный контейнер (несохранённый профиль) агент не удаляет никогда.
+          expect(h.fake.state.calls).not.toContain("remove cg-session-old");
+          expect(h.fake.state.calls).toContain("remove cg-session-bad");
           expect(h.fake.state.created).toEqual([]);
           expect(yield* h.supervisor.snapshot).toEqual([
             {
@@ -737,23 +924,51 @@ describe("SessionSupervisor", () => {
               _tag: "Stopped",
               sessionId: "a",
               cloudSynced: true,
-              profileSaved: false,
+              profileSaved: true,
             },
           ]);
+          // Пользователь и базовая версия профиля — из меток контейнера.
+          expect(h.fake.state.commits).toEqual([
+            {
+              userId: "ua",
+              baseVersion: 3,
+              objectKey: "profiles/ua/new.cgp",
+              sizeBytes: expect.any(Number),
+            },
+          ]);
+          expect(callsFrom(h.fake, "stop cg-session-a 15")).toEqual(
+            removedWithLayers("a"),
+          );
         }),
       (fake) => {
+        // Слои подхваченной сессии создал прошлый запуск агента.
+        mkdirSync(join(fake.state.scratch, "a", "client", "upper"), {
+          recursive: true,
+        });
         fake.state.game = true;
         fake.state.cloud = 2;
         fake.state.existing = [
           {
             name: "cg-session-a",
-            labels: { "cg.session": "a", "cg.slot": "1", "cg.app": "1794680" },
+            labels: {
+              "cg.session": "a",
+              "cg.slot": "1",
+              "cg.app": "1794680",
+              "cg.user": "ua",
+              "cg.base-version": "3",
+            },
             running: true,
           },
           {
             name: "cg-session-old",
             labels: { "cg.session": "old", "cg.slot": "0", "cg.app": "1" },
             running: false,
+          },
+          {
+            // Контейнер MVP-2 (без cg.user) — подхватывать нечего.
+            name: "cg-session-bad",
+            labels: { "cg.session": "bad", "cg.slot": "0", "cg.app": "1" },
+            running: true,
           },
         ];
       },
@@ -787,7 +1002,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: true,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
       }),
@@ -817,7 +1032,7 @@ describe("SessionSupervisor", () => {
             _tag: "Stopped",
             sessionId: "s1",
             cloudSynced: false,
-            profileSaved: false,
+            profileSaved: true,
           },
         ]);
       }),
@@ -851,9 +1066,290 @@ describe("SessionSupervisor", () => {
               _tag: "Stopped",
               sessionId: "s1",
               cloudSynced: false,
-              profileSaved: false,
+              profileSaved: true,
             },
           ]);
         }),
       ));
+
+  it("start restores profile before container start", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle({
+          ...start,
+          profile: { version: 7, objectKey: "profiles/u1/v7.cgp" },
+        });
+        yield* h.tick("0 seconds");
+        expect(callsFrom(h.fake, "createVolume cg-s-s1-client")).toEqual([
+          "createVolume cg-s-s1-client",
+          "createVolume cg-s-s1-apps",
+          "create cg-session-s1",
+          "store.get profiles/u1/v7.cgp",
+          "putArchive cg-session-s1 /home/ubuntu",
+          "start cg-session-s1",
+        ]);
+        expect(h.fake.state.put[0]?.tar).toEqual(bytes("profile-v7-tar"));
+        // Каталоги слоёв созданы агентом заранее.
+        for (const layer of ["client", "apps"])
+          for (const dir of ["upper", "work"])
+            expect(
+              existsSync(join(h.fake.state.scratch, "s1", layer, dir)),
+            ).toBe(true);
+        expect(h.fake.state.created[0]?.labels["cg.base-version"]).toBe("7");
+        expect(yield* h.drain).toEqual([
+          { _tag: "StreamReady", sessionId: "s1", streamUrl },
+        ]);
+      }),
+    ));
+
+  it("start imports legacy cg-home volume when no profile", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+            "create cg-session-s1",
+            "volumeExists cg-home-u1",
+            "remove cg-session-s1-import",
+            "create cg-session-s1-import",
+            "start cg-session-s1-import",
+            "wait cg-session-s1-import",
+            "getArchive cg-session-s1-import /tmp/cg-profile.tar",
+            "remove cg-session-s1-import",
+            "putArchive cg-session-s1 /home/ubuntu",
+            "start cg-session-s1",
+          ]);
+          expect(h.fake.state.created[1]).toEqual({
+            name: "cg-session-s1-import",
+            image: "cg-session:550.163.01",
+            env: { HOME: "/home/ubuntu" },
+            labels: { "cg.helper": "import" },
+            network: "none",
+            udpPorts: [],
+            binds: [],
+            // Старый том только читается.
+            mounts: [
+              { volume: "cg-home-u1", target: "/home/ubuntu", readOnly: true },
+            ],
+            runtime: "runc",
+            gpus: false,
+            shmSizeBytes: 64 * 1024 * 1024,
+            securityOpt: ["no-new-privileges:true"],
+            tmpfs: {},
+            user: "1000",
+            entrypoint: ["/usr/local/bin/cg-profile-pack"],
+          });
+          // В контейнер сессии — содержимое tar из помощника.
+          expect(h.fake.state.put).toEqual([
+            {
+              container: "cg-session-s1",
+              path: "/home/ubuntu",
+              tar: bytes("legacy-home-tar"),
+            },
+          ]);
+          expect(h.fake.state.calls).not.toContain("removeVolume cg-home-u1");
+        }),
+      (fake) => {
+        fake.state.volumes = ["cg-home-u1"];
+      },
+    ));
+
+  it("first login starts with an empty home", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+          "create cg-session-s1",
+          "volumeExists cg-home-u1",
+          "start cg-session-s1",
+        ]);
+        expect(h.fake.state.put).toEqual([]);
+      }),
+    ));
+
+  it("profile that cannot be restored fails the session before start", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle({
+          ...start,
+          profile: { version: 2, objectKey: "profiles/u1/missing.cgp" },
+        });
+        yield* h.tick("0 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "Failed",
+            sessionId: "s1",
+            reason: failReasons.profileRestore,
+          },
+        ]);
+        expect(h.fake.state.calls).not.toContain("start cg-session-s1");
+        expect(callsFrom(h.fake, "remove cg-session-s1")).toEqual(
+          removedWithLayers("s1").slice(1),
+        );
+      }),
+    ));
+
+  it("stop saves profile then removes container and layers", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle({
+          ...start,
+          profile: { version: 7, objectKey: "profiles/u1/v7.cgp" },
+        });
+        yield* h.tick("0 seconds");
+        yield* h.drain;
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(
+          callsFrom(
+            h.fake,
+            "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
+          ),
+        ).toEqual([
+          "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
+          "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+          "getArchive cg-session-s1 /tmp/cg-profile.tar",
+          "store.put u1",
+          "commit profiles/u1/new.cgp",
+          ...removedWithLayers("s1"),
+        ]);
+        expect(h.fake.state.uploaded).toEqual([
+          { userId: "u1", tar: bytes("session-home-tar") },
+        ]);
+        expect(h.fake.state.commits).toEqual([
+          {
+            userId: "u1",
+            baseVersion: 7,
+            objectKey: "profiles/u1/new.cgp",
+            sizeBytes: bytes("session-home-tar").length + 32,
+          },
+        ]);
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: true,
+          },
+        ]);
+      }),
+    ));
+
+  it("rejected commit deletes uploaded object", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          // Профиля не было: база null.
+          expect(h.fake.state.commits[0]?.baseVersion).toBeNull();
+          expect(callsFrom(h.fake, "commit profiles/u1/new.cgp")).toEqual([
+            "commit profiles/u1/new.cgp",
+            "store.remove profiles/u1/new.cgp",
+            ...removedWithLayers("s1"),
+          ]);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: false,
+            },
+          ]);
+        }),
+      (fake) => {
+        fake.state.commit = "reject";
+      },
+    ));
+
+  for (const failure of ["upload", "pack", "commit"] as const)
+    it(`profile ${failure} failure keeps container`, () =>
+      run(
+        (h) =>
+          Effect.gen(function* () {
+            yield* startReady(h);
+            yield* h.supervisor.handle({
+              _tag: "StopSession",
+              sessionId: "s1",
+            });
+            yield* h.tick("0 seconds");
+            const calls = h.fake.state.calls;
+            expect(calls.at(-1)).toBe("stop cg-session-s1 15");
+            expect(calls).not.toContain("remove cg-session-s1");
+            expect(calls).not.toContain("removeVolume cg-s-s1-client");
+            expect(calls).not.toContain("removeVolume cg-s-s1-apps");
+            expect(calls).not.toContain("create cg-s-s1-cleanup");
+            expect(existsSync(join(h.fake.state.scratch, "s1"))).toBe(true);
+            expect(yield* h.drain).toEqual([
+              {
+                _tag: "Stopped",
+                sessionId: "s1",
+                cloudSynced: false,
+                profileSaved: false,
+              },
+            ]);
+            expect(yield* h.supervisor.snapshot).toEqual([]);
+          }),
+        (fake) => {
+          if (failure === "upload") fake.state.putFail = true;
+          if (failure === "pack") fake.state.packExit = 2;
+          if (failure === "commit") fake.state.commit = "fail";
+        },
+      ));
+
+  it("agent start removes orphan cg-s volumes and scratch", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          const calls = h.fake.state.calls;
+          // Тома и scratch без контейнера — убраны.
+          for (const id of ["gone", "gone2"])
+            expect(calls).toContain(`removeVolume cg-s-${id}-client`);
+          expect(calls).toContain("create cg-s-gone2-cleanup");
+          expect(h.fake.state.created).toContainEqual(
+            expect.objectContaining({
+              name: "cg-s-gone2-cleanup",
+              entrypoint: ["rm", "-rf", join(h.fake.state.scratch, "gone2")],
+            }),
+          );
+          // У остановленного контейнера слои его — не трогаются, сам он тоже.
+          expect(calls).not.toContain("removeVolume cg-s-kept-client");
+          expect(calls).not.toContain("create cg-s-kept-cleanup");
+          expect(calls).not.toContain("remove cg-session-kept");
+          // Посторонние каталоги в scratch не трогаются.
+          expect(calls).not.toContain("removeVolume cg-s-not an id-client");
+          // Забытые помощники убраны.
+          expect(calls).toContain("remove cg-session-x-import");
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        const scratch = fake.state.scratch;
+        mkdirSync(join(scratch, "gone2", "client", "work"), {
+          recursive: true,
+        });
+        mkdirSync(join(scratch, "kept", "apps", "upper"), { recursive: true });
+        mkdirSync(join(scratch, "not an id"), { recursive: true });
+        fake.state.labelledVolumes = [
+          { name: "cg-s-gone-client", labels: { "cg.session": "gone" } },
+          { name: "cg-s-gone-apps", labels: { "cg.session": "gone" } },
+          { name: "cg-s-kept-client", labels: { "cg.session": "kept" } },
+        ];
+        fake.state.existing = [
+          {
+            name: "cg-session-kept",
+            labels: { "cg.session": "kept", "cg.slot": "0", "cg.app": "1" },
+            running: false,
+          },
+        ];
+        fake.state.helpers = [
+          {
+            name: "cg-session-x-import",
+            labels: { "cg.helper": "import" },
+            running: false,
+          },
+        ];
+      },
+    ));
 });

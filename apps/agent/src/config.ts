@@ -4,6 +4,13 @@ import { Config, Context, Layer, Schema } from "effect";
 /** Минимальная длина `AGENT_TOKEN` — та же, что проверяет оркестратор. */
 export const agentTokenMinLength = 32;
 
+/**
+ * Абсолютный путь каталога хоста. Без `,` и `:`: пути попадают в опцию `o=`
+ * overlay-тома (`lowerdir=…,upperdir=…`) и в bind `источник:цель`.
+ */
+const HostDir = (name: string) =>
+  Config.schema(Schema.String.check(Schema.isPattern(/^\/[^,:\s]*$/)), name);
+
 /** Описание переменных окружения агента. */
 export const agentConfig = Config.all({
   /** Имя воркера (`workers.id` в БД оркестратора). */
@@ -60,6 +67,12 @@ export const agentConfig = Config.all({
    * `profile/codec.ts`). Видит только агент — никогда в логи/отчёты.
    */
   profileKey: Config.Redacted("PROFILE_KEY"),
+  /** Общая библиотека игр на хосте (внутри — `steamapps/`): lower для `steamapps` сессий. */
+  libraryDir: HostDir("LIBRARY_DIR"),
+  /** Чистый клиент Steam на хосте: lower для `~/.local/share/Steam` сессий. */
+  steamClientDir: HostDir("STEAM_CLIENT_DIR"),
+  /** Scratch сессий: upper/work их overlay-слоёв, `<SCRATCH_DIR>/<sessionId>/…`. */
+  scratchDir: HostDir("SCRATCH_DIR"),
 });
 
 export type AgentConfigValues = Config.Success<typeof agentConfig>;

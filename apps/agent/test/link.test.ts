@@ -5,11 +5,13 @@ import {
   AgentNotConnected,
   type AgentReport,
   AgentRpcs,
+  type ProfileCommit,
 } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import {
   type Cause,
   Effect,
+  Fiber,
   Layer,
   ManagedRuntime,
   Option,
@@ -27,10 +29,12 @@ import {
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentConfig, type AgentConfigValues } from "../src/config";
 import * as OrchestratorLink from "../src/OrchestratorLink";
+import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { testConfig } from "./fakes";
 
 const token = "link-test-token-0123456789abcdef!";
 
@@ -42,6 +46,7 @@ const server = {
   reports: [] as Array<AgentReport>,
   /** Сколько следующих отчётов отклонить с AgentNotConnected. */
   rejectReports: 0,
+  commits: [] as Array<ProfileCommit>,
 };
 
 const Handlers = AgentRpcs.toLayer(
@@ -65,8 +70,11 @@ const Handlers = AgentRpcs.toLayer(
           server.reports.push(report);
           return Effect.void;
         }),
-      // Task 5: оркестратор проверяет baseVersion и upsert'ит `profiles`.
-      "agent.profileCommit": () => Effect.succeed({ accepted: false }),
+      "agent.profileCommit": (payload) =>
+        Effect.sync(() => {
+          server.commits.push(payload);
+          return { accepted: payload.baseVersion === 4 };
+        }),
     }),
   ),
 );
@@ -116,23 +124,14 @@ beforeAll(async () => {
 });
 afterAll(() => runtime.dispose());
 
-const config = (): AgentConfigValues => ({
-  workerId: "w1",
-  orchestratorUrl: `ws://127.0.0.1:${port}/agent`,
-  agentToken: Redacted.make(token),
-  publicIp: "203.0.113.7",
-  slots: 1,
-  udpPortBase: 59000,
-  sessionImage: "cg-session:test",
-  sessionNetwork: "cg-sessions",
-  gbmAllocatorPath: Option.none(),
-  dockerSocket: "/var/run/docker.sock",
-  s3Endpoint: "http://cg-rustfs:9000",
-  s3Bucket: "cg-profiles",
-  s3AccessKey: Redacted.make("test-access-key"),
-  s3SecretKey: Redacted.make("test-secret-key"),
-  profileKey: Redacted.make(Buffer.from(new Uint8Array(32)).toString("base64")),
-});
+const config = (): AgentConfigValues =>
+  testConfig({
+    orchestratorUrl: `ws://127.0.0.1:${port}/agent`,
+    agentToken: Redacted.make(token),
+    slots: 1,
+    sessionImage: "cg-session:test",
+    gbmAllocatorPath: Option.none(),
+  });
 
 const waitUntil = (condition: () => boolean, ms = 5000) =>
   Effect.promise(async () => {
@@ -145,9 +144,19 @@ const waitUntil = (condition: () => boolean, ms = 5000) =>
 
 describe("OrchestratorLink", () => {
   it(
-    "connects with bearer and snapshot, routes commands, sends reports in order, reconnects",
+    "connects with bearer and snapshot, routes commands, sends reports in order, commits profiles, reconnects",
     () =>
       Effect.gen(function* () {
+        const committer = yield* ProfileCommitter;
+        // Коммит до соединения ждёт его.
+        const early = yield* Effect.forkChild(
+          committer.commit({
+            userId: "u1",
+            baseVersion: 4,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+          }),
+        );
         const handled: Array<AgentCommand> = [];
         const reports = yield* Queue.unbounded<AgentReport>();
         const supervisor: SessionSupervisorShape = {
@@ -165,6 +174,7 @@ describe("OrchestratorLink", () => {
         yield* Layer.build(
           OrchestratorLink.layer.pipe(
             Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+            Layer.provide(Layer.succeed(ProfileCommitter, committer)),
             Layer.provide(Layer.succeed(AgentConfig, config())),
           ),
         );
@@ -187,6 +197,20 @@ describe("OrchestratorLink", () => {
           roles: ["worker"],
           installs: [],
         });
+
+        expect(yield* Fiber.join(early)).toBe(true);
+        expect(
+          yield* committer.commit({
+            userId: "u1",
+            baseVersion: 3,
+            objectKey: "profiles/u1/b.cgp",
+            sizeBytes: 11,
+          }),
+        ).toBe(false);
+        expect(server.commits.map((c) => c.objectKey)).toEqual([
+          "profiles/u1/a.cgp",
+          "profiles/u1/b.cgp",
+        ]);
 
         const start: AgentCommand = {
           _tag: "StartSession",
@@ -235,6 +259,7 @@ describe("OrchestratorLink", () => {
         yield* waitUntil(() => server.connects.length === 3);
       }).pipe(
         Effect.scoped,
+        Effect.provide(ProfileCommitter.layer),
         Effect.provideService(References.MinimumLogLevel, "None"),
         Effect.runPromise,
       ),
