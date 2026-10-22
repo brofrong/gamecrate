@@ -212,7 +212,10 @@ if [ -n "${foreign}" ]; then
   echo "ОШИБКА: в ${new} есть файлы не uid 1000, например ${foreign}" >&2
   exit 1
 fi
-du -sh "${new}" "${new}/steamrt64" "${new}/appcache" 2>/dev/null | sed 's/^/    /' || true
+# По одному: du с несколькими путями не считает повторно вложенные в уже посчитанный каталог.
+for d in "${new}" "${new}/steamrt64" "${new}/appcache" "${new}/package"; do
+  du -sh "${d}" 2>/dev/null | sed 's/^/    /' || true
+done
 
 echo "==> замена ${target}"
 refuse_if_busy
