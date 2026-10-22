@@ -18,7 +18,3 @@ node_modules
 spike/nv
 images/session/nv
 **/*.tgz
-
-# SCRATCH_DIR по умолчанию (~/cloud-gaming/scratch на сервере) лежит внутри контекста сборки:
-# слои сессий (work/work от root с правами 000) сломали бы сборку и не нужны в образе.
-scratch

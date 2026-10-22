@@ -14,9 +14,14 @@ REMOTE_HOST="brofrong"
 REMOTE_DIR="cloud-gaming"
 LOCAL_ENV="${REPO_ROOT}/.env.production"
 
-# Живые сессии и установки: пересоздание cg-agent и смена слоёв под ними — не деплоим.
+# Живые сессии и установки: пересоздание cg-agent и смена слоёв под ними — не деплоим. Считаются
+# и только что созданные (created: агент создал, ещё не запустил). Остановленные (exited,
+# например profile-unsaved) не мешают.
 echo "==> проверка: нет запущенных сессий, установок и сборки клиента Steam"
-busy="$(ssh "${REMOTE_HOST}" 'for l in cg.session cg.install cg.template; do docker ps --filter "label=$l" --format "{{.Names}} ($l)"; done')"
+busy="$(ssh "${REMOTE_HOST}" 'for l in cg.session cg.install cg.template; do
+  docker ps -a --filter "label=$l" --filter status=created --filter status=running \
+    --filter status=restarting --filter status=paused --format "{{.Names}} ({{.State}}, $l)"
+done')"
 if [ -n "${busy}" ]; then
   echo "ОШИБКА: на ${REMOTE_HOST} запущены контейнеры:" >&2
   printf '%s\n' "${busy}" | sed 's/^/  /' >&2
@@ -25,8 +30,6 @@ if [ -n "${busy}" ]; then
 fi
 
 echo "==> rsync ${REPO_ROOT} -> ${REMOTE_HOST}:~/${REMOTE_DIR}"
-# /scratch/ — SCRATCH_DIR по умолчанию (~/cloud-gaming/scratch) живёт внутри каталога деплоя:
-# исключён, чтобы --delete не трогал слои сессий.
 rsync -az --delete \
   --exclude ".git/" \
   --exclude "node_modules/" \
@@ -37,7 +40,6 @@ rsync -az --delete \
   --exclude ".turbo/" \
   --exclude "dist/" \
   --exclude ".DS_Store" \
-  --exclude "/scratch/" \
   --include ".env.example" \
   --exclude ".env" \
   --exclude ".env.*" \
@@ -50,33 +52,50 @@ ssh "${REMOTE_HOST}" "test -f ~/${REMOTE_DIR}/.env" || {
   exit 1
 }
 
-# Секрет из локального .env.production — в серверный .env, если ключа там нет. Значение идёт
-# через stdin ssh: не попадает ни в аргументы процессов, ни в вывод.
+# Секрет из локального .env.production — в серверный .env, если ключа там нет. Берётся первая
+# строка `<ключ>=` локального файла: она же проверяется и она же отправляется. Значение идёт через
+# stdin ssh: не попадает ни в аргументы процессов, ни в вывод. На сервере смотрится только наличие
+# ключа и непустого значения (grep -q), сами значения не читаются; пустая строка `<ключ>=` —
+# ошибка (удалить её вручную), а не повод дописать вторую.
 #   append_secret <ключ> <проверка значения: функция> <описание> <команда генерации>
 append_secret() {
-  local key="$1" check="$2" what="$3" gen="$4"
-  if ssh "${REMOTE_HOST}" "grep -q '^${key}=' ~/${REMOTE_DIR}/.env"; then
-    echo "==> ${key} на сервере уже есть"
-    return
-  fi
-  if ! "${check}" "${key}"; then
+  local key="$1" check="$2" what="$3" gen="$4" state line
+  state="$(ssh "${REMOTE_HOST}" "f=~/${REMOTE_DIR}/.env; if grep -q '^${key}=.' \"\$f\"; then echo present; elif grep -q '^${key}=' \"\$f\"; then echo empty; else echo missing; fi")"
+  case "${state}" in
+    present)
+      echo "==> ${key} на сервере уже есть"
+      return
+      ;;
+    empty)
+      echo "ОШИБКА: в ~/${REMOTE_DIR}/.env на сервере строка ${key}= с пустым значением —" >&2
+      echo "удалите её вручную (sed -i '/^${key}=\$/d' ~/${REMOTE_DIR}/.env) и повторите деплой." >&2
+      exit 1
+      ;;
+    missing) ;;
+    *)
+      echo "ОШИБКА: не удалось проверить ${key} в ~/${REMOTE_DIR}/.env на сервере" >&2
+      exit 1
+      ;;
+  esac
+  line="$(grep -m 1 "^${key}=" "${LOCAL_ENV}" 2>/dev/null || true)"
+  if ! "${check}" "${line#*=}"; then
     echo "ОШИБКА: в ~/${REMOTE_DIR}/.env на сервере нет ${key}, а в ${LOCAL_ENV} нет значения" >&2
     echo "(${what}). Сгенерировать (см. README.md), не выводя на экран:" >&2
     echo "  grep -q '^${key}=' .env.production || printf '${key}=%s\\n' \"\$(${gen})\" >> .env.production" >&2
     exit 1
   fi
   echo "==> дописываем ${key} в ~/${REMOTE_DIR}/.env на сервере"
-  grep "^${key}=" "${LOCAL_ENV}" | head -n 1 | ssh "${REMOTE_HOST}" \
+  printf '%s\n' "${line}" | ssh "${REMOTE_HOST}" \
     "f=~/${REMOTE_DIR}/.env; [ -z \"\$(tail -c1 \"\$f\")\" ] || echo >> \"\$f\"; cat >> \"\$f\""
 }
 
-# Проверки значения в .env.production (значение не выводится).
-min32() { grep -q "^$1=.\{32,\}$" "${LOCAL_ENV}" 2>/dev/null; }
-min16() { grep -q "^$1=.\{16,\}$" "${LOCAL_ENV}" 2>/dev/null; }
+# Проверки значения (аргумент — значение из .env.production; не выводится).
+min32() { [ "${#1}" -ge 32 ]; }
+min16() { [ "${#1}" -ge 16 ]; }
 # base64 ровно 32 байт (AES-256): 44 символа base64, после декодирования 32 байта.
 base64_32() {
-  grep -q "^$1=[A-Za-z0-9+/]\{43\}=$" "${LOCAL_ENV}" 2>/dev/null &&
-    [ "$(sed -n "s/^$1=//p" "${LOCAL_ENV}" | head -n 1 | base64 -d 2>/dev/null | wc -c | tr -d ' ')" = 32 ]
+  [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]] &&
+    [ "$(printf '%s' "$1" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" = 32 ]
 }
 
 append_secret AGENT_TOKEN min32 "не короче 32 символов" "openssl rand -hex 32"
@@ -93,7 +112,7 @@ set -euo pipefail
 envval() { local v; v="$(sed -n "s/^$1=//p" ~/"${REMOTE_DIR}"/.env | tail -n 1)"; printf '%s' "${v:-$2}"; }
 REMOTE_DIR="$1"
 data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
-scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming/scratch)"
+scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming-scratch)"
 dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/steam-client"
   "${data}/steam-client/steamapps" "${data}/install-scratch" "${scratch}")
 mkdir -p "${dirs[@]}"
@@ -106,7 +125,7 @@ for d in "${dirs[@]}"; do
 done
 if [ ! -x "${data}/steam-client/ubuntu12_32/steam" ]; then
   echo "    ВНИМАНИЕ: клиент Steam в ${data}/steam-client не собран — ./deploy/build-steam-client.sh" >&2
-  echo "    (без него каждая сессия скачивает клиент заново, ~500 МБ)." >&2
+  echo "    (без него каждая сессия скачивает клиент заново, ~2,5 ГБ)." >&2
 fi
 REMOTE
 

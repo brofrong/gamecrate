@@ -50,11 +50,12 @@ rsync этого каталога в `~/cg-session-image` на воркере, �
 ```
 
 Lower overlay `~/.local/share/Steam` сессий и установщиков — клиент Steam, скачанный этим образом
-(без входа, без игр, пустой `steamapps/` 1000:1000). Скрипт запускает контейнер образа с пустым
+(~2,5 ГБ, без входа, без игр, пустой `steamapps/` 1000:1000). Скрипт запускает контейнер образа с пустым
 домом и `CG_MODE=install` (`cg-launch` → `steam -silent`), дважды ждёт входа клиента в цикл
-(`logs/connection_log.txt` и 60 с без роста каталога) и закрывает его `cg-steam-shutdown` (второй
-цикл — после `docker restart` без замка `cg-launch`: за один цикл `steamrt64`/`appcache`
-распакованы не до конца), копирует `~/.local/share/Steam` без `logs/` и заменяет каталог
+(`logs/connection_log.txt` и 60 с без роста каталога больше 1 МБ, без `logs/`, `htmlcache/`,
+`dumps/`) и закрывает его `cg-steam-shutdown` (второй цикл — `steam -silent` через `docker exec` в
+окружении Plasma, как в `cg-steam-shutdown`: за один цикл `steamrt64`/`appcache` распакованы не до
+конца), копирует `~/.local/share/Steam` без `logs/` и заменяет каталог
 переименованием. Подробности и когда пересобирать — `deploy/README.md`, «Клиент Steam: пересборка
 шаблона». Образ при этом не меняется: шаблон зависит от клиента Steam, а не от драйвера.
 

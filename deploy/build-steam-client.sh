@@ -4,14 +4,18 @@
 #
 #   ./deploy/build-steam-client.sh [ssh-хост]
 #
-# 1. Отказ, если на воркере запущены сессии, установки или другая сборка (метки cg.session,
-#    cg.install, cg.template): клиент — lower их overlay, менять его под живыми нельзя.
+# 1. Отказ, если на воркере есть созданные или запущенные сессии, установки или другая сборка
+#    (метки cg.session, cg.install, cg.template): клиент — lower их overlay, менять его под живыми
+#    нельзя. Сервис на время сборки должен простаивать (см. README).
 # 2. Контейнер образа сессии (SESSION_IMAGE) с пустым домом и CG_MODE=install — те же GPU, shm,
 #    no-new-privileges, /dev/input и GBM, что у сессий (agent: desktopSpec); cg-launch запускает
-#    `steam -silent`, Steam сам скачивает и распаковывает клиент (~500 МБ).
-# 3. Цикл: ждать logs/connection_log.txt и 60 с без роста ~/.local/share/Steam → cg-steam-shutdown.
-#    Два цикла (второй — после `docker restart`): за первый steamrt64/appcache распаковываются не
-#    до конца, и каждая сессия потом сама докачивала ~480 МБ и долго входила.
+#    `steam -silent`, Steam сам скачивает обновление (~500 МБ) и
+#    распаковывает клиент (~2,5 ГБ).
+# 3. Цикл: ждать logs/connection_log.txt и 60 с без роста ~/.local/share/Steam (рост < 1 МБ, без
+#    logs/, htmlcache/, dumps/ — их клиент пишет и в простое) → cg-steam-shutdown. Два цикла
+#    (второй — `steam -silent` через `docker exec` в окружении Plasma, как в cg-steam-shutdown):
+#    за первый steamrt64/appcache распаковываются не до конца, и каждая сессия потом сама
+#    докачивала ~480 МБ и долго входила.
 # 4. `docker cp` клиента в <STEAM_CLIENT_DIR>.new без logs/ и с пустым steamapps/ (1000:1000).
 # 5. Замена каталога переименованием (`mv --exchange`), старый удаляется контейнером-помощником
 #    от root (в старом шаблоне могут быть файлы root).
@@ -41,14 +45,18 @@ new="${target}.new"
 name="cg-steam-client-build"
 label="cg.template=steam-client"
 steam=/home/ubuntu/.local/share/Steam
-# Ожидание одного цикла: скачивание ~500 МБ и распаковка.
+# Ожидание одного цикла: скачивание ~500 МБ и распаковка в ~2,5 ГБ.
 cycle_timeout_sec=1800
 quiet_sec=60
+# Рост меньше этого (КБ) за quiet_sec считается простоем.
+quiet_growth_kb=1024
 poll_sec=10
 
+# Созданные (агент создал, ещё не запустил) считаются как запущенные; остановленные — нет.
 busy() {
   for l in cg.session cg.install cg.template; do
-    docker ps --filter "label=${l}" --format "{{.Names}} (${l})"
+    docker ps -a --filter "label=${l}" --filter status=created --filter status=running \
+      --filter status=restarting --filter status=paused --format "{{.Names}} ({{.State}}, ${l})"
   done
 }
 refuse_if_busy() {
@@ -110,10 +118,10 @@ PASSWD="$(head -c 18 /dev/urandom | base64)" docker run -d --name "${name}" --la
   -e CG_MODE=install -e PASSWD \
   "${image}" >/dev/null
 
-# Ждать, пока клиент Steam войдёт в цикл: есть logs/connection_log.txt и размер каталога не
-# растёт quiet_sec секунд.
+# Ждать, пока клиент Steam войдёт в цикл: есть logs/connection_log.txt и каталог (без logs/,
+# htmlcache/, dumps/) за quiet_sec секунд вырос меньше чем на quiet_growth_kb.
 wait_idle() {
-  local start now size last=-1 since
+  local start now size last=-1000000 since
   start="$(date +%s)"
   since="${start}"
   while :; do
@@ -124,16 +132,17 @@ wait_idle() {
       docker logs --tail 50 "${name}" >&2 || true
       exit 1
     fi
-    size="$(docker exec "${name}" du -sb "${steam}" 2>/dev/null | cut -f1 || true)"
+    size="$(docker exec "${name}" du -sk --exclude=logs --exclude=htmlcache --exclude=dumps \
+      "${steam}" 2>/dev/null | cut -f1 || true)"
     size="${size:-0}"
-    if [ "${size}" != "${last}" ]; then
+    if [ $((size - last)) -ge "${quiet_growth_kb}" ] || [ $((last - size)) -ge "${quiet_growth_kb}" ]; then
       last="${size}"
       since="${now}"
-      echo "    $((now - start)) с: $((size / 1048576)) МБ"
+      echo "    $((now - start)) с: $((size / 1024)) МБ"
     fi
     if docker exec "${name}" test -f "${steam}/logs/connection_log.txt" &&
       [ $((now - since)) -ge "${quiet_sec}" ]; then
-      echo "    клиент в цикле: $((size / 1048576)) МБ, ${quiet_sec} с без роста"
+      echo "    клиент в цикле: $((size / 1024)) МБ, ${quiet_sec} с без роста"
       return
     fi
     if [ $((now - start)) -ge "${cycle_timeout_sec}" ]; then
@@ -156,10 +165,34 @@ wait_idle
 shutdown_steam
 
 echo "==> цикл 2: повторный запуск (довести steamrt64/appcache)"
-# Замок cg-launch и logs/ — в слое контейнера: без них автостарт после restart снова запустит
-# `steam -silent`, а connection_log.txt появится заново только после нового входа в цикл.
-docker exec "${name}" rm -rf "${steam}/logs" /tmp/cg-launch.lock
-docker restart "${name}" >/dev/null
+# Без logs/ connection_log.txt появится заново только после нового входа в цикл. Steam — через
+# `docker exec` в окружении сессии Plasma (переменные из /proc/<plasmashell>/environ, как в
+# cg-steam-shutdown): автостарт cg-launch второй раз не сработает (замок), а restart контейнера
+# не нужен.
+docker exec "${name}" rm -rf "${steam}/logs"
+# pgrep -xo по имени процесса: -f нашёл бы и сам этот bash (в его аргументах есть «plasmashell»).
+docker exec -d "${name}" bash -c '
+plasma=$(pgrep -xo plasmashell)
+[ -n "${plasma}" ] && [ -r "/proc/${plasma}/environ" ] || exit 1
+while IFS= read -r -d "" var; do
+  case "${var}" in
+    DISPLAY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
+      USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
+      export "${var?}"
+      ;;
+  esac
+done <"/proc/${plasma}/environ"
+exec steam -silent </dev/null >/tmp/cg-steam-template.log 2>&1
+'
+for ((i = 0; ; i++)); do
+  docker exec "${name}" pgrep -f 'ubuntu12_32/steam( |$)' >/dev/null && break
+  if [ "${i}" -ge 120 ]; then
+    echo "ОШИБКА: Steam не запустился через docker exec за 120 с (нет Plasma?)" >&2
+    docker exec "${name}" tail -n 20 /tmp/cg-steam-template.log >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
 wait_idle
 shutdown_steam
 docker stop "${name}" >/dev/null
