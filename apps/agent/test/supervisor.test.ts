@@ -38,6 +38,11 @@ const config: AgentConfigValues = {
   udpPortBase: 59000,
   sessionImage: "cg-session:550.163.01",
   sessionNetwork: "cg-sessions",
+  s3Endpoint: "http://cg-rustfs:9000",
+  s3Bucket: "cg-profiles",
+  s3AccessKey: Redacted.make("test-access-key"),
+  s3SecretKey: Redacted.make("test-secret-key"),
+  profileKey: Redacted.make(Buffer.from(new Uint8Array(32)).toString("base64")),
   gbmAllocatorPath: Option.some(
     "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01",
   ),

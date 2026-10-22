@@ -127,6 +127,11 @@ const config = (): AgentConfigValues => ({
   sessionNetwork: "cg-sessions",
   gbmAllocatorPath: Option.none(),
   dockerSocket: "/var/run/docker.sock",
+  s3Endpoint: "http://cg-rustfs:9000",
+  s3Bucket: "cg-profiles",
+  s3AccessKey: Redacted.make("test-access-key"),
+  s3SecretKey: Redacted.make("test-secret-key"),
+  profileKey: Redacted.make(Buffer.from(new Uint8Array(32)).toString("base64")),
 });
 
 const waitUntil = (condition: () => boolean, ms = 5000) =>

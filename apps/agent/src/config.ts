@@ -45,6 +45,21 @@ export const agentConfig = Config.all({
   dockerSocket: Config.NonEmptyString("DOCKER_SOCKET").pipe(
     Config.withDefault("/var/run/docker.sock"),
   ),
+  /** Endpoint S3-совместимого хранилища профилей (RustFS), напр. `http://cg-rustfs:9000`. */
+  s3Endpoint: Config.NonEmptyString("S3_ENDPOINT"),
+  /** Бакет с зашифрованными профилями. */
+  s3Bucket: Config.NonEmptyString("S3_BUCKET").pipe(
+    Config.withDefault("cg-profiles"),
+  ),
+  /** Ключ доступа S3. */
+  s3AccessKey: Config.Redacted("S3_ACCESS_KEY"),
+  /** Секретный ключ S3. */
+  s3SecretKey: Config.Redacted("S3_SECRET_KEY"),
+  /**
+   * Ключ шифрования профилей: base64 ровно 32 байт (AES-256-GCM, см.
+   * `profile/codec.ts`). Видит только агент — никогда в логи/отчёты.
+   */
+  profileKey: Config.Redacted("PROFILE_KEY"),
 });
 
 export type AgentConfigValues = Config.Success<typeof agentConfig>;
