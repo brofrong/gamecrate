@@ -32,7 +32,10 @@ export function AppHeader({
         <div className="ml-auto flex items-center gap-3">
           {children}
           {user && (
-            <div className="flex items-center gap-2">
+            <Link
+              to="/profile"
+              className="flex items-center gap-2 rounded-md hover:opacity-80"
+            >
               {user.image ? (
                 <img
                   src={user.image}
@@ -47,7 +50,7 @@ export function AppHeader({
               <span className="hidden max-w-40 truncate text-sm md:inline">
                 {user.name}
               </span>
-            </div>
+            </Link>
           )}
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>
             <LogOut />
