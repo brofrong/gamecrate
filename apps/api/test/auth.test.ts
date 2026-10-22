@@ -28,6 +28,7 @@ import { RpcMiddlewares } from "../src/auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "../src/auth/rpc";
 import { AppConfig, type AppConfigValues, appConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { Mailer } from "../src/mail/Mailer";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
 
@@ -204,6 +205,7 @@ const appDeps = (webDistDir: string) =>
     DbTest,
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
+    Layer.succeed(Mailer, { send: () => Effect.void }),
   ).pipe(
     Layer.provideMerge(
       Layer.succeed(AppConfig, {

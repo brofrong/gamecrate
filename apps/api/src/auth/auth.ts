@@ -1,9 +1,11 @@
-// Better Auth: вход через Steam (OpenID) и Pocket ID (OIDC), роли пользователей.
+// Better Auth: вход через Steam (OpenID), Pocket ID (OIDC), Google, Яндекс и код
+// на почту; роли пользователей.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
 import { account, type Db, session, user, verification } from "@cg/db";
 import { type CurrentUserShape, isSyntheticEmail, type Role } from "@cg/rpc";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
+import { emailOTP } from "better-auth/plugins/email-otp";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { steamOpenID } from "better-auth-steam";
 import { eq } from "drizzle-orm";
@@ -12,8 +14,11 @@ import { Context, Effect, FiberSet, Layer, Option, Redacted } from "effect";
 import type { Headers } from "effect/http/Headers";
 import { AppConfig, type AppConfigValues } from "../config";
 import { syncOnLogin } from "../library/LibraryService";
+import { Mailer, type Mail } from "../mail/Mailer";
+import { changeEmailCodeMail, loginCodeMail } from "../mail/templates";
 import type { ProtonDb } from "../steam/ProtonDb";
 import type { SteamApi } from "../steam/SteamApi";
+import { yandexProvider } from "./yandex";
 
 /** Роль пользователя Pocket ID по claim `groups`. */
 export const pocketIdRole = (
@@ -38,6 +43,11 @@ export interface MakeAuthOptions {
    * после встроенного обновления роли Pocket ID.
    */
   readonly databaseHooks?: BetterAuthOptions["databaseHooks"];
+  /**
+   * Отправка писем (коды входа и смены почты). По умолчанию отбрасывает
+   * письмо ошибкой — `BetterAuth.layer` передаёт настоящую отправку через `Mailer`.
+   */
+  readonly sendMail?: (mail: Mail) => Promise<void>;
 }
 
 export const makeAuth = (
@@ -46,6 +56,9 @@ export const makeAuth = (
 ) => {
   const db = drizzle(Redacted.value(config.databaseUrl));
   const hooks = options.databaseHooks ?? {};
+  const sendMail =
+    options.sendMail ??
+    (() => Promise.reject(new Error("mailer not configured")));
 
   return betterAuth({
     baseURL: config.publicUrl,
@@ -66,12 +79,28 @@ export const makeAuth = (
       },
     },
     account: {
-      // Привязка аккаунтов запрещена: Steam — для игроков, Pocket ID — для админов.
-      // Иначе Steam-вход в общий с админом user давал бы роль admin, а исключённый
-      // из группы админ сохранял бы её, входя через Steam. Отключает /steam/link
-      // (better-auth-steam), /link-social и неявную привязку по email.
-      accountLinking: { enabled: false },
+      // Привязка аккаунтов включена: один игрок — один user, даже если он входит
+      // то через почту, то через Google/Яндекс/Pocket ID. trustedProviders — эти
+      // провайдеры подтверждают почту сами, поэтому неявная склейка по email не
+      // требует отдельного подтверждения. Steam не в списке (нет email), шатдаун
+      // и хуки входа через Steam — Task 4.
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google", "yandex", "pocket-id"],
+        allowDifferentEmails: true,
+        allowUnlinkingAll: true,
+      },
     },
+    ...(Option.isSome(config.google)
+      ? {
+          socialProviders: {
+            google: {
+              clientId: config.google.value.clientId,
+              clientSecret: Redacted.value(config.google.value.clientSecret),
+            },
+          },
+        }
+      : {}),
     databaseHooks: {
       ...hooks,
       session: {
@@ -113,10 +142,34 @@ export const makeAuth = (
                   config.pocketIdAdminGroup,
                 ),
               );
-              return {};
+              return { emailVerified: profile["email_verified"] === true };
             },
           },
+          ...(Option.isSome(config.yandex)
+            ? [
+                yandexProvider(
+                  config.yandex.value.clientId,
+                  Redacted.value(config.yandex.value.clientSecret),
+                ),
+              ]
+            : []),
         ],
+      }),
+      emailOTP({
+        otpLength: 6,
+        expiresIn: 600,
+        allowedAttempts: 3,
+        storeOTP: "hashed",
+        resendStrategy: "rotate",
+        changeEmail: { enabled: true, verifyCurrentEmail: false },
+        rateLimit: { window: 30, max: 1 },
+        sendVerificationOTP: ({ email, otp, type }) =>
+          sendMail({
+            to: email,
+            ...(type === "change-email"
+              ? changeEmailCodeMail(otp)
+              : loginCodeMail(otp)),
+          }),
       }),
     ],
   });
@@ -189,21 +242,29 @@ export class BetterAuth extends Context.Service<
       ),
   });
 
-  /** Вход через Steam запускает фоновую синхронизацию библиотеки (`librarySyncHooks`). */
+  /**
+   * Вход через Steam запускает фоновую синхронизацию библиотеки (`librarySyncHooks`).
+   * Письма (коды входа и смены почты) идут через `Mailer`: `sendMail` прогоняет
+   * `mailer.send` через рантайм слоя (`FiberSet.makeRuntimePromise`), чтобы Better
+   * Auth мог `await`-ить отправку и получить отказавший `MailError` как rejection.
+   */
   static readonly layer: Layer.Layer<
     BetterAuth,
     never,
-    AppConfig | Db | SteamApi | ProtonDb
+    AppConfig | Db | SteamApi | ProtonDb | Mailer
   > = Layer.effect(
     BetterAuth,
     Effect.gen(function* () {
       const config = yield* AppConfig;
+      const mailer = yield* Mailer;
+      const runPromise = yield* FiberSet.makeRuntimePromise<Mailer>();
+      const sendMail = (mail: Mail) => runPromise(mailer.send(mail));
       // Синхронизации живут в scope слоя (срок работы сервера), а не запроса входа.
       const runFork = yield* FiberSet.makeRuntime<Db | SteamApi | ProtonDb>();
       const databaseHooks = librarySyncHooks((userId) => {
         runFork(syncOnLogin(userId));
       });
-      return BetterAuth.fromAuth(makeAuth(config, { databaseHooks }));
+      return BetterAuth.fromAuth(makeAuth(config, { databaseHooks, sendMail }));
     }),
   );
 }
