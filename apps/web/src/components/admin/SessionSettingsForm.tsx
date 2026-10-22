@@ -47,22 +47,25 @@ const toValues = (settings: SessionSettings): Values => ({
   installTimeoutMinutes: String(settings.installTimeoutMinutes),
 });
 
-/** Проверить все поля: настройки или ошибки по полям. */
+/**
+ * Проверить все поля: настройки или ошибки по полям. Начинает с `initial`
+ * (загруженные настройки), поэтому поля, которых нет в `fields` — сейчас
+ * `installTimeoutMinutes`, Task 6 добавит его в форму — доезжают до сервера
+ * неизменными, а не пропадают из сохраняемого значения.
+ */
 const validate = (
+  initial: SessionSettings,
   values: Values,
 ): { settings: SessionSettings } | { errors: Errors } => {
   const errors: Errors = {};
-  const parsed = {} as Record<Key, number>;
+  const parsed: Record<Key, number> = { ...initial };
   for (const { key } of fields) {
     const raw = values[key].trim();
     const value = raw === "" ? Number.NaN : Number(raw);
     if (isValid(key, value)) parsed[key] = value;
     else errors[key] = rangeMessage(key);
   }
-  return Object.keys(errors).length > 0
-    ? { errors }
-    : // Task 6: добавить installTimeoutMinutes в `fields`, иначе он не редактируется.
-      { settings: parsed as SessionSettings };
+  return Object.keys(errors).length > 0 ? { errors } : { settings: parsed };
 };
 
 export function SessionSettingsForm({
@@ -80,7 +83,7 @@ export function SessionSettingsForm({
 
   const submit = async () => {
     setServerError(null);
-    const result = validate(values);
+    const result = validate(initial, values);
     if ("errors" in result) {
       setErrors(result.errors);
       return;
