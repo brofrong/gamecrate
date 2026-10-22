@@ -121,6 +121,15 @@ const fields = Config.all({
    * же ФС, что `LIBRARY_DIR`: готовая игра переносится в библиотеку `rename`.
    */
   installScratchDir: Config.option(HostDir("INSTALL_SCRATCH_DIR")),
+  /**
+   * Минимум свободного места (ГиБ) на ФС `SCRATCH_DIR`/`INSTALL_SCRATCH_DIR`:
+   * меньше — `StartSession`/`InstallGame` отклоняются («На сервере закончилось
+   * место»), чтобы upper-слои не заполнили общий диск хоста.
+   */
+  minFreeGb: Config.schema(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    "MIN_FREE_GB",
+  ).pipe(Config.withDefault(20)),
 });
 
 /** Первая пара из `pairs`, где каталоги совпадают или вложены один в другой. */

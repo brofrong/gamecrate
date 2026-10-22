@@ -73,7 +73,7 @@ describe("seal/open", () => {
 });
 
 describe("extractSingleFile", () => {
-  it("returns the payload of a one-entry ustar tar", () => {
+  it("returns the payload of a one-entry ustar tar", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cg-agent-profile-"));
     try {
       const payload = crypto.getRandomValues(new Uint8Array(1500));
@@ -94,10 +94,60 @@ describe("extractSingleFile", () => {
           `tar failed: ${new TextDecoder().decode(result.stderr)}`,
         );
       const tarBytes = new Uint8Array(readFileSync(tarPath));
-      expect(extractSingleFile(tarBytes)).toEqual(payload);
+      expect(await run(extractSingleFile(tarBytes, "payload.bin"))).toEqual(
+        payload,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  const options = { uid: 1000, gid: 1000, mode: 0o644, mtime: 0 };
+  const payload = new TextEncoder().encode("profile");
+
+  it("accepts a regular file whose name ends with the expected one (typeflag '0' or NUL)", async () => {
+    const tar = singleFileTar("tmp/cg-profile.tar", payload, options);
+    expect(await run(extractSingleFile(tar, "cg-profile.tar"))).toEqual(
+      payload,
+    );
+    tar[156] = 0;
+    expect(await run(extractSingleFile(tar, "cg-profile.tar"))).toEqual(
+      payload,
+    );
+  });
+
+  it("rejects an entry that is not a regular file", async () => {
+    const tar = singleFileTar("cg-profile.tar", payload, options);
+    // '5' — каталог, '2' — символическая ссылка.
+    for (const flag of ["5", "2"]) {
+      tar[156] = flag.charCodeAt(0);
+      const error = await runError(extractSingleFile(tar, "cg-profile.tar"));
+      expect(error).toBeInstanceOf(ProfileCorrupt);
+      expect(error.reason).toContain("typeflag");
+    }
+  });
+
+  it("rejects an entry with another name", async () => {
+    const tar = singleFileTar("cg-profile.tar.partial", payload, options);
+    const error = await runError(extractSingleFile(tar, "cg-profile.tar"));
+    expect(error).toBeInstanceOf(ProfileCorrupt);
+    expect(error.reason).toContain("cg-profile.tar.partial");
+    const other = singleFileTar("evil-cg-profile.tar", payload, options);
+    expect(
+      (await runError(extractSingleFile(other, "cg-profile.tar"))).reason,
+    ).toContain("evil-cg-profile.tar");
+  });
+
+  it("rejects a truncated archive", async () => {
+    const tar = singleFileTar("cg-profile.tar", payload, options);
+    const error = await runError(
+      extractSingleFile(tar.subarray(0, 512 + 3), "cg-profile.tar"),
+    );
+    expect(error).toBeInstanceOf(ProfileCorrupt);
+    expect(
+      (await runError(extractSingleFile(new Uint8Array(100), "cg-profile.tar")))
+        ._tag,
+    ).toBe("ProfileCorrupt");
   });
 });
 

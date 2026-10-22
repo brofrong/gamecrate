@@ -109,21 +109,49 @@ export const openProfile = (
 
 /**
  * Содержимое единственного файла из ustar tar (заголовок 512 байт, размер —
- * октальное поле со смещением 124, длиной 12 байт).
+ * октальное поле со смещением 124, длиной 12 байт). Запись должна быть обычным
+ * файлом (typeflag `'0'` или NUL) с именем `name` (или `…/name`), а данные —
+ * целиком в архиве; иначе `ProfileCorrupt` (Docker отдал не то, что ждали).
  */
-export const extractSingleFile = (tar: Uint8Array): Uint8Array => {
-  const HEADER_SIZE = 512;
-  const SIZE_FIELD_OFFSET = 124;
-  const SIZE_FIELD_LENGTH = 12;
-  const sizeText = new TextDecoder()
-    .decode(
-      tar.subarray(SIZE_FIELD_OFFSET, SIZE_FIELD_OFFSET + SIZE_FIELD_LENGTH),
-    )
-    .replace(/\0/g, "")
-    .trim();
-  const size = Number.parseInt(sizeText, 8);
-  return tar.subarray(HEADER_SIZE, HEADER_SIZE + size);
-};
+export const extractSingleFile = (
+  tar: Uint8Array,
+  name: string,
+): Effect.Effect<Uint8Array, ProfileCorrupt> =>
+  Effect.suspend(() => {
+    const HEADER_SIZE = 512;
+    const NAME_LENGTH = 100;
+    const SIZE_FIELD_OFFSET = 124;
+    const SIZE_FIELD_LENGTH = 12;
+    const TYPEFLAG_OFFSET = 156;
+    const corrupt = (reason: string) =>
+      Effect.fail(new ProfileCorrupt({ reason: `tar: ${reason}` }));
+    if (tar.length < HEADER_SIZE) return corrupt("archive shorter than header");
+    const decoder = new TextDecoder();
+    const typeflag = tar[TYPEFLAG_OFFSET] ?? 0;
+    if (typeflag !== 0 && typeflag !== "0".charCodeAt(0))
+      return corrupt(
+        `entry is not a regular file (typeflag ${JSON.stringify(String.fromCharCode(typeflag))})`,
+      );
+    const entry = decoder
+      .decode(tar.subarray(0, NAME_LENGTH))
+      .replace(/\0.*$/s, "");
+    if (entry !== name && !entry.endsWith(`/${name}`))
+      return corrupt(
+        `unexpected entry ${JSON.stringify(entry)}, want ${JSON.stringify(name)}`,
+      );
+    const sizeText = decoder
+      .decode(
+        tar.subarray(SIZE_FIELD_OFFSET, SIZE_FIELD_OFFSET + SIZE_FIELD_LENGTH),
+      )
+      .replace(/\0/g, "")
+      .trim();
+    const size = Number.parseInt(sizeText, 8);
+    if (!/^[0-7]+$/.test(sizeText) || !Number.isSafeInteger(size))
+      return corrupt(`invalid size field ${JSON.stringify(sizeText)}`);
+    if (HEADER_SIZE + size > tar.length)
+      return corrupt(`truncated: ${size} bytes declared`);
+    return Effect.succeed(tar.subarray(HEADER_SIZE, HEADER_SIZE + size));
+  });
 
 /**
  * Ustar tar с одним файлом `name` (для `PUT /containers/{id}/archive`):

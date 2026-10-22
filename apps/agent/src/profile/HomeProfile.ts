@@ -4,15 +4,17 @@
 import type { ProfileRef } from "@cg/rpc";
 import { Duration, Effect, Schema } from "effect";
 import { AgentConfig } from "../config";
-import { DockerClient, type DockerError } from "../DockerClient";
+import { DockerClient, DockerError } from "../DockerClient";
 import { helperSpec, runHelper } from "../Helper";
-import { extractSingleFile } from "./codec";
+import { extractSingleFile, type ProfileCorrupt } from "./codec";
 import { ProfileCommitter } from "./ProfileCommitter";
 import { ProfileStore } from "./ProfileStore";
 
 export const HOME_DIR = "/home/ubuntu";
 /** Куда `cg-profile-pack` пишет архив профиля в контейнере. */
 export const PACK_OUTPUT = "/tmp/cg-profile.tar";
+/** Имя записи в tar, который Docker отдаёт для `PACK_OUTPUT`. */
+const PACK_ENTRY = "cg-profile.tar";
 export const PROFILE_PACK = "/usr/local/bin/cg-profile-pack";
 export const STEAM_SHUTDOWN = "/usr/local/bin/cg-steam-shutdown";
 /**
@@ -21,12 +23,41 @@ export const STEAM_SHUTDOWN = "/usr/local/bin/cg-steam-shutdown";
  */
 export const PACK_TIMEOUT = Duration.minutes(10);
 
+/**
+ * Предел упакованного профиля (`/tmp/cg-profile.tar`): агент держит архив в
+ * памяти несколько раз (выгрузка, gzip, шифрование) при `mem_limit` 512m.
+ * Больше — архив не загружается: сохранение не удалось (контейнер остаётся,
+ * `profile-unsaved`), импорт старого тома — сбой запуска.
+ */
+export const PROFILE_MAX_BYTES = 200 * 1024 * 1024;
+
+const MiB = (bytes: number) => (bytes / (1024 * 1024)).toFixed(0);
+
+/**
+ * Размер `PACK_OUTPUT` в `container` (и в остановленном) до его выгрузки; больше
+ * `PROFILE_MAX_BYTES` — `ProfileError` шага `size` с размером в сообщении.
+ */
+const checkPackedSize = (container: string) =>
+  Effect.gen(function* () {
+    const docker = yield* DockerClient;
+    const size = yield* docker
+      .archiveSize(container, PACK_OUTPUT)
+      .pipe(Effect.mapError(failed("size")));
+    if (size > PROFILE_MAX_BYTES)
+      return yield* new ProfileError({
+        stage: "size",
+        message: `profile archive is ${size} bytes (${MiB(size)} MiB), limit ${MiB(PROFILE_MAX_BYTES)} MiB`,
+      });
+    return size;
+  });
+
 /** Старый (MVP-2) том дома: только читается, один раз — для импорта профиля. */
 export const legacyVolume = (userId: string) => `cg-home-${userId}`;
 
 /**
  * Профиль не восстановлен/не сохранён. `stage` — шаг: `get`, `import`, `restore`
- * (восстановление); `pack`, `export`, `upload`, `commit` (сохранение).
+ * (восстановление); `pack`, `export`, `upload`, `commit` (сохранение); `size` —
+ * архив больше `PROFILE_MAX_BYTES` (и при импорте, и при сохранении).
  */
 export class ProfileError extends Schema.TaggedError<ProfileError>()(
   "ProfileError",
@@ -41,13 +72,23 @@ const failed =
   (error: { readonly message: string }): ProfileError =>
     new ProfileError({ stage, message: error.message });
 
+/** Архив профиля из `GET /archive` не тот (`ProfileCorrupt`) — как ошибка Docker. */
+const unpack = (tar: Uint8Array) =>
+  extractSingleFile(tar, PACK_ENTRY).pipe(
+    Effect.mapError(
+      (error: ProfileCorrupt) =>
+        new DockerError({ operation: "getArchive", message: error.reason }),
+    ),
+  );
+
 /** Откуда взят дом: объект профиля, старый том или пустой (первый вход по QR). */
 export type RestoredFrom = "profile" | "legacy" | "empty";
 
 /**
  * Tar профиля из старого тома `cg-home-<userId>`: помощник образа сессии с этим
  * томом read-only в `/home/ubuntu` запускает `cg-profile-pack` (uid 1000, без
- * GPU и сети), архив забирается после его выхода. Том не изменяется.
+ * GPU и сети), архив забирается после его выхода (больше `PROFILE_MAX_BYTES` —
+ * `ProfileError` шага `size`, не загружается). Том не изменяется.
  */
 export const importLegacy = (options: {
   readonly userId: string;
@@ -71,10 +112,14 @@ export const importLegacy = (options: {
           },
         ],
       }),
-      docker.getArchive(options.helperName, PACK_OUTPUT, {
-        timeout: PACK_TIMEOUT,
-      }),
-    ).pipe(Effect.map(extractSingleFile));
+      checkPackedSize(options.helperName).pipe(
+        Effect.andThen(
+          docker.getArchive(options.helperName, PACK_OUTPUT, {
+            timeout: PACK_TIMEOUT,
+          }),
+        ),
+      ),
+    ).pipe(Effect.flatMap(unpack));
   });
 
 /**
@@ -109,7 +154,11 @@ export const restoreProfile = (options: {
       tar = yield* importLegacy({
         userId: options.userId,
         helperName: `${options.container}-import`,
-      }).pipe(Effect.mapError(failed("import")));
+      }).pipe(
+        Effect.mapError((error) =>
+          error._tag === "ProfileError" ? error : failed("import")(error),
+        ),
+      );
       from = "legacy";
     }
     yield* docker
@@ -121,16 +170,18 @@ export const restoreProfile = (options: {
 /**
  * Снимает профиль с запущенного `container` и фиксирует новую версию: Steam
  * закрывается штатно (`cg-steam-shutdown`; не вышло — только предупреждение),
- * `cg-profile-pack` → архив → шифрование и загрузка → `agent.profileCommit` от
- * `baseVersion`. Отклонён (база устарела) — загруженный объект удаляется.
- * Результат — `accepted`; сбой любого шага — `ProfileError`.
+ * `cg-profile-pack` → размер (не больше `PROFILE_MAX_BYTES`) → архив →
+ * шифрование и загрузка → `agent.profileCommit` от
+ * `baseVersion`. Отклонён (база устарела) — загруженный объект удаляется, и это
+ * тоже `ProfileError` (шаг `commit`): прогресс сессии не сохранён, её контейнер
+ * нужно оставить, как при любом другом сбое (`profile-unsaved`).
  */
 export const saveProfile = (options: {
   readonly container: string;
   readonly userId: string;
   readonly baseVersion: number | null;
 }): Effect.Effect<
-  boolean,
+  void,
   ProfileError,
   DockerClient | ProfileStore | ProfileCommitter
 > =>
@@ -165,9 +216,10 @@ export const saveProfile = (options: {
         stage: "pack",
         message: `cg-profile-pack exited with ${exitCode}`,
       });
+    yield* checkPackedSize(options.container);
     const tar = yield* docker
       .getArchive(options.container, PACK_OUTPUT, { timeout: PACK_TIMEOUT })
-      .pipe(Effect.map(extractSingleFile), Effect.mapError(failed("export")));
+      .pipe(Effect.flatMap(unpack), Effect.mapError(failed("export")));
 
     const { objectKey, sizeBytes } = yield* store
       .put(options.userId, tar)
@@ -194,6 +246,9 @@ export const saveProfile = (options: {
           }),
         ),
       );
+      return yield* new ProfileError({
+        stage: "commit",
+        message: "rejected: stale base version",
+      });
     }
-    return accepted;
   });

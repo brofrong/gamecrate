@@ -165,6 +165,14 @@ export interface DockerClientShape {
     path: string,
     options?: RequestOptions,
   ) => Effect.Effect<Uint8Array, DockerError>;
+  /**
+   * `HEAD /containers/{id}/archive`: размер файла `path` в байтах (заголовок
+   * `X-Docker-Container-Path-Stat`), без выгрузки; и в остановленном контейнере.
+   */
+  readonly archiveSize: (
+    name: string,
+    path: string,
+  ) => Effect.Effect<number, DockerError>;
 }
 
 /** Тело `POST /containers/create` для спецификации. */
@@ -289,7 +297,7 @@ export const make = (socketPath: string): DockerClientShape => {
    */
   const request = (
     operation: string,
-    method: "GET" | "POST" | "PUT" | "DELETE",
+    method: "GET" | "HEAD" | "POST" | "PUT" | "DELETE",
     path: string,
     options: {
       readonly body?: unknown;
@@ -324,7 +332,7 @@ export const make = (socketPath: string): DockerClientShape => {
           },
         );
         const bytes = new Uint8Array(await response.arrayBuffer());
-        return { status: response.status, bytes };
+        return { status: response.status, headers: response.headers, bytes };
       },
       catch: (cause) =>
         new DockerError({
@@ -337,9 +345,10 @@ export const make = (socketPath: string): DockerClientShape => {
         orElse: () =>
           Effect.fail(new DockerError({ operation, message: "timeout" })),
       }),
-      Effect.flatMap(({ status, bytes }) => {
+      Effect.flatMap(({ status, headers, bytes }) => {
         const ok = options.ok ?? [200, 201, 204];
-        if (ok.includes(status)) return Effect.succeed({ status, bytes });
+        if (ok.includes(status))
+          return Effect.succeed({ status, headers, bytes });
         const text = new TextDecoder().decode(bytes);
         let message = text.trim();
         try {
@@ -552,6 +561,35 @@ export const make = (socketPath: string): DockerClientShape => {
         ok: [200],
         timeout: options.timeout,
       }).pipe(Effect.map(({ bytes }) => bytes)),
+
+    archiveSize: (name, path) =>
+      request("archiveSize", "HEAD", archivePath(name, path), {
+        ok: [200],
+      }).pipe(
+        Effect.flatMap(({ headers }) =>
+          Effect.try({
+            try: () => {
+              const header = headers.get("x-docker-container-path-stat");
+              if (header === null) throw new Error("no path stat header");
+              const stat: unknown = JSON.parse(
+                Buffer.from(header, "base64").toString("utf8"),
+              );
+              const size =
+                typeof stat === "object" && stat !== null && "size" in stat
+                  ? stat.size
+                  : undefined;
+              if (typeof size !== "number" || !Number.isSafeInteger(size))
+                throw new Error("no size in path stat");
+              return size;
+            },
+            catch: (cause) =>
+              new DockerError({
+                operation: "archiveSize",
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+          }),
+        ),
+      ),
   };
 };
 

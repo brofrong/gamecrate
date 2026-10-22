@@ -45,7 +45,7 @@
   `GBM_ALLOCATOR_PATH=/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01`,
   `SESSION_NETWORK=cg-sessions`, `DOCKER_SOCKET=/var/run/docker.sock`, `ROLES=worker,gamestore`,
   `CG_DATA_DIR=/raid/cloud-gaming`, `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`,
-  `S3_BUCKET=cg-profiles`. Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
+  `S3_BUCKET=cg-profiles`, `MIN_FREE_GB=20` (см. «Место на диске»). Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
   `S3_ACCESS_KEY`/`S3_SECRET_KEY` = `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`, `PROFILE_KEY` из
   `.env`, `LIBRARY_DIR`, `STEAM_CLIENT_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`.
 - Каталоги хоста (владелец `brofrong`, uid 1000; создаёт `deploy.sh` без sudo):
@@ -271,12 +271,15 @@ ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-f
 ## Профиль не сохранён (`profile-unsaved`)
 
 Если при остановке сессии профиль не удалось снять, зашифровать, выгрузить в RustFS или
-зафиксировать в `profiles` (RustFS недоступен, тайм-аут, сбой `cg-profile-pack`), агент **не
+зафиксировать в `profiles` (RustFS недоступен или не отвечает — тайм-аут 2 мин на выгрузку, сбой
+`cg-profile-pack`, архив профиля больше 200 МиБ — `stage: "size"` с размером в `error`, выгрузка
+отклонена из-за устаревшей версии — `stage: "commit"`, `rejected: stale base version`), агент **не
 удаляет** контейнер: `cg-session-<id>` остаётся остановленным вместе с томами `cg-s-<id>-*` и
 каталогом `<SCRATCH_DIR>/<id>`, в логе агента — `profile-unsaved` (`sessionId`, `userId`, `stage`,
 `error`). Сессия завершается (`profileSaved: false`), слот свободен; следующая сессия пользователя
-получит предыдущую версию профиля. Ни остановка, ни перезапуск агента такой контейнер не удаляют
-— решает человек:
+получит предыдущую версию профиля. Оркестратор пишет в свой лог предупреждение
+`Session profile not saved` (`sessionId`, `userId`). Ни остановка, ни перезапуск агента такой
+контейнер не удаляют — решает человек:
 
 ```sh
 ssh brofrong 'docker logs cg-agent 2>&1 | grep profile-unsaved'
@@ -297,18 +300,93 @@ ssh brofrong 'docker ps -a --filter label=cg.session --filter status=exited --fo
    агент остановит его штатно — с сохранением профиля и удалением контейнера и слоёв (в логе
    `Session stopped` с `profileSaved`). Steam при этом заново не запускается (замок `cg-launch` в
    слое контейнера). Если пользователь уже играл после этой сессии, версия профиля ушла вперёд и
-   выгрузка будет отклонена (`profileSaved: false`, контейнер удалён) — более новый профиль
-   остаётся.
+   выгрузка будет отклонена (`profileSaved: false`, контейнер снова остаётся остановленным) —
+   более новый профиль остаётся, этот контейнер — выбросить (п. 3). Если причина — размер (больше
+   200 МиБ), повтор не поможет: найти, что разрослось
+   (`docker cp cg-session-<id>:/tmp/cg-profile.tar /tmp/ && tar -tvf /tmp/cg-profile.tar | sort -k3 -n | tail`),
+   и выбросить контейнер (п. 3) либо добавить исключение в `images/session/cg-profile-pack`.
 3. **Или выбросить** (профиль этой сессии не нужен): `ssh brofrong 'docker rm cg-session-<id> && docker restart cg-agent'`
    — агент при старте удалит осиротевшие тома `cg-s-<id>-*` и `<SCRATCH_DIR>/<id>` (каталог от
    root, руками без sudo не удалить).
 
 Пункты 2 и 3 описаны по коду агента и на сервере не проверялись — после первого случая уточнить.
 
+## Профиль в RustFS потерян, повреждён или сменился `PROFILE_KEY`
+
+Признак: запуск сессии пользователя падает сразу с «Не удалось загрузить профиль пользователя», в
+логе агента `Session failed` с `stage: "get"` и ошибкой вида `NoSuchKey` (объекта нет),
+`не удалось расшифровать (AES-GCM)` / `неверная сигнатура` (объект повреждён или зашифрован другим
+ключом) или `timeout` (RustFS не отвечает — тогда чинить RustFS, профиль не трогать).
+
+- **`PROFILE_KEY` сменили случайно** — вернуть прежний ключ в `.env` и передеплоить: иначе не
+  читается ни один профиль. Ключ не менять никогда, пока в `profiles` есть строки.
+- **Объект одного пользователя потерян/повреждён** — удалить его строку в `profiles` (версия
+  профиля начнётся заново):
+
+  ```sh
+  ssh brofrong "docker exec cg-postgres psql -U cg -d cloud_gaming -c \"delete from profiles where user_id = '<userId>'\""
+  ```
+
+  Следующая сессия пользователя: если том `cg-home-<userId>` (MVP-2) ещё есть — профиль заново
+  импортируется из него (см. ниже); иначе дом пустой — Steam попросит QR-вход. Пока пользователь не
+  вошёл в Steam (в сессии уже установленной игры), установка новых игр для него сразу падает с
+  «Сначала войдите в Steam: запустите любую уже установленную игру». Старый объект в бакете можно
+  удалить (`... cg-rustfs-bucket s3 rm s3://cg-profiles/<objectKey>`, как `s3 ls` выше).
+
+## Место на диске (`MIN_FREE_GB`)
+
+Слои сессий (`SCRATCH_DIR`, корневая ФС общего сервера) и установок (`INSTALL_SCRATCH_DIR`, ФС
+библиотеки) пишутся на общие диски. Перед каждым `StartSession` агент проверяет свободное место на
+ФС `SCRATCH_DIR`, перед каждой установкой — на ФС `INSTALL_SCRATCH_DIR` (`statfs`, место для
+непривилегированного пользователя). Меньше `MIN_FREE_GB` ГиБ (по умолчанию 20, переменная в
+`.env`) — запуск отклоняется: пользователь видит «На сервере закончилось место» (у установки —
+«Не удалось установить игру», у задачи в `install_jobs.error` — «На сервере закончилось место»), в
+логе агента — `Not enough free disk space` (`dir`, `freeGb`, `minFreeGb`). Если `statfs` не удался,
+запуск не блокируется (предупреждение `Measuring free disk space failed`).
+
+```sh
+ssh brofrong 'df -h / /home/brofrong/cloud-gaming-scratch /raid/cloud-gaming'
+ssh brofrong 'docker logs cg-agent 2>&1 | grep -E "Not enough free disk space|Measuring free disk space"'
+ssh brofrong 'du -sh /home/brofrong/cloud-gaming-scratch/* /raid/cloud-gaming/install-scratch/* 2>/dev/null'
+```
+
+Освободить место: остановленные контейнеры `profile-unsaved` (см. выше; их слои — в
+`SCRATCH_DIR`), наши старые образы без тега (`docker images --filter dangling=true` — только
+`cg-*`, чужие не трогать). Порог меняется в `.env` (`MIN_FREE_GB=…`) и применяется после
+`docker compose up -d cg-agent` (перезапуск агента прерывает идущие установки).
+
+## Установка падает: в библиотеке `common/<игра>` без манифеста
+
+Перенос игры в библиотеку — `rename` каталога `common/<installdir>`, затем манифеста
+`appmanifest_<appId>.acf`. Если агент упал или перезапустился между ними, в
+`/raid/cloud-gaming/library/steamapps/common/` остаётся каталог без манифеста: Steam сессий игру не
+видит, а каждая новая установка этой игры падает («Не удалось установить игру», в
+`install_jobs.error` — «Не удалось перенести игру в библиотеку», в логе агента `Install failed` с
+`app <id> is not unpacked in the install layer`) — агент не перезаписывает существующий каталог.
+
+```sh
+# каталоги common/ без манифеста с таким installdir
+ssh brofrong 'cd /raid/cloud-gaming/library/steamapps && for d in common/*/; do d=${d#common/}; d=${d%/}; grep -qsF "\"$d\"" appmanifest_*.acf || echo "orphan: $d"; done'
+```
+
+Только когда нет живых сессий и установок (`docker ps --filter label=cg.session`,
+`--filter label=cg.install`: библиотека — lower их overlay, менять её под смонтированным overlay
+нельзя), убрать каталог **из библиотеки, на той же ФС** (владелец — uid 1000, sudo не нужен):
+
+```sh
+ssh brofrong 'mkdir -p /raid/cloud-gaming/orphans && mv "/raid/cloud-gaming/library/steamapps/common/<dir>" "/raid/cloud-gaming/orphans/<dir>-$(date +%F)"'
+```
+
+Затем повторить установку (пользователь снова нажимает «Играть»). Когда игра встала, удалить
+отложенный каталог: `ssh brofrong 'rm -rf "/raid/cloud-gaming/orphans/<dir>-<дата>"'`.
+
 ## Импорт старого дома `cg-home-<userId>` (MVP-2)
 
 Происходит сам: при первом запуске (установке или сессии) пользователя, у которого нет записи в
-`profiles`, агент читает его том `cg-home-<userId>` (только чтение, помощником `cg-profile-pack`),
+`profiles`, агент читает его том `cg-home-<userId>` (только чтение, помощником `cg-profile-pack`;
+архив больше 200 МиБ не импортируется — запуск падает с «Профиль пользователя слишком большой
+(больше 200 МиБ)»; тогда владелец вручную удаляет в томе лишнее (код том не меняет) или, если
+прогресс не нужен, удаляет том — пользователь войдёт по QR заново),
 делает из него профиль и кладёт в дом нового контейнера; при его остановке профиль сохраняется в
 RustFS как версия 1. Повторно
 QR-вход не нужен. Код том не изменяет и не удаляет никогда. Удалить вручную, когда убедились, что

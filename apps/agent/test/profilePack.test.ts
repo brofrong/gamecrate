@@ -101,6 +101,43 @@ describe("cg-profile-pack", () => {
     }
   });
 
+  it("junk under the Proton user dir is not packed, saves are", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cg-profile-pack-junk-"));
+    const user = `${pfx}/drive_c/users/steamuser`;
+    const saves = [
+      `${user}/AppData/Local/Game/Saved/SaveGames/slot1.sav`,
+      `${user}/AppData/Local/Game/Saved/Config/Windows/Game.ini`,
+      `${user}/Documents/My Games/Game/save.sav`,
+      `${user}/AppData/Roaming/Studio/Game/profile.dat`,
+    ];
+    const junk = [
+      `${user}/AppData/Local/Game/Saved/Logs/Game.log`,
+      `${user}/AppData/Local/Game/Saved/Crashes/UE-1/dump.dmp`,
+      `${user}/AppData/Local/Game/webcache/index`,
+      `${user}/AppData/Local/Game/Cache/data_0`,
+      `${user}/AppData/Local/Game/GPUCache/data_1`,
+      `${user}/AppData/Roaming/Studio/ShaderCache/a.bin`,
+    ];
+    try {
+      for (const file of [...saves, ...junk]) {
+        mkdirSync(join(dir, dirname(file)), { recursive: true });
+        writeFileSync(join(dir, file), "x");
+      }
+      const entries = list(dir);
+      for (const path of saves) expect(entries).toContain(path);
+      for (const entry of entries) {
+        expect(entry).not.toContain("/Saved/Logs");
+        expect(entry).not.toContain("/Saved/Crashes");
+        expect(entry).not.toContain("/webcache");
+        expect(entry).not.toContain("/Cache");
+        expect(entry).not.toContain("/GPUCache");
+        expect(entry).not.toContain("/ShaderCache");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("empty home lists nothing", () => {
     const empty = mkdtempSync(join(tmpdir(), "cg-profile-pack-empty-"));
     try {

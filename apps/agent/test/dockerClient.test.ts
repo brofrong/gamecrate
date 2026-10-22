@@ -464,4 +464,43 @@ describe("DockerClient", () => {
       "/v1.47/containers/cg-import-s1/archive?path=%2Ftmp%2Fcg-profile.tar",
     );
   });
+
+  it("archiveSize reads the size from the path stat header (HEAD)", async () => {
+    const stat = Buffer.from(
+      JSON.stringify({
+        name: "cg-profile.tar",
+        size: 209715201,
+        mode: 420,
+        mtime: "2026-10-22T10:00:00Z",
+        linkTarget: "",
+      }),
+    ).toString("base64");
+    respond = () =>
+      new Response(null, {
+        headers: { "x-docker-container-path-stat": stat },
+      });
+    expect(
+      await run(docker.archiveSize("cg-session-s1", "/tmp/cg-profile.tar")),
+    ).toBe(209715201);
+    expect(recorded).toEqual([
+      {
+        method: "HEAD",
+        path: "/v1.47/containers/cg-session-s1/archive?path=%2Ftmp%2Fcg-profile.tar",
+        body: undefined,
+        contentType: null,
+      },
+    ]);
+
+    respond = () => new Response(null);
+    const missing = await runError(
+      docker.archiveSize("cg-session-s1", "/tmp/cg-profile.tar"),
+    );
+    expect(missing.operation).toBe("archiveSize");
+
+    respond = () => new Response(null, { status: 404 });
+    const gone = await runError(
+      docker.archiveSize("cg-session-s1", "/tmp/cg-profile.tar"),
+    );
+    expect(gone.status).toBe(404);
+  });
 });

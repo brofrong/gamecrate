@@ -14,7 +14,12 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { AgentCommand, AgentReport, ProfileRef } from "@cg/rpc";
+import {
+  type AgentCommand,
+  type AgentReport,
+  type ProfileRef,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import {
   Clock,
   Context,
@@ -34,6 +39,7 @@ import {
   type DockerError,
   isGone,
 } from "./DockerClient";
+import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { isValidId } from "./ids";
 import {
   cleanup,
@@ -72,10 +78,13 @@ export const installReasons = {
   cancelled: "Установка отменена",
   dockerStart: "Не удалось запустить установщик",
   profileRestore: "Не удалось загрузить профиль пользователя",
+  /** Профиля нет: Steam без входа ждал бы невидимый QR (оркестратор покажет как есть). */
+  steamLogin: steamLoginRequiredReason,
   containerGone: "Установщик неожиданно остановился",
   stop: "Не удалось остановить установщик",
   promote: "Не удалось перенести игру в библиотеку",
   invalidCommand: "Некорректная команда установки",
+  noSpace: "На сервере закончилось место",
   notGamestore: "Этот сервер не устанавливает игры",
   unexpected: "Внутренняя ошибка установщика",
 } as const;
@@ -333,6 +342,7 @@ type Services = AgentConfig | DockerClient | ProfileStore | ProfileCommitter;
 const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
+  const freeSpace = yield* FreeSpace;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<Services>();
   const withServices = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -375,15 +385,39 @@ const make = Effect.gen(function* () {
     );
 
   /**
+   * Строки байтов и состояния всех `appmanifest_*.acf` в `steamapps` одним
+   * exec: Steam перед целью качает зависимости (Proton, Steam Linux Runtime) в
+   * их собственные манифесты. Не прочиталось — `undefined` (хода нет).
+   */
+  const readActivity = (job: Job) =>
+    docker
+      .exec(job.name, [
+        "sh",
+        "-c",
+        `grep -sHE '"(StateFlags|BytesDownloaded|BytesToDownload|BytesStaged|BytesToStage)"' ${STEAMAPPS_DIR}/appmanifest_*.acf`,
+      ])
+      .pipe(
+        Effect.map(({ stdout }) => stdout),
+        Effect.catchTag("DockerError", (error: DockerError) =>
+          Effect.logWarning("Reading app manifests failed", {
+            jobId: job.jobId,
+            error: error.message,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+
+  /**
    * Опрос манифеста цели: `InstallProgress` при изменении байтов загрузки, итог
    * — поля манифеста со `StateFlags 4`. Ход установки — любое изменение байтов
    * загрузки и распаковки (`BytesStaged`: после загрузки Steam распаковывает и
-   * проверяет) или `StateFlags`; хода нет STALL_TIMEOUT — `Abort`.
+   * проверяет) или `StateFlags`, а также любое изменение байтов/состояния
+   * других манифестов (зависимости); хода нет STALL_TIMEOUT — `Abort`.
    */
   const watch = (job: Job) =>
     Effect.gen(function* () {
       let lastBytes: string | undefined;
       let lastState: string | undefined;
+      let lastActivity: string | undefined;
       let changedAt = yield* Clock.currentTimeMillis;
       while (true) {
         const fields = yield* readManifest(job);
@@ -416,13 +450,21 @@ const make = Effect.gen(function* () {
             changedAt = now;
           }
         }
+        const activity = yield* readActivity(job);
+        if (activity !== undefined && activity !== lastActivity) {
+          lastActivity = activity;
+          changedAt = now;
+        }
         if (now - changedAt >= Duration.toMillis(STALL_TIMEOUT))
           return yield* new Abort({ reason: installReasons.stalled });
         yield* Effect.sleep(INSTALL_POLL);
       }
     });
 
-  /** Слои → контейнер → профиль → заготовка манифеста → старт → загрузка. */
+  /**
+   * Слои → контейнер → профиль (нет профиля — сразу `steamLogin`) → заготовка
+   * манифеста → старт → загрузка.
+   */
   const download = (job: Job) =>
     Effect.gen(function* () {
       const startFailed = (cause: unknown) =>
@@ -445,6 +487,10 @@ const make = Effect.gen(function* () {
             new Abort({ reason: installReasons.profileRestore, cause }),
         ),
       );
+      // Пустой дом — пользователь ни разу не входил в Steam: установщик без
+      // входа ждал бы QR, которого никто не видит, и упал бы через STALL_TIMEOUT.
+      if (from === "empty")
+        return yield* new Abort({ reason: installReasons.steamLogin });
       const mtime = Math.floor((yield* Clock.currentTimeMillis) / 1000);
       yield* docker
         .putArchive(
@@ -525,7 +571,7 @@ const make = Effect.gen(function* () {
         alreadyInLibrary: plan.existing,
         sizeBytes,
         buildId,
-        profileSaved: Result.isSuccess(saved) && saved.success,
+        profileSaved: Result.isSuccess(saved),
       });
       // Установщик свободен до отчёта: оркестратор может сразу прислать следующую.
       if (current === job) current = undefined;
@@ -626,6 +672,10 @@ const make = Effect.gen(function* () {
         });
         return yield* failed(command.jobId, installReasons.busy);
       }
+      // Игра качается в INSTALL_SCRATCH_DIR (та же ФС, что библиотека).
+      const scratchRoot = Option.getOrElse(config.installScratchDir, () => "");
+      if (!(yield* hasFreeSpace(freeSpace, scratchRoot, config.minFreeGb)))
+        return yield* failed(command.jobId, installReasons.noSpace);
       const job: Job = {
         jobId: command.jobId,
         appId: command.appId,

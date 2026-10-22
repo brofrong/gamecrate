@@ -30,6 +30,7 @@ export const testConfig = (
   scratchDir: "/scratch",
   roles: ["worker"],
   installScratchDir: Option.none(),
+  minFreeGb: 20,
   ...patch,
 });
 
@@ -54,6 +55,7 @@ export const unusedDocker: DockerClientShape = {
   listVolumes: unused("listVolumes"),
   putArchive: unused("putArchive"),
   getArchive: unused("getArchive"),
+  archiveSize: unused("archiveSize"),
 };
 
 /**

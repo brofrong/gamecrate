@@ -6,7 +6,9 @@
 # Состав (whitelist, несуществующие пути пропускаются):
 #   .local/share/Steam/config (без htmlcache, avatarcache), .local/share/Steam/local.vdf,
 #   .local/share/Steam/userdata, .steam/registry.vdf, .config, всё в .local/share кроме Steam,
-#   .local/share/Steam/steamapps/compatdata/*/pfx/drive_c/users/steamuser (сохранения Proton),
+#   .local/share/Steam/steamapps/compatdata/*/pfx/drive_c/users/steamuser (сохранения Proton; без
+#     мусора: AppData/Local/*/Saved/Logs, AppData/Local/*/Saved/Crashes и каталогов webcache,
+#     Cache, GPUCache, ShaderCache),
 #   .local/share/Steam/steamapps/compatdata/*/pfx/user.reg,
 #   .local/share/Steam/steamapps/common/Steam Controller Configs (раскладки).
 #
@@ -43,6 +45,18 @@ emit() {
     -prune -o -print
 }
 
+# Дом пользователя Proton (сохранения игр): родители, сам каталог и всё под ним, кроме мусора —
+# логов и дампов падений Unreal и кешей браузера/шейдеров (бывают в сотни мегабайт).
+emit_proton_user() {
+  local path=$1
+  [ -e "${path}" ] || [ -L "${path}" ] || return 0
+  emit_parents "${path}"
+  find "${path}" \( -path "${path}/AppData/Local/*/Saved/Logs" \
+    -o -path "${path}/AppData/Local/*/Saved/Crashes" \
+    -o \( -type d \( -name webcache -o -name Cache -o -name GPUCache -o -name ShaderCache \) \) \) \
+    -prune -o -print
+}
+
 entries() {
   local path
   emit "${steam}/config"
@@ -54,7 +68,7 @@ entries() {
     [ "${path}" = "${steam}" ] || emit "${path}"
   done
   for path in "${steam}"/steamapps/compatdata/*/pfx; do
-    emit "${path}/drive_c/users/steamuser"
+    emit_proton_user "${path}/drive_c/users/steamuser"
     emit "${path}/user.reg"
   done
   emit "${steam}/steamapps/common/Steam Controller Configs"

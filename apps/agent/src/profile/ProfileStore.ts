@@ -1,6 +1,6 @@
 // Хранилище зашифрованных профилей в S3-совместимом бакете (RustFS), поверх
 // `Bun.S3Client` (path-style). Расшифровка/шифровка — `./codec`.
-import { Context, Effect, Layer, Redacted, Schema } from "effect";
+import { Context, Duration, Effect, Layer, Redacted, Schema } from "effect";
 import { AgentConfig } from "../config";
 import {
   importProfileKey,
@@ -52,6 +52,35 @@ export interface ProfileStoreOptions {
   readonly profileKey: CryptoKey;
 }
 
+/**
+ * Предельное время операций: RustFS, который принял соединение и молчит, не
+ * должен вешать остановку/запуск сессии и установщик — по таймауту операция
+ * падает `ProfileStoreError`, и срабатывают обычные пути отказа
+ * (profile-unsaved / Failed). `get`/`put` — вместе с (де)шифровкой.
+ */
+export const GET_TIMEOUT = Duration.minutes(2);
+export const PUT_TIMEOUT = Duration.minutes(2);
+export const REMOVE_TIMEOUT = Duration.seconds(30);
+
+/** Ограничивает операцию `duration`; по истечении — `ProfileStoreError` «timeout». */
+const withTimeout =
+  (operation: string, duration: Duration.Duration) =>
+  <A>(
+    effect: Effect.Effect<A, ProfileStoreError>,
+  ): Effect.Effect<A, ProfileStoreError> =>
+    effect.pipe(
+      Effect.timeoutOrElse({
+        duration,
+        orElse: () =>
+          Effect.fail(
+            new ProfileStoreError({
+              operation,
+              message: `timeout after ${Duration.format(duration)}`,
+            }),
+          ),
+      }),
+    );
+
 /** Оборачивает причину отказа промиса S3 в `ProfileStoreError`. */
 const toStoreError =
   (operation: string) =>
@@ -90,7 +119,7 @@ export const make = (options: ProfileStoreOptions): ProfileStoreShape => {
               }),
           ),
         );
-      }),
+      }).pipe(withTimeout("get", GET_TIMEOUT)),
 
     put: (userId, tar) =>
       Effect.gen(function* () {
@@ -101,13 +130,13 @@ export const make = (options: ProfileStoreOptions): ProfileStoreShape => {
           catch: toStoreError("put"),
         });
         return { objectKey, sizeBytes: sealed.length };
-      }),
+      }).pipe(withTimeout("put", PUT_TIMEOUT)),
 
     remove: (objectKey) =>
       Effect.tryPromise({
         try: () => client.delete(objectKey),
         catch: toStoreError("remove"),
-      }).pipe(Effect.asVoid),
+      }).pipe(Effect.asVoid, withTimeout("remove", REMOVE_TIMEOUT)),
   };
 };
 

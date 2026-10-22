@@ -21,6 +21,7 @@ import {
   DockerError,
   type DockerClientShape,
 } from "../src/DockerClient";
+import { PROFILE_MAX_BYTES, saveProfile } from "../src/profile/HomeProfile";
 import {
   ProfileCommitError,
   ProfileCommitter,
@@ -34,6 +35,7 @@ import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
 import { tarOfFile, testConfig, unusedDocker } from "./fakes";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -80,6 +82,9 @@ const makeFake = () => {
     /** Что пакует cg-profile-pack в контейнере сессии и в помощнике импорта. */
     packed: bytes("session-home-tar"),
     legacy: bytes("legacy-home-tar"),
+    /** Размер упакованного архива по `archiveSize` (нет — настоящий размер). */
+    packedSize: undefined as number | undefined,
+    legacySize: undefined as number | undefined,
     packExit: 0,
     /** Объекты профилей в хранилище (расшифрованные tar). */
     profiles: { "profiles/u1/v7.cgp": bytes("profile-v7-tar") } as Record<
@@ -90,6 +95,13 @@ const makeFake = () => {
     putFail: false,
     commits: [] as ProfileCommit[],
     commit: "accept" as "accept" | "reject" | "fail",
+  };
+  /** Свободно на ФС scratch (`FreeSpace`) и каталоги, которые проверялись. */
+  const disk = {
+    freeBytes: 1024 * 1024 * 1024 * 1024,
+    /** statfs не удался. */
+    fail: false,
+    checked: [] as string[],
   };
   const record = (call: string) => {
     state.dockerCalls++;
@@ -163,6 +175,13 @@ const makeFake = () => {
           "cg-profile.tar",
           container.endsWith("-import") ? state.legacy : state.packed,
         );
+      }),
+    archiveSize: (container, path) =>
+      Effect.sync(() => {
+        record(`archiveSize ${container} ${path}`);
+        return container.endsWith("-import")
+          ? (state.legacySize ?? state.legacy.length)
+          : (state.packedSize ?? state.packed.length);
       }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
@@ -274,7 +293,7 @@ const makeFake = () => {
       }),
     attach: () => Effect.void,
   });
-  return { state, docker, store, committer };
+  return { state, docker, store, committer, disk };
 };
 
 type Fake = ReturnType<typeof makeFake>;
@@ -322,6 +341,14 @@ const run = (
     program.pipe(
       Effect.scoped,
       Effect.provide(TestClock.layer()),
+      Effect.provideService(FreeSpace, (dir) =>
+        Effect.suspend(() => {
+          fake.disk.checked.push(dir);
+          return fake.disk.fail
+            ? Effect.fail(new DiskSpaceError({ dir, message: "EIO" }))
+            : Effect.succeed(fake.disk.freeBytes);
+        }),
+      ),
       Effect.provideService(References.MinimumLogLevel, "None"),
       Effect.ensuring(
         Effect.sync(() =>
@@ -421,6 +448,50 @@ describe("SessionSupervisor", () => {
           tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
         });
       }),
+    ));
+
+  it("start with less than MIN_FREE_GB free on the scratch FS fails without touching Docker", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          const before = h.fake.state.dockerCalls;
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          expect(failReasons.noSpace).toBe("На сервере закончилось место");
+          expect(yield* h.drain).toEqual([
+            { _tag: "Failed", sessionId: "s1", reason: failReasons.noSpace },
+          ]);
+          expect(h.fake.disk.checked).toEqual([h.fake.state.scratch]);
+          expect(h.fake.state.dockerCalls).toBe(before);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        fake.disk.freeBytes = 20 * 1024 * 1024 * 1024 - 1;
+      },
+    ));
+
+  it("start with exactly MIN_FREE_GB free goes ahead", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          expect(h.fake.disk.checked).toEqual([h.fake.state.scratch]);
+        }),
+      (fake) => {
+        fake.disk.freeBytes = 20 * 1024 * 1024 * 1024;
+      },
+    ));
+
+  it("free space that cannot be measured does not block the start", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          expect(h.fake.disk.checked).toEqual([h.fake.state.scratch]);
+        }),
+      (fake) => {
+        fake.disk.fail = true;
+      },
     ));
 
   it("each session container gets its own random account password", () =>
@@ -807,6 +878,7 @@ describe("SessionSupervisor", () => {
           ).toEqual([
             "exec cg-session-lost /usr/local/bin/cg-steam-shutdown",
             "exec cg-session-lost /usr/local/bin/cg-profile-pack",
+            "archiveSize cg-session-lost /tmp/cg-profile.tar",
             "getArchive cg-session-lost /tmp/cg-profile.tar",
             "store.put ul",
             "commit profiles/ul/new.cgp",
@@ -1166,6 +1238,7 @@ describe("SessionSupervisor", () => {
             "create cg-session-s1-import",
             "start cg-session-s1-import",
             "wait cg-session-s1-import",
+            "archiveSize cg-session-s1-import /tmp/cg-profile.tar",
             "getArchive cg-session-s1-import /tmp/cg-profile.tar",
             "remove cg-session-s1-import",
             "putArchive cg-session-s1 /home/ubuntu",
@@ -1260,6 +1333,7 @@ describe("SessionSupervisor", () => {
         ).toEqual([
           "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
           "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+          "archiveSize cg-session-s1 /tmp/cg-profile.tar",
           "getArchive cg-session-s1 /tmp/cg-profile.tar",
           "store.put u1",
           "commit profiles/u1/new.cgp",
@@ -1287,7 +1361,7 @@ describe("SessionSupervisor", () => {
       }),
     ));
 
-  it("rejected commit deletes uploaded object", () =>
+  it("rejected commit deletes uploaded object and keeps the container like profile-unsaved", () =>
     run(
       (h) =>
         Effect.gen(function* () {
@@ -1296,11 +1370,17 @@ describe("SessionSupervisor", () => {
           yield* h.tick("0 seconds");
           // Профиля не было: база null.
           expect(h.fake.state.commits[0]?.baseVersion).toBeNull();
+          // Объект удалён, контейнер только остановлен: его дом — единственная
+          // копия прогресса этой сессии.
           expect(callsFrom(h.fake, "commit profiles/u1/new.cgp")).toEqual([
             "commit profiles/u1/new.cgp",
             "store.remove profiles/u1/new.cgp",
-            ...removedWithLayers("s1"),
+            "stop cg-session-s1 15",
           ]);
+          const calls = h.fake.state.calls;
+          expect(calls).not.toContain("remove cg-session-s1");
+          expect(calls).not.toContain("removeVolume cg-s-s1-client");
+          expect(existsSync(join(h.fake.state.scratch, "s1"))).toBe(true);
           expect(yield* h.drain).toEqual([
             {
               _tag: "Stopped",
@@ -1349,6 +1429,123 @@ describe("SessionSupervisor", () => {
           if (failure === "commit") fake.state.commit = "fail";
         },
       ));
+
+  it("profile archive over 200 MiB is not loaded: container kept, profileSaved false", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const calls = h.fake.state.calls;
+          expect(
+            callsFrom(
+              h.fake,
+              "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+            ),
+          ).toEqual([
+            "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+            "archiveSize cg-session-s1 /tmp/cg-profile.tar",
+            "stop cg-session-s1 15",
+          ]);
+          expect(calls).not.toContain(
+            "getArchive cg-session-s1 /tmp/cg-profile.tar",
+          );
+          expect(calls).not.toContain("store.put u1");
+          expect(calls).not.toContain("remove cg-session-s1");
+          expect(existsSync(join(h.fake.state.scratch, "s1"))).toBe(true);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: false,
+            },
+          ]);
+        }),
+      (fake) => {
+        fake.state.packedSize = PROFILE_MAX_BYTES + 1;
+      },
+    ));
+
+  it("profile archive of exactly 200 MiB is still saved", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(h.fake.state.calls).toContain("store.put u1");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+        }),
+      (fake) => {
+        fake.state.packedSize = PROFILE_MAX_BYTES;
+      },
+    ));
+
+  it("saveProfile names the archive size when it is over the limit", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fake = makeFake();
+        fake.state.packedSize = 300 * 1024 * 1024;
+        const error = yield* Effect.flip(
+          saveProfile({
+            container: "cg-session-s1",
+            userId: "u1",
+            baseVersion: 7,
+          }).pipe(
+            Effect.provideService(DockerClient, fake.docker),
+            Effect.provideService(ProfileStore, fake.store),
+            Effect.provideService(ProfileCommitter, fake.committer),
+          ),
+        );
+        expect(error.stage).toBe("size");
+        expect(error.message).toContain("314572800 bytes");
+        expect(error.message).toContain("300 MiB");
+        expect(error.message).toContain("limit 200 MiB");
+      }).pipe(Effect.provideService(References.MinimumLogLevel, "None")),
+    ));
+
+  it("legacy cg-home over 200 MiB fails the start with a clear reason", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Failed",
+              sessionId: "s1",
+              reason: failReasons.profileTooLarge,
+            },
+          ]);
+          expect(failReasons.profileTooLarge).toBe(
+            "Профиль пользователя слишком большой (больше 200 МиБ)",
+          );
+          const calls = h.fake.state.calls;
+          expect(calls).toContain(
+            "archiveSize cg-session-s1-import /tmp/cg-profile.tar",
+          );
+          expect(calls).not.toContain(
+            "getArchive cg-session-s1-import /tmp/cg-profile.tar",
+          );
+          expect(calls).not.toContain("start cg-session-s1");
+          // Помощник импорта убран, старый том не тронут.
+          expect(calls.at(-1)).not.toBe("start cg-session-s1-import");
+          expect(calls).not.toContain("removeVolume cg-home-u1");
+        }),
+      (fake) => {
+        fake.state.volumes = ["cg-home-u1"];
+        fake.state.legacySize = PROFILE_MAX_BYTES + 1;
+      },
+    ));
 
   it("agent start removes orphan cg-s volumes and scratch", () =>
     run(

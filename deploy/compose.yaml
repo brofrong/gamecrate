@@ -139,6 +139,8 @@ services:
       STEAM_CLIENT_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/steam-client
       INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/install-scratch
       SCRATCH_DIR: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
+      # Меньше стольких ГиБ свободно на ФС scratch — старт сессии/установки отклоняется.
+      MIN_FREE_GB: ${MIN_FREE_GB:-20}
       # Хранилище профилей: те же ключи, что у cg-rustfs (корневые ключи RustFS).
       S3_ENDPOINT: http://cg-rustfs:9000
       S3_BUCKET: ${S3_BUCKET:-cg-profiles}

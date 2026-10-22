@@ -131,3 +131,17 @@ describe("agentConfig roles", () => {
     );
   });
 });
+
+describe("agentConfig MIN_FREE_GB", () => {
+  it("defaults to 20 GB and reads a non-negative integer", async () => {
+    expect((await ok(base)).minFreeGb).toBe(20);
+    expect((await ok({ ...base, MIN_FREE_GB: "5" })).minFreeGb).toBe(5);
+    expect((await ok({ ...base, MIN_FREE_GB: "0" })).minFreeGb).toBe(0);
+    expect(await error({ ...base, MIN_FREE_GB: "-1" })).toContain(
+      "MIN_FREE_GB",
+    );
+    expect(await error({ ...base, MIN_FREE_GB: "lots" })).toContain(
+      "MIN_FREE_GB",
+    );
+  });
+});

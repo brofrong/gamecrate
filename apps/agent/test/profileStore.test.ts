@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { Effect, Redacted } from "effect";
+import { Effect, Fiber, Redacted } from "effect";
+import { TestClock } from "effect/testing";
 import { importProfileKey } from "../src/profile/codec";
 import {
   ProfileStore,
@@ -97,5 +98,91 @@ describe("ProfileStore", () => {
     await run(store.remove(objectKey));
     const error = await runError(store.get(objectKey));
     expect(error).toBeInstanceOf(ProfileStoreError);
+  });
+});
+
+describe("ProfileStore timeouts", () => {
+  /** S3, который принимает соединение, но никогда не отвечает. */
+  let hang: ReturnType<typeof Bun.serve>;
+  let hangingStore: ProfileStoreShape;
+
+  beforeAll(async () => {
+    hang = Bun.serve({
+      port: 0,
+      idleTimeout: 0,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    const profileKey = await run(
+      importProfileKey(
+        Redacted.make(
+          Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(
+            "base64",
+          ),
+        ),
+      ),
+    );
+    hangingStore = ProfileStore.make({
+      endpoint: `http://127.0.0.1:${hang.port}`,
+      bucket,
+      accessKeyId: "test-access-key",
+      secretAccessKey: "test-secret-key",
+      profileKey,
+    });
+  });
+
+  afterAll(() => {
+    hang.stop(true);
+  });
+
+  /** Запускает операцию, двигает TestClock: до `before` она ещё идёт, к `after` — ProfileStoreError. */
+  const timesOut = <A>(
+    operation: Effect.Effect<A, ProfileStoreError>,
+    before: `${number} seconds`,
+    after: `${number} seconds`,
+  ) =>
+    run(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(Effect.flip(operation));
+        yield* TestClock.adjust(before);
+        const early = fiber.pollUnsafe();
+        yield* TestClock.adjust(after);
+        return { early, error: yield* Fiber.join(fiber) };
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+
+  it("get that never answers fails with ProfileStoreError after 2 minutes", async () => {
+    const { early, error } = await timesOut(
+      hangingStore.get("profiles/u1/x.cgp"),
+      "119 seconds",
+      "1 seconds",
+    );
+    expect(early).toBeUndefined();
+    expect(error).toBeInstanceOf(ProfileStoreError);
+    expect(error.operation).toBe("get");
+    expect(error.message).toContain("timeout");
+  });
+
+  it("put that never answers fails with ProfileStoreError after 2 minutes", async () => {
+    const { early, error } = await timesOut(
+      hangingStore.put("u1", new Uint8Array([1, 2, 3])),
+      "119 seconds",
+      "1 seconds",
+    );
+    expect(early).toBeUndefined();
+    expect(error).toBeInstanceOf(ProfileStoreError);
+    expect(error.operation).toBe("put");
+    expect(error.message).toContain("timeout");
+  });
+
+  it("remove that never answers fails with ProfileStoreError after 30 seconds", async () => {
+    const { early, error } = await timesOut(
+      hangingStore.remove("profiles/u1/x.cgp"),
+      "29 seconds",
+      "1 seconds",
+    );
+    expect(early).toBeUndefined();
+    expect(error).toBeInstanceOf(ProfileStoreError);
+    expect(error.operation).toBe("remove");
+    expect(error.message).toContain("timeout");
   });
 });

@@ -40,6 +40,7 @@ import {
 import { extractSingleFile } from "../src/profile/codec";
 import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import { ProfileStore, ProfileStoreError } from "../src/profile/ProfileStore";
+import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
 import { tarOfFile, testConfig, unusedDocker } from "./fakes";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -95,6 +96,8 @@ const makeFake = () => {
     put: [] as Array<{ container: string; path: string; tar: Uint8Array }>,
     /** Что отдаёт `cat` манифеста целевой игры (нет — файла нет). */
     manifest: undefined as string | undefined,
+    /** Что отдаёт grep строк байтов/состояния всех `appmanifest_*.acf`. */
+    allManifests: "",
     /** Контейнер установщика исчез: exec отвечает 409. */
     gone: false,
     /** `putArchive` заготовки падает дефектом (ошибка в коде, не в Docker). */
@@ -112,6 +115,13 @@ const makeFake = () => {
       Uint8Array
     >,
     commits: [] as ProfileCommit[],
+  };
+  /** Свободно на ФС scratch (`FreeSpace`) и каталоги, которые проверялись. */
+  const disk = {
+    freeBytes: 1024 * 1024 * 1024 * 1024,
+    /** statfs не удался. */
+    fail: false,
+    checked: [] as string[],
   };
   const record = (call: string) => {
     state.dockerCalls++;
@@ -174,6 +184,11 @@ const makeFake = () => {
         record(`getArchive ${container} ${path}`);
         return tarOfFile("cg-profile.tar", bytes("installer-home-tar"));
       }),
+    archiveSize: (container, path) =>
+      Effect.sync(() => {
+        record(`archiveSize ${container} ${path}`);
+        return bytes("installer-home-tar").length;
+      }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
         state.dockerCalls++;
@@ -187,6 +202,16 @@ const makeFake = () => {
               message: "container is not running",
             }),
           );
+        if (cmd[0] === "sh") {
+          const expected = [
+            "sh",
+            "-c",
+            `grep -sHE '"(StateFlags|BytesDownloaded|BytesToDownload|BytesStaged|BytesToStage)"' ${STEAMAPPS}/appmanifest_*.acf`,
+          ];
+          if (cmd.join("|") !== expected.join("|"))
+            return Effect.succeed({ exitCode: 2, stdout: "" });
+          return Effect.succeed({ exitCode: 0, stdout: state.allManifests });
+        }
         if (cmd[0] === "cat") {
           if (cmd.join(" ") !== `cat ${STEAMAPPS}/appmanifest_736260.acf`)
             return Effect.succeed({ exitCode: 2, stdout: "" });
@@ -230,7 +255,7 @@ const makeFake = () => {
       }),
     attach: () => Effect.void,
   });
-  return { state, docker, store, committer };
+  return { state, docker, store, committer, disk };
 };
 
 type Fake = ReturnType<typeof makeFake>;
@@ -315,6 +340,14 @@ const run = (
     program.pipe(
       Effect.scoped,
       Effect.provide(TestClock.layer()),
+      Effect.provideService(FreeSpace, (dir) =>
+        Effect.suspend(() => {
+          fake.disk.checked.push(dir);
+          return fake.disk.fail
+            ? Effect.fail(new DiskSpaceError({ dir, message: "EIO" }))
+            : Effect.succeed(fake.disk.freeBytes);
+        }),
+      ),
       Effect.provideService(References.MinimumLogLevel, "None"),
       Effect.ensuring(
         Effect.sync(() =>
@@ -434,7 +467,9 @@ describe("Installer", () => {
         expect(header.slice(100, 107)).toBe("0000644");
         expect(header.slice(108, 115)).toBe("0001750");
         expect(header.slice(116, 123)).toBe("0001750");
-        const content = new TextDecoder().decode(extractSingleFile(stub.tar));
+        const content = new TextDecoder().decode(
+          yield* extractSingleFile(stub.tar, "appmanifest_736260.acf"),
+        );
         expect(content).toBe(stubManifest(736260));
         expect(content).toBe(
           '"AppState"\n{\n\t"appid"\t\t"736260"\n\t"Universe"\t\t"1"\n\t"installdir"\t\t"736260"\n\t"StateFlags"\t\t"1026"\n}\n',
@@ -511,6 +546,7 @@ describe("Installer", () => {
         ).toEqual([
           "exec cg-install-j1 /usr/local/bin/cg-steam-shutdown",
           "exec cg-install-j1 /usr/local/bin/cg-profile-pack",
+          "archiveSize cg-install-j1 /tmp/cg-profile.tar",
           "getArchive cg-install-j1 /tmp/cg-profile.tar",
           "store.put u1",
           "commit profiles/u1/new.cgp",
@@ -708,6 +744,47 @@ describe("Installer", () => {
       }),
     ));
 
+  it("dependency downloads in other manifests keep the install from stalling", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Цель ждёт в очереди, пока Steam качает зависимость (свой манифест).
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "88",
+          BytesDownloaded: "0",
+        });
+        const dependency = (bytes: number) => {
+          h.fake.state.allManifests = [
+            `${STEAMAPPS}/appmanifest_736260.acf:\t"StateFlags"\t\t"1026"`,
+            `${STEAMAPPS}/appmanifest_1628350.acf:\t"StateFlags"\t\t"1026"`,
+            `${STEAMAPPS}/appmanifest_1628350.acf:\t"BytesDownloaded"\t\t"${bytes}"`,
+            "",
+          ].join("\n");
+        };
+        dependency(0);
+        yield* h.tick("2 seconds");
+        for (const bytes of [10, 20, 30]) {
+          yield* h.tick("8 minutes");
+          dependency(bytes);
+        }
+        yield* h.tick("8 minutes");
+        // 26 минут без изменений манифеста цели — но зависимость качалась.
+        expect((yield* h.drain).map((r) => r._tag)).toEqual([
+          "InstallProgress",
+        ]);
+        expect(h.installer.running()).toEqual(["j1"]);
+        // Ещё чуть меньше 2 минут — 10 минут без изменений не прошло.
+        yield* h.tick("1 minute");
+        expect(yield* h.drain).toEqual([]);
+        // Больше ничего не меняется 10 минут — остановилась.
+        yield* h.tick("2 minutes");
+        expect(yield* h.drain).toEqual([failed(installReasons.stalled)]);
+      }),
+    ));
+
   it("unexpected defect fails the job and removes the installer", () =>
     run(
       (h) =>
@@ -786,6 +863,27 @@ describe("Installer", () => {
       },
     ));
 
+  it("install with less than MIN_FREE_GB free on the install scratch FS fails without touching Docker", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          const before = h.fake.state.dockerCalls;
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          expect(installReasons.noSpace).toBe("На сервере закончилось место");
+          expect(yield* h.drain).toEqual([failed(installReasons.noSpace)]);
+          expect(h.fake.disk.checked).toEqual([h.fake.state.installScratch]);
+          expect(h.fake.state.dockerCalls).toBe(before);
+          expect(h.installer.running()).toEqual([]);
+        }),
+      {
+        setup: (fake) => {
+          fake.disk.freeBytes = 5 * 1024 * 1024 * 1024 - 1;
+        },
+        config: { minFreeGb: 5 },
+      },
+    ));
+
   it("second install while one runs fails as busy", () =>
     run((h) =>
       Effect.gen(function* () {
@@ -857,6 +955,27 @@ describe("Installer", () => {
         expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
           removedWithScratch,
         );
+      }),
+    ));
+
+  it("user without a profile fails at once with a Steam login hint", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install({ ...install, profile: null });
+        yield* h.tick("0 seconds");
+        expect(installReasons.steamLogin).toBe(
+          "Сначала войдите в Steam: запустите любую уже установленную игру",
+        );
+        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+        // Steam без входа ждал бы невидимый QR — контейнер не запускается.
+        expect(h.fake.state.calls).not.toContain("start cg-install-j1");
+        expect(h.fake.state.calls).not.toContain(
+          `putArchive cg-install-j1 ${STEAMAPPS}`,
+        );
+        expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+          removedWithScratch,
+        );
+        expect(h.installer.running()).toEqual([]);
       }),
     ));
 

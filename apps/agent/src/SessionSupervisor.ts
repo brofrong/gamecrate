@@ -40,6 +40,7 @@ import {
   prepare,
   sessionLayers,
 } from "./Overlay";
+import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
 import type { ProfileStore } from "./profile/ProfileStore";
@@ -74,6 +75,8 @@ export const failReasons = {
   stop: "Не удалось остановить игровой сервер",
   invalidCommand: "Некорректная команда запуска сессии",
   profileRestore: "Не удалось загрузить профиль пользователя",
+  profileTooLarge: "Профиль пользователя слишком большой (больше 200 МиБ)",
+  noSpace: "На сервере закончилось место",
 } as const;
 
 /** Допустимый `sessionId`/`userId` (см. `ids.ts`). */
@@ -269,6 +272,7 @@ export interface SessionSupervisorShape {
 const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
+  const freeSpace = yield* FreeSpace;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<
     AgentConfig | DockerClient | ProfileStore | ProfileCommitter
@@ -437,9 +441,10 @@ const make = Effect.gen(function* () {
 
   /**
    * Остановка: облако (если игра шла) → профиль → stop → remove → слои →
-   * `Stopped`. Профиль не сохранён — контейнер только останавливается и вместе
-   * со слоями остаётся (`profile-unsaved` в логе), следующая сессия получит
-   * предыдущую версию профиля.
+   * `Stopped`. Профиль не сохранён (в том числе коммит отклонён: база устарела)
+   * — контейнер только останавливается и вместе со слоями остаётся
+   * (`profile-unsaved` в логе), следующая сессия получит предыдущую версию
+   * профиля.
    */
   const finish = (session: Session) =>
     Effect.gen(function* () {
@@ -492,7 +497,7 @@ const make = Effect.gen(function* () {
         );
         yield* cleanupLogged(session.overlays);
       }
-      const profileSaved = Result.isSuccess(saved) && saved.success;
+      const profileSaved = Result.isSuccess(saved);
       sessions.delete(session.sessionId);
       yield* emit({
         _tag: "Stopped",
@@ -588,7 +593,14 @@ const make = Effect.gen(function* () {
       }).pipe(
         withServices,
         Effect.mapError(
-          (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
+          (cause) =>
+            new Abort({
+              reason:
+                cause.stage === "size"
+                  ? failReasons.profileTooLarge
+                  : failReasons.profileRestore,
+              cause,
+            }),
         ),
       );
       yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
@@ -693,6 +705,17 @@ const make = Effect.gen(function* () {
             running: known.gameRunning,
           });
         }
+        return;
+      }
+      // Scratch сессий — на общем диске хоста: без запаса места не стартуем.
+      if (
+        !(yield* hasFreeSpace(freeSpace, config.scratchDir, config.minFreeGb))
+      ) {
+        yield* emit({
+          _tag: "Failed",
+          sessionId: command.sessionId,
+          reason: failReasons.noSpace,
+        });
         return;
       }
       const session = yield* register({
