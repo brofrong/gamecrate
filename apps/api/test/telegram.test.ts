@@ -77,6 +77,14 @@ describe("verifyTelegramLogin", () => {
       _tag: "Expired",
     });
   });
+
+  it("auth_date in the future is expired", () => {
+    const data = signed(baseData);
+    const now = new Date((Number(baseData.auth_date) - 301) * 1000);
+    expect(verifyTelegramLogin(data, TEST_BOT_TOKEN, now)).toEqual({
+      _tag: "Expired",
+    });
+  });
 });
 
 describe("telegram callback endpoint", () => {
@@ -311,5 +319,64 @@ describe("telegram callback endpoint", () => {
       .from(account)
       .where(eq(account.accountId, "777"));
     expect(rows.length).toBe(0);
+  });
+
+  it("missing user in the body is rejected with 400 and creates nothing", async () => {
+    const usersBefore = await drizzle({ client: db })
+      .select({ id: user.id })
+      .from(user);
+
+    const response = await callback({});
+    const body = (await response.json()) as { code?: string };
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("TELEGRAM_INVALID_BODY");
+
+    const usersAfter = await drizzle({ client: db })
+      .select({ id: user.id })
+      .from(user);
+    expect(usersAfter.length).toBe(usersBefore.length);
+  });
+
+  it("user without a hash is rejected with 400 and creates nothing", async () => {
+    const { hash: _hash, ...withoutHash } = signed({
+      id: "888",
+      first_name: "NoHash",
+      auth_date: authDateNow(),
+    });
+    const response = await callback({ user: withoutHash });
+    const body = (await response.json()) as { code?: string };
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("TELEGRAM_INVALID_BODY");
+
+    const rows = await drizzle({ client: db })
+      .select({ id: account.id })
+      .from(account)
+      .where(eq(account.accountId, "888"));
+    expect(rows.length).toBe(0);
+  });
+
+  it("numeric id and auth_date (as the widget sends them in JSON) sign in", async () => {
+    const stringFields = {
+      id: "321",
+      first_name: "Num",
+      auth_date: authDateNow(),
+    };
+    const hash = telegramHash(stringFields, TEST_BOT_TOKEN);
+    const response = await callback({
+      user: {
+        id: Number(stringFields.id),
+        first_name: stringFields.first_name,
+        auth_date: Number(stringFields.auth_date),
+        hash,
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ redirect: "/library" });
+
+    const [created] = await drizzle({ client: db })
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.email, `tg_321@${TELEGRAM_EMAIL_DOMAIN}`));
+    expect(created?.email).toBe(`tg_321@${TELEGRAM_EMAIL_DOMAIN}`);
   });
 });

@@ -76,7 +76,9 @@ export type VerifyTelegramLoginResult =
  * Проверяет подпись и срок действия данных Telegram Login Widget. Сравнение
  * хэшей — `timingSafeEqual` (хэш в hex: несовпадение длины — уже подделка, не
  * бросаем, а считаем `BadSignature`, иначе `timingSafeEqual` падает на разных
- * по длине буферах).
+ * по длине буферах). Срок — `|now - auth_date| > 300 c`: не только устаревшие
+ * данные, но и `auth_date` из будущего (рассинхрон часов сверх допуска или
+ * подделка таймстемпа) считаются `Expired`.
  */
 export const verifyTelegramLogin = (
   data: TelegramAuthData,
@@ -92,7 +94,7 @@ export const verifyTelegramLogin = (
     return { _tag: "BadSignature" };
   }
   const ageSeconds = now.getTime() / 1000 - Number(data.auth_date);
-  if (ageSeconds > MAX_AUTH_AGE_SECONDS) {
+  if (Math.abs(ageSeconds) > MAX_AUTH_AGE_SECONDS) {
     return { _tag: "Expired" };
   }
   return {
@@ -105,18 +107,41 @@ export const verifyTelegramLogin = (
 
 /** Тело `POST /telegram/callback`. */
 interface TelegramCallbackBody {
-  readonly user: Record<string, unknown>;
+  readonly user?: unknown;
   readonly callbackURL?: string;
   readonly link?: boolean;
 }
 
-/** Числа Telegram (`id`, `auth_date`) приходят числами — приводим в строки до декодирования. */
-const decodeTelegramUser = (raw: Record<string, unknown>): TelegramAuthData =>
-  Schema.decodeUnknownSync(TelegramAuthData)({
-    ...raw,
-    id: String(raw["id"]),
-    auth_date: String(raw["auth_date"]),
-  });
+/**
+ * Декодирует `user` из тела в `TelegramAuthData`. Числа Telegram (`id`,
+ * `auth_date`) приходят числами — приводим в строки до декодирования. Эндпоинт
+ * публичный и без аутентификации — тело нельзя доверять без проверки формы:
+ * отсутствующий/не-объектный `user` или отсутствие обязательных полей
+ * (`id`/`auth_date`/`hash`) превращаются в структурированный `BAD_REQUEST`, а
+ * не в необработанное исключение (`TypeError`/`ParseError`) до того, как
+ * хендлер тронёт БД.
+ */
+const decodeTelegramUser = (raw: unknown): TelegramAuthData => {
+  if (typeof raw !== "object" || raw === null) {
+    throw APIError.from("BAD_REQUEST", {
+      code: "TELEGRAM_INVALID_BODY",
+      message: "Отсутствуют данные Telegram",
+    });
+  }
+  const record = raw as Record<string, unknown>;
+  try {
+    return Schema.decodeUnknownSync(TelegramAuthData)({
+      ...record,
+      id: String(record["id"]),
+      auth_date: String(record["auth_date"]),
+    });
+  } catch {
+    throw APIError.from("BAD_REQUEST", {
+      code: "TELEGRAM_INVALID_BODY",
+      message: "Некорректные данные Telegram",
+    });
+  }
+};
 
 /** Плагин Better Auth: вход и привязка через Telegram Login Widget. */
 export const telegramPlugin = (options: {
@@ -128,7 +153,7 @@ export const telegramPlugin = (options: {
       "/telegram/callback",
       { method: "POST" },
       async (ctx) => {
-        const body = ctx.body as TelegramCallbackBody;
+        const body = (ctx.body ?? {}) as TelegramCallbackBody;
         const data = decodeTelegramUser(body.user);
         const verified = verifyTelegramLogin(data, options.botToken, new Date());
         if (verified._tag === "BadSignature") {
