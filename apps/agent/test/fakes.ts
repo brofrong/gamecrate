@@ -2,6 +2,7 @@
 import { Effect, Option, Redacted } from "effect";
 import type { AgentConfigValues } from "../src/config";
 import type { DockerClientShape } from "../src/DockerClient";
+import { singleFileTar } from "../src/profile/codec";
 
 /** Конфиг агента для тестов; `patch` перекрывает поля. */
 export const testConfig = (
@@ -27,6 +28,8 @@ export const testConfig = (
   libraryDir: "/raid/cloud-gaming/library",
   steamClientDir: "/raid/cloud-gaming/steam-client",
   scratchDir: "/scratch",
+  roles: ["worker"],
+  installScratchDir: Option.none(),
   ...patch,
 });
 
@@ -55,30 +58,7 @@ export const unusedDocker: DockerClientShape = {
 
 /**
  * Tar с одним файлом `name` (как отдаёт `GET /containers/{id}/archive` для
- * пути к файлу): заголовок ustar 512 байт, данные, выравнивание, два нулевых блока.
+ * пути к файлу): владелец 1000:1000, права 0644.
  */
-export const tarOfFile = (name: string, data: Uint8Array) => {
-  const header = new Uint8Array(512);
-  const text = new TextEncoder();
-  header.set(text.encode(name), 0);
-  header.set(text.encode("0000644\0"), 100);
-  header.set(text.encode("0001750\0"), 108);
-  header.set(text.encode("0001750\0"), 116);
-  header.set(
-    text.encode(`${data.length.toString(8).padStart(11, "0")}\0`),
-    124,
-  );
-  header.set(text.encode("00000000000\0"), 136);
-  header.set(text.encode("        "), 148);
-  header[156] = "0".charCodeAt(0);
-  header.set(text.encode("ustar\0"), 257);
-  header.set(text.encode("00"), 263);
-  let sum = 0;
-  for (const byte of header) sum += byte;
-  header.set(text.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
-  const padded = Math.ceil(data.length / 512) * 512;
-  const tar = new Uint8Array(512 + padded + 1024);
-  tar.set(header, 0);
-  tar.set(data, 512);
-  return tar;
-};
+export const tarOfFile = (name: string, data: Uint8Array) =>
+  singleFileTar(name, data, { uid: 1000, gid: 1000, mode: 0o644, mtime: 0 });

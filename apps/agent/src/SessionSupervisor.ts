@@ -29,6 +29,7 @@ import {
   type ContainerSpec,
   DockerClient,
   type DockerError,
+  isGone,
 } from "./DockerClient";
 import { HELPER_LABEL } from "./Helper";
 import { isValidId } from "./ids";
@@ -83,6 +84,11 @@ export const streamUrlFor = (sessionId: string) =>
   `http://${containerName(sessionId)}:${SELKIES_PORT}`;
 
 type StartSession = Extract<AgentCommand, { _tag: "StartSession" }>;
+/** Команды сессий; команды установки идут в Installer (см. OrchestratorLink). */
+export type SessionCommand = Extract<
+  AgentCommand,
+  { _tag: "StartSession" | "StopSession" }
+>;
 
 /**
  * Метки контейнера сессии с пользователем и базовой версией профиля (пусто —
@@ -119,6 +125,35 @@ const GBM_TARGETS = [
 export const sessionPassword = () => randomBytes(24).toString("base64url");
 
 /**
+ * Контейнер рабочего стола Plasma со Steam (сессия, установщик): образ сессии,
+ * сеть сессий, GPU NVIDIA и GBM-бэкенд, права и `/dev/input` — одинаково у всех.
+ */
+export const desktopSpec = (
+  config: AgentConfigValues,
+  fields: Pick<
+    ContainerSpec,
+    "name" | "env" | "labels" | "udpPorts" | "mounts"
+  >,
+): ContainerSpec => ({
+  ...fields,
+  image: config.sessionImage,
+  network: config.sessionNetwork,
+  binds: Option.match(config.gbmAllocatorPath, {
+    onNone: () => [],
+    onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
+  }),
+  runtime: "nvidia",
+  gpus: true,
+  shmSizeBytes: SHM_SIZE_BYTES,
+  // В базовом образе у `ubuntu` `NOPASSWD: ALL` в sudoers, а /etc/shadow ему
+  // принадлежит (su root): без этого флага любой процесс контейнера получает root.
+  securityOpt: ["no-new-privileges:true"],
+  // Интерпозеру геймпадов Selkies нужен каталог /dev/input (файлов в нём нет);
+  // entrypoint создаёт его через sudo-root, что при no-new-privileges невозможно.
+  tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
+});
+
+/**
  * Контейнер сессии для `StartSession`: дом — слой контейнера, клиент Steam и
  * библиотека — overlay-тома сессии (`sessionLayers`), профиль кладётся до старта.
  */
@@ -126,39 +161,25 @@ export const sessionSpec = (
   config: AgentConfigValues,
   command: StartSession,
   password: string,
-): ContainerSpec => ({
-  name: containerName(command.sessionId),
-  image: config.sessionImage,
-  env: {
-    CG_APP_ID: String(command.appId),
-    SELKIES_WEBRTC_UDP_MUX_PORT: String(command.udpPort),
-    SELKIES_WEBRTC_PUBLIC_IP: config.publicIp,
-    PASSWD: password,
-  },
-  labels: {
-    "cg.session": command.sessionId,
-    "cg.slot": String(command.slot),
-    "cg.app": String(command.appId),
-    [USER_LABEL]: command.userId,
-    [BASE_VERSION_LABEL]: formatBaseVersion(command.profile?.version ?? null),
-  },
-  network: config.sessionNetwork,
-  udpPorts: [command.udpPort],
-  binds: Option.match(config.gbmAllocatorPath, {
-    onNone: () => [],
-    onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
-  }),
-  mounts: mountsFor(sessionLayers(config, command.sessionId)),
-  runtime: "nvidia",
-  gpus: true,
-  shmSizeBytes: SHM_SIZE_BYTES,
-  // В базовом образе у `ubuntu` `NOPASSWD: ALL` в sudoers, а /etc/shadow ему
-  // принадлежит (su root): без этого флага любой процесс сессии получает root.
-  securityOpt: ["no-new-privileges:true"],
-  // Интерпозеру геймпадов Selkies нужен каталог /dev/input (файлов в нём нет);
-  // entrypoint создаёт его через sudo-root, что при no-new-privileges невозможно.
-  tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
-});
+): ContainerSpec =>
+  desktopSpec(config, {
+    name: containerName(command.sessionId),
+    env: {
+      CG_APP_ID: String(command.appId),
+      SELKIES_WEBRTC_UDP_MUX_PORT: String(command.udpPort),
+      SELKIES_WEBRTC_PUBLIC_IP: config.publicIp,
+      PASSWD: password,
+    },
+    labels: {
+      "cg.session": command.sessionId,
+      "cg.slot": String(command.slot),
+      "cg.app": String(command.appId),
+      [USER_LABEL]: command.userId,
+      [BASE_VERSION_LABEL]: formatBaseVersion(command.profile?.version ?? null),
+    },
+    udpPorts: [command.udpPort],
+    mounts: mountsFor(sessionLayers(config, command.sessionId)),
+  });
 
 /**
  * Шаблон процесса игры для `pgrep -f`/`pkill -f` (procps: расширенные регулярные
@@ -236,13 +257,9 @@ class CheckFailed extends Data.TaggedError("CheckFailed")<{
   readonly message: string;
 }> {}
 
-/** Контейнера больше нет (или он остановлен): exec отвечает 404/409. */
-const isGone = (error: DockerError) =>
-  error.status === 404 || error.status === 409;
-
 export interface SessionSupervisorShape {
   /** Команда оркестратора; возвращается сразу, работа идёт в фоне. */
-  readonly handle: (command: AgentCommand) => Effect.Effect<void>;
+  readonly handle: (command: SessionCommand) => Effect.Effect<void>;
   /** Живые сессии для `agent.connect.running` (с момента приёма StartSession). */
   readonly snapshot: Effect.Effect<ReadonlyArray<RunningSession>>;
   /** Отчёты оркестратору в порядке возникновения. */
@@ -923,11 +940,6 @@ const make = Effect.gen(function* () {
           return start(command);
         case "StopSession":
           return stop(command.sessionId);
-        case "InstallGame":
-        case "CancelInstall":
-          // Task 4: обрабатывает Installer (роль gamestore); этот агент
-          // подключается с roles: ["worker"] и такие команды не получает.
-          return Effect.void;
       }
     },
     snapshot: Effect.sync(() =>

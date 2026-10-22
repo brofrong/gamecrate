@@ -124,3 +124,45 @@ export const extractSingleFile = (tar: Uint8Array): Uint8Array => {
   const size = Number.parseInt(sizeText, 8);
   return tar.subarray(HEADER_SIZE, HEADER_SIZE + size);
 };
+
+/**
+ * Ustar tar с одним файлом `name` (для `PUT /containers/{id}/archive`):
+ * заголовок 512 байт, данные с выравниванием, два нулевых блока. Владелец и права
+ * — из `options` (Docker распаковывает с ними). `name` — до 100 байт ASCII.
+ */
+export const singleFileTar = (
+  name: string,
+  data: Uint8Array,
+  options: {
+    readonly uid: number;
+    readonly gid: number;
+    readonly mode: number;
+    /** Время изменения, секунды Unix. */
+    readonly mtime: number;
+  },
+): Uint8Array => {
+  const encoder = new TextEncoder();
+  const nameBytes = encoder.encode(name);
+  if (nameBytes.length > 100 || /[^\x20-\x7e]/.test(name))
+    throw new Error(`tar entry name not supported: ${JSON.stringify(name)}`);
+  const octal = (value: number, width: number) =>
+    encoder.encode(`${value.toString(8).padStart(width - 1, "0")}\0`);
+  const header = new Uint8Array(512);
+  header.set(nameBytes, 0);
+  header.set(octal(options.mode, 8), 100);
+  header.set(octal(options.uid, 8), 108);
+  header.set(octal(options.gid, 8), 116);
+  header.set(octal(data.length, 12), 124);
+  header.set(octal(options.mtime, 12), 136);
+  header.set(encoder.encode("        "), 148);
+  header[156] = "0".charCodeAt(0);
+  header.set(encoder.encode("ustar\0"), 257);
+  header.set(encoder.encode("00"), 263);
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.set(encoder.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+  const tar = new Uint8Array(512 + Math.ceil(data.length / 512) * 512 + 1024);
+  tar.set(header, 0);
+  tar.set(data, 512);
+  return tar;
+};

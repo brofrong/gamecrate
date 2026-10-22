@@ -1,5 +1,7 @@
 // Конфигурация агента воркера из окружения. Секреты — только Redacted.
-import { Config, Context, Layer, Schema } from "effect";
+import { relative } from "node:path";
+import type { AgentRoles } from "@cg/rpc";
+import { Config, Context, Layer, Option, Schema, SchemaIssue } from "effect";
 
 /** Минимальная длина `AGENT_TOKEN` — та же, что проверяет оркестратор. */
 export const agentTokenMinLength = 32;
@@ -11,8 +13,47 @@ export const agentTokenMinLength = 32;
 const HostDir = (name: string) =>
   Config.schema(Schema.String.check(Schema.isPattern(/^\/[^,:\s]*$/)), name);
 
+const configError = (message: string) =>
+  Config.fail(
+    new Schema.SchemaError(new SchemaIssue.InvalidValue({ message })),
+  );
+
+type Role = AgentRoles[number];
+const isRole = (name: string): name is Role =>
+  name === "worker" || name === "gamestore";
+
+/** `ROLES`: роли через запятую (пробелы вокруг и повторы не важны). */
+const roles = Config.String("ROLES").pipe(
+  Config.withDefault("worker"),
+  Config.flatMap((text) => {
+    const names = [
+      ...new Set(
+        text
+          .split(",")
+          .map((name) => name.trim())
+          .filter((name) => name !== ""),
+      ),
+    ];
+    const unknown = names.filter((name) => !isRole(name));
+    if (unknown.length > 0)
+      return configError(`ROLES: unknown role(s) ${unknown.join(", ")}`);
+    const valid = names.filter(isRole);
+    if (valid.length === 0) return configError("ROLES: no roles given");
+    return Config.succeed<AgentRoles>(valid);
+  }),
+);
+
+/** `a` и `b` — один каталог или один внутри другого. */
+const overlapping = (a: string, b: string) => {
+  const inside = (parent: string, child: string) => {
+    const path = relative(parent, child);
+    return path === "" || !(path === ".." || path.startsWith("../"));
+  };
+  return inside(a, b) || inside(b, a);
+};
+
 /** Описание переменных окружения агента. */
-export const agentConfig = Config.all({
+const fields = Config.all({
   /** Имя воркера (`workers.id` в БД оркестратора). */
   workerId: Config.NonEmptyString("WORKER_ID"),
   /** Полный адрес WebSocket оркестратора, напр. `ws://cg-orchestrator:3001/agent`. */
@@ -73,7 +114,32 @@ export const agentConfig = Config.all({
   steamClientDir: HostDir("STEAM_CLIENT_DIR"),
   /** Scratch сессий: upper/work их overlay-слоёв, `<SCRATCH_DIR>/<sessionId>/…`. */
   scratchDir: HostDir("SCRATCH_DIR"),
+  /** `worker` — сессии, `gamestore` — установка игр в общую библиотеку. */
+  roles,
+  /**
+   * Scratch установок (роль `gamestore`): `<INSTALL_SCRATCH_DIR>/<jobId>/…`. Та
+   * же ФС, что `LIBRARY_DIR`: готовая игра переносится в библиотеку `rename`.
+   */
+  installScratchDir: Config.option(HostDir("INSTALL_SCRATCH_DIR")),
 });
+
+/**
+ * Роль `gamestore` требует `INSTALL_SCRATCH_DIR` (`LIBRARY_DIR` обязателен
+ * всегда), не пересекающийся со `SCRATCH_DIR`: каждый из них агент при старте
+ * чистит от «чужих» каталогов.
+ */
+export const agentConfig = fields.pipe(
+  Config.flatMap((values) => {
+    if (!values.roles.includes("gamestore")) return Config.succeed(values);
+    if (Option.isNone(values.installScratchDir))
+      return configError("INSTALL_SCRATCH_DIR is required for role gamestore");
+    if (overlapping(values.installScratchDir.value, values.scratchDir))
+      return configError(
+        "INSTALL_SCRATCH_DIR must not be SCRATCH_DIR or nested with it",
+      );
+    return Config.succeed(values);
+  }),
+);
 
 export type AgentConfigValues = Config.Success<typeof agentConfig>;
 

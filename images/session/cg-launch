@@ -2,27 +2,38 @@
 # Запуск игры сразу после входа в графическую сессию (автостарт KDE, /etc/xdg/autostart/cg-launch.desktop).
 # Работает в окружении сессии Plasma: там LD_PRELOAD интерпозера ввода Selkies (геймпад) и переменные
 # контейнера, в том числе CG_APP_ID. Пустой CG_APP_ID — ничего не запускать (просто рабочий стол).
-# Игра запускается не больше одного раза за жизнь контейнера: если Plasma перезапустится и автостарт
+# CG_MODE=install (контейнер установщика, агент с ролью gamestore) — только клиент Steam, без игры:
+# он сам докачивает игры, чьи appmanifest помечены «нужно обновление» (заготовку кладёт агент).
+# Steam запускается не больше одного раза за жизнь контейнера: если Plasma перезапустится и автостарт
 # сработает снова, повторный запуск пропускается. Замок — каталог в /tmp (слой контейнера, не том
-# /home/ubuntu): новый контейнер начинает без замка, mkdir атомарен.
+# /home/ubuntu): новый контейнер начинает без замка, mkdir атомарен. CG_LAUNCH_LOCK — другой путь
+# замка (тесты).
 set -u
 
+mode="${CG_MODE:-}"
 app_id="${CG_APP_ID:-}"
-if [ -z "${app_id}" ]; then
-  echo "[cg-launch] CG_APP_ID is empty, nothing to launch" >&2
-  exit 0
+if [ "${mode}" != "install" ]; then
+  if [ -z "${app_id}" ]; then
+    echo "[cg-launch] CG_APP_ID is empty, nothing to launch" >&2
+    exit 0
+  fi
+  case "${app_id}" in
+    *[!0-9]*)
+      echo "[cg-launch] CG_APP_ID is not a number: ${app_id}" >&2
+      exit 1
+      ;;
+  esac
 fi
-case "${app_id}" in
-  *[!0-9]*)
-    echo "[cg-launch] CG_APP_ID is not a number: ${app_id}" >&2
-    exit 1
-    ;;
-esac
 
-lock="/tmp/cg-launch.lock"
+lock="${CG_LAUNCH_LOCK:-/tmp/cg-launch.lock}"
 if ! mkdir "${lock}" 2>/dev/null; then
   echo "[cg-launch] already launched in this container (${lock} exists), skipping" >&2
   exit 0
+fi
+
+if [ "${mode}" = "install" ]; then
+  echo "[cg-launch] install mode: steam -silent" >&2
+  exec steam -silent
 fi
 
 echo "[cg-launch] steam -silent -applaunch ${app_id}" >&2

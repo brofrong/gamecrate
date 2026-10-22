@@ -23,6 +23,10 @@ export class DockerError extends Schema.TaggedError<DockerError>()(
   },
 ) {}
 
+/** Контейнера больше нет (или он остановлен): exec отвечает 404/409. */
+export const isGone = (error: DockerError) =>
+  error.status === 404 || error.status === 409;
+
 /** Именованный том в контейнере (`HostConfig.Mounts`, `Type: volume`). */
 export interface VolumeMount {
   readonly volume: string;

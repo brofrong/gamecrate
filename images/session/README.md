@@ -10,9 +10,11 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
   прокидывает), постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт, скрипты профиля;
   каталоги `~/.local/share/Steam/steamapps` и `~/.steam` (с родителями) заранее, владелец `ubuntu`.
 - `cg-launch` — `steam -silent -applaunch "$CG_APP_ID"`; пустой `CG_APP_ID` — ничего не делает,
-  не число — ошибка (exit 1). Запускает игру не больше одного раза за жизнь контейнера: замок
-  `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`); если Plasma
-  перезапустится и автостарт сработает снова — `[cg-launch] already launched …, skipping`.
+  не число — ошибка (exit 1). `CG_MODE=install` (установщик) — `steam -silent` без игры, `CG_APP_ID`
+  не нужен. Запускает Steam не больше одного раза за жизнь контейнера: замок
+  `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`; `CG_LAUNCH_LOCK` —
+  другой путь, для тестов); если Plasma перезапустится и автостарт сработает снова —
+  `[cg-launch] already launched …, skipping`.
 - `cg-launch.desktop` → `/etc/xdg/autostart/`: KDE запускает `cg-launch` внутри сессии Plasma,
   где есть `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит геймпад, спека §7.3).
 - `cg-profile-pack` — профиль из `$HOME` в `/tmp/cg-profile.tar` (GNU tar, записи 1000:1000) по
@@ -58,6 +60,17 @@ rsync этого каталога в `~/cg-session-image` на воркере, �
 | `/dev/input`                  | `--tmpfs /dev/input:mode=1777,size=64k,nosuid,nodev,noexec`: entrypoint создаёт каталог через `sudo-root`, при `no-new-privileges` — не может; без каталога интерпозер геймпадов не работает        |
 | `PASSWD`                      | случайный на каждый контейнер (по умолчанию в базовом образе — `mypasswd`); при `no-new-privileges` entrypoint его не применит (`selkies: cannot change the password of ubuntu` в логе — ожидаемо)  |
 | Debian                        | GBM-бэкенд: `/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.<ver>` → `/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1` и `/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so` (ro) |
+
+### Установщик (агент с ролью `gamestore`)
+
+Тот же образ и те же GPU, права, `/dev/input`, GBM, сеть `cg-sessions`, но контейнер
+`cg-install-<jobId>`: `CG_MODE=install`, без `CG_APP_ID` и без UDP-порта, метки
+`cg.install=<jobId>`, `cg.app`, `cg.user`; тома `cg-i-<jobId>-client`/`cg-i-<jobId>-apps` с upper в
+`INSTALL_SCRATCH_DIR/<jobId>` (та же ФС, что `LIBRARY_DIR`). Профиль пользователя кладётся как у
+сессии, а в `steamapps` до старта — заготовка `appmanifest_<appId>.acf` со `StateFlags 1026`
+(1000:1000, 0644): Steam сам ставит игру и её зависимости. Агент читает манифест `docker exec cat`,
+по `StateFlags 4` сохраняет профиль, удаляет контейнер и тома и переносит `rename` из upper в
+библиотеку только новые приложения (каталог `common/<installdir>`, затем манифест).
 
 Зашито в образ: `SELKIES_MODE=webrtc`, `SELKIES_WAYLAND=true`, `SELKIES_ENCODER=h264enc`,
 `SELKIES_RATE_CONTROL_MODE=cbr`, `SELKIES_VIDEO_BITRATE=10000,2000-40000`,

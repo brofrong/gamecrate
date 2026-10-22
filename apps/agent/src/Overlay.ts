@@ -2,11 +2,11 @@
 // `~/.local/share/Steam`, `apps` (lower — общая библиотека) — на
 // `~/.local/share/Steam/steamapps`. Запись контейнера попадает только в upper:
 // `<root>/<id>/{client,apps}/{upper,work}`. Тома собирает dockerd (`local`,
-// `type=overlay`), sudo не нужен. Сессии — `sessionLayers`; установщик (Task 4)
-// строит свои слои тем же `layers`.
+// `type=overlay`), sudo не нужен. Сессии — `sessionLayers`, установщик —
+// `installLayers`.
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { AgentConfig, type AgentConfigValues } from "./config";
 import { DockerClient, type DockerError } from "./DockerClient";
 import { helperSpec, runHelper } from "./Helper";
@@ -93,6 +93,22 @@ export const sessionLayers = (config: AgentConfigValues, sessionId: string) =>
     labels: { "cg.session": sessionId },
   });
 
+/**
+ * Слои установки (роль `gamestore`): тома `cg-i-<jobId>-*`, scratch
+ * `<INSTALL_SCRATCH_DIR>/<jobId>`. Без `INSTALL_SCRATCH_DIR` — исключение
+ * (конфиг роли gamestore его требует).
+ */
+export const installLayers = (config: AgentConfigValues, jobId: string) =>
+  layers(config, {
+    root: Option.getOrThrowWith(
+      config.installScratchDir,
+      () => new Error("INSTALL_SCRATCH_DIR is not set"),
+    ),
+    prefix: "cg-i",
+    id: jobId,
+    labels: { "cg.install": jobId },
+  });
+
 /** Тома слоёв для `ContainerSpec.mounts`. */
 export const mountsFor = (overlays: Overlays) => [
   { volume: overlays.client.volume, target: STEAM_DIR },
@@ -128,30 +144,42 @@ export const prepare = (overlays: Overlays) =>
     }
   });
 
+/** `rm -rf` от root: только ровно `<root>/<id>` с допустимыми id и префиксом. */
+const ownDir = (overlays: Overlays) =>
+  isValidId(overlays.id) &&
+  isValidId(overlays.prefix) &&
+  overlays.dir === join(overlays.root, overlays.id)
+    ? Effect.void
+    : Effect.fail(
+        new OverlayError({
+          operation: "cleanup",
+          message: `refusing to clean ${JSON.stringify(overlays.dir)}`,
+        }),
+      );
+
 /**
- * Удаляет тома (контейнер, который их монтирует, должен быть уже удалён), затем
- * каталог `<root>/<id>` — помощником от root: `work/work` ядро создаёт от root с
- * правами 000, агенту (uid 1000) его не удалить. Монтируется весь `root`, а не
- * `<root>/<id>`: точку монтирования `rm` не удалил бы.
+ * Удаляет оба тома: контейнер, который их монтирует, должен быть уже удалён
+ * (иначе 409). После успеха overlay размонтирован — upper можно читать и менять.
  */
-export const cleanup = (overlays: Overlays) =>
+export const removeVolumes = (overlays: Overlays) =>
   Effect.gen(function* () {
-    // `rm -rf` от root: только ровно `<root>/<id>` с допустимым id.
-    if (
-      !isValidId(overlays.id) ||
-      !isValidId(overlays.prefix) ||
-      overlays.dir !== join(overlays.root, overlays.id)
-    )
-      return yield* new OverlayError({
-        operation: "cleanup",
-        message: `refusing to clean ${JSON.stringify(overlays.dir)}`,
-      });
     const docker = yield* DockerClient;
-    const config = yield* AgentConfig;
     for (const layer of [overlays.client, overlays.apps])
       yield* docker
         .removeVolume(layer.volume)
         .pipe(Effect.mapError(fromDocker("removeVolume")));
+  });
+
+/**
+ * Удаляет каталог `<root>/<id>` (тома уже удалены) — помощником от root:
+ * `work/work` ядро создаёт от root с правами 000, агенту (uid 1000) его не
+ * удалить. Монтируется весь `root`, а не `<root>/<id>`: точку монтирования `rm`
+ * не удалил бы.
+ */
+export const removeScratch = (overlays: Overlays) =>
+  Effect.gen(function* () {
+    yield* ownDir(overlays);
+    const config = yield* AgentConfig;
     if (!existsSync(overlays.dir)) return;
     yield* runHelper(
       helperSpec(config, {
@@ -163,4 +191,12 @@ export const cleanup = (overlays: Overlays) =>
       }),
       Effect.void,
     ).pipe(Effect.mapError(fromDocker("removeScratch")));
+  });
+
+/** Тома, затем scratch (`removeVolumes` → `removeScratch`); каталог проверяется до любых вызовов. */
+export const cleanup = (overlays: Overlays) =>
+  Effect.gen(function* () {
+    yield* ownDir(overlays);
+    yield* removeVolumes(overlays);
+    yield* removeScratch(overlays);
   });

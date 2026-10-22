@@ -28,6 +28,7 @@ import {
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentConfig, type AgentConfigValues } from "../src/config";
+import { Installer, type InstallerShape } from "../src/Installer";
 import * as OrchestratorLink from "../src/OrchestratorLink";
 import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import {
@@ -156,6 +157,7 @@ const config = (): AgentConfigValues =>
     slots: 1,
     sessionImage: "cg-session:test",
     gbmAllocatorPath: Option.none(),
+    roles: ["worker", "gamestore"],
   });
 
 const waitUntil = (condition: () => boolean, ms = 5000) =>
@@ -168,6 +170,17 @@ const waitUntil = (condition: () => boolean, ms = 5000) =>
   });
 
 describe("OrchestratorLink", () => {
+  it("install results survive a reconnect like session results", () => {
+    const report = (tag: AgentReport["_tag"]) =>
+      OrchestratorLink.isTerminal({ _tag: tag } as AgentReport);
+    expect(report("InstallFinished")).toBe(true);
+    expect(report("InstallFailed")).toBe(true);
+    expect(report("Stopped")).toBe(true);
+    expect(report("Failed")).toBe(true);
+    expect(report("InstallProgress")).toBe(false);
+    expect(report("Heartbeat")).toBe(false);
+  });
+
   it(
     "connects with bearer and snapshot, routes commands, sends reports in order, commits profiles, reconnects",
     () =>
@@ -196,9 +209,21 @@ describe("OrchestratorLink", () => {
           ]),
           reports,
         };
+        const installed: Array<AgentCommand> = [];
+        const installReports = yield* Queue.unbounded<AgentReport>();
+        const installer: InstallerShape = {
+          install: (command) => Effect.sync(() => void installed.push(command)),
+          cancel: (jobId) =>
+            Effect.sync(
+              () => void installed.push({ _tag: "CancelInstall", jobId }),
+            ),
+          running: () => ["j0"],
+          reports: installReports,
+        };
         yield* Layer.build(
           OrchestratorLink.layer.pipe(
             Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+            Layer.provide(Layer.succeed(Installer, installer)),
             Layer.provide(Layer.succeed(ProfileCommitter, committer)),
             Layer.provide(Layer.succeed(AgentConfig, config())),
           ),
@@ -219,8 +244,9 @@ describe("OrchestratorLink", () => {
               gameRunning: true,
             },
           ],
-          roles: ["worker"],
-          installs: [],
+          // Роли — из ROLES, установки — живые задачи установщика.
+          roles: ["worker", "gamestore"],
+          installs: ["j0"],
         });
 
         expect(yield* Fiber.join(early)).toBe(true);
@@ -250,6 +276,25 @@ describe("OrchestratorLink", () => {
         yield* waitUntil(() => handled.length === 1);
         expect(handled).toEqual([start]);
 
+        // Команды установки — установщику, не супервизору сессий.
+        const installGame: AgentCommand = {
+          _tag: "InstallGame",
+          jobId: "j1",
+          appId: 736260,
+          userId: "u1",
+          profile: null,
+        };
+        yield* Queue.offerAll(server.streams[0]!, [
+          installGame,
+          { _tag: "CancelInstall", jobId: "j1" },
+        ]);
+        yield* waitUntil(() => installed.length === 2);
+        expect(installed).toEqual([
+          installGame,
+          { _tag: "CancelInstall", jobId: "j1" },
+        ]);
+        expect(handled).toEqual([start]);
+
         yield* Queue.offerAll(reports, [
           { _tag: "StreamReady", sessionId: "s1", streamUrl: "u" },
           { _tag: "GameState", sessionId: "s1", running: true },
@@ -261,6 +306,22 @@ describe("OrchestratorLink", () => {
           "GameState",
           "Heartbeat",
         ]);
+        // Отчёты установщика идут тем же порядком, что и в его очереди.
+        yield* Queue.offerAll(installReports, [
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 1,
+            bytesTotal: 2,
+          },
+          { _tag: "InstallFailed", jobId: "j1", reason: "Установка отменена" },
+        ]);
+        yield* waitUntil(() => server.reports.length === 5);
+        expect(server.reports.slice(3).map((r) => r._tag)).toEqual([
+          "InstallProgress",
+          "InstallFailed",
+        ]);
+        server.reports.splice(3);
 
         // Оркестратор отклонил итоговый отчёт: переподключение, отчёт уходит первым.
         server.rejectReports = 1;

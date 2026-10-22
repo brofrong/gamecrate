@@ -1,10 +1,16 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
-// (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды из
-// потока передаёт SessionSupervisor, его отчёты отправляет по одному, по порядку;
-// на время соединения через него идут `agent.profileCommit` (ProfileCommitter).
+// (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды сессий
+// передаёт SessionSupervisor, команды установки — Installer; их отчёты отправляет
+// по одному, по порядку (каждого источника); на время соединения через него идут
+// `agent.profileCommit` (ProfileCommitter).
 // Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
 // переподключение с паузой 1 → 30 с.
-import { type AgentConnect, type AgentReport, AgentRpcs } from "@cg/rpc";
+import {
+  type AgentCommand,
+  type AgentConnect,
+  type AgentReport,
+  AgentRpcs,
+} from "@cg/rpc";
 import { BunSocket } from "@effect/platform-bun";
 import {
   Cause,
@@ -19,6 +25,7 @@ import {
 } from "effect";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentConfig } from "./config";
+import { Installer } from "./Installer";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { SessionSupervisor } from "./SessionSupervisor";
 
@@ -27,9 +34,15 @@ export const RECONNECT_MAX = Duration.seconds(30);
 /** Соединение прожило столько — пауза перед следующим снова с RECONNECT_MIN. */
 export const HEALTHY_CONNECTION = Duration.seconds(60);
 
-/** Итоговые отчёты: их не заменяет снимок `running` при переподключении. */
-const isTerminal = (report: AgentReport) =>
-  report._tag === "Stopped" || report._tag === "Failed";
+/**
+ * Итоговые отчёты: их не заменяет снимок `running`/`installs` при
+ * переподключении.
+ */
+export const isTerminal = (report: AgentReport) =>
+  report._tag === "Stopped" ||
+  report._tag === "Failed" ||
+  report._tag === "InstallFinished" ||
+  report._tag === "InstallFailed";
 
 /** Следующая пауза: удвоение до RECONNECT_MAX. */
 export const nextDelay = (delay: Duration.Duration) =>
@@ -38,6 +51,7 @@ export const nextDelay = (delay: Duration.Duration) =>
 export const run = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const supervisor = yield* SessionSupervisor;
+  const installer = yield* Installer;
   const committer = yield* ProfileCommitter;
   const protocol = RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
@@ -56,6 +70,18 @@ export const run = Effect.gen(function* () {
    */
   const carry: Array<AgentReport> = [];
 
+  /**
+   * Отчёты сессий и установок в одной очереди (порядок внутри источника
+   * сохраняется); перекачка идёт всё время жизни агента, и со связью, и без.
+   */
+  const outbox = yield* Queue.unbounded<AgentReport>();
+  for (const source of [supervisor.reports, installer.reports])
+    yield* Queue.take(source).pipe(
+      Effect.flatMap((report) => Queue.offer(outbox, report)),
+      Effect.forever,
+      Effect.forkChild,
+    );
+
   const connection = Effect.gen(function* () {
     const context = yield* Layer.build(protocol);
     const client = yield* RpcClient.make(AgentRpcs).pipe(
@@ -64,7 +90,7 @@ export const run = Effect.gen(function* () {
     yield* committer.attach((payload) =>
       client["agent.profileCommit"](payload),
     );
-    const buffered = yield* Queue.clear(supervisor.reports);
+    const buffered = yield* Queue.clear(outbox);
     carry.push(...buffered.filter(isTerminal));
     const payload: AgentConnect = {
       workerId: config.workerId,
@@ -72,30 +98,39 @@ export const run = Effect.gen(function* () {
       slots: config.slots,
       udpPortBase: config.udpPortBase,
       running: yield* supervisor.snapshot,
-      // Task 4: роль gamestore и список живых установок (конфиг агента пока
-      // не знает про роли — этот агент всегда "worker" без установок).
-      roles: ["worker"],
-      installs: [],
+      roles: config.roles,
+      installs: installer.running(),
     };
     yield* Effect.logInfo("Connecting to orchestrator", {
       url: config.orchestratorUrl,
       running: payload.running.length,
+      roles: payload.roles,
+      installs: payload.installs,
     });
 
+    const route = (command: AgentCommand) => {
+      switch (command._tag) {
+        case "InstallGame":
+          return installer.install(command);
+        case "CancelInstall":
+          return installer.cancel(command.jobId);
+        default:
+          return supervisor.handle(command);
+      }
+    };
     const commands = client["agent.connect"](payload).pipe(
       Stream.runForEach((command) =>
-        // Task 4: InstallGame/CancelInstall не несут sessionId — лог общий по тегу.
         Effect.logInfo("Command received", {
           command: command._tag,
-        }).pipe(Effect.andThen(supervisor.handle(command))),
+          id: "sessionId" in command ? command.sessionId : command.jobId,
+        }).pipe(Effect.andThen(route(command))),
       ),
     );
 
     /** Один отчёт; не дошедший итоговый возвращается в `carry`. */
     const sendNext = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
-        const report =
-          carry.shift() ?? (yield* restore(Queue.take(supervisor.reports)));
+        const report = carry.shift() ?? (yield* restore(Queue.take(outbox)));
         yield* restore(client["agent.report"](report)).pipe(
           Effect.onExit((exit) =>
             Exit.isSuccess(exit) || !isTerminal(report)
@@ -135,5 +170,5 @@ export const run = Effect.gen(function* () {
 export const layer: Layer.Layer<
   never,
   never,
-  AgentConfig | SessionSupervisor | ProfileCommitter
+  AgentConfig | SessionSupervisor | Installer | ProfileCommitter
 > = Layer.effectDiscard(run.pipe(Effect.forkScoped));

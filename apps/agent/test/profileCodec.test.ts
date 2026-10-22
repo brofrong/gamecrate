@@ -12,6 +12,7 @@ import {
   ProfileCorrupt,
   ProfileKeyInvalid,
   sealProfile,
+  singleFileTar,
 } from "../src/profile/codec";
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
@@ -97,5 +98,47 @@ describe("extractSingleFile", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("singleFileTar", () => {
+  it("is a valid ustar archive with the given owner, mode and content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cg-single-tar-"));
+    try {
+      const data = new TextEncoder().encode("x".repeat(700));
+      const tarPath = join(dir, "one.tar");
+      writeFileSync(
+        tarPath,
+        singleFileTar("appmanifest_736260.acf", data, {
+          uid: 1000,
+          gid: 1000,
+          mode: 0o644,
+          mtime: 1_760_000_000,
+        }),
+      );
+      // Системный tar проверяет контрольную сумму заголовка.
+      const list = Bun.spawnSync(["tar", "-tvf", tarPath, "--numeric-owner"]);
+      expect(new TextDecoder().decode(list.stderr)).toBe("");
+      expect(list.exitCode).toBe(0);
+      const line = new TextDecoder().decode(list.stdout).trim();
+      expect(line).toStartWith("-rw-r--r--");
+      expect(line).toMatch(/\b1000\s+1000\b/);
+      expect(line).toEndWith("appmanifest_736260.acf");
+      const extract = Bun.spawnSync(["tar", "-xf", tarPath, "-C", dir]);
+      expect(extract.exitCode).toBe(0);
+      expect(readFileSync(join(dir, "appmanifest_736260.acf"), "utf8")).toBe(
+        "x".repeat(700),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses names a ustar header cannot hold", () => {
+    const options = { uid: 1000, gid: 1000, mode: 0o644, mtime: 0 };
+    expect(() =>
+      singleFileTar("x".repeat(101), new Uint8Array(), options),
+    ).toThrow();
+    expect(() => singleFileTar("файл", new Uint8Array(), options)).toThrow();
   });
 });
