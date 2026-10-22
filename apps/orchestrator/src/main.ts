@@ -7,6 +7,7 @@ import { HttpRouter } from "effect/http";
 import { AgentHub } from "./AgentHub";
 import { OrchestratorConfig } from "./config";
 import { HttpApp } from "./http";
+import { InstallDispatcher } from "./InstallDispatcher";
 import * as Scheduler from "./Scheduler";
 import { SessionRunner } from "./SessionRunner";
 
@@ -16,11 +17,15 @@ const BunServer = Layer.unwrap(
   ),
 );
 
-/** Фоновая работа: подписка на хаб, таймеры сессий, планировщик. */
-const Sessions = Layer.mergeAll(SessionRunner.layer, Scheduler.layer);
+/** Фоновая работа: подписки на хаб, таймеры сессий, планировщик, установки. */
+const Sessions = Layer.mergeAll(
+  SessionRunner.layer,
+  Scheduler.layer,
+  InstallDispatcher.layer,
+);
 
-// `Layer.provide(Sessions)` строит ведение сессий раньше HTTP-сервера: раннер
-// подписан на хаб до того, как подключится первый агент. Один AgentHub на всех.
+// `Layer.provide(Sessions)` строит ведение сессий раньше HTTP-сервера: раннер и
+// диспетчер установок подписаны на хаб до того, как подключится первый агент. Один AgentHub на всех.
 const Server = HttpRouter.serve(HttpApp).pipe(
   Layer.provide(Sessions),
   Layer.provide(AgentHub.layer),

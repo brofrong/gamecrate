@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   Db,
+  gamestoreApps,
   games,
   playSegments,
   sessions,
@@ -56,6 +57,7 @@ const makeFakeHub = () => {
       }),
     connected: () => new Set(infos.keys()),
     info: (workerId) => infos.get(workerId),
+    workerOf: () => undefined,
     events,
     subscribe: PubSub.subscribe(events),
     connect: () => Stream.die("fake hub"),
@@ -110,6 +112,7 @@ const connectWorker = (fake: FakeHub, workerId: string, slots: number) =>
       publicIp: "203.0.113.7",
       slots,
       udpPortBase: 59000,
+      roles: ["worker"],
     });
   });
 
@@ -119,6 +122,11 @@ const seedUsers = (...ids: string[]) =>
     yield* db
       .insert(games)
       .values({ appId: 570, name: "Dota 2" })
+      .onConflictDoNothing();
+    // Игра в библиотеке — планировщик размещает сессии, а не ставит в установку.
+    yield* db
+      .insert(gamestoreApps)
+      .values({ appId: 570, sizeBytes: 1, buildId: "1" })
       .onConflictDoNothing();
     for (const id of ids)
       yield* db.insert(user).values({
@@ -206,7 +214,9 @@ const connected = (
   publicIp: "203.0.113.7",
   slots: 2,
   udpPortBase: 59000,
+  roles: ["worker"],
   running,
+  installs: [],
 });
 
 describe("scheduler", () => {
@@ -299,6 +309,7 @@ describe("scheduler", () => {
           publicIp: "203.0.113.7",
           slots: 1,
           udpPortBase: 59000,
+          roles: ["worker"],
         });
         yield* insertSession({ id: "s1", userId: "u1" });
 

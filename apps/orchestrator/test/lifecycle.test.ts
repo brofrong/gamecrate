@@ -650,4 +650,74 @@ describe("decide", () => {
     });
     expect(d.ops.some((op) => op._tag === "MarkOpenBillable")).toBe(false);
   });
+
+  it("installing never bills and times out with installTimeout reason", () => {
+    const events: LifecycleEvent[] = [
+      { _tag: "Scheduled" },
+      { _tag: "StreamReady" },
+      { _tag: "GameStarted" },
+      { _tag: "GameExited" },
+      { _tag: "InstallStarted" },
+      tick,
+    ];
+    // Ни агента сессии, ни браузера: installing ждёт только установку.
+    const s = snap("installing", { agentSeenAt: null, clientSeenAt: T0 });
+    for (let m = 0; m <= 180; m += 5) {
+      const now = min(m);
+      for (const e of events)
+        expect(decide(s, e, now, settings)).toEqual(unchanged("installing"));
+    }
+    const failed = (failReason: string): Decision => ({
+      state: "failed",
+      ops: [],
+      command: null,
+      failReason,
+    });
+    expect(decide(s, tick, sec(180 * 60 + 1), settings)).toEqual(
+      failed("Установка не закончилась за отведённое время"),
+    );
+    // Таймаут из настроек применяется к уже идущей установке.
+    const short = { ...settings, installTimeoutMinutes: 10 };
+    expect(decide(s, tick, min(10), short)).toEqual(unchanged("installing"));
+    expect(decide(s, tick, sec(10 * 60 + 1), short)).toEqual(
+      failed("Установка не закончилась за отведённое время"),
+    );
+    // Установка упала: пользователю — общая причина, техническая — в задаче.
+    expect(
+      decide(
+        s,
+        { _tag: "InstallFailed", reason: "Загрузка остановилась" },
+        min(1),
+        settings,
+      ),
+    ).toEqual(failed("Не удалось установить игру"));
+    // Остановка без контейнера, ожидание не оплачивается.
+    expect(decide(s, { _tag: "UserStop" }, min(1), settings)).toEqual(
+      unchanged("ended"),
+    );
+  });
+
+  it("install finished returns session to queued", () => {
+    const queued = snap("queued", { agentSeenAt: null });
+    expect(
+      decide(queued, { _tag: "InstallStarted" }, sec(1), settings),
+    ).toEqual(unchanged("installing"));
+    const installing = snap("installing", { agentSeenAt: null });
+    expect(
+      decide(installing, { _tag: "InstallFinished" }, min(30), settings),
+    ).toEqual(unchanged("queued"));
+    // Итоги установки вне installing ничего не меняют.
+    for (const state of ["queued", "starting", "playing"] as const) {
+      const s = snap(state, {}, min(1));
+      expect(decide(s, { _tag: "InstallFinished" }, min(1), settings)).toEqual(
+        unchanged(state),
+      );
+      expect(
+        decide(s, { _tag: "InstallFailed", reason: "x" }, min(1), settings),
+      ).toEqual(unchanged(state));
+    }
+    expect(
+      decide(snap("starting"), { _tag: "InstallStarted" }, sec(1), settings),
+    ).toEqual(unchanged("starting"));
+  });
 });

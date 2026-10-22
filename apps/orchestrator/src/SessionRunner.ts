@@ -332,7 +332,7 @@ const make = (options: SessionRunnerOptions) =>
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":
-                // Task 5: InstallDispatcher обрабатывает прогресс и итог установки.
+                // Задачу и ждущие её сессии ведёт InstallDispatcher (своя подписка).
                 return Effect.void;
             }
           })();

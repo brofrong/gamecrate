@@ -1,11 +1,13 @@
 // HTTP-роутер оркестратора: /healthz и RPC агентов по WebSocket (/agent).
 import { createHash, timingSafeEqual } from "node:crypto";
-import { AgentRpcs } from "@cg/rpc";
+import { Db } from "@cg/db";
+import { AgentNotConnected, AgentRpcs } from "@cg/rpc";
 import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentHub } from "./AgentHub";
 import { OrchestratorConfig } from "./config";
+import * as SessionRepo from "./SessionRepo";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -56,19 +58,37 @@ const AgentWebsocketProtocol = Layer.effect(
   }),
 );
 
-/** Хендлеры `agent.*`: делегируют AgentHub, соединение — по id WebSocket-клиента. */
+/**
+ * Хендлеры `agent.*`: делегируют AgentHub, соединение — по id WebSocket-клиента.
+ * `agent.profileCommit` — compare-and-set версии в `profiles`
+ * (`SessionRepo.commitProfile`); по соединению без `agent.connect` —
+ * AgentNotConnected (агент повторит).
+ */
 export const AgentRpcHandlers = AgentRpcs.toLayer(
-  AgentHub.use((hub) =>
-    Effect.succeed(
-      AgentRpcs.of({
-        "agent.connect": (payload, { client }) =>
-          hub.connect(client.id, payload),
-        "agent.report": (report, { client }) => hub.report(client.id, report),
-        // Task 5: проверка baseVersion и upsert `profiles`.
-        "agent.profileCommit": () => Effect.succeed({ accepted: false }),
-      }),
-    ),
-  ),
+  Effect.gen(function* () {
+    const hub = yield* AgentHub;
+    const db = yield* Db;
+    return AgentRpcs.of({
+      "agent.connect": (payload, { client }) => hub.connect(client.id, payload),
+      "agent.report": (report, { client }) => hub.report(client.id, report),
+      "agent.profileCommit": (commit, { client }) =>
+        Effect.gen(function* () {
+          const workerId = hub.workerOf(client.id);
+          if (workerId === undefined) return yield* new AgentNotConnected();
+          const result = yield* SessionRepo.commitProfile(commit).pipe(
+            Effect.provideService(Db, db),
+            Effect.orDie,
+          );
+          yield* Effect.logInfo("Profile commit", {
+            userId: commit.userId,
+            baseVersion: commit.baseVersion,
+            accepted: result.accepted,
+            workerId,
+          });
+          return result;
+        }),
+    });
+  }),
 );
 
 /** Effect RPC агентов по WebSocket на `/agent` (сериализация NDJSON). */

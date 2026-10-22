@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { connect } from "node:net";
-import { Db, workers } from "@cg/db";
+import { Db, profiles, user, workers } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type AgentCommand, type AgentConnect, AgentRpcs } from "@cg/rpc";
 import { BunHttpServer, BunSocket } from "@effect/platform-bun";
@@ -120,8 +120,8 @@ const hello = (workerId: string): AgentConnect => ({
       gameRunning: true,
     },
   ],
-  roles: ["worker"],
-  installs: [],
+  roles: ["worker", "gamestore"],
+  installs: ["job-1"],
 });
 
 type AgentClient = Effect.Success<typeof agentClient>;
@@ -192,7 +192,9 @@ describe("agent hub", () => {
           publicIp: "203.0.113.7",
           slots: 1,
           udpPortBase: 59000,
+          roles: ["worker", "gamestore"],
           running: hello("w-connect").running,
+          installs: ["job-1"],
         });
         expect(hub.connected().has("w-connect")).toBe(true);
         expect(hub.info("w-connect")).toEqual({
@@ -200,6 +202,7 @@ describe("agent hub", () => {
           publicIp: "203.0.113.7",
           slots: 1,
           udpPortBase: 59000,
+          roles: ["worker", "gamestore"],
         });
 
         const [row] = yield* db
@@ -310,6 +313,65 @@ describe("agent hub", () => {
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure")
           expect(result.failure._tag).toBe("AgentNotConnected");
+      }),
+    ));
+
+  it("profile commit needs agent.connect and versions the profile", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        yield* db.insert(user).values({
+          id: "u-commit",
+          name: "u-commit",
+          email: "u-commit@steam.invalid",
+          emailVerified: false,
+        });
+        const commit = {
+          userId: "u-commit",
+          baseVersion: null,
+          objectKey: "profiles/u-commit/a.cgp",
+          sizeBytes: 42,
+        };
+
+        // Соединение без agent.connect — не обработан (агент повторит).
+        const client = yield* agentClient;
+        const early = yield* client["agent.profileCommit"](commit).pipe(
+          Effect.result,
+        );
+        expect(early._tag).toBe("Failure");
+        if (early._tag === "Failure")
+          expect(early.failure._tag).toBe("AgentNotConnected");
+        expect(
+          yield* db
+            .select()
+            .from(profiles)
+            .where(eq(profiles.userId, "u-commit")),
+        ).toEqual([]);
+
+        const events = yield* hub.subscribe;
+        yield* connectAgent(hello("w-commit"), client);
+        yield* waitEvent(events, isTag("Connected", "w-commit"));
+        expect(yield* client["agent.profileCommit"](commit)).toEqual({
+          accepted: true,
+        });
+        expect(
+          yield* client["agent.profileCommit"]({
+            ...commit,
+            baseVersion: 1,
+            objectKey: "profiles/u-commit/b.cgp",
+          }),
+        ).toEqual({ accepted: true });
+        // Повтор с той же базой — устарел.
+        expect(
+          yield* client["agent.profileCommit"]({ ...commit, baseVersion: 1 }),
+        ).toEqual({ accepted: false });
+        const [row] = yield* db
+          .select()
+          .from(profiles)
+          .where(eq(profiles.userId, "u-commit"));
+        expect(row?.version).toBe(2);
+        expect(row?.objectKey).toBe("profiles/u-commit/b.cgp");
       }),
     ));
 

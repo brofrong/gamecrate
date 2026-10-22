@@ -1,0 +1,697 @@
+import { describe, expect, it } from "bun:test";
+import {
+  Db,
+  gamestoreApps,
+  games,
+  installJobs,
+  profiles,
+  sessions,
+  user,
+  workers,
+} from "@cg/db";
+import { DbTest } from "@cg/db/test";
+import type { AgentCommand, AgentReport, AgentRoles } from "@cg/rpc";
+import { asc, eq } from "drizzle-orm";
+import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
+import {
+  AgentHub,
+  type AgentHubEvent,
+  type AgentHubShape,
+  type WorkerInfo,
+} from "../src/AgentHub";
+import {
+  InstallDispatcher,
+  type InstallDispatcherOptions,
+  installErrors,
+} from "../src/InstallDispatcher";
+import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
+import * as Scheduler from "../src/Scheduler";
+import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
+
+/** Фейковый хаб: подключённые агенты и отправленные команды — в памяти. */
+const makeFakeHub = () => {
+  const infos = new Map<string, WorkerInfo>();
+  const sent: Array<{ workerId: string; command: AgentCommand }> = [];
+  const state = {
+    refuse: (_workerId: string, _command: AgentCommand) => false,
+  };
+  const events = Effect.runSync(PubSub.unbounded<AgentHubEvent>());
+  const hub: AgentHubShape = {
+    send: (workerId, command) =>
+      Effect.sync(() => {
+        if (!infos.has(workerId) || state.refuse(workerId, command))
+          return false;
+        sent.push({ workerId, command });
+        return true;
+      }),
+    connected: () => new Set(infos.keys()),
+    info: (workerId) => infos.get(workerId),
+    workerOf: () => undefined,
+    events,
+    subscribe: PubSub.subscribe(events),
+    connect: () => Stream.die("fake hub"),
+    report: () => Effect.die("fake hub"),
+  };
+  return { hub, infos, sent, state };
+};
+type FakeHub = ReturnType<typeof makeFakeHub>;
+
+type Env = Db | AgentHub | InstallDispatcher | SessionRunner | Scope.Scope;
+
+const run = <A, E>(
+  body: (fake: FakeHub) => Effect.Effect<A, E, Env>,
+  options: InstallDispatcherOptions = {},
+) => {
+  const fake = makeFakeHub();
+  return Effect.runPromise(
+    Effect.scoped(body(fake)).pipe(
+      Effect.provideService(References.MinimumLogLevel, "Error"),
+      Effect.provide(
+        Layer.mergeAll(
+          InstallDispatcher.layerWithoutLoops(options),
+          SessionRunner.layerWithoutLoops(),
+        ).pipe(
+          Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
+          Layer.provideMerge(DbTest),
+          Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
+        ),
+      ),
+    ),
+  );
+};
+
+const at = (base: Date, seconds: number) =>
+  new Date(base.getTime() + seconds * 1000);
+
+/** Даты в `toMatchObject` Bun не сравнивает — сравниваем через JSON. */
+const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+const like = (actual: unknown, expected: unknown) =>
+  expect(json(actual)).toMatchObject(json(expected) as object);
+
+const DOTA = 570;
+const PORTAL = 400;
+
+/** Агент подключён: строка `workers` (как пишет хаб) + запись в фейке. */
+const connectAgent = (
+  fake: FakeHub,
+  workerId: string,
+  roles: AgentRoles,
+  slots = 1,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(workers)
+      .values({ id: workerId, publicIp: "203.0.113.7", slots })
+      .onConflictDoNothing();
+    fake.infos.set(workerId, {
+      workerId,
+      publicIp: "203.0.113.7",
+      slots,
+      udpPortBase: 59000,
+      roles,
+    });
+  });
+
+const seed = (...userIds: string[]) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.insert(games).values([
+      { appId: DOTA, name: "Dota 2" },
+      { appId: PORTAL, name: "Portal" },
+    ]);
+    for (const id of userIds)
+      yield* db.insert(user).values({
+        id,
+        name: id,
+        email: `${id}@steam.invalid`,
+        emailVerified: false,
+      });
+  });
+
+const markInstalled = (appId: number) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(gamestoreApps)
+      .values({ appId, sizeBytes: 1_000, buildId: "1" });
+  });
+
+const insertSession = (values: {
+  id: string;
+  userId: string;
+  appId?: number;
+  createdAt?: Date;
+  stopRequestedAt?: Date;
+}) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.insert(sessions).values({ appId: DOTA, ...values });
+  });
+
+const sessionRow = (id: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db.select().from(sessions).where(eq(sessions.id, id));
+    if (row === undefined) return yield* Effect.die(`no session ${id}`);
+    return row;
+  });
+
+const jobs = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db
+      .select()
+      .from(installJobs)
+      .orderBy(asc(installJobs.createdAt));
+  });
+
+const onlyJob = () =>
+  Effect.gen(function* () {
+    const all = yield* jobs();
+    expect(all).toHaveLength(1);
+    const [job] = all;
+    if (job === undefined) return yield* Effect.die("no job");
+    return job;
+  });
+
+const report = (workerId: string, agentReport: AgentReport): AgentHubEvent => ({
+  _tag: "Report",
+  workerId,
+  report: agentReport,
+});
+
+const connected = (
+  workerId: string,
+  installs: ReadonlyArray<string>,
+): AgentHubEvent => ({
+  _tag: "Connected",
+  workerId,
+  publicIp: "203.0.113.7",
+  slots: 0,
+  udpPortBase: 59000,
+  roles: ["gamestore"],
+  running: [],
+  installs,
+});
+
+/** Отправленные команды установки (без StartSession). */
+const installCommands = (fake: FakeHub) =>
+  fake.sent.filter(
+    (s) =>
+      s.command._tag === "InstallGame" || s.command._tag === "CancelInstall",
+  );
+
+describe("install jobs", () => {
+  it("uninstalled game moves session to installing with a new job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seed("u1", "u2");
+        yield* markInstalled(PORTAL);
+        yield* connectAgent(fake, "w1", ["worker"], 2);
+        yield* db.insert(profiles).values({
+          userId: "u2",
+          version: 3,
+          objectKey: "profiles/u2/p3.cgp",
+          sizeBytes: 10,
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          createdAt: at(t0, -10),
+        });
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        const job = yield* onlyJob();
+        like(job, {
+          appId: DOTA,
+          userId: "u1",
+          state: "queued",
+          workerId: null,
+        });
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          stateSince: t0,
+          installJobId: job.id,
+          workerId: null,
+          slot: null,
+        });
+        // Установленная игра размещается как раньше — с профилем пользователя.
+        like(yield* sessionRow("s2"), { state: "starting", workerId: "w1" });
+        expect(fake.sent).toEqual([
+          {
+            workerId: "w1",
+            command: {
+              _tag: "StartSession",
+              sessionId: "s2",
+              userId: "u2",
+              appId: PORTAL,
+              slot: 0,
+              udpPort: 59000,
+              profile: { version: 3, objectKey: "profiles/u2/p3.cgp" },
+            },
+          },
+        ]);
+
+        // Установке не нужен воркер: без агентов сессия тоже уходит в installing.
+        fake.infos.clear();
+        yield* db
+          .update(sessions)
+          .set({ state: "ended" })
+          .where(eq(sessions.id, "s2"));
+        yield* insertSession({ id: "s3", userId: "u2", appId: DOTA });
+        yield* Scheduler.tick(at(t0, 2));
+        like(yield* sessionRow("s3"), {
+          state: "installing",
+          installJobId: job.id,
+        });
+      }),
+    ));
+
+  it("second session joins running install job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "w1", ["worker"], 2);
+        yield* insertSession({ id: "s1", userId: "u1" });
+
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running", workerId: "gs" });
+
+        yield* insertSession({ id: "s2", userId: "u2" });
+        yield* Scheduler.tick(at(t0, 2));
+        yield* dispatcher.tick(at(t0, 2));
+
+        // Одна задача на appid: s2 ждёт ту же, второй InstallGame нет.
+        expect((yield* onlyJob()).id).toBe(job.id);
+        like(yield* sessionRow("s2"), {
+          state: "installing",
+          installJobId: job.id,
+        });
+        expect(installCommands(fake)).toEqual([
+          {
+            workerId: "gs",
+            command: {
+              _tag: "InstallGame",
+              jobId: job.id,
+              appId: DOTA,
+              userId: "u1",
+              profile: null,
+            },
+          },
+        ]);
+
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallProgress",
+            jobId: job.id,
+            bytesDownloaded: 340,
+            bytesTotal: 1000,
+          }),
+          at(t0, 10),
+        );
+        like(yield* onlyJob(), { bytesDownloaded: 340, bytesTotal: 1000 });
+        // Прогресс от чужого агента не принимается.
+        yield* dispatcher.handle(
+          report("w1", {
+            _tag: "InstallProgress",
+            jobId: job.id,
+            bytesDownloaded: 999,
+            bytesTotal: 1000,
+          }),
+          at(t0, 11),
+        );
+        like(yield* onlyJob(), { bytesDownloaded: 340 });
+
+        const finishedAt = at(t0, 60);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: job.id,
+            sizeBytes: 50_000,
+            buildId: "777",
+          }),
+          finishedAt,
+        );
+        like(yield* onlyJob(), { state: "done" });
+        const db = yield* Db;
+        const [app] = yield* db
+          .select()
+          .from(gamestoreApps)
+          .where(eq(gamestoreApps.appId, DOTA));
+        like(app, { sizeBytes: 50_000, buildId: "777" });
+        for (const id of ["s1", "s2"])
+          like(yield* sessionRow(id), {
+            state: "queued",
+            stateSince: finishedAt,
+          });
+
+        // Дальше — обычное размещение на воркер.
+        yield* Scheduler.tick(at(t0, 62));
+        like(yield* sessionRow("s1"), { state: "starting", workerId: "w1" });
+        like(yield* sessionRow("s2"), { state: "starting", workerId: "w1" });
+      }),
+    ));
+
+  it("dispatcher sends InstallGame only to a gamestore agent", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* db.insert(profiles).values({
+          userId: "u1",
+          version: 2,
+          objectKey: "profiles/u1/p2.cgp",
+          sizeBytes: 10,
+        });
+        yield* connectAgent(fake, "w1", ["worker"], 4);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+        yield* Scheduler.tick(t0);
+
+        // Только агент сессий — задачи ждут в очереди.
+        yield* dispatcher.tick(t0);
+        expect(installCommands(fake)).toEqual([]);
+        for (const job of yield* jobs())
+          like(job, { state: "queued", workerId: null });
+
+        // Агент gamestore есть, но команда не дошла — задача снова в очереди.
+        yield* connectAgent(fake, "gs", ["worker", "gamestore"], 1);
+        fake.state.refuse = (_workerId, command) =>
+          command._tag === "InstallGame";
+        yield* dispatcher.tick(at(t0, 2));
+        expect(installCommands(fake)).toEqual([]);
+        for (const job of yield* jobs())
+          like(job, { state: "queued", workerId: null });
+
+        // Дошла: самая старая задача, с профилем пользователя; одна на агента.
+        fake.state.refuse = () => false;
+        yield* dispatcher.tick(at(t0, 4));
+        const [first, second] = yield* jobs();
+        like(first, { appId: DOTA, state: "running", workerId: "gs" });
+        like(second, { appId: PORTAL, state: "queued", workerId: null });
+        expect(installCommands(fake)).toEqual([
+          {
+            workerId: "gs",
+            command: {
+              _tag: "InstallGame",
+              jobId: first?.id ?? "",
+              appId: DOTA,
+              userId: "u1",
+              profile: { version: 2, objectKey: "profiles/u1/p2.cgp" },
+            },
+          },
+        ]);
+        yield* dispatcher.tick(at(t0, 6));
+        expect(installCommands(fake)).toHaveLength(1);
+      }),
+    ));
+
+  it("failed job fails waiting sessions", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2", "u3");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+
+        // Итог от чужого агента не принимается.
+        yield* dispatcher.handle(
+          report("w-other", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "x",
+          }),
+          at(t0, 5),
+        );
+        like(yield* onlyJob(), { state: "running" });
+
+        const failedAt = at(t0, 30);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "Загрузка остановилась",
+          }),
+          failedAt,
+        );
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: "Загрузка остановилась",
+        });
+        for (const id of ["s1", "s2"])
+          like(yield* sessionRow(id), {
+            state: "failed",
+            failReason: failReasons.installFailed,
+            endedAt: failedAt,
+          });
+
+        // Первый итог побеждает: поздний InstallFinished ничего не меняет.
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: job.id,
+            sizeBytes: 1,
+            buildId: "1",
+          }),
+          at(t0, 31),
+        );
+        like(yield* onlyJob(), { state: "failed" });
+        const db = yield* Db;
+        expect(yield* db.select().from(gamestoreApps)).toEqual([]);
+
+        // И наоборот: InstallFailed после InstallFinished (отмена неизвестной задачи).
+        yield* insertSession({ id: "s3", userId: "u3" });
+        yield* Scheduler.tick(at(t0, 40));
+        yield* dispatcher.tick(at(t0, 40));
+        const [, retry] = yield* jobs();
+        if (retry === undefined) return yield* Effect.die("no retry job");
+        like(retry, { state: "running", workerId: "gs" });
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: retry.id,
+            sizeBytes: 5,
+            buildId: "2",
+          }),
+          at(t0, 50),
+        );
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: retry.id,
+            reason: "Установка отменена",
+          }),
+          at(t0, 51),
+        );
+        like((yield* jobs())[1], { state: "done", error: null });
+        like(yield* sessionRow("s3"), { state: "queued" });
+      }),
+    ));
+
+  it("install missing from reconnect fails job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1" });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running" });
+
+        // Связь моргнула, установка жива — задача продолжается (и более новое
+        // подключение отменяет подозрение прежнего).
+        yield* dispatcher.handle(connected("gs", []), at(t0, 14));
+        yield* dispatcher.handle(connected("gs", [job.id]), at(t0, 15));
+        yield* dispatcher.tick(at(t0, 15 + RECONCILE_GRACE_MS / 1000));
+        like(yield* onlyJob(), { state: "running" });
+        expect(installCommands(fake)).toHaveLength(1);
+
+        // Агент перезапустился: установки нет. Отчёты, перенесённые через
+        // переподключение, ещё могут прийти — сразу не валим.
+        const reconnectAt = at(t0, 30);
+        yield* dispatcher.handle(connected("gs", []), reconnectAt);
+        yield* dispatcher.tick(at(t0, 31));
+        like(yield* onlyJob(), { state: "running" });
+
+        const failAt = new Date(reconnectAt.getTime() + RECONCILE_GRACE_MS);
+        yield* dispatcher.tick(failAt);
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: installErrors.interrupted,
+        });
+        like(yield* sessionRow("s1"), {
+          state: "failed",
+          failReason: failReasons.installFailed,
+        });
+
+        // Перенесённый InstallFinished пришёл после Connected с installs=[] —
+        // задача завершена, а не провалена.
+        yield* insertSession({ id: "s2", userId: "u2", appId: PORTAL });
+        yield* Scheduler.tick(at(t0, 60));
+        yield* dispatcher.tick(at(t0, 60));
+        const [, portal] = yield* jobs();
+        if (portal === undefined) return yield* Effect.die("no job");
+        like(portal, { state: "running", workerId: "gs" });
+        yield* dispatcher.handle(connected("gs", []), at(t0, 90));
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: portal.id,
+            sizeBytes: 9,
+            buildId: "3",
+          }),
+          at(t0, 90),
+        );
+        yield* dispatcher.tick(at(t0, 120));
+        like((yield* jobs())[1], { state: "done" });
+        like(yield* sessionRow("s2"), { state: "queued" });
+
+        // Агент продолжает установку, которой оркестратор не ждёт, — отменить.
+        yield* dispatcher.handle(connected("gs", ["job-unknown"]), at(t0, 130));
+        expect(installCommands(fake).at(-1)).toEqual({
+          workerId: "gs",
+          command: { _tag: "CancelInstall", jobId: "job-unknown" },
+        });
+      }),
+    ));
+
+  it("silent gamestore agent fails its job", () => {
+    const t0 = new Date();
+    return run(
+      (fake) =>
+        Effect.gen(function* () {
+          const dispatcher = yield* InstallDispatcher;
+          yield* seed("u1");
+          yield* connectAgent(fake, "gs", ["gamestore"], 0);
+          yield* insertSession({ id: "s1", userId: "u1" });
+          yield* Scheduler.tick(t0);
+          yield* dispatcher.tick(t0);
+
+          // Heartbeat агента продлевает жизнь задачи.
+          const seenAt = at(t0, 60);
+          yield* dispatcher.handle(
+            report("gs", { _tag: "Heartbeat", sessionIds: [] }),
+            seenAt,
+          );
+          yield* dispatcher.tick(new Date(seenAt.getTime() + AGENT_TIMEOUT_MS));
+          like(yield* onlyJob(), { state: "running" });
+
+          yield* dispatcher.tick(
+            new Date(seenAt.getTime() + AGENT_TIMEOUT_MS + 1000),
+          );
+          like(yield* onlyJob(), {
+            state: "failed",
+            error: installErrors.interrupted,
+          });
+          like(yield* sessionRow("s1"), {
+            state: "failed",
+            failReason: failReasons.installFailed,
+          });
+        }),
+      { startedAt: t0 },
+    );
+  });
+
+  it("stop requested while installing ends the session and cancels the last waiter's job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const dispatcher = yield* InstallDispatcher;
+        const runner = yield* SessionRunner;
+        yield* seed("u1", "u2", "u3");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+
+        const stop = (id: string, when: Date) =>
+          db
+            .update(sessions)
+            .set({ stopRequestedAt: when })
+            .where(eq(sessions.id, id));
+
+        // Первая из двух ждущих уходит — установка продолжается.
+        yield* stop("s1", at(t0, 10));
+        yield* runner.tick(at(t0, 10));
+        like(yield* sessionRow("s1"), {
+          state: "ended",
+          endedAt: at(t0, 10),
+        });
+        yield* dispatcher.tick(at(t0, 10));
+        expect(installCommands(fake)).toHaveLength(1);
+        like(yield* onlyJob(), { state: "running" });
+
+        // Ушла последняя — CancelInstall (один раз); итог решает отчёт агента.
+        yield* stop("s2", at(t0, 20));
+        yield* runner.tick(at(t0, 20));
+        like(yield* sessionRow("s2"), { state: "ended" });
+        yield* dispatcher.tick(at(t0, 20));
+        yield* dispatcher.tick(at(t0, 22));
+        expect(installCommands(fake).slice(1)).toEqual([
+          {
+            workerId: "gs",
+            command: { _tag: "CancelInstall", jobId: job.id },
+          },
+        ]);
+        like(yield* onlyJob(), { state: "running" });
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "Установка отменена",
+          }),
+          at(t0, 23),
+        );
+        like(yield* onlyJob(), { state: "failed" });
+
+        // Задача ещё в очереди (агенту не отправлена) — просто отменяется.
+        fake.infos.delete("gs");
+        yield* insertSession({ id: "s3", userId: "u3", appId: PORTAL });
+        yield* Scheduler.tick(at(t0, 30));
+        const [, queued] = yield* jobs();
+        if (queued === undefined) return yield* Effect.die("no job");
+        like(queued, { state: "queued" });
+        yield* stop("s3", at(t0, 31));
+        yield* runner.tick(at(t0, 31));
+        yield* dispatcher.tick(at(t0, 31));
+        like((yield* jobs())[1], {
+          state: "failed",
+          error: installErrors.cancelled,
+        });
+        expect(installCommands(fake)).toHaveLength(2);
+      }),
+    ));
+});

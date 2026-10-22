@@ -6,6 +6,7 @@ import {
   type AgentConnect,
   AgentNotConnected,
   type AgentReport,
+  type AgentRoles,
   type RunningSession,
 } from "@cg/rpc";
 import { sql } from "drizzle-orm";
@@ -28,12 +29,15 @@ export interface WorkerInfo {
   readonly slots: number;
   /** Слот `i` — UDP-порт `udpPortBase + i`. В БД не хранится. */
   readonly udpPortBase: number;
+  /** `worker` — принимает сессии, `gamestore` — установки игр. В БД не хранится. */
+  readonly roles: AgentRoles;
 }
 
 /**
  * События хаба.
  * - `Connected` — агент подключился (или переподключился), строка `workers` уже
- *   записана; `running` — сессии, которые уже идут на воркере.
+ *   записана; `running` — сессии, которые уже идут на воркере, `installs` —
+ *   id задач установки, чьи контейнеры у агента ещё живы.
  * - `Report` — отчёт агента текущего соединения воркера.
  * - `Disconnected` — соединение воркера оборвалось и более нового нет.
  *   Замена соединения более новым `Disconnected` не публикует.
@@ -42,6 +46,7 @@ export type AgentHubEvent =
   | (WorkerInfo & {
       readonly _tag: "Connected";
       readonly running: ReadonlyArray<RunningSession>;
+      readonly installs: ReadonlyArray<string>;
     })
   | {
       readonly _tag: "Report";
@@ -60,6 +65,8 @@ export interface AgentHubShape {
   readonly connected: () => ReadonlySet<string>;
   /** Сведения о подключённом воркере; не подключён — `undefined`. */
   readonly info: (workerId: string) => WorkerInfo | undefined;
+  /** Воркер текущего соединения WebSocket-клиента `clientId` (`undefined` — нет `agent.connect`). */
+  readonly workerOf: (clientId: number) => string | undefined;
   /** PubSub событий хаба (неограниченный). */
   readonly events: PubSub.PubSub<AgentHubEvent>;
   /** Подписка на события с этого момента; живёт в scope. */
@@ -173,6 +180,7 @@ const make = Effect.gen(function* () {
   const announce = (
     connection: Connection,
     running: ReadonlyArray<RunningSession>,
+    installs: ReadonlyArray<string>,
   ) =>
     Effect.gen(function* () {
       if (!isCurrent(connection)) return;
@@ -183,23 +191,20 @@ const make = Effect.gen(function* () {
         _tag: "Connected",
         ...connection.info,
         running,
+        installs,
       });
       yield* Effect.logInfo("Agent connected", {
         workerId: connection.info.workerId,
+        roles: connection.info.roles,
         running: running.length,
+        installs: installs.length,
       });
     });
 
   const connect: AgentHubShape["connect"] = (clientId, payload) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        // Task 4/5: roles/installs пока не используются (InstallDispatcher).
-        const {
-          running,
-          roles: _roles,
-          installs: _installs,
-          ...info
-        } = payload;
+        const { running, installs, ...info } = payload;
         // Scope этого эффекта — время жизни потока: release срабатывает при обрыве
         // соединения (сервер прерывает поток) или замене более новым соединением.
         const connection = yield* Effect.acquireRelease(
@@ -215,7 +220,7 @@ const make = Effect.gen(function* () {
           }),
           unregister,
         );
-        yield* upsertLock.withPermit(announce(connection, running));
+        yield* upsertLock.withPermit(announce(connection, running, installs));
         return Stream.fromQueue(connection.commands);
       }),
     );
@@ -242,6 +247,7 @@ const make = Effect.gen(function* () {
     send,
     connected: () => new Set(byWorker.keys()),
     info: (workerId) => byWorker.get(workerId)?.info,
+    workerOf: (clientId) => byClient.get(clientId),
     events,
     subscribe: PubSub.subscribe(events),
     connect,

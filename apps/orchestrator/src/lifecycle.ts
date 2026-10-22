@@ -42,6 +42,10 @@ export type LifecycleEvent =
   | { _tag: "UserStop" }
   | { _tag: "StopFinished" }
   | { _tag: "Failed"; reason: string }
+  | { _tag: "InstallStarted" }
+  | { _tag: "InstallFinished" }
+  /** `reason` — техническая причина задачи (она в `install_jobs.error`). */
+  | { _tag: "InstallFailed"; reason: string }
   | { _tag: "Tick" };
 
 export type SegmentOp =
@@ -60,6 +64,8 @@ export const failReasons = {
   agentLost: "Сервер с игрой перестал отвечать",
   startTimeout: "Игра не запустилась за отведённое время",
   clientGone: "Игрок отключился",
+  installFailed: "Не удалось установить игру",
+  installTimeout: "Установка не закончилась за отведённое время",
 } as const;
 
 const MINUTE_MS = 60_000;
@@ -110,8 +116,9 @@ const onTick = (
   const inState = ms(s.stateSince, now);
   const keep = decision(s.state);
 
-  // 1. Агент молчит — в любом активном состоянии, кроме queued (агента ещё нет).
-  if (s.state !== "queued") {
+  // 1. Агент молчит — в любом активном состоянии, кроме queued и installing
+  // (агента сессии ещё нет).
+  if (s.state !== "queued" && s.state !== "installing") {
     const agentRef = s.agentSeenAt ?? s.stateSince;
     if (ms(agentRef, now) > AGENT_TIMEOUT_MS) {
       return decision(
@@ -124,6 +131,13 @@ const onTick = (
   }
 
   switch (s.state) {
+    // Установка не оплачивается и браузера не ждёт: ушедший игрок не отменяет
+    // загрузку, сессия после неё вернётся в queued и там закончится по K.
+    case "installing":
+      return inState > settings.installTimeoutMinutes * MINUTE_MS
+        ? decision("failed", [], null, failReasons.installTimeout)
+        : keep;
+
     case "queued":
     case "starting": {
       if (
@@ -230,14 +244,28 @@ const onEvent = (
           ])
         : keep;
 
+    case "InstallStarted":
+      return s.state === "queued" ? decision("installing") : keep;
+
+    case "InstallFinished":
+      return s.state === "installing" ? decision("queued") : keep;
+
+    case "InstallFailed":
+      return s.state === "installing"
+        ? decision("failed", [], null, failReasons.installFailed)
+        : keep;
+
     case "GameExited":
-      return s.state === "queued" || s.state === "stopping"
+      return s.state === "queued" ||
+        s.state === "installing" ||
+        s.state === "stopping"
         ? keep
         : decision("stopping", closeAt(s, now, now));
 
     // Из `disconnected` отрезок закрывается неоплачиваемым — разрыв не учитывается намеренно.
     case "UserStop":
-      if (s.state === "queued") return decision("ended");
+      if (s.state === "queued" || s.state === "installing")
+        return decision("ended");
       if (s.state === "stopping") return keep;
       return decision("stopping", closeAt(s, now, now), "StopContainer");
 

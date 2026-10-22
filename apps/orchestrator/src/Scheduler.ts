@@ -1,9 +1,13 @@
 // Планировщик: раз в 2 с раздаёт сессии из очереди по свободным слотам
-// подключённых воркеров и отправляет агенту StartSession.
-import { Db, sessions, workers } from "@cg/db";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+// подключённых воркеров и отправляет агенту StartSession; сессии неустановленных
+// игр отправляет ждать установку (`installing`).
+import { Db, gamestoreApps, sessions, workers } from "@cg/db";
+import type { ProfileRef } from "@cg/rpc";
+import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { AgentHub } from "./AgentHub";
+import * as InstallRepo from "./InstallRepo";
+import * as SessionRepo from "./SessionRepo";
 import { isActive } from "./SessionRepo";
 
 /** Период планировщика. */
@@ -15,11 +19,12 @@ const lowestFreeSlot = (slots: number, busy: ReadonlySet<number>) => {
   return undefined;
 };
 
-/** Не больше стольких назначений за проход (остальные — на следующем). */
+/** Не больше стольких назначений (включая отправки в установку) за проход. */
 export const SCHEDULE_BATCH = 20;
 
 /** Назначение одной сессии, уже записанное в БД. */
 interface Placement {
+  readonly _tag: "Placed";
   readonly session: {
     readonly id: string;
     readonly userId: string;
@@ -30,15 +35,92 @@ interface Placement {
   readonly workerId: string;
   readonly slot: number;
   readonly udpPort: number;
+  readonly profile: ProfileRef | null;
 }
 
 /**
- * Одна транзакция на одну сессию: самая старая `queued`-сессия без запроса
- * остановки (`FOR UPDATE SKIP LOCKED`, `LIMIT 1`); первый по `id` воркер из
- * `candidates` со строкой в `workers` и свободным слотом, слот — наименьший
- * свободный. Запись `workerId`, `slot`, `state = 'starting'`,
- * `stateSince = agentSeenAt = now` и коммит. `undefined` — очередь пуста или
- * свободных слотов нет.
+ * Итог `placeOne`: `Placed` — назначена на воркер; `Installing` — ждёт задачу
+ * установки; `Retry` — игру только что установили, сессию разместит следующий
+ * `placeOne`; `undefined` — делать нечего.
+ */
+type Outcome =
+  | Placement
+  | {
+      readonly _tag: "Installing";
+      readonly sessionId: string;
+      readonly jobId: string;
+    }
+  | { readonly _tag: "Retry" };
+
+/** Игра сессии есть в общей библиотеке (подзапрос по внешней `sessions`). */
+const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId})`;
+
+/** Самая старая `queued`-сессия без запроса остановки под условием `where`. */
+const lockOldestQueued = (where: SQL) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [session] = yield* db
+      .select({
+        id: sessions.id,
+        userId: sessions.userId,
+        appId: sessions.appId,
+        stateSince: sessions.stateSince,
+        agentSeenAt: sessions.agentSeenAt,
+      })
+      .from(sessions)
+      .where(
+        and(
+          eq(sessions.state, "queued"),
+          isNull(sessions.stopRequestedAt),
+          where,
+        ),
+      )
+      .orderBy(asc(sessions.createdAt))
+      .limit(1)
+      .for("update", { skipLocked: true });
+    return session;
+  });
+
+/**
+ * Сессия неустановленной игры: задача установки — активная этого appid или
+ * новая `queued` с `userId` сессии; `installJobId` и `InstallStarted`
+ * (→ `installing`). Задача блокируется до проверки библиотеки: если её как раз
+ * завершают, видим уже установленную игру (`Retry`), а не завершённую задачу.
+ */
+const startInstall = (
+  now: Date,
+  session: {
+    readonly id: string;
+    readonly userId: string;
+    readonly appId: number;
+  },
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const locked = yield* InstallRepo.lockActiveJob(session.appId);
+    if (yield* InstallRepo.isInstalled(session.appId))
+      return { _tag: "Retry" } as const;
+    const jobId =
+      locked ?? (yield* InstallRepo.createJob(session.appId, session.userId));
+    yield* db
+      .update(sessions)
+      .set({ installJobId: jobId })
+      .where(eq(sessions.id, session.id));
+    const settings = yield* SessionRepo.loadSettings();
+    yield* SessionRepo.transition(session.id, now, settings, (row) =>
+      row.state === "queued" ? { _tag: "InstallStarted" } : null,
+    );
+    return { _tag: "Installing", sessionId: session.id, jobId } as const;
+  });
+
+/**
+ * Одна транзакция на одну сессию (`FOR UPDATE SKIP LOCKED`, `LIMIT 1`, без
+ * запроса остановки). Сначала самая старая `queued`-сессия неустановленной
+ * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
+ * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
+ * установленной игры: первый по `id` воркер из `candidates` со строкой в
+ * `workers` и свободным слотом, слот — наименьший свободный. Запись `workerId`,
+ * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит.
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -46,21 +128,12 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     const hub = yield* AgentHub;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const [session] = yield* db
-          .select({
-            id: sessions.id,
-            userId: sessions.userId,
-            appId: sessions.appId,
-            stateSince: sessions.stateSince,
-            agentSeenAt: sessions.agentSeenAt,
-          })
-          .from(sessions)
-          .where(
-            and(eq(sessions.state, "queued"), isNull(sessions.stopRequestedAt)),
-          )
-          .orderBy(asc(sessions.createdAt))
-          .limit(1)
-          .for("update", { skipLocked: true });
+        const uninstalled = yield* lockOldestQueued(sql`not ${appInstalled}`);
+        if (uninstalled !== undefined)
+          return (yield* startInstall(now, uninstalled)) as Outcome;
+
+        if (candidates.length === 0) return undefined;
+        const session = yield* lockOldestQueued(appInstalled);
         if (session === undefined) return undefined;
 
         // Только воркеры, чья строка уже записана хабом (на неё ссылается FK).
@@ -94,11 +167,14 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
               agentSeenAt: now,
             })
             .where(eq(sessions.id, session.id));
+          const profile = yield* SessionRepo.profileOf(session.userId);
           return {
+            _tag: "Placed",
             session,
             workerId,
             slot,
             udpPort: info.udpPortBase + slot,
+            profile,
           } satisfies Placement;
         }
         return undefined;
@@ -133,7 +209,8 @@ const unplace = (placement: Placement) =>
 
 /**
  * Один проход планировщика: по одной сессии за транзакцию (`placeOne`), не
- * больше `SCHEDULE_BATCH` за проход. StartSession (`udpPort = udpPortBase + slot`)
+ * больше `SCHEDULE_BATCH` за проход. Сессии размещаются только на агентах с
+ * ролью `worker`. StartSession (`udpPort = udpPortBase + slot`)
  * уходит после коммита, поэтому сбой не откатит уже отправленные команды.
  * `send` вернул `false` — сессия возвращается в `queued` (`unplace`), а воркер
  * до конца прохода не используется. Если процесс упадёт между коммитом и
@@ -143,12 +220,23 @@ const unplace = (placement: Placement) =>
 export const tick = (now: Date) =>
   Effect.gen(function* () {
     const hub = yield* AgentHub;
-    let candidates = [...hub.connected()];
+    let candidates = [...hub.connected()].filter(
+      (id) => hub.info(id)?.roles.includes("worker") ?? false,
+    );
     let placed = 0;
-    while (candidates.length > 0 && placed < SCHEDULE_BATCH) {
+    while (placed < SCHEDULE_BATCH) {
       const placement = yield* placeOne(now, candidates);
       if (placement === undefined) return;
-      const { session, workerId, slot, udpPort } = placement;
+      if (placement._tag !== "Placed") {
+        placed++;
+        if (placement._tag === "Installing")
+          yield* Effect.logInfo("Session waits for game install", {
+            sessionId: placement.sessionId,
+            jobId: placement.jobId,
+          });
+        continue;
+      }
+      const { session, workerId, slot, udpPort, profile } = placement;
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
         sessionId: session.id,
@@ -156,8 +244,7 @@ export const tick = (now: Date) =>
         appId: session.appId,
         slot,
         udpPort,
-        // Task 5: передать профиль пользователя из `profiles`.
-        profile: null,
+        profile,
       });
       if (sent) {
         placed++;

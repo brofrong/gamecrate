@@ -3,6 +3,7 @@
 import {
   Db,
   playSegments,
+  profiles,
   type SessionState,
   sessions,
   settings,
@@ -10,6 +11,8 @@ import {
 import {
   defaultSessionSettings,
   isSessionStreamUrl,
+  type ProfileCommit,
+  type ProfileRef,
   SessionSettings,
   sessionSettingsKey,
   sessionStreamUrl,
@@ -324,4 +327,46 @@ export const activeOnWorker = (workerId: string) =>
       })
       .from(sessions)
       .where(and(eq(sessions.workerId, workerId), isActive));
+  });
+
+/** Текущая версия профиля пользователя для агента; профиля ещё нет — `null`. */
+export const profileOf = (userId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ version: profiles.version, objectKey: profiles.objectKey })
+      .from(profiles)
+      .where(eq(profiles.userId, userId));
+    return (row ?? null) satisfies ProfileRef | null;
+  });
+
+/**
+ * Новая версия профиля (`agent.profileCommit`), compare-and-set по версии:
+ * `baseVersion = null` — первая версия (`1`), принимается, только если записи
+ * ещё нет; иначе — `version = baseVersion + 1`, только если текущая версия
+ * равна `baseVersion`. Устаревшая база — `accepted: false`, профиль не меняется.
+ * Прежний объект в S3 не удаляется (чистка — план 4).
+ */
+export const commitProfile = (commit: ProfileCommit) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const { userId, baseVersion, objectKey, sizeBytes } = commit;
+    const written =
+      baseVersion === null
+        ? yield* db
+            .insert(profiles)
+            .values({ userId, version: 1, objectKey, sizeBytes })
+            .onConflictDoNothing()
+            .returning({ userId: profiles.userId })
+        : yield* db
+            .update(profiles)
+            .set({ version: baseVersion + 1, objectKey, sizeBytes })
+            .where(
+              and(
+                eq(profiles.userId, userId),
+                eq(profiles.version, baseVersion),
+              ),
+            )
+            .returning({ userId: profiles.userId });
+    return { accepted: written.length === 1 };
   });
