@@ -12,6 +12,13 @@ mock.module("../src/auth", () => ({
   signInWithSteam: async () => ({ error: undefined }),
   signOut: async () => {},
   signInWithPocketId: async () => {},
+  // Экспорты ниже не используются в этом файле, но `mock.module` подменяет
+  // «../src/auth» глобально на весь прогон `bun test` — без них падает
+  // test/login.test.tsx, которому они нужны (см. его комментарий к mock.module).
+  sendEmailCode: async () => ({ error: null }),
+  signInWithEmailCode: async () => ({ error: null }),
+  signInWithProvider: async () => {},
+  signInWithTelegram: async () => ({ error: null }),
 }));
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");

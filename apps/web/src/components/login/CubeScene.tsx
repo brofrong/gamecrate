@@ -133,7 +133,7 @@ export function CubeScene({
         aria-hidden="true"
         className="absolute inset-0 block size-full"
       />
-      <div className="absolute top-7 right-7 grid gap-2 font-mono text-[11px] text-brand-muted">
+      <div className="absolute top-7 right-7 hidden gap-2 font-mono text-[11px] text-brand-muted lg:grid">
         {STEP_LABELS.map((label, i) => (
           <span
             key={label}
