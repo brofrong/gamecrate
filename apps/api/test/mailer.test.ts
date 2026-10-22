@@ -8,7 +8,7 @@ import {
   MailError,
   makeMailer,
 } from "../src/mail/Mailer";
-import { loginCodeMail } from "../src/mail/templates";
+import { changeEmailCodeMail, loginCodeMail } from "../src/mail/templates";
 
 /** Перехватывает лог-сообщения вместо их вывода, для проверки log-транспорта. */
 const captureLogs = () => {
@@ -127,5 +127,13 @@ describe("makeMailer", () => {
     expect(mail.text).toContain("123456");
     expect(mail.text).toContain("10 минут");
     expect(mail.html).toContain("123456");
+  });
+
+  it("change email code mail contains the code and the ttl", () => {
+    const mail = changeEmailCodeMail("654321");
+    expect(mail.subject).toBe("Подтверди новую почту в GameCrate");
+    expect(mail.text).toContain("654321");
+    expect(mail.text).toContain("10 минут");
+    expect(mail.html).toContain("654321");
   });
 });
