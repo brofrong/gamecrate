@@ -25,11 +25,13 @@ import {
 import { randomBytes } from "node:crypto";
 import { AgentConfig, type AgentConfigValues } from "./config";
 import {
+  type ContainerInfo,
   type ContainerSpec,
   DockerClient,
   type DockerError,
 } from "./DockerClient";
 import { HELPER_LABEL } from "./Helper";
+import { isValidId } from "./ids";
 import {
   cleanup,
   mountsFor,
@@ -73,12 +75,8 @@ export const failReasons = {
   profileRestore: "Не удалось загрузить профиль пользователя",
 } as const;
 
-/**
- * Допустимый `sessionId`/`userId`: попадает в имя контейнера и тома и в пути
- * Docker API, поэтому только `[A-Za-z0-9_-]`, не длиннее 64.
- */
-const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-export const isValidId = (id: string) => ID_PATTERN.test(id);
+/** Допустимый `sessionId`/`userId` (см. `ids.ts`). */
+export { isValidId };
 
 export const containerName = (sessionId: string) => `cg-session-${sessionId}`;
 export const streamUrlFor = (sessionId: string) =>
@@ -594,6 +592,9 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (launchWith !== undefined)
         yield* launch(session, launchWith.spec, launchWith.profile);
+      // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
+      if (yield* Deferred.isDone(session.stopRequested))
+        return yield* finish(session);
       const ready = yield* untilStop(session, waitReady(session));
       if (ready.stopped) return yield* finish(session);
       session.phase = "ready";
@@ -717,44 +718,51 @@ const make = Effect.gen(function* () {
         yield* Deferred.succeed(session.stopRequested, undefined);
         return;
       }
-      // Неизвестная (уже остановленная) сессия: убрать запущенный контейнер с её
-      // именем вместе со слоями, только если он наш (метка cg.session=<id>), и
-      // подтвердить остановку. Остановленный не трогаем: в его слоях может быть
-      // несохранённый профиль.
+      // Неизвестная сессия: контейнер с её именем удаляется только штатной
+      // остановкой — дом пользователя в его слоях. Запущенный наш (например,
+      // `docker stop` не удался при прошлой остановке) подхватывается и
+      // останавливается как обычно, с сохранением профиля (`Stopped` отправит
+      // finish). Без меток профиля — только остановить. Остановленный не трогаем.
       const name = containerName(sessionId);
+      const stopped = emit({
+        _tag: "Stopped",
+        sessionId,
+        cloudSynced: false,
+        profileSaved: false,
+      });
       yield* Effect.forkIn(
-        docker.inspect(name).pipe(
-          Effect.flatMap((container) => {
-            if (container === undefined) return Effect.void;
-            if (container.labels["cg.session"] !== sessionId)
-              return Effect.logWarning(
-                "Not removing a container without our session label",
-                { sessionId, name },
-              );
-            if (!container.running)
-              return Effect.logWarning(
-                "Keeping a stopped session container (profile-unsaved)",
-                { sessionId, name },
-              );
-            return docker
-              .remove(name)
-              .pipe(
-                Effect.andThen(cleanupLogged(sessionLayers(config, sessionId))),
-              );
-          }),
+        Effect.gen(function* () {
+          const container = yield* docker.inspect(name);
+          if (container === undefined) return yield* stopped;
+          if (container.labels["cg.session"] !== sessionId) {
+            yield* Effect.logWarning(
+              "Not touching a container without our session label",
+              { sessionId, name },
+            );
+            return yield* stopped;
+          }
+          if (!container.running) {
+            yield* Effect.logWarning(
+              "Keeping a stopped session container (profile-unsaved)",
+              { sessionId, name },
+            );
+            return yield* stopped;
+          }
+          const adopted = yield* adoptRunning(container, { stop: true });
+          if (adopted !== undefined) return;
+          yield* Effect.logError("profile-unsaved", {
+            sessionId,
+            container: name,
+            reason: "no profile labels",
+          });
+          yield* docker.stop(name, STOP_TIMEOUT_SEC);
+          yield* stopped;
+        }).pipe(
           Effect.catchTag("DockerError", (error) =>
-            Effect.logWarning("Removing unknown session container failed", {
+            Effect.logWarning("Stopping unknown session container failed", {
               sessionId,
               error: error.message,
-            }),
-          ),
-          Effect.andThen(
-            emit({
-              _tag: "Stopped",
-              sessionId,
-              cloudSynced: false,
-              profileSaved: false,
-            }),
+            }).pipe(Effect.andThen(stopped)),
           ),
         ),
         scope,
@@ -762,13 +770,16 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Контейнеры, пережившие перезапуск агента: живые подхватить, живые чужие или
-   * испорченные убрать. Остановленные не удаляются никогда: в их слоях —
-   * несохранённый профиль (`profile-unsaved`).
+   * Запущенный контейнер `cg.session` под надзор: проверка меток (пользователь и
+   * база профиля нужны для сохранения), состояние игры и облака, жизненный цикл.
+   * `stop` — сразу остановить (штатно, с сохранением профиля). `undefined` —
+   * метки испорчены или сессия уже ведётся.
    */
-  const adopt = Effect.gen(function* () {
-    const containers = yield* docker.listByLabel("cg.session");
-    for (const container of containers) {
+  const adoptRunning = (
+    container: ContainerInfo,
+    options: { readonly stop: boolean },
+  ) =>
+    Effect.gen(function* () {
       const sessionId = container.labels["cg.session"] ?? "";
       const userId = container.labels[USER_LABEL] ?? "";
       const baseVersion = parseBaseVersion(
@@ -776,37 +787,22 @@ const make = Effect.gen(function* () {
       );
       const slot = Number(container.labels["cg.slot"]);
       const appId = Number(container.labels["cg.app"]);
-      if (!container.running) {
-        yield* Effect.logWarning(
-          "Keeping stopped session container (profile-unsaved)",
-          { name: container.name, sessionId },
-        );
-        continue;
-      }
-      const valid =
-        isValidId(sessionId) &&
-        isValidId(userId) &&
-        baseVersion !== undefined &&
-        Number.isInteger(slot) &&
-        Number.isInteger(appId);
-      if (!valid || sessions.has(sessionId) || baseVersion === undefined) {
-        yield* Effect.logInfo("Removing leftover session container", {
-          name: container.name,
-        });
-        yield* docker.remove(container.name).pipe(
-          Effect.catchTag("DockerError", (error) =>
-            Effect.logWarning("Removing leftover container failed", {
-              name: container.name,
-              error: error.message,
-            }),
-          ),
-        );
-        continue;
-      }
+      if (
+        !isValidId(sessionId) ||
+        !isValidId(userId) ||
+        baseVersion === undefined ||
+        !Number.isInteger(slot) ||
+        !Number.isInteger(appId) ||
+        sessions.has(sessionId)
+      )
+        return undefined;
       const target: Target = { name: container.name, appId };
       const gameRunning = yield* gameAlive(target).pipe(
         Effect.orElseSucceed(() => false),
       );
+      const cloudBaseline = gameRunning ? yield* cloudCount(target) : undefined;
+      // Пока шли проверки, сессию мог подхватить параллельный StopSession.
+      if (sessions.has(sessionId)) return undefined;
       const session = yield* register({
         sessionId,
         userId,
@@ -816,14 +812,48 @@ const make = Effect.gen(function* () {
         name: container.name,
         created: true,
         gameRunning,
-        cloudBaseline: gameRunning ? yield* cloudCount(target) : undefined,
+        cloudBaseline,
       });
+      if (options.stop)
+        yield* Deferred.succeed(session.stopRequested, undefined);
       yield* Effect.logInfo("Adopted running session container", {
         sessionId,
         slot,
         gameRunning,
+        stopping: options.stop,
       });
       yield* Effect.forkIn(lifecycle(session, undefined), scope);
+      return session;
+    });
+
+  /**
+   * Контейнеры, пережившие перезапуск агента: живые подхватить, живые с
+   * испорченными метками (MVP-2, без cg.user) убрать. Остановленные не
+   * удаляются никогда: в их слоях — несохранённый профиль (`profile-unsaved`).
+   */
+  const adopt = Effect.gen(function* () {
+    const containers = yield* docker.listByLabel("cg.session");
+    for (const container of containers) {
+      if (!container.running) {
+        yield* Effect.logWarning(
+          "Keeping stopped session container (profile-unsaved)",
+          { name: container.name, sessionId: container.labels["cg.session"] },
+        );
+        continue;
+      }
+      if ((yield* adoptRunning(container, { stop: false })) !== undefined)
+        continue;
+      yield* Effect.logInfo("Removing leftover session container", {
+        name: container.name,
+      });
+      yield* docker.remove(container.name).pipe(
+        Effect.catchTag("DockerError", (error) =>
+          Effect.logWarning("Removing leftover container failed", {
+            name: container.name,
+            error: error.message,
+          }),
+        ),
+      );
     }
   });
 

@@ -1,19 +1,36 @@
 // Фиксация новой версии профиля у оркестратора (`agent.profileCommit`). RPC идёт
 // по текущему соединению OrchestratorLink: оно подключает себя (`attach`) на время
-// своей жизни, а `commit` ждёт соединения до COMMIT_TIMEOUT.
+// своей жизни, а `commit` ждёт соединения до COMMIT_TIMEOUT. Соединение
+// подключается раньше, чем оркестратор зарегистрирует агента (`agent.connect`),
+// поэтому `AgentNotConnected` — «не обработан», коммит повторяется.
 import type { ProfileCommit } from "@cg/rpc";
 import {
+  Cause,
   Context,
   Deferred,
   Duration,
   Effect,
   Layer,
+  Schedule,
   Schema,
   type Scope,
 } from "effect";
 
 /** Сколько ждать соединения и ответа оркестратора. */
 export const COMMIT_TIMEOUT = Duration.seconds(60);
+/** Пауза перед повтором коммита, отклонённого с AgentNotConnected. */
+export const COMMIT_RETRY = Duration.seconds(1);
+
+/**
+ * Оркестратор коммит не обрабатывал (агент ещё/уже не зарегистрирован) —
+ * повтор безопасен. Прочие ошибки (обрыв посреди вызова) не повторяются: коммит
+ * мог быть принят, и повтор с той же базой отклонили бы как устаревший.
+ */
+const notConnected = (cause: unknown) =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "_tag" in cause &&
+  cause._tag === "AgentNotConnected";
 
 /** Оркестратор недоступен, отказал или не ответил вовремя. Принят ли коммит — неизвестно. */
 export class ProfileCommitError extends Schema.TaggedError<ProfileCommitError>()(
@@ -63,7 +80,24 @@ const make = Effect.gen(function* () {
 
   const commit: ProfileCommitterShape["commit"] = (payload) =>
     Effect.suspend(() => Deferred.await(current)).pipe(
-      Effect.flatMap((call) => call(payload)),
+      Effect.flatMap((call) =>
+        call(payload).pipe(
+          // Соединение закрылось посреди вызова: RPC-клиент завершает запрос
+          // прерыванием. Это не прерывание вызывающего (сессия должна дойти до
+          // `Stopped`), а сбой коммита с неизвестным исходом — без повтора.
+          Effect.catchCause((cause) =>
+            Effect.fail(
+              Cause.hasInterruptsOnly(cause)
+                ? new ProfileCommitError({ message: "connection closed" })
+                : Cause.squash(cause),
+            ),
+          ),
+        ),
+      ),
+      Effect.retry({
+        while: notConnected,
+        schedule: Schedule.spaced(COMMIT_RETRY),
+      }),
       Effect.map(({ accepted }) => accepted),
       Effect.mapError(
         (cause) => new ProfileCommitError({ message: describe(cause) }),

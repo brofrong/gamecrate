@@ -92,6 +92,11 @@ export interface ExecResult {
   readonly stdout: string;
 }
 
+/** Для долгих шагов (упаковка и выгрузка профиля): свой таймаут запроса. */
+export interface RequestOptions {
+  readonly timeout?: Duration.Input;
+}
+
 export interface DockerClientShape {
   /** Создать контейнер, не запуская; id контейнера. */
   readonly create: (spec: ContainerSpec) => Effect.Effect<string, DockerError>;
@@ -110,10 +115,14 @@ export interface DockerClientShape {
   ) => Effect.Effect<void, DockerError>;
   /** `docker rm -f` (тома не трогает); нет такого — успех. */
   readonly remove: (name: string) => Effect.Effect<void, DockerError>;
-  /** `docker exec` без TTY: код выхода и stdout (stderr отбрасывается). */
+  /**
+   * `docker exec` без TTY: код выхода и stdout (stderr отбрасывается).
+   * `timeout` — сколько ждать завершения команды (по умолчанию 60 с).
+   */
   readonly exec: (
     name: string,
     cmd: ReadonlyArray<string>,
+    options?: RequestOptions,
   ) => Effect.Effect<ExecResult, DockerError>;
   /** `docker logs` целиком: stdout и stderr вперемешку, в порядке записи. */
   readonly logs: (name: string) => Effect.Effect<string, DockerError>;
@@ -150,6 +159,7 @@ export interface DockerClientShape {
   readonly getArchive: (
     name: string,
     path: string,
+    options?: RequestOptions,
   ) => Effect.Effect<Uint8Array, DockerError>;
 }
 
@@ -173,6 +183,9 @@ export const createBody = (spec: ContainerSpec) => {
         Source: mount.volume,
         Target: mount.target,
         ReadOnly: mount.readOnly ?? false,
+        // Наши тома никогда не наполняются содержимым образа: старый
+        // cg-home-* только читается, overlay-тома — это клиент Steam и библиотека.
+        VolumeOptions: { NoCopy: true },
       })),
       PortBindings: Object.fromEntries(
         ports.map(([key, port]) => [
@@ -279,7 +292,7 @@ export const make = (socketPath: string): DockerClientShape => {
       /** Тело-tar (`application/x-tar`) вместо JSON. */
       readonly tar?: Uint8Array;
       readonly ok?: ReadonlyArray<number>;
-      readonly timeout?: Duration.Duration;
+      readonly timeout?: Duration.Input | undefined;
     } = {},
   ) =>
     Effect.tryPromise({
@@ -424,7 +437,7 @@ export const make = (socketPath: string): DockerClientShape => {
 
     remove,
 
-    exec: (name, cmd) =>
+    exec: (name, cmd, options = {}) =>
       Effect.gen(function* () {
         const { Id } = yield* request(
           "exec",
@@ -436,6 +449,7 @@ export const make = (socketPath: string): DockerClientShape => {
         const { bytes } = yield* request("exec", "POST", `${execPath}/start`, {
           body: { Detach: false, Tty: false },
           ok: [200],
+          timeout: options.timeout,
         });
         const { ExitCode } = yield* request(
           "exec",
@@ -529,9 +543,10 @@ export const make = (socketPath: string): DockerClientShape => {
         ok: [200],
       }).pipe(Effect.asVoid),
 
-    getArchive: (name, path) =>
+    getArchive: (name, path, options = {}) =>
       request("getArchive", "GET", archivePath(name, path), {
         ok: [200],
+        timeout: options.timeout,
       }).pipe(Effect.map(({ bytes }) => bytes)),
   };
 };

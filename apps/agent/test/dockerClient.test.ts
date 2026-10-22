@@ -117,17 +117,21 @@ describe("DockerClient", () => {
         ShmSize: 2147483648,
         Binds: ["/lib/a.so:/usr/lib/b.so:ro"],
         Mounts: [
+          // NoCopy: Docker не копирует содержимое образа в пустой том (старый
+          // cg-home-* только читается, в overlay-тома образ не пишется).
           {
             Type: "volume",
             Source: "cg-s-s1-client",
             Target: "/home/ubuntu/.local/share/Steam",
             ReadOnly: false,
+            VolumeOptions: { NoCopy: true },
           },
           {
             Type: "volume",
             Source: "cg-home-u1",
             Target: "/home/ubuntu",
             ReadOnly: true,
+            VolumeOptions: { NoCopy: true },
           },
         ],
         PortBindings: { "59001/udp": [{ HostIp: "", HostPort: "59001" }] },
@@ -192,6 +196,34 @@ describe("DockerClient", () => {
       Cmd: ["pgrep", "-f", "x"],
     });
     expect(recorded[1]?.body).toEqual({ Detach: false, Tty: false });
+  });
+
+  it("exec and getArchive take a longer timeout for slow steps", async () => {
+    respond = (key) => {
+      if (key === "POST /v1.47/containers/c/exec")
+        return Response.json({ Id: "e2" }, { status: 201 });
+      if (key === "GET /v1.47/exec/e2/json")
+        return Response.json({ ExitCode: 0 });
+      return new Response(new Uint8Array(), { status: 200 });
+    };
+    const slow = (key: string) =>
+      key === "POST /v1.47/exec/e2/start" || key.startsWith("GET");
+    const base = respond;
+    respond = (key) =>
+      slow(key)
+        ? (Bun.sleep(150).then(() => base(key)) as unknown as Response)
+        : base(key);
+    const timedOut = await runError(
+      docker.exec("c", ["true"], { timeout: "20 millis" }),
+    );
+    expect(timedOut.message).toBe("timeout");
+    expect(
+      await run(docker.exec("c", ["true"], { timeout: "5 seconds" })),
+    ).toEqual({ exitCode: 0, stdout: "" });
+    const archive = await runError(
+      docker.getArchive("c", "/tmp/x", { timeout: "20 millis" }),
+    );
+    expect(archive.message).toBe("timeout");
   });
 
   it("exec on a stopped container fails with status 409", async () => {

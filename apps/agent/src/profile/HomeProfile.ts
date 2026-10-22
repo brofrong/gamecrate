@@ -2,7 +2,7 @@
 // восстановление в созданный, ещё не запущенный контейнер и сохранение при
 // остановке. Состав профиля — whitelist скрипта образа `cg-profile-pack`.
 import type { ProfileRef } from "@cg/rpc";
-import { Effect, Schema } from "effect";
+import { Duration, Effect, Schema } from "effect";
 import { AgentConfig } from "../config";
 import { DockerClient, type DockerError } from "../DockerClient";
 import { helperSpec, runHelper } from "../Helper";
@@ -15,6 +15,11 @@ export const HOME_DIR = "/home/ubuntu";
 export const PACK_OUTPUT = "/tmp/cg-profile.tar";
 export const PROFILE_PACK = "/usr/local/bin/cg-profile-pack";
 export const STEAM_SHUTDOWN = "/usr/local/bin/cg-steam-shutdown";
+/**
+ * Таймаут упаковки профиля и выгрузки архива из контейнера: большой дом
+ * (`.config`, сохранения Proton) не укладывается в обычные 60 с запроса.
+ */
+export const PACK_TIMEOUT = Duration.minutes(10);
 
 /** Старый (MVP-2) том дома: только читается, один раз — для импорта профиля. */
 export const legacyVolume = (userId: string) => `cg-home-${userId}`;
@@ -66,7 +71,9 @@ export const importLegacy = (options: {
           },
         ],
       }),
-      docker.getArchive(options.helperName, PACK_OUTPUT),
+      docker.getArchive(options.helperName, PACK_OUTPUT, {
+        timeout: PACK_TIMEOUT,
+      }),
     ).pipe(Effect.map(extractSingleFile));
   });
 
@@ -151,7 +158,7 @@ export const saveProfile = (options: {
     );
 
     const { exitCode } = yield* docker
-      .exec(options.container, [PROFILE_PACK])
+      .exec(options.container, [PROFILE_PACK], { timeout: PACK_TIMEOUT })
       .pipe(Effect.mapError(failed("pack")));
     if (exitCode !== 0)
       return yield* new ProfileError({
@@ -159,7 +166,7 @@ export const saveProfile = (options: {
         message: `cg-profile-pack exited with ${exitCode}`,
       });
     const tar = yield* docker
-      .getArchive(options.container, PACK_OUTPUT)
+      .getArchive(options.container, PACK_OUTPUT, { timeout: PACK_TIMEOUT })
       .pipe(Effect.map(extractSingleFile), Effect.mapError(failed("export")));
 
     const { objectKey, sizeBytes } = yield* store

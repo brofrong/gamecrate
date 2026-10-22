@@ -100,6 +100,36 @@ describe("Overlay", () => {
     expect(install.apps.upper).toBe("/x/install/j1/apps/upper");
   });
 
+  it("layers rejects ids and prefixes that could escape the scratch root", () => {
+    for (const id of ["../x", "", "a/b", ".", "..", "a b", "x".repeat(65)])
+      expect(() => sessionLayers(config(), id)).toThrow("invalid overlay id");
+    expect(() =>
+      layers(config(), {
+        root: scratch,
+        prefix: "cg/s",
+        id: "j1",
+        labels: {},
+      }),
+    ).toThrow("invalid overlay prefix");
+  });
+
+  it("cleanup refuses a hand-made layer set outside its root", async () => {
+    const docker = makeDocker();
+    const forged = { ...sessionLayers(config(), "s1"), dir: "/" };
+    const error = await Effect.runPromise(
+      Effect.flip(cleanup(forged)).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(DockerClient, docker.shape),
+            Layer.succeed(AgentConfig, config()),
+          ),
+        ),
+      ),
+    );
+    expect(error._tag).toBe("OverlayError");
+    expect(docker.calls).toEqual([]);
+  });
+
   it("createVolume body carries overlay options", () => {
     expect(
       volumeBody({

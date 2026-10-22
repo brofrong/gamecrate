@@ -10,6 +10,7 @@ import { Effect, Schema } from "effect";
 import { AgentConfig, type AgentConfigValues } from "./config";
 import { DockerClient, type DockerError } from "./DockerClient";
 import { helperSpec, runHelper } from "./Helper";
+import { isValidId } from "./ids";
 
 /** Не удалось подготовить или убрать слои. */
 export class OverlayError extends Schema.TaggedError<OverlayError>()(
@@ -45,7 +46,11 @@ export interface Overlays {
 export const STEAM_DIR = "/home/ubuntu/.local/share/Steam";
 export const STEAMAPPS_DIR = `${STEAM_DIR}/steamapps`;
 
-/** Слои `id` под `root` с томами `<prefix>-<id>-client|apps`. */
+/**
+ * Слои `id` под `root` с томами `<prefix>-<id>-client|apps`. `id` и `prefix` —
+ * по правилу `isValidId` (иначе исключение — ошибка вызывающего): из них
+ * строятся имена томов и каталог, который `cleanup` удаляет от root.
+ */
 export const layers = (
   config: AgentConfigValues,
   options: {
@@ -55,6 +60,12 @@ export const layers = (
     readonly labels: Readonly<Record<string, string>>;
   },
 ): Overlays => {
+  if (!isValidId(options.id))
+    throw new Error(`invalid overlay id: ${JSON.stringify(options.id)}`);
+  if (!isValidId(options.prefix))
+    throw new Error(
+      `invalid overlay prefix: ${JSON.stringify(options.prefix)}`,
+    );
   const dir = join(options.root, options.id);
   const layer = (name: "client" | "apps", lower: string): Layer => ({
     volume: `${options.prefix}-${options.id}-${name}`,
@@ -125,6 +136,16 @@ export const prepare = (overlays: Overlays) =>
  */
 export const cleanup = (overlays: Overlays) =>
   Effect.gen(function* () {
+    // `rm -rf` от root: только ровно `<root>/<id>` с допустимым id.
+    if (
+      !isValidId(overlays.id) ||
+      !isValidId(overlays.prefix) ||
+      overlays.dir !== join(overlays.root, overlays.id)
+    )
+      return yield* new OverlayError({
+        operation: "cleanup",
+        message: `refusing to clean ${JSON.stringify(overlays.dir)}`,
+      });
     const docker = yield* DockerClient;
     const config = yield* AgentConfig;
     for (const layer of [overlays.client, overlays.apps])

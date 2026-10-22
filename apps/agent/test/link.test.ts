@@ -47,6 +47,17 @@ const server = {
   /** Сколько следующих отчётов отклонить с AgentNotConnected. */
   rejectReports: 0,
   commits: [] as Array<ProfileCommit>,
+  /**
+   * Номер зарегистрированного соединения (0 — нет): как у AgentHub, коммит без
+   * регистрации — AgentNotConnected.
+   */
+  registered: 0,
+  /** Номер последнего `agent.connect`. */
+  generation: 0,
+  /** Задержка регистрации после прихода `agent.connect`, мс. */
+  registerDelayMs: 0,
+  /** Сколько коммитов отклонено с AgentNotConnected. */
+  commitRejections: 0,
 };
 
 const Handlers = AgentRpcs.toLayer(
@@ -58,7 +69,17 @@ const Handlers = AgentRpcs.toLayer(
             const queue = yield* Queue.unbounded<AgentCommand, Cause.Done>();
             server.connects.push(payload);
             server.streams.push(queue);
-            return Stream.fromQueue(queue);
+            const generation = ++server.generation;
+            yield* Effect.sleep(server.registerDelayMs);
+            server.registered = generation;
+            // Поток старого соединения может закончиться позже нового connect.
+            return Stream.fromQueue(queue).pipe(
+              Stream.ensuring(
+                Effect.sync(() => {
+                  if (server.registered === generation) server.registered = 0;
+                }),
+              ),
+            );
           }),
         ),
       "agent.report": (report) =>
@@ -71,9 +92,13 @@ const Handlers = AgentRpcs.toLayer(
           return Effect.void;
         }),
       "agent.profileCommit": (payload) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
+          if (server.registered === 0) {
+            server.commitRejections++;
+            return Effect.fail(new AgentNotConnected());
+          }
           server.commits.push(payload);
-          return { accepted: payload.baseVersion === 4 };
+          return Effect.succeed({ accepted: payload.baseVersion === 4 });
         }),
     }),
   ),
@@ -254,9 +279,31 @@ describe("OrchestratorLink", () => {
           profileSaved: false,
         });
 
-        // Поток команд завершился сам (вытеснен) — тоже переподключение.
+        // Поток команд завершился сам (вытеснен) — тоже переподключение. Коммит,
+        // начатый между соединениями, уходит по новому сокету раньше, чем
+        // оркестратор зарегистрировал агента (AgentNotConnected), — и повторяется.
+        server.registerDelayMs = 300;
+        server.commitRejections = 0;
         yield* Queue.end(server.streams[1]!);
+        yield* waitUntil(() => server.registered === 0);
+        // Клиент уже закрыл старое соединение (переподключение — не раньше 1 с).
+        yield* Effect.promise(() => Bun.sleep(200));
+        const during = yield* Effect.forkChild(
+          committer.commit({
+            userId: "u1",
+            baseVersion: 4,
+            objectKey: "profiles/u1/c.cgp",
+            sizeBytes: 12,
+          }),
+        );
         yield* waitUntil(() => server.connects.length === 3);
+        expect(yield* Fiber.join(during)).toBe(true);
+        expect(server.commitRejections).toBeGreaterThan(0);
+        expect(server.commits.map((c) => c.objectKey)).toEqual([
+          "profiles/u1/a.cgp",
+          "profiles/u1/b.cgp",
+          "profiles/u1/c.cgp",
+        ]);
       }).pipe(
         Effect.scoped,
         Effect.provide(ProfileCommitter.layer),

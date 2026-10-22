@@ -756,15 +756,14 @@ describe("SessionSupervisor", () => {
               profileSaved: false,
             })),
           );
-          // Удаляется только запущенный контейнер с нашей меткой cg.session=<id>
-          // (вместе со слоями); остановленный хранит несохранённый профиль.
+          // Наш контейнер не удаляется никогда: дом в его слоях. Запущенный без
+          // меток профиля (сохранить нечем) только останавливается, остановленный
+          // не трогается.
           expect(callsFrom(h.fake, "inspect cg-session-nope")).toEqual([
             "inspect cg-session-nope",
             "inspect cg-session-foreign",
             "inspect cg-session-ours",
-            "remove cg-session-ours",
-            "removeVolume cg-s-ours-client",
-            "removeVolume cg-s-ours-apps",
+            "stop cg-session-ours 15",
             "inspect cg-session-kept",
           ]);
         }),
@@ -784,6 +783,58 @@ describe("SessionSupervisor", () => {
             name: "cg-session-kept",
             labels: { "cg.session": "kept" },
             running: false,
+          },
+        };
+      },
+    ));
+
+  it("stop of an untracked running session container saves its profile first", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Например, docker stop не удался при прошлой остановке: контейнер жив,
+          // но агент его уже не ведёт.
+          yield* h.supervisor.handle({
+            _tag: "StopSession",
+            sessionId: "lost",
+          });
+          yield* h.tick("0 seconds");
+          expect(
+            callsFrom(
+              h.fake,
+              "exec cg-session-lost /usr/local/bin/cg-steam-shutdown",
+            ),
+          ).toEqual([
+            "exec cg-session-lost /usr/local/bin/cg-steam-shutdown",
+            "exec cg-session-lost /usr/local/bin/cg-profile-pack",
+            "getArchive cg-session-lost /tmp/cg-profile.tar",
+            "store.put ul",
+            "commit profiles/ul/new.cgp",
+            ...removedWithLayers("lost").slice(0, 4),
+          ]);
+          expect(h.fake.state.commits[0]?.baseVersion).toBe(5);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "lost",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.inspected = {
+          "cg-session-lost": {
+            name: "cg-session-lost",
+            labels: {
+              "cg.session": "lost",
+              "cg.slot": "0",
+              "cg.app": "1794680",
+              "cg.user": "ul",
+              "cg.base-version": "5",
+            },
+            running: true,
           },
         };
       },
