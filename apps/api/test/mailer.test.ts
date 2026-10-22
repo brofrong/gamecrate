@@ -108,6 +108,66 @@ describe("makeMailer", () => {
     expect((result.failure as MailError).reason).toContain("ECONNREFUSED");
   });
 
+  it("a throwing transport factory becomes MailError, not an unhandled throw", async () => {
+    const mailer = makeMailer({
+      smtpUrl: "smtps://u:p@mail.example:465",
+      from: "GameCrate <no-reply@example.com>",
+      createTransport: () => {
+        throw new Error("malformed smtp url");
+      },
+    });
+
+    const result = await Effect.runPromise(
+      mailer
+        .send({
+          to: "ivan@example.com",
+          subject: "Код для входа в GameCrate",
+          text: "123456",
+          html: "<p>123456</p>",
+        })
+        .pipe(Effect.result),
+    );
+
+    expect(result._tag).toBe("Failure");
+    if (result._tag !== "Failure") return;
+    expect(result.failure).toBeInstanceOf(MailError);
+    expect((result.failure as MailError).reason).toContain(
+      "malformed smtp url",
+    );
+  });
+
+  it("two sends build the transport once and reuse it", async () => {
+    let factoryCalls = 0;
+    let sendMailCalls = 0;
+    const fakeTransport = {
+      sendMail: () => {
+        sendMailCalls += 1;
+        return Promise.resolve();
+      },
+    } as unknown as ReturnType<typeof nodemailer.createTransport>;
+
+    const mailer = makeMailer({
+      smtpUrl: "smtps://u:p@mail.example:465",
+      from: "GameCrate <no-reply@example.com>",
+      createTransport: () => {
+        factoryCalls += 1;
+        return fakeTransport;
+      },
+    });
+
+    const mail = {
+      to: "ivan@example.com",
+      subject: "Код для входа в GameCrate",
+      text: "123456",
+      html: "<p>123456</p>",
+    };
+    await Effect.runPromise(mailer.send(mail));
+    await Effect.runPromise(mailer.send(mail));
+
+    expect(factoryCalls).toBe(1);
+    expect(sendMailCalls).toBe(2);
+  });
+
   it("log transport is rejected outside localhost", () => {
     expect(isLogTransportAllowed("log://", "https://game.brofrong.ru")).toBe(
       false,

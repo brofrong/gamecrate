@@ -16,6 +16,7 @@ import {
 import type { BetterAuthOptions } from "better-auth/minimal";
 import type { drizzle } from "drizzle-orm/bun-sql";
 import { eq } from "drizzle-orm";
+import { Effect } from "effect";
 import { pocketIdRoleState } from "./auth";
 
 /** Drizzle-инстанс из `makeAuth` (`drizzle-orm/bun-sql`, без привязки к схеме). */
@@ -46,6 +47,29 @@ const unlinkProviderIdState = defineRequestState<string | null>(() => null);
  * при привязке/входе (`PROVIDER_ID` в его исходниках) — не путать с id плагина
  * `"steam-openid"`, под которым он зарегистрирован в `plugins`. */
 const STEAM_PROVIDER_ID = "steam";
+
+/**
+ * После-хуки пишут в БД уже после того, как Better Auth закоммитил основную
+ * мутацию (unlink/link) — провал этой записи не должен превращать уже
+ * успешный ответ в ошибку (пользователь увидит 200, хотя роль/steamId не
+ * обновились), но и не должен проходить незамеченным. Лог — тем же стилем,
+ * что `librarySyncHooks` в `auth.ts` (`Effect.runFork(Effect.logError(...))`),
+ * без секретов: только userId и providerId.
+ */
+const runAfterHookWrite = async (
+  message: string,
+  userId: string,
+  providerId: string,
+  write: () => Promise<unknown>,
+): Promise<void> => {
+  try {
+    await write();
+  } catch (cause) {
+    Effect.runFork(
+      Effect.logError(message, { userId, providerId, cause: String(cause) }),
+    );
+  }
+};
 
 /**
  * `/steam/callback` и `/callback/:id` всегда завершаются редиректом — успех и
@@ -128,15 +152,27 @@ export const authHooks = (deps: {
       const userId = session?.user.id;
       if (!userId) return;
       if (providerId === "pocket-id") {
-        await deps.db
-          .update(user)
-          .set({ role: "player" })
-          .where(eq(user.id, userId));
+        await runAfterHookWrite(
+          "Failed to reset role after pocket-id unlink",
+          userId,
+          providerId,
+          () =>
+            deps.db
+              .update(user)
+              .set({ role: "player" })
+              .where(eq(user.id, userId)),
+        );
       } else if (providerId === STEAM_PROVIDER_ID) {
-        await deps.db
-          .update(user)
-          .set({ steamId: null })
-          .where(eq(user.id, userId));
+        await runAfterHookWrite(
+          "Failed to reset steamId after steam unlink",
+          userId,
+          providerId,
+          () =>
+            deps.db
+              .update(user)
+              .set({ steamId: null })
+              .where(eq(user.id, userId)),
+        );
       }
       return;
     }
@@ -162,10 +198,16 @@ export const authHooks = (deps: {
         ? await pocketIdRoleState.get()
         : null;
       if (role !== null) {
-        await deps.db
-          .update(user)
-          .set({ role })
-          .where(eq(user.id, session.user.id));
+        await runAfterHookWrite(
+          "Failed to set role after pocket-id link",
+          session.user.id,
+          "pocket-id",
+          () =>
+            deps.db
+              .update(user)
+              .set({ role })
+              .where(eq(user.id, session.user.id)),
+        );
       }
       return;
     }

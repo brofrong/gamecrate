@@ -12,6 +12,7 @@ const MESSAGES: Record<string, string> = {
   TELEGRAM_EXPIRED: "Telegram не подтвердил вход",
   TELEGRAM_INVALID_BODY: "Telegram не подтвердил вход",
   TELEGRAM_ALREADY_LINKED: "Этот Telegram уже привязан к другому аккаунту",
+  TELEGRAM_SESSION_REQUIRED: "Чтобы привязать Telegram, сначала войди",
   MAIL_FAILED: "Не удалось отправить письмо, попробуй позже",
 };
 

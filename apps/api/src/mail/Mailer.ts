@@ -64,13 +64,38 @@ export class MailerConfigError extends Schema.TaggedError<MailerConfigError>()(
 /**
  * Собрать сервис `Mailer`: `smtpUrl === LOG_TRANSPORT` — пишет письмо в лог
  * (`Effect.logInfo`) и никогда не падает; иначе отправляет через nodemailer
- * (готовый `transport` — для тестов, иначе строится из `smtpUrl`).
+ * (готовый `transport` — для тестов, иначе строится из `smtpUrl` при первой
+ * отправке и переиспользуется дальше — см. `getTransport`).
  */
 export const makeMailer = (options: {
   readonly smtpUrl: string;
   readonly from: string;
   readonly transport?: Transporter;
+  /** Фабрика транспорта для тестов (по умолчанию `nodemailer.createTransport`). */
+  readonly createTransport?: (smtpUrl: string) => Transporter;
 }): Mailer["Service"] => {
+  let transport: Transporter | undefined = options.transport;
+  const createTransport = options.createTransport ?? nodemailer.createTransport;
+
+  /**
+   * Транспорт строится лениво при первой отправке и кешируется для
+   * последующих — `nodemailer.createTransport` может бросить синхронно
+   * (например, при неразборчивом `smtpUrl`), поэтому вызов внутри
+   * `Effect.try`, а не напрямую в `send`: иначе отказ ускользал бы из-под
+   * `Effect.tryPromise` необработанным throw.
+   */
+  const getTransport = (): Effect.Effect<Transporter, MailError> => {
+    if (transport) return Effect.succeed(transport);
+    return Effect.try({
+      try: () => {
+        const created = createTransport(options.smtpUrl);
+        transport = created;
+        return created;
+      },
+      catch: (cause) => new MailError({ reason: String(cause) }),
+    });
+  };
+
   const send = (mail: Mail): Effect.Effect<void, MailError> => {
     if (options.smtpUrl === LOG_TRANSPORT)
       return Effect.logInfo("mail", {
@@ -79,19 +104,22 @@ export const makeMailer = (options: {
         text: mail.text,
       });
 
-    const transport =
-      options.transport ?? nodemailer.createTransport(options.smtpUrl);
-    return Effect.tryPromise({
-      try: () =>
-        transport.sendMail({
-          from: options.from,
-          to: mail.to,
-          subject: mail.subject,
-          text: mail.text,
-          html: mail.html,
+    return getTransport().pipe(
+      Effect.flatMap((t) =>
+        Effect.tryPromise({
+          try: () =>
+            t.sendMail({
+              from: options.from,
+              to: mail.to,
+              subject: mail.subject,
+              text: mail.text,
+              html: mail.html,
+            }),
+          catch: (cause) => new MailError({ reason: String(cause) }),
         }),
-      catch: (cause) => new MailError({ reason: String(cause) }),
-    }).pipe(Effect.asVoid);
+      ),
+      Effect.asVoid,
+    );
   };
 
   return Mailer.of({ send });
