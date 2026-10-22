@@ -155,8 +155,11 @@ describe("email otp sign-in", () => {
   // ответа эндпоинта: проверяем реальное поведение (200, код не выдаётся),
   // а не придуманное.
   it("mailer failure does not fail the request but no code is delivered", async () => {
+    const email = "fails@example.com";
+    const attempts: Array<Mail> = [];
     const failingAuth = makeAuth(baseConfig(), {
-      sendMail: async () => {
+      sendMail: async (mail) => {
+        attempts.push(mail);
         throw new Error("smtp down");
       },
     });
@@ -164,11 +167,24 @@ describe("email otp sign-in", () => {
       new Request(`${origin}/api/auth/email-otp/send-verification-otp`, {
         method: "POST",
         headers: { origin, "content-type": "application/json" },
-        body: JSON.stringify({ email: "fails@example.com", type: "sign-in" }),
+        body: JSON.stringify({ email, type: "sign-in" }),
       }),
     );
     // better-auth отправляет письмо в фоне и не роняет запрос из-за отказа почты.
     expect(response.status).toBe(200);
+    // Попытка отправить письмо была (sendMail вызван), но она провалилась — код
+    // пользователю не попал, значит валидного кода для входа не существует.
+    expect(attempts.length).toBe(1);
+
+    const signIn = await failingAuth.handler(
+      new Request(`${origin}/api/auth/sign-in/email-otp`, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ email, otp: "000000" }),
+      }),
+    );
+    expect([400, 401]).toContain(signIn.status);
+    expect(signIn.headers.getSetCookie()).toEqual([]);
   });
 
   it("linking options are enabled", () => {
