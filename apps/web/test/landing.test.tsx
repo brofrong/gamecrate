@@ -1,14 +1,13 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { CurrentUserShape } from "@cg/rpc";
 import { Unauthorized } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import { RouterProvider } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
+import { testRouter } from "./router";
 
-const signIn = mock(async () => ({ error: undefined }));
 mock.module("../src/auth", () => ({
-  signInWithSteam: signIn,
   signOut: async () => {},
-  signInWithPocketId: async () => {},
   // Экспорты ниже не используются в этом файле, но `mock.module` подменяет
   // «../src/auth» глобально на весь прогон `bun test` — без них падает
   // test/login.test.tsx, которому они нужны (см. его комментарий к mock.module).
@@ -19,7 +18,6 @@ mock.module("../src/auth", () => ({
 }));
 
 const { LandingPage } = await import("../src/components/landing/LandingPage");
-const { steamLoginFailed } = await import("../src/lib/useSteamLogin");
 const { indexView } = await import("../src/routes/index");
 
 const user: CurrentUserShape = {
@@ -33,11 +31,10 @@ const user: CurrentUserShape = {
 };
 
 describe("landing", () => {
-  it("landing renders headline, nav anchors and footer", () => {
-    render(<LandingPage error={false} />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
-      "Любая игра. Где угодно. Прямо сейчас.",
-    );
+  it("landing renders headline, nav anchors and footer", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    const heading = await screen.findByRole("heading", { level: 1 });
+    expect(heading.textContent).toBe("Любая игра. Где угодно. Прямо сейчас.");
     for (const [href, name] of [
       ["#tech", "Технология"],
       ["#how", "Как работает"],
@@ -52,18 +49,21 @@ describe("landing", () => {
     expect(screen.getByText(/торговой маркой Valve/)).toBeTruthy();
   });
 
-  it("play button starts steam login and shows pending", async () => {
-    render(<LandingPage error={false} />);
-    const play = screen.getAllByRole("button", { name: "Играть" })[0];
-    if (!play) throw new Error("no play button");
-    fireEvent.click(play);
-    expect(signIn).toHaveBeenCalledTimes(1);
-    expect((play as HTMLButtonElement).disabled).toBe(true);
+  it("play buttons link to /login", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    const links = await screen.findAllByRole("link", {
+      name: /Играть|Войти|Выбрать/,
+    });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe("/login");
+    }
   });
 
-  it("landing shows steam error from query", () => {
-    render(<LandingPage error />);
-    expect(screen.getAllByText(steamLoginFailed).length).toBeGreaterThan(0);
+  it("landing never calls steam a login method", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    await screen.findByRole("heading", { level: 1 });
+    expect(document.body.textContent).not.toContain("Войти через Steam");
   });
 
   it("index redirects signed-in user to library", () => {
@@ -78,15 +78,17 @@ describe("landing", () => {
     expect(indexView(AsyncResult.initial(), false)).toBe("loading");
   });
 
-  it("landing has every section anchor", () => {
-    render(<LandingPage error={false} />);
+  it("landing has every section anchor", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    await screen.findByRole("heading", { level: 1 });
     for (const id of ["tech", "how", "plans", "ach", "faq"]) {
       expect(document.getElementById(id)).toBeTruthy();
     }
   });
 
-  it("landing says «облако», never «контейнер»", () => {
-    render(<LandingPage error={false} />);
+  it("landing says «облако», never «контейнер»", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    await screen.findByRole("heading", { level: 1 });
     expect(document.body.textContent).not.toMatch(/контейнер/i);
     expect(document.body.textContent).toMatch(/облак/i);
   });

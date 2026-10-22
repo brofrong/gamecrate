@@ -44,7 +44,7 @@ export const signInWithEmailCode = async (
   otp: string,
 ): Promise<{ error: string | null }> => {
   const { error } = await authClient.signIn.emailOtp({ email, otp });
-  return { error: error ? error.code ?? "UNKNOWN" : null };
+  return { error: error ? (error.code ?? "UNKNOWN") : null };
 };
 
 /** Привязка соцпровайдера к уже вошедшему пользователю из `/profile`. */
@@ -62,7 +62,7 @@ export const unlinkProvider = async (
 ): Promise<{ error: string | null }> => {
   const body = { providerId, accountId };
   const { error } = await authClient.unlinkAccount(body);
-  return { error: error ? error.code ?? "UNKNOWN" : null };
+  return { error: error ? (error.code ?? "UNKNOWN") : null };
 };
 
 /** Привязка Steam к уже вошедшему пользователю (вход через Steam отключён — только привязка). */
@@ -115,20 +115,6 @@ export const signInWithTelegram = async (
     return { error: "NETWORK" };
   }
 };
-
-/**
- * Вход через Steam: ответ сервера уводит браузер на steamcommunity.com.
- * @deprecated — удаляется в Task 10
- */
-export const signInWithSteam = () =>
-  authClient.steam.login({ callbackURL: "/library", errorCallbackURL: "/" });
-
-/**
- * Вход админа через Pocket ID (OIDC-провайдер `pocket-id` плагина genericOAuth).
- * @deprecated — удаляется в Task 10, используй `signInWithProvider("pocket-id", "/admin")`
- */
-export const signInWithPocketId = () =>
-  authClient.signIn.social({ provider: "pocket-id", callbackURL: "/admin" });
 
 /**
  * Выход. Сессия RPC-сокета привязана к cookie апгрейда, поэтому после выхода

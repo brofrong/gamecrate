@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Logo } from "@/components/brand/Logo";
 import { useScrollProgress } from "@/components/brand/useScrollProgress";
 import { cn } from "@/lib/utils";
-import { SteamButton } from "./SteamButton";
+import { PlayButton } from "./PlayButton";
 
 export const navLinks = [
   ["#tech", "Технология"],
@@ -48,7 +48,7 @@ export function LandingNav() {
             </a>
           ))}
         </div>
-        <SteamButton variant="ghost" />
+        <PlayButton variant="ghost" />
       </div>
     </nav>
   );

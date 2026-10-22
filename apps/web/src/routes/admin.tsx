@@ -8,7 +8,7 @@ import { AsyncResult } from "effect/reactivity";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import type * as React from "react";
 import { toast } from "sonner";
-import { signInWithPocketId } from "@/auth";
+import { signInWithProvider } from "@/auth";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { AppHeader } from "@/components/AppHeader";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
@@ -34,7 +34,10 @@ import { rootRoute } from "./__root";
 
 function PocketIdButton({ variant }: { variant?: "default" | "outline" }) {
   return (
-    <Button variant={variant} onClick={() => void signInWithPocketId()}>
+    <Button
+      variant={variant}
+      onClick={() => void signInWithProvider("pocket-id", "/admin")}
+    >
       Войти через Pocket ID
     </Button>
   );

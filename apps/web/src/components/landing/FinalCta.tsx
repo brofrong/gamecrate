@@ -1,5 +1,5 @@
 // Финальный призыв перед футером.
-import { SteamButton } from "./SteamButton";
+import { PlayButton } from "./PlayButton";
 
 export function FinalCta() {
   return (
@@ -10,9 +10,9 @@ export function FinalCta() {
           Твои игры <span className="text-gradient">ждут</span>.
         </h2>
         <p className="mb-[30px] text-lg text-brand-muted">
-          Войди через Steam и выбери, во что сегодня.
+          Войди и выбери, во что сегодня.
         </p>
-        <SteamButton variant="primary" />
+        <PlayButton variant="primary" />
       </div>
     </section>
   );

@@ -1,8 +1,8 @@
 // Тарифы: три карточки по часам игры. Цифры — заглушки, пока PLANS_ARE_PLACEHOLDERS.
 import { cn } from "@/lib/utils";
 import { PLANS_ARE_PLACEHOLDERS, plans } from "./data";
+import { PlayButton } from "./PlayButton";
 import { SectionHead } from "./SectionHead";
-import { SteamButton } from "./SteamButton";
 
 /** «1 490 ₽» — разряды через тонкий неразрывный пробел (Intl в ru-RU не делит 4 цифры). */
 export const formatRub = (n: number) =>
@@ -88,12 +88,12 @@ export function Plans() {
                   </li>
                 ))}
               </ul>
-              <SteamButton
+              <PlayButton
                 variant={plan.popular ? "primary" : "ghost"}
                 className="w-full justify-center"
               >
                 Выбрать
-              </SteamButton>
+              </PlayButton>
             </div>
           ))}
         </div>

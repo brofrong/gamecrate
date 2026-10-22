@@ -2,12 +2,11 @@
 // шесть плюсов. Текстовый слой не перехватывает мышь (иначе ряд под курсором не
 // определится), кнопка — перехватывает.
 import { ArrowRight } from "lucide-react";
-import { steamLoginFailed } from "@/lib/useSteamLogin";
 import { CoverWall } from "./CoverWall";
 import { perks, platforms } from "./data";
-import { SteamButton } from "./SteamButton";
+import { PlayButton } from "./PlayButton";
 
-export function Hero({ error }: { error: boolean }) {
+export function Hero() {
   return (
     <header
       id="top"
@@ -35,13 +34,10 @@ export function Hero({ error }: { error: boolean }) {
           Твоя библиотека Steam на облачной видеокарте. В браузере, на ПК или с
           телефона — без установки и без мощного железа.
         </p>
-        {error && (
-          <p className="mb-4 text-sm text-red-400">{steamLoginFailed}</p>
-        )}
-        <SteamButton variant="primary" className="pointer-events-auto">
+        <PlayButton variant="primary" className="pointer-events-auto">
           Играть
           <ArrowRight className="size-[18px]" strokeWidth={2.4} />
-        </SteamButton>
+        </PlayButton>
         <div className="mt-14 grid max-w-[980px] grid-cols-2 gap-2.5 min-[600px]:grid-cols-3 min-[1000px]:grid-cols-6">
           {perks.map(({ icon: Icon, title, text }) => (
             <div
