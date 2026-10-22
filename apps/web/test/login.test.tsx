@@ -117,6 +117,46 @@ describe("login panel", () => {
     ).toBe(true);
   });
 
+  it("resend unlocks after 30s and resends to the same address", async () => {
+    render(
+      <LoginPanel
+        providers={providers}
+        next="/library"
+        onLevel={noop}
+        onTint={noop}
+        onLit={noop}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("почта"), {
+      target: { value: "ivan@gmail.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Получить код" }));
+    await screen.findByText(/Код отправлен на/);
+
+    const resendButton = () =>
+      screen.getByRole("button", {
+        name: "Отправить ещё раз",
+      }) as HTMLButtonElement;
+    expect(resendButton().disabled).toBe(true);
+    expect(screen.getByText(/через \d+с/)).toBeTruthy();
+
+    // Таймер «Отправить ещё раз» тикает по реальному `setInterval`, опрашивая
+    // `Date.now()` — сдвигаем часы на 31с вперёд и ждём ближайший тик.
+    const nowSpy = spyOn(Date, "now").mockReturnValue(Date.now() + 31_000);
+    try {
+      await waitFor(() => expect(resendButton().disabled).toBe(false), {
+        timeout: 3000,
+      });
+      expect(screen.queryByText(/через \d+с/)).toBeNull();
+
+      fireEvent.click(resendButton());
+      await waitFor(() => expect(sendEmailCode).toHaveBeenCalledTimes(2));
+      expect(sendEmailCode).toHaveBeenNthCalledWith(2, "ivan@gmail.com");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it("six digits auto-submit", async () => {
     render(
       <LoginPanel

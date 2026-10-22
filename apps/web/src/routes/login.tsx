@@ -1,7 +1,7 @@
 // `/login`: сцена «сборка куба» слева, панель входа справа; вошедшего пользователя
 // уводит на `next`/`/library` полной навигацией (сокет RPC привязан к cookie сессии).
 import { useAtomValue } from "@effect/atom-react";
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -44,13 +44,13 @@ function LoginPage() {
   return (
     <main className="grid min-h-dvh bg-brand-bg font-sans text-brand-text lg:grid-cols-[55fr_45fr]">
       <div className="relative order-2 h-[240px] lg:order-1 lg:h-auto">
-        <a
-          href="/"
+        <Link
+          to="/"
           aria-label="GameCrate"
           className="absolute top-7 left-7 z-10"
         >
           <Logo height={36} />
-        </a>
+        </Link>
         <CubeScene level={level} tint={tint} lit={lit} />
       </div>
       <div className="order-1 flex items-center justify-center p-6 lg:order-2">

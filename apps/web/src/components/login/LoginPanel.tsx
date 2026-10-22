@@ -9,6 +9,7 @@ import {
   signInWithProvider,
   signInWithTelegram,
 } from "@/auth";
+import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
 import { telegramAuth } from "@/lib/telegramWidget";
@@ -159,9 +160,9 @@ export function LoginPanel({
 
   return (
     <div className="grid w-full max-w-sm gap-5">
-      <h3 className="text-2xl font-semibold tracking-[-0.02em] text-brand-text">
+      <h1 className="text-2xl font-semibold tracking-[-0.02em] text-brand-text">
         Войти в GameCrate
-      </h3>
+      </h1>
 
       {step.kind === "email" ? (
         <>
@@ -186,6 +187,7 @@ export function LoginPanel({
             <input
               type="email"
               placeholder="почта"
+              aria-label="Почта"
               value={step.email}
               disabled={pending}
               onChange={(e) => {
@@ -195,26 +197,27 @@ export function LoginPanel({
               className="h-11 rounded-xl border border-white/12 bg-white/6 px-4 text-sm text-brand-text outline-none placeholder:text-brand-muted focus-visible:border-brand-cyan"
             />
             {error && <p className="text-sm text-red-400">{error}</p>}
-            <button
+            <Button
               type="submit"
               disabled={pending || step.email.trim().length === 0}
-              className="h-11 rounded-xl bg-brand-gradient text-sm font-semibold text-white disabled:opacity-50"
+              className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
             >
               Получить код
-            </button>
+            </Button>
           </form>
         </>
       ) : (
         <div className="grid gap-2.5">
           <p className="text-sm text-brand-muted">
             Код отправлен на {step.email}{" "}
-            <button
+            <Button
               type="button"
+              variant="link"
               onClick={changeEmail}
-              className="text-brand-cyan underline"
+              className="h-auto p-0 text-brand-cyan"
             >
               Изменить
-            </button>
+            </Button>
           </p>
           <input
             type="text"
@@ -228,26 +231,27 @@ export function LoginPanel({
             className="h-11 rounded-xl border border-white/12 bg-white/6 px-4 text-center font-mono text-lg tracking-[0.3em] text-brand-text outline-none focus-visible:border-brand-cyan"
           />
           {error && <p className="text-sm text-red-400">{error}</p>}
-          <button
+          <Button
             type="button"
             disabled={pending || step.otp.length !== 6}
             onClick={() => void submitCode(step.email, step.otp)}
-            className="h-11 rounded-xl bg-brand-gradient text-sm font-semibold text-white disabled:opacity-50"
+            className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
           >
             Войти
-          </button>
+          </Button>
           <p className="text-xs text-brand-muted">
             Письмо не пришло? Проверь спам или отправь ещё раз
           </p>
           <div className="flex items-center gap-2 text-xs">
-            <button
+            <Button
               type="button"
+              variant="link"
               disabled={!canResend || pending}
               onClick={() => void requestCode(step.email)}
-              className="text-brand-cyan underline disabled:text-brand-dim disabled:no-underline"
+              className="h-auto p-0 text-brand-cyan disabled:text-brand-dim disabled:no-underline"
             >
               Отправить ещё раз
-            </button>
+            </Button>
             {!canResend && (
               <span className="text-brand-dim">через {remaining}с</span>
             )}
@@ -259,13 +263,14 @@ export function LoginPanel({
         Входя, ты создаёшь аккаунт GameCrate, если его ещё нет
       </p>
       {providers.pocketId && (
-        <button
+        <Button
           type="button"
+          variant="link"
           onClick={() => void signInWithProvider("pocket-id", "/admin")}
-          className="justify-self-start text-xs text-brand-muted underline"
+          className="h-auto justify-self-start p-0 text-xs text-brand-muted"
         >
           Вход для команды
-        </button>
+        </Button>
       )}
     </div>
   );

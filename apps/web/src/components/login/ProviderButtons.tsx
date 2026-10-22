@@ -1,5 +1,6 @@
 // Кнопки способов входа: показываются только провайдеры, включённые на сервере;
 // наведение подсвечивает кубики цветом сервиса, клик запускает вход этим провайдером.
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AuthProviders } from "@cg/rpc";
 
@@ -52,7 +53,7 @@ export function ProviderButtons({
       {active.map((p) => {
         const meta = META[p];
         return (
-          <button
+          <Button
             key={p}
             type="button"
             disabled={pending}
@@ -60,7 +61,7 @@ export function ProviderButtons({
             onMouseLeave={() => onHover(null)}
             onClick={() => onProvider(p)}
             className={cn(
-              "flex h-11 items-center gap-3 rounded-xl px-4 text-sm font-semibold transition-colors disabled:opacity-50",
+              "h-11 w-full justify-start gap-3 rounded-xl px-4 text-sm font-semibold",
               meta.className,
             )}
           >
@@ -71,7 +72,7 @@ export function ProviderButtons({
               {meta.icon}
             </span>
             {meta.label}
-          </button>
+          </Button>
         );
       })}
     </div>
