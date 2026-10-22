@@ -74,6 +74,11 @@ const appDeps = (
       pocketIdAdminGroup: "cloud_gaming_admins",
       allowedOrigins: ["http://localhost:5173"],
       webDistDir,
+      smtpUrl: Redacted.make("log://"),
+      mailFrom: "GameCrate <test@example.com>",
+      google: Option.none(),
+      yandex: Option.none(),
+      telegram: Option.none(),
     }),
   );
 

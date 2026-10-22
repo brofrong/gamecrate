@@ -4,7 +4,7 @@ import { migrationsFolder, session, user } from "@cg/db";
 import { SQL } from "bun";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
-import { Redacted } from "effect";
+import { Option, Redacted } from "effect";
 import { type Auth, makeAuth } from "../src/auth/auth";
 
 const secret = "test-secret-test-secret-test-secret-0123";
@@ -72,6 +72,11 @@ beforeAll(async () => {
     pocketIdAdminGroup: "cloud_gaming_admins",
     allowedOrigins: [],
     webDistDir: "unused",
+    smtpUrl: Redacted.make("log://"),
+    mailFrom: "GameCrate <test@example.com>",
+    google: Option.none(),
+    yandex: Option.none(),
+    telegram: Option.none(),
   });
 });
 

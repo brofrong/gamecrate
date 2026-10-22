@@ -129,6 +129,11 @@ const appDeps = (webDistDir: string) =>
         pocketIdAdminGroup: "cloud_gaming_admins",
         allowedOrigins: ["http://localhost:5173"],
         webDistDir,
+        smtpUrl: Redacted.make("log://"),
+        mailFrom: "GameCrate <test@example.com>",
+        google: Option.none(),
+        yandex: Option.none(),
+        telegram: Option.none(),
       }),
     ),
   );
@@ -288,6 +293,8 @@ describe("config ALLOWED_ORIGINS", () => {
     POCKET_ID_CLIENT_SECRET: "unused",
     POCKET_ID_ADMIN_GROUP: "admins",
     WEB_DIST_DIR: "unused",
+    SMTP_URL: "log://",
+    MAIL_FROM: "GameCrate <test@example.com>",
   };
 
   it("defaults to no extra origins", async () => {
