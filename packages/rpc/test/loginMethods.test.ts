@@ -12,20 +12,18 @@ describe("isSyntheticEmail", () => {
 describe("canUnlink", () => {
   it("unlinking google with only steam left is refused", () =>
     expect(
-      canUnlink(
-        [{ providerId: "google" }, { providerId: "steam-openid" }],
-        "google",
-        { email: "tg_1@telegram.invalid", emailVerified: false },
-      ),
+      canUnlink([{ providerId: "google" }, { providerId: "steam" }], "google", {
+        email: "tg_1@telegram.invalid",
+        emailVerified: false,
+      }),
     ).toBe(false));
 
   it("unlinking steam is always allowed", () =>
     expect(
-      canUnlink(
-        [{ providerId: "google" }, { providerId: "steam-openid" }],
-        "steam-openid",
-        { email: "tg_1@telegram.invalid", emailVerified: false },
-      ),
+      canUnlink([{ providerId: "google" }, { providerId: "steam" }], "steam", {
+        email: "tg_1@telegram.invalid",
+        emailVerified: false,
+      }),
     ).toBe(true));
 
   it("verified real email counts as a login method", () =>

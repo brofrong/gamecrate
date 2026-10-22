@@ -4,7 +4,7 @@
 // — правило последнего способа входа при `/unlink-account`;
 // — роль Pocket ID пишется при привязке (`/callback/:id`) и сбрасывается на
 //   `player` при отвязке; `steam_id` сбрасывается при отвязке Steam.
-import { hasRequestState } from "@better-auth/core/context";
+import { defineRequestState, hasRequestState } from "@better-auth/core/context";
 import { account, user } from "@cg/db";
 import { canUnlink } from "@cg/rpc";
 import {
@@ -22,16 +22,47 @@ import { pocketIdRoleState } from "./auth";
 type AuthDb = ReturnType<typeof drizzle>;
 
 /**
- * `/unlink-account` — эндпоинт Better Auth валидирует только `accountId`
- * (аккаунт для удаления), но наши хуки дополнительно читают `providerId` из
- * исходного (не прошедшего чужую zod-схему) тела запроса: сами хуки получают
- * `ctx.body` до валидации конкретного эндпоинта, поэтому лишнее для схемы
- * поле всё равно доступно. Фронтенд обязан передавать оба поля.
+ * `/unlink-account` — эндпоинт Better Auth валидирует (и резолвит удаляемый
+ * ряд) только по `accountId` — это Better Auth ID ряда `account`, а не внешний
+ * `accountId` провайдера (см. `dist/api/routes/account.mjs`: `accounts.find(a
+ * => a.id === accountId)`). Тело не несёт `providerId` вовсе — доверять клиенту
+ * в вопросе «какой это провайдер» нельзя (тело может не совпадать с реальным
+ * рядом), поэтому `before`-хук сам резолвит ряд по `accountId` из БД, как это
+ * делает сам эндпоинт.
  */
 interface UnlinkAccountBody {
   readonly accountId?: string;
-  readonly providerId?: string;
 }
+
+/**
+ * `providerId` ряда `account`, который `before`-хук на `/unlink-account`
+ * резолвил по `accountId` и разрешил удалить — `after`-хук этого же запроса
+ * берёт его отсюда (не из тела: см. `UnlinkAccountBody`), потому что к моменту
+ * `after` сам ряд уже удалён эндпоинтом и его провайдера из БД не достать.
+ */
+const unlinkProviderIdState = defineRequestState<string | null>(() => null);
+
+/** Канонический `providerId` аккаунта Steam, который пишет `better-auth-steam`
+ * при привязке/входе (`PROVIDER_ID` в его исходниках) — не путать с id плагина
+ * `"steam-openid"`, под которым он зарегистрирован в `plugins`. */
+const STEAM_PROVIDER_ID = "steam";
+
+/**
+ * `/steam/callback` и `/callback/:id` всегда завершаются редиректом — успех и
+ * отказ одинаково бросают `ctx.redirect(...)` (значит, `ctx.context.returned`
+ * — `APIError` "FOUND" в обоих случаях; `isAPIError` сам по себе успех от
+ * отказа не отличает). Разница — только в `?error=...` на итоговом URL
+ * (`redirectWithError`/`redirectOnError` его добавляют, обычный редирект на
+ * `callbackURL` — нет).
+ */
+const isSuccessRedirect = (returned: unknown, baseURL: string): boolean => {
+  if (!isAPIError(returned) || returned.statusCode !== 302) return false;
+  const location = returned.headers
+    ? new Headers(returned.headers).get("location")
+    : null;
+  if (!location) return false;
+  return !new URL(location, baseURL).searchParams.has("error");
+};
 
 /**
  * Хуки Better Auth. `deps.db` — тот же drizzle-инстанс, что использует
@@ -58,14 +89,19 @@ export const authHooks = (deps: {
       // в т. ч. `freshSessionMiddleware`) — без неё Better Auth сам ответит 401.
       const session = await getSessionFromCtx(ctx);
       if (!session) return;
-      const providerId = (ctx.body as UnlinkAccountBody | undefined)
-        ?.providerId;
-      if (!providerId) return;
+      const accountId = (ctx.body as UnlinkAccountBody | undefined)?.accountId;
+      if (!accountId) return;
       const accounts = await deps.db
-        .select({ providerId: account.providerId })
+        .select({ id: account.id, providerId: account.providerId })
         .from(account)
         .where(eq(account.userId, session.user.id));
-      const allowed = canUnlink(accounts, providerId, {
+      // Резолвим ряд так же, как сам эндпоинт (`accounts.find(a => a.id ===
+      // accountId)`) — тело не несёт providerId, значения из тела доверять
+      // нельзя. Ряд не нашёлся — не наша забота, эндпоинт ответит сам
+      // (ACCOUNT_NOT_FOUND).
+      const target = accounts.find((candidate) => candidate.id === accountId);
+      if (!target) return;
+      const allowed = canUnlink(accounts, target.providerId, {
         email: session.user.email,
         emailVerified: session.user.emailVerified,
       });
@@ -75,14 +111,19 @@ export const authHooks = (deps: {
           message: "Нельзя отвязать последний способ входа",
         });
       }
+      // Разрешили — запоминаем провайдера для after-хука этого же запроса:
+      // после успешного удаления ряда в БД его уже не будет.
+      await unlinkProviderIdState.set(target.providerId);
     }
   }),
   after: createAuthMiddleware(async (ctx) => {
     if (ctx.path === "/unlink-account") {
       // Ошибку (в т. ч. из нашего before-хука) `after` не трогает — удаления не было.
       if (isAPIError(ctx.context.returned)) return;
-      const providerId = (ctx.body as UnlinkAccountBody | undefined)
-        ?.providerId;
+      const providerId = (await hasRequestState())
+        ? await unlinkProviderIdState.get()
+        : null;
+      if (!providerId) return;
       const session = await getSessionFromCtx(ctx);
       const userId = session?.user.id;
       if (!userId) return;
@@ -91,7 +132,7 @@ export const authHooks = (deps: {
           .update(user)
           .set({ role: "player" })
           .where(eq(user.id, userId));
-      } else if (providerId === "steam-openid") {
+      } else if (providerId === STEAM_PROVIDER_ID) {
         await deps.db
           .update(user)
           .set({ steamId: null })
@@ -105,6 +146,13 @@ export const authHooks = (deps: {
     if (ctx.path === "/callback/:id") {
       const params = ctx.params as { readonly id?: string } | undefined;
       if (params?.id !== "pocket-id") return;
+      // Callback мог упасть (включая редирект-с-ошибкой через ctx.redirect —
+      // успех этого эндпоинта тоже редирект, поэтому `isAPIError` одной не
+      // различить: см. `isSuccessRedirect`) — роль пишем только при реальном
+      // успехе, как и /unlink-account выше.
+      if (!isSuccessRedirect(ctx.context.returned, ctx.context.baseURL)) {
+        return;
+      }
       // Режим привязки: пользователь уже вошёл, и callback — редирект на
       // `callbackURL` того же запроса, в котором `mapProfileToUser` выставил
       // роль в `pocketIdRoleState` (он зовётся до ветки линковки в `/callback/:id`).
@@ -122,14 +170,9 @@ export const authHooks = (deps: {
       return;
     }
     if (ctx.path === "/steam/callback") {
-      const returned = ctx.context.returned;
-      if (!isAPIError(returned) || returned.statusCode !== 302) return;
-      const location = returned.headers
-        ? new Headers(returned.headers).get("location")
-        : null;
-      if (!location) return;
-      const redirectUrl = new URL(location, ctx.context.baseURL);
-      if (redirectUrl.searchParams.has("error")) return;
+      if (!isSuccessRedirect(ctx.context.returned, ctx.context.baseURL)) {
+        return;
+      }
       // Steam-вход отключён (`/steam/login` → 404): успешный редирект без
       // `error` здесь — всегда режим привязки, но сессию проверяем явно.
       const session = await getSessionFromCtx(ctx);

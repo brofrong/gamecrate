@@ -108,7 +108,10 @@ beforeAll(async () => {
     {
       id: "acc-mail-steam",
       accountId: "76500000000000001",
-      providerId: "steam-openid",
+      // "steam", не "steam-openid" — PROVIDER_ID в better-auth-steam@0.2.3
+      // отличается от id плагина ("steam-openid"), которым он зарегистрирован
+      // в `plugins` и под которым виден в `/callback/:id`.
+      providerId: "steam",
       userId: "u-mail",
       updatedAt: new Date(),
     },
@@ -213,10 +216,11 @@ describe("account linking", () => {
     expect(updatedUser?.steamId).toBe(steamId);
 
     const [linkedAccount] = await orm
-      .select({ userId: account.userId })
+      .select({ userId: account.userId, providerId: account.providerId })
       .from(account)
       .where(eq(account.accountId, steamId));
     expect(linkedAccount?.userId).toBe("u-admin");
+    expect(linkedAccount?.providerId).toBe("steam");
   });
 
   it("steam already linked to another user is refused", async () => {
@@ -285,6 +289,49 @@ describe("account linking", () => {
     expect(stillThere?.id).toBe("acc-mail-google");
   });
 
+  it("a body without providerId still enforces the last-login-method rule", async () => {
+    // emailVerified ещё false (из предыдущего теста) — google остаётся
+    // единственным способом входа. Тело не несёт providerId вовсе: before-хук
+    // резолвит провайдера сам по accountId из БД (см. hooks.ts), поэтому
+    // отсутствие поля не открывает лазейку.
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: mailCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ accountId: "acc-mail-google" }),
+      }),
+    );
+    const body = (await response.json()) as { code?: string };
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("LAST_LOGIN_METHOD");
+  });
+
+  it("a mismatched providerId in the body does not bypass the rule", async () => {
+    // accountId всё ещё указывает на единственный способ входа (google), но
+    // тело лжёт про providerId — before-хук игнорирует его и резолвит из БД.
+    const response = await auth.handler(
+      new Request(`${origin}/api/auth/unlink-account`, {
+        method: "POST",
+        headers: {
+          cookie: mailCookie,
+          origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          accountId: "acc-mail-google",
+          providerId: "steam",
+        }),
+      }),
+    );
+    const body = (await response.json()) as { code?: string };
+    expect(response.status).toBe(400);
+    expect(body.code).toBe("LAST_LOGIN_METHOD");
+  });
+
   it("unlinking steam is allowed even when it is the only other account", async () => {
     const response = await auth.handler(
       new Request(`${origin}/api/auth/unlink-account`, {
@@ -296,7 +343,7 @@ describe("account linking", () => {
         },
         body: JSON.stringify({
           accountId: "acc-mail-steam",
-          providerId: "steam-openid",
+          providerId: "steam",
         }),
       }),
     );

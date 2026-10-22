@@ -8,9 +8,9 @@ export const isSyntheticEmail = (email: string): boolean =>
 
 /** Идентификаторы провайдеров Better Auth, которыми можно войти. */
 export type LoginProviderId =
-  "google" | "yandex" | "pocket-id" | "telegram" | "steam-openid";
+  "google" | "yandex" | "pocket-id" | "telegram" | "steam";
 
-/** Провайдеры, дающие вход сами по себе; `steam-openid` сюда не входит (см. спеку). */
+/** Провайдеры, дающие вход сами по себе; `steam` сюда не входит (см. спеку). */
 export const LOGIN_CAPABLE: ReadonlySet<string> = new Set<LoginProviderId>([
   "google",
   "yandex",
