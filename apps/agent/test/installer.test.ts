@@ -97,6 +97,8 @@ const makeFake = () => {
     manifest: undefined as string | undefined,
     /** Контейнер установщика исчез: exec отвечает 409. */
     gone: false,
+    /** `putArchive` заготовки падает дефектом (ошибка в коде, не в Docker). */
+    dieOnStub: false,
     /** Контейнеры `cg.install`, оставшиеся с прошлого запуска. */
     existing: [] as ContainerInfo[],
     labelledVolumes: [] as Array<{
@@ -163,6 +165,8 @@ const makeFake = () => {
     putArchive: (container, path, tar) =>
       Effect.sync(() => {
         record(`putArchive ${container} ${path}`);
+        if (state.dieOnStub && path === STEAMAPPS)
+          throw new Error("unexpected bug");
         state.put.push({ container, path, tar });
       }),
     getArchive: (container, path) =>
@@ -664,6 +668,70 @@ describe("Installer", () => {
         expect(existsSync(join(h.fake.state.installScratch, "j1"))).toBe(false);
         expect(h.installer.running()).toEqual([]);
       }),
+    ));
+
+  it("staging and state changes keep a long install from stalling", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const manifest = (fields: Record<string, string>) => {
+          h.fake.state.manifest = acf({
+            appid: "736260",
+            BytesToDownload: "88",
+            BytesDownloaded: "88",
+            BytesToStage: "88",
+            ...fields,
+          });
+        };
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Скачано, дальше Steam распаковывает (BytesStaged) и меняет состояние.
+        manifest({ StateFlags: "1026", BytesStaged: "0" });
+        yield* h.tick("2 seconds");
+        yield* h.tick("8 minutes");
+        manifest({ StateFlags: "1026", BytesStaged: "40" });
+        yield* h.tick("8 minutes");
+        manifest({ StateFlags: "1030", BytesStaged: "40" });
+        yield* h.tick("8 minutes");
+        // Прогресс — только по байтам загрузки; сбоя нет.
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 88,
+            bytesTotal: 88,
+          },
+        ]);
+        expect(h.installer.running()).toEqual(["j1"]);
+        // Ничего не меняется 10 минут — остановилась.
+        yield* h.tick("3 minutes");
+        expect(yield* h.drain).toEqual([failed(installReasons.stalled)]);
+      }),
+    ));
+
+  it("unexpected defect fails the job and removes the installer", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.unexpected)]);
+          expect(h.fake.state.calls).not.toContain("start cg-install-j1");
+          expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+            removedWithScratch,
+          );
+          expect(h.installer.running()).toEqual([]);
+          // Установщик свободен: следующая задача принимается.
+          h.fake.state.dieOnStub = false;
+          yield* h.installer.install({ ...install, jobId: "j2" });
+          yield* h.tick("0 seconds");
+          expect(h.installer.running()).toEqual(["j2"]);
+          expect(h.fake.state.calls).toContain("start cg-install-j2");
+        }),
+      {
+        setup: (fake) => {
+          fake.state.dieOnStub = true;
+        },
+      },
     ));
 
   it("reconcile removes orphan installs", () =>

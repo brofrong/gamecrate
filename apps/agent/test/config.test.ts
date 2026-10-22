@@ -87,4 +87,47 @@ describe("agentConfig roles", () => {
       INSTALL_SCRATCH_DIR: `${base.SCRATCH_DIR}-install`,
     });
   });
+
+  it("session scratch must not share a directory tree with the library or the Steam client", async () => {
+    const cases: Array<[string, string]> = [
+      ["/raid/cloud-gaming/library", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming/library/steamapps", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming/steam-client", "STEAM_CLIENT_DIR"],
+      ["/raid/cloud-gaming/steam-client/scratch", "STEAM_CLIENT_DIR"],
+      ["/", "LIBRARY_DIR"],
+    ];
+    // Любой агент, не только gamestore: уборка слоёв сессий — тоже `rm -rf` от root.
+    for (const [dir, other] of cases)
+      expect(await error({ ...base, SCRATCH_DIR: dir })).toContain(
+        `SCRATCH_DIR must not be ${other}`,
+      );
+  });
+
+  it("install scratch must not share a directory tree with the library or the Steam client", async () => {
+    const cases: Array<[string, string]> = [
+      ["/raid/cloud-gaming/library", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming/library/steamapps", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming", "LIBRARY_DIR"],
+      ["/raid/cloud-gaming/steam-client", "STEAM_CLIENT_DIR"],
+      ["/raid/cloud-gaming/steam-client/install", "STEAM_CLIENT_DIR"],
+    ];
+    for (const [dir, other] of cases)
+      expect(
+        await error({
+          ...base,
+          ROLES: "worker,gamestore",
+          INSTALL_SCRATCH_DIR: dir,
+        }),
+      ).toContain(`INSTALL_SCRATCH_DIR must not be ${other}`);
+    // Раскладка brofrong: соседние каталоги на одной ФС.
+    const config = await ok({
+      ...base,
+      ROLES: "worker,gamestore",
+      INSTALL_SCRATCH_DIR: "/raid/cloud-gaming/install-scratch",
+    });
+    expect(config.installScratchDir).toEqual(
+      Option.some("/raid/cloud-gaming/install-scratch"),
+    );
+  });
 });

@@ -59,7 +59,10 @@ import {
 /** Метка контейнеров и томов установки: `cg.install=<jobId>`. */
 export const INSTALL_LABEL = "cg.install";
 export const INSTALL_POLL = Duration.seconds(2);
-/** Байты в манифесте не менялись столько — загрузка считается остановившейся. */
+/**
+ * Манифест не менялся столько (байты загрузки и распаковки, `StateFlags`) —
+ * загрузка считается остановившейся.
+ */
 export const STALL_TIMEOUT = Duration.minutes(10);
 
 /** Причины `InstallFailed` (их видит пользователь). */
@@ -74,6 +77,7 @@ export const installReasons = {
   promote: "Не удалось перенести игру в библиотеку",
   invalidCommand: "Некорректная команда установки",
   notGamestore: "Этот сервер не устанавливает игры",
+  unexpected: "Внутренняя ошибка установщика",
 } as const;
 
 export const installContainerName = (jobId: string) => `cg-install-${jobId}`;
@@ -371,12 +375,15 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * Опрос манифеста цели: `InstallProgress` при изменении байтов, итог — поля
-   * манифеста со `StateFlags 4`. Байты не менялись STALL_TIMEOUT — `Abort`.
+   * Опрос манифеста цели: `InstallProgress` при изменении байтов загрузки, итог
+   * — поля манифеста со `StateFlags 4`. Ход установки — любое изменение байтов
+   * загрузки и распаковки (`BytesStaged`: после загрузки Steam распаковывает и
+   * проверяет) или `StateFlags`; хода нет STALL_TIMEOUT — `Abort`.
    */
   const watch = (job: Job) =>
     Effect.gen(function* () {
-      let last: string | undefined;
+      let lastBytes: string | undefined;
+      let lastState: string | undefined;
       let changedAt = yield* Clock.currentTimeMillis;
       while (true) {
         const fields = yield* readManifest(job);
@@ -385,16 +392,28 @@ const make = Effect.gen(function* () {
         const bytesDownloaded = count(fields?.BytesDownloaded);
         const bytesTotal = count(fields?.BytesToDownload);
         if (bytesDownloaded !== undefined && bytesTotal !== undefined) {
-          const key = `${bytesDownloaded}/${bytesTotal}`;
-          if (key !== last) {
-            last = key;
-            changedAt = now;
+          const bytes = `${bytesDownloaded}/${bytesTotal}`;
+          if (bytes !== lastBytes) {
+            lastBytes = bytes;
             yield* emit({
               _tag: "InstallProgress",
               jobId: job.jobId,
               bytesDownloaded,
               bytesTotal,
             });
+          }
+        }
+        if (fields !== undefined) {
+          const state = [
+            fields.BytesDownloaded,
+            fields.BytesToDownload,
+            fields.BytesStaged,
+            fields.BytesToStage,
+            fields.StateFlags,
+          ].join("|");
+          if (state !== lastState) {
+            lastState = state;
+            changedAt = now;
           }
         }
         if (now - changedAt >= Duration.toMillis(STALL_TIMEOUT))
@@ -566,6 +585,14 @@ const make = Effect.gen(function* () {
       yield* finish(job, outcome.manifest);
     }).pipe(
       Effect.catchTag("InstallAbort", (abort) => fail(job, abort)),
+      // Ошибка в коде (дефект) — тоже сбой задачи: контейнер и слои убрать,
+      // оркестратору — `InstallFailed`, установщик свободен.
+      Effect.catchDefect((defect) =>
+        fail(
+          job,
+          new Abort({ reason: installReasons.unexpected, cause: defect }),
+        ),
+      ),
       Effect.ensuring(
         Effect.sync(() => {
           if (current === job) current = undefined;

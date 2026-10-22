@@ -123,19 +123,46 @@ const fields = Config.all({
   installScratchDir: Config.option(HostDir("INSTALL_SCRATCH_DIR")),
 });
 
+/** Первая пара из `pairs`, где каталоги совпадают или вложены один в другой. */
+const firstOverlap = (
+  pairs: ReadonlyArray<readonly [string, string, string, string]>,
+) => pairs.find(([, a, , b]) => overlapping(a, b));
+
 /**
- * Роль `gamestore` требует `INSTALL_SCRATCH_DIR` (`LIBRARY_DIR` обязателен
- * всегда), не пересекающийся со `SCRATCH_DIR`: каждый из них агент при старте
- * чистит от «чужих» каталогов.
+ * Каталоги scratch агент при старте чистит от «чужих» подкаталогов (`rm -rf`
+ * от root), поэтому `SCRATCH_DIR` и `INSTALL_SCRATCH_DIR` не должны совпадать
+ * или быть вложены (в любую сторону) ни друг с другом, ни с `LIBRARY_DIR` и
+ * `STEAM_CLIENT_DIR` — иначе уборка удалит библиотеку или клиент Steam. Роль
+ * `gamestore` требует `INSTALL_SCRATCH_DIR` (`LIBRARY_DIR` обязателен всегда).
  */
 export const agentConfig = fields.pipe(
   Config.flatMap((values) => {
-    if (!values.roles.includes("gamestore")) return Config.succeed(values);
-    if (Option.isNone(values.installScratchDir))
-      return configError("INSTALL_SCRATCH_DIR is required for role gamestore");
-    if (overlapping(values.installScratchDir.value, values.scratchDir))
+    const scratch = ["SCRATCH_DIR", values.scratchDir] as const;
+    const shared = [
+      ["LIBRARY_DIR", values.libraryDir],
+      ["STEAM_CLIENT_DIR", values.steamClientDir],
+    ] as const;
+    const pairs: Array<readonly [string, string, string, string]> = shared.map(
+      ([name, dir]) => [...scratch, name, dir] as const,
+    );
+    if (values.roles.includes("gamestore")) {
+      if (Option.isNone(values.installScratchDir))
+        return configError(
+          "INSTALL_SCRATCH_DIR is required for role gamestore",
+        );
+      const install = [
+        "INSTALL_SCRATCH_DIR",
+        values.installScratchDir.value,
+      ] as const;
+      pairs.push(
+        [...install, ...scratch],
+        ...shared.map(([name, dir]) => [...install, name, dir] as const),
+      );
+    }
+    const overlap = firstOverlap(pairs);
+    if (overlap !== undefined)
       return configError(
-        "INSTALL_SCRATCH_DIR must not be SCRATCH_DIR or nested with it",
+        `${overlap[0]} must not be ${overlap[2]} or nested with it`,
       );
     return Config.succeed(values);
   }),
