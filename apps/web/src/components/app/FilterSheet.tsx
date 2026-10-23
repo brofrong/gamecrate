@@ -11,11 +11,11 @@ import {
   type Chip,
   DEFAULT_FILTERS,
   type Filters,
-  type ProtonFilter,
   type SortKey,
   type StatusFilter,
 } from "@/lib/libraryFilters";
 import { cn } from "@/lib/utils";
+import { chipActiveClassName, PROTON_OPTIONS } from "./filterOptions";
 
 const STATUS_SEGMENTS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "Все" },
@@ -30,16 +30,6 @@ const SORT_SEGMENTS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "playtime", label: "Время в игре" },
 ];
 
-const PROTON_CHIPS: ReadonlyArray<{ value: ProtonFilter; label: string }> = [
-  { value: "any", label: "любой" },
-  { value: "platinum", label: "platinum" },
-  { value: "gold", label: "gold" },
-  { value: "silver", label: "silver" },
-  { value: "bronze", label: "bronze" },
-  { value: "borked", label: "borked" },
-  { value: "pending", label: "неизвестно" },
-];
-
 const EXTRA_CHIPS: ReadonlyArray<{ value: Chip; label: string }> = [
   { value: "never", label: "Не запускались" },
   { value: "10h", label: "Больше 10 ч" },
@@ -51,8 +41,6 @@ const segmentActiveClassName = "bg-[#1a1d26] text-[#eef1ff]";
 
 const chipClassName =
   "flex h-[30px] items-center rounded-full bg-[#0d0f14] px-3 text-xs font-medium text-[#cfd3e6] transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-const chipActiveClassName =
-  "bg-[#3cc2ff]/14 text-[#eef1ff] shadow-[inset_0_0_0_1px_rgba(60,194,255,.45)]";
 
 /** Содержимое шторки — отдельный компонент, чтобы `useState(filters)` инициализировал
  * черновик заново при каждом монтировании (т.е. при каждом открытии). */
@@ -162,7 +150,7 @@ function FilterSheetContent({
           Proton
         </h3>
         <div className="mb-3 flex flex-wrap gap-1.5">
-          {PROTON_CHIPS.map((chip) => (
+          {PROTON_OPTIONS.map((chip) => (
             <button
               key={chip.value}
               type="button"

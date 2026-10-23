@@ -15,6 +15,7 @@ import {
   type StatusFilter,
 } from "@/lib/libraryFilters";
 import { cn } from "@/lib/utils";
+import { chipActiveClassName, PROTON_OPTIONS } from "./filterOptions";
 
 const STATUS_OPTIONS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "все" },
@@ -27,16 +28,6 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "recent", label: "недавние" },
   { value: "name", label: "по названию" },
   { value: "playtime", label: "по времени в игре" },
-];
-
-const PROTON_OPTIONS: ReadonlyArray<{ value: ProtonFilter; label: string }> = [
-  { value: "any", label: "любой" },
-  { value: "platinum", label: "platinum" },
-  { value: "gold", label: "gold" },
-  { value: "silver", label: "silver" },
-  { value: "bronze", label: "bronze" },
-  { value: "borked", label: "borked" },
-  { value: "pending", label: "неизвестно" },
 ];
 
 const STATUS_CHIPS: ReadonlyArray<{
@@ -71,9 +62,6 @@ const selectClassName =
 
 const chipClassName =
   "flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-full bg-[#13161d] px-3 text-xs font-medium text-[#cfd3e6] transition-colors disabled:cursor-not-allowed disabled:opacity-50";
-
-const chipActiveClassName =
-  "bg-[#3cc2ff]/14 text-[#eef1ff] shadow-[inset_0_0_0_1px_rgba(60,194,255,.45)]";
 
 export function FilterBar({
   filters,
