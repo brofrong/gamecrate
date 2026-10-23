@@ -193,10 +193,11 @@ cg-sessions` → подсеть) доступ к локальной сети и 
 `docs/superpowers/specs/2026-10-22-auth-login-and-linking-design.md`, §3.5); перед первым деплоем
 этой работы их нужно один раз удалить вручную, иначе привязка Steam к новому аккаунту не пройдёт
 (плагин ответит «Steam уже привязан к другому аккаунту»). Удаление `user` каскадом уносит его
-`account`, `session`, `user_games` и остальные таблицы с `user_id`.
+`account`, `session`, `sessions`, `user_games` и остальные таблицы с `user_id`, кроме `play_segments`
+(у неё `NO ACTION`) — её строки удаляются первыми в той же транзакции. Выполнено 2026-10-23.
 
 ```sh
-ssh brofrong "cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env exec cg-postgres psql -U cg -d cloud_gaming -c \"DELETE FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam')\""
+ssh brofrong "cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env exec cg-postgres psql -U cg -d cloud_gaming -v ON_ERROR_STOP=1 -c \"BEGIN; DELETE FROM play_segments WHERE user_id IN (SELECT id FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam')); DELETE FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam'); COMMIT;\""
 ```
 
 (`~/cloud-gaming` и контейнер `cg-postgres` на сервере уже есть — это чистка перед деплоем
