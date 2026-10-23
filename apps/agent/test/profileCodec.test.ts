@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Effect, Redacted } from "effect";
 import {
   extractSingleFile,
+  filesTar,
   importProfileKey,
   openProfile,
   PROFILE_MAGIC,
@@ -190,5 +191,40 @@ describe("singleFileTar", () => {
       singleFileTar("x".repeat(101), new Uint8Array(), options),
     ).toThrow();
     expect(() => singleFileTar("файл", new Uint8Array(), options)).toThrow();
+  });
+});
+
+describe("filesTar", () => {
+  it("writes directories and files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cg-files-tar-"));
+    try {
+      const tarPath = join(dir, "many.tar");
+      writeFileSync(
+        tarPath,
+        filesTar(
+          [
+            { path: "a", mode: 0o755 },
+            { path: "a/b", data: new TextEncoder().encode("hi"), mode: 0o644 },
+          ],
+          { uid: 1000, gid: 1000, mtime: 1_760_000_000 },
+        ),
+      );
+      const list = Bun.spawnSync(["tar", "-tvf", tarPath, "--numeric-owner"]);
+      expect(new TextDecoder().decode(list.stderr)).toBe("");
+      expect(list.exitCode).toBe(0);
+      const lines = new TextDecoder().decode(list.stdout).trim().split("\n");
+      const dirLine = lines.find((line) => line.endsWith("a/"));
+      const fileLine = lines.find((line) => line.endsWith("a/b"));
+      expect(dirLine).toBeDefined();
+      expect(dirLine).toStartWith("d");
+      expect(fileLine).toBeDefined();
+      expect(fileLine).toStartWith("-");
+      expect(fileLine).toMatch(/\b1000\s+1000\b/);
+      const extract = Bun.spawnSync(["tar", "-xf", tarPath, "-C", dir]);
+      expect(extract.exitCode).toBe(0);
+      expect(readFileSync(join(dir, "a", "b"), "utf8")).toBe("hi");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

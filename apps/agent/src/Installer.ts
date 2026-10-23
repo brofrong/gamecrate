@@ -62,6 +62,7 @@ import {
   sessionPassword,
   USER_LABEL,
 } from "./SessionSupervisor";
+import { tokenize } from "./steam/vdf";
 
 /** Метка контейнеров и томов установки: `cg.install=<jobId>`. */
 export const INSTALL_LABEL = "cg.install";
@@ -113,44 +114,6 @@ export const stubManifest = (appId: number) =>
     "}",
     "",
   ].join("\n");
-
-type Token =
-  | { readonly kind: "string"; readonly value: string }
-  | { readonly kind: "open" }
-  | { readonly kind: "close" };
-
-/** Лексемы KeyValues (VDF) Steam: строки в кавычках, `{`, `}`, `//`-комментарии. */
-const tokenize = (text: string): Array<Token> | undefined => {
-  const tokens: Array<Token> = [];
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i] ?? "";
-    if (char === '"') {
-      let value = "";
-      i++;
-      while (i < text.length && text[i] !== '"') {
-        if (text[i] === "\\" && i + 1 < text.length) {
-          const next = text[i + 1];
-          value += next === "n" ? "\n" : next === "t" ? "\t" : next;
-          i += 2;
-        } else {
-          value += text[i];
-          i++;
-        }
-      }
-      if (i >= text.length) return undefined;
-      i++;
-      tokens.push({ kind: "string", value });
-    } else if (char === "{" || char === "}") {
-      tokens.push(char === "{" ? { kind: "open" } : { kind: "close" });
-      i++;
-    } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (/\s/.test(char)) i++;
-    else return undefined;
-  }
-  return tokens;
-};
 
 /**
  * Поля верхнего уровня блока `"AppState" { … }` манифеста Steam (вложенные
