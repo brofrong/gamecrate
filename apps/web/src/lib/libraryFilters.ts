@@ -58,8 +58,7 @@ function isSortKey(v: unknown): v is SortKey {
 
 function isProtonTier(v: unknown): v is ProtonTier {
   return (
-    typeof v === "string" &&
-    (PROTON_TIERS as ReadonlyArray<string>).includes(v)
+    typeof v === "string" && (PROTON_TIERS as ReadonlyArray<string>).includes(v)
   );
 }
 

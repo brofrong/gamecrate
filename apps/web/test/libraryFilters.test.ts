@@ -292,13 +292,20 @@ describe("applyFilters performance", () => {
             : i % 3 === 1
               ? { _tag: "Installing", percent: i % 100 }
               : { _tag: "Missing" },
-        lastPlayedAt: i % 2 === 0 ? `2026-10-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z` : null,
+        lastPlayedAt:
+          i % 2 === 0
+            ? `2026-10-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z`
+            : null,
       }),
     );
     const start = performance.now();
-    applyFilters(entries, { ...DEFAULT_FILTERS, q: "a" }, {
-      steamProfile: true,
-    });
+    applyFilters(
+      entries,
+      { ...DEFAULT_FILTERS, q: "a" },
+      {
+        steamProfile: true,
+      },
+    );
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(50);
   });
