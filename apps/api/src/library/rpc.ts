@@ -9,6 +9,7 @@ import {
   refreshUserTiers,
   syncLibrary,
 } from "./LibraryService";
+import { recentGames } from "./RecentRepo";
 
 export const LibraryRpcHandlers = LibraryRpcs.toLayer(
   Effect.gen(function* () {
@@ -51,8 +52,13 @@ export const LibraryRpcHandlers = LibraryRpcs.toLayer(
             yield* sync(current.id, current.steamId);
           return yield* libraryView(current.id);
         }),
-      // TODO: подключаются в задаче главной /app («Недавние», «В тренде»).
-      "library.recent": () => Effect.succeed([]),
+      // Блок «Недавние» для главной /app.
+      "library.recent": () =>
+        Effect.gen(function* () {
+          const current = yield* CurrentUser;
+          return yield* recentGames(current.id);
+        }),
+      // TODO: подключается в задаче главной /app («В тренде»).
       "library.trending": () => Effect.succeed({ now: [], week: [] }),
     });
   }),
