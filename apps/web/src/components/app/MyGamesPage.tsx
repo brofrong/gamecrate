@@ -11,14 +11,19 @@ import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { linkSteam } from "@/auth";
+import { ActiveSessionPanel } from "@/components/app/ActiveSessionPanel";
 import { AsideSlot, StickySlot } from "@/components/app/AppShell";
+import { ComingSoonPanel } from "@/components/app/ComingSoonPanel";
 import { ConnectSteam } from "@/components/app/ConnectSteam";
 import { FilterBar, filtersEqual } from "@/components/app/FilterBar";
 import { FilterSheet } from "@/components/app/FilterSheet";
 import { GameSection } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
+import { InstallsPanel } from "@/components/app/InstallsPanel";
 import { RecentRow } from "@/components/app/RecentRow";
+import { SteamPanel } from "@/components/app/SteamPanel";
 import { SummaryStrip } from "@/components/app/SummaryStrip";
+import { TimePanel } from "@/components/app/TimePanel";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { PrivateProfile } from "@/components/PrivateProfile";
 import { Button } from "@/components/ui/button";
@@ -224,6 +229,10 @@ export function MyGamesPage() {
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
       ? library.value.syncedAt
       : null;
+  const readyLibrary =
+    AsyncResult.isSuccess(library) && library.value._tag === "Ready"
+      ? library.value
+      : undefined;
 
   return (
     <>
@@ -304,11 +313,7 @@ export function MyGamesPage() {
 
       <SummaryStrip
         user={user}
-        view={
-          AsyncResult.isSuccess(library) && library.value._tag === "Ready"
-            ? library.value
-            : undefined
-        }
+        view={readyLibrary}
         monthMinutes={
           AsyncResult.isSuccess(summary) ? summary.value.totalMinutes : 0
         }
@@ -368,8 +373,34 @@ export function MyGamesPage() {
         </>
       )}
 
-      <AsideSlot>{null}</AsideSlot>
-      <StickySlot>{null}</StickySlot>
+      <AsideSlot>
+        <SteamPanel
+          user={user}
+          view={readyLibrary}
+          onRefresh={() => void onRefresh()}
+          refreshing={refreshing}
+        />
+        {activeSession && (
+          <ActiveSessionPanel
+            session={activeSession}
+            onResume={play.onResume}
+          />
+        )}
+        <TimePanel
+          summary={AsyncResult.isSuccess(summary) ? summary.value : undefined}
+        />
+        {activeSession && <InstallsPanel session={activeSession} />}
+        <ComingSoonPanel name="Epic Games" />
+      </AsideSlot>
+      <StickySlot>
+        {activeSession && (
+          <ActiveSessionPanel
+            session={activeSession}
+            onResume={play.onResume}
+            compact
+          />
+        )}
+      </StickySlot>
     </>
   );
 }

@@ -9,11 +9,12 @@ import { MyGamesPage } from "@/components/app/MyGamesPage";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { parseSearch, toSearch } from "@/lib/libraryFilters";
 import { useStalled } from "@/lib/useStalled";
-import { meAtom, resultErrorTag } from "@/rpc";
+import { activeSessionAtom, meAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
 function AppLayout() {
   const me = useAtomValue(meAtom);
+  const active = useAtomValue(activeSessionAtom);
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
 
   if (resultErrorTag(me) === "Unauthorized") {
@@ -26,8 +27,10 @@ function AppLayout() {
 
   if (!AsyncResult.isSuccess(me)) return null;
 
+  const session = AsyncResult.isSuccess(active) ? active.value : null;
+
   return (
-    <AppShell user={me.value}>
+    <AppShell user={me.value} installing={session?.state === "installing"}>
       <Outlet />
     </AppShell>
   );

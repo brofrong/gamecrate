@@ -46,8 +46,10 @@ export function AppShell(props: {
   children: React.ReactNode;
   aside?: React.ReactNode;
   sticky?: React.ReactNode;
+  /** Полоска подсвечивает «Установки» (`Rail`), когда активная сессия устанавливается. */
+  installing?: boolean;
 }) {
-  const { children, aside, sticky } = props;
+  const { children, aside, sticky, installing = false } = props;
   const [asideEl, setAsideEl] = useState<HTMLDivElement | null>(null);
   const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
 
@@ -55,14 +57,14 @@ export function AppShell(props: {
     <SlotContext.Provider value={{ aside: asideEl, sticky: stickyEl }}>
       <div className="min-h-dvh bg-[#0d0f14] text-[#eef1ff] md:grid md:grid-cols-[84px_1fr] md:items-start md:gap-6 md:p-6 xl:grid-cols-[84px_1fr_330px]">
         <div className="hidden md:block">
-          <Rail installing={false} />
+          <Rail installing={installing} />
         </div>
         <div className="flex flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">
           {children}
         </div>
         <div
           ref={setAsideEl}
-          className="hidden md:col-start-2 md:block xl:col-start-3"
+          className="hidden md:col-start-2 md:flex md:flex-col md:gap-4 xl:col-start-3"
         >
           {aside}
         </div>

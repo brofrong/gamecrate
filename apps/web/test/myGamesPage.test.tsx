@@ -276,6 +276,24 @@ describe("MyGamesPage", () => {
     ).toBeTruthy();
   });
 
+  it("lights the Rail installs dot when the active session is installing", async () => {
+    const installing: SessionView = {
+      id: "s1",
+      appId: 1086940,
+      gameName: "Baldur's Gate 3",
+      state: "installing",
+      streamReady: false,
+      failReason: null,
+      idleDeadline: null,
+      installPercent: 40,
+      playedSeconds: 0,
+      createdAt: "2026-10-23T10:00:00.000Z",
+    };
+    renderMyGames("/app", { active: installing });
+    await screen.findByRole("heading", { name: "Мои игры" });
+    expect(await screen.findByTestId("installs-dot")).toBeTruthy();
+  });
+
   it("shows the header summary line", async () => {
     const entries = Array.from({ length: 148 }, (_, i) =>
       entry({
