@@ -31,6 +31,7 @@ import {
   type DockerClientShape,
 } from "../src/DockerClient";
 import {
+  CONNECTION_LOG,
   Installer,
   type InstallerShape,
   installReasons,
@@ -38,10 +39,23 @@ import {
   stubManifest,
 } from "../src/Installer";
 import { extractSingleFile } from "../src/profile/codec";
+import { PACK_OUTPUT } from "../src/profile/HomeProfile";
 import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import { ProfileStore, ProfileStoreError } from "../src/profile/ProfileStore";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
-import { tarOfFile, testConfig, unusedDocker } from "./fakes";
+import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
+import { findTarEntry } from "./tar";
+
+const fixture = (name: string) =>
+  readFileSync(
+    new URL(`fixtures/steam-logs/${name}`, import.meta.url),
+    "utf8",
+  );
+
+/** Строка принятого входа (спека §5.4, проба на brofrong). */
+const LOGGED_ON = fixture("connection_log_logged_on.txt");
+/** Клиент ждёт учётных данных: никакого входа нет. */
+const WAITING_FOR_CREDENTIALS = fixture("connection_log_waiting.txt");
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const STEAMAPPS = "/home/ubuntu/.local/share/Steam/steamapps";
@@ -120,6 +134,17 @@ const makeFake = () => {
       Uint8Array
     >,
     commits: [] as ProfileCommit[],
+    /**
+     * Журнал подключения клиента Steam (спека §5.4): растёт по ходу теста.
+     * По умолчанию пуст до старта контейнера (без осевших строк шаблона).
+     */
+    connectionLog: "",
+    /**
+     * `start` сразу дописывает в журнал принятый вход (симулирует клиента,
+     * который мгновенно вошёл сохранённым токеном) — так большинству тестов
+     * не нужно заботиться о детекции входа; тесты самой детекции отключают.
+     */
+    autoLogin: true,
   };
   /** Свободно на ФС scratch (`FreeSpace`) и каталоги, которые проверялись. */
   const disk = {
@@ -142,7 +167,12 @@ const makeFake = () => {
         specs.set(spec.name, spec);
         return `id-${spec.name}`;
       }),
-    start: (name) => Effect.sync(() => record(`start ${name}`)),
+    start: (name) =>
+      Effect.sync(() => {
+        record(`start ${name}`);
+        if (state.autoLogin && name.startsWith("cg-install-"))
+          state.connectionLog += LOGGED_ON;
+      }),
     wait: (name) =>
       Effect.sync(() => {
         record(`wait ${name}`);
@@ -198,14 +228,35 @@ const makeFake = () => {
         state.put.push({ container, path, tar });
       }),
     getArchive: (container, path) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         record(`getArchive ${container} ${path}`);
-        return tarOfFile("cg-profile.tar", bytes("installer-home-tar"));
+        // Файлы входа Steam (посев) до записи отсутствуют: пустой дом.
+        if (path !== PACK_OUTPUT)
+          return Effect.fail(
+            new DockerError({
+              operation: "getArchive",
+              status: 404,
+              message: "no such file",
+            }),
+          );
+        return Effect.succeed(
+          tarOfFile("cg-profile.tar", bytes("installer-home-tar")),
+        );
       }),
     archiveSize: (container, path) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         record(`archiveSize ${container} ${path}`);
-        return bytes("installer-home-tar").length;
+        if (path === PACK_OUTPUT)
+          return Effect.succeed(bytes("installer-home-tar").length);
+        if (path === CONNECTION_LOG)
+          return Effect.succeed(Buffer.byteLength(state.connectionLog));
+        return Effect.fail(
+          new DockerError({
+            operation: "archiveSize",
+            status: 404,
+            message: "no such file",
+          }),
+        );
       }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
@@ -220,6 +271,16 @@ const makeFake = () => {
               message: "container is not running",
             }),
           );
+        if (cmd[0] === "tail") {
+          const match = /^\+(\d+)$/.exec(cmd[2] ?? "");
+          if (match === null || cmd[3] !== CONNECTION_LOG)
+            return Effect.succeed({ exitCode: 2, stdout: "" });
+          const skip = Number(match[1]) - 1;
+          return Effect.succeed({
+            exitCode: 0,
+            stdout: state.connectionLog.slice(skip),
+          });
+        }
         if (cmd[0] === "sh") {
           const expected = [
             "sh",
@@ -452,6 +513,7 @@ describe("Installer", () => {
           "store.get profiles/u1/v7.cgp",
           "putArchive cg-install-j1 /home/ubuntu",
           `putArchive cg-install-j1 ${STEAMAPPS}`,
+          `archiveSize cg-install-j1 ${CONNECTION_LOG}`,
           "start cg-install-j1",
         ]);
         // Слой клиента Steam — на SCRATCH_DIR (NVMe: pressure-vessel копирует
@@ -1087,6 +1149,101 @@ describe("Installer", () => {
           removedWithScratch,
         );
         expect(h.installer.running()).toEqual([]);
+      }),
+    ));
+
+  it("installer with empty profile and a Steam login seeds and starts", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLogin = testSteamLogin();
+        yield* h.installer.install({
+          ...install,
+          profile: null,
+          steamLogin,
+        });
+        yield* h.tick("0 seconds");
+        // Вход вписан, посев и старт прошли — установщик жив, причина
+        // steamLogin не отправлена (есть чем войти).
+        expect(h.installer.running()).toEqual(["j1"]);
+        expect(yield* h.drain).toEqual([]);
+        expect(h.fake.state.calls).toContain("start cg-install-j1");
+        const seeded = h.fake.state.put.find((p) => p.path === "/home/ubuntu");
+        if (seeded === undefined) throw new Error("no login seed archive");
+        const local = findTarEntry(seeded.tar, "local.vdf");
+        if (local === undefined) throw new Error("no local.vdf in archive");
+        expect(new TextDecoder().decode(local)).toContain("ConnectCache");
+      }),
+    ));
+
+  it("installer fails with steamLogin when Steam does not log on in time", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        h.fake.state.connectionLog = WAITING_FOR_CREDENTIALS;
+        yield* h.installer.install(install);
+        yield* h.tick("90 seconds");
+        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+        expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+          removedWithScratch,
+        );
+        // Вход не был вписан этим запуском (из профиля) — без предупреждения.
+        expect(h.fake.state.calls).not.toContain("store.put u1");
+      }),
+    ));
+
+  it("installer ignores Logged On lines written before start", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        // Строки шаблона клиента, осевшие в overlay до старта этого контейнера.
+        h.fake.state.connectionLog = LOGGED_ON;
+        yield* h.installer.install({
+          ...install,
+          steamLoginTimeoutSeconds: 5,
+        });
+        yield* h.tick("0 seconds");
+        // После старта в журнал ничего нового не дописано.
+        h.fake.state.connectionLog += WAITING_FOR_CREDENTIALS;
+        yield* h.tick("5 seconds");
+        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+      }),
+    ));
+
+  it("installer proceeds after logon and commits steamLoginSeeded", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        const steamLogin = testSteamLogin();
+        yield* h.installer.install({
+          ...install,
+          profile: null,
+          steamLogin,
+        });
+        yield* h.tick("0 seconds");
+        // Контейнер жив, вход пока не пришёл.
+        expect(h.installer.running()).toEqual(["j1"]);
+        expect(yield* h.drain).toEqual([]);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallFinished",
+            jobId: "j1",
+            sizeBytes: 88382496,
+            buildId: "12345",
+          },
+        ]);
+        expect(h.fake.state.commits).toEqual([
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/new.cgp",
+            sizeBytes: bytes("installer-home-tar").length,
+            steamLoginSeeded: true,
+          },
+        ]);
       }),
     ));
 

@@ -1,0 +1,4 @@
+[2026-10-23 10:00:01] Initializing connection manager
+[2026-10-23 10:00:05] Using JWT refresh token for login
+[2026-10-23 10:00:06] RecvMsgClientLogOnResponse() : [U:1:1] 'OK'
+[2026-10-23 10:00:06] state transition [Logged On, Online]

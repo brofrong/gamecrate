@@ -1,4 +1,5 @@
 // Общие заготовки тестов агента: конфиг и «пустой» DockerClient.
+import type { SteamLoginSeed } from "@cg/rpc";
 import { Effect, Option, Redacted } from "effect";
 import type { AgentConfigValues } from "../src/config";
 import type { DockerClientShape } from "../src/DockerClient";
@@ -64,3 +65,16 @@ export const unusedDocker: DockerClientShape = {
  */
 export const tarOfFile = (name: string, data: Uint8Array) =>
   singleFileTar(name, data, { uid: 1000, gid: 1000, mode: 0o644, mtime: 0 });
+
+/** Вход для посева (Task 3): токен и имя аккаунта — тестовые секреты. */
+export const testSteamLogin = (
+  patch: Partial<{
+    readonly accountName: string;
+    readonly steamId: string;
+    readonly refreshToken: string;
+  }> = {},
+): SteamLoginSeed => ({
+  accountName: Redacted.make(patch.accountName ?? "test-account"),
+  steamId: patch.steamId ?? "76561197960287930",
+  refreshToken: Redacted.make(patch.refreshToken ?? "test-refresh-token"),
+});
