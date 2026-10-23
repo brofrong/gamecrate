@@ -28,6 +28,38 @@ import { rootRoute } from "./__root";
 /** Период heartbeat (сервер ждёт не реже чем раз в 30 с). */
 export const HEARTBEAT_MS = 5_000;
 
+/**
+ * `onPlayAgain` для `SessionStatus`/`Player`: запускает ту же игру заново (§3.2,
+ * «Готово» на экране QR после пропавшего входа) и переходит на новую сессию.
+ * Выделено в чистую функцию — зависимости (`start`/`navigate`) подаются явно,
+ * так тест может подставить фейковый RPC-клиент и фейковую навигацию без рендера
+ * всего маршрута (которому для этого нужен настоящий сокет `@/rpc`).
+ */
+export const playAgain = async (
+  appId: number,
+  deps: {
+    readonly start: (
+      args: ReturnType<typeof startSessionArgs>,
+    ) => Promise<Exit.Exit<{ readonly id: string }, { readonly _tag: string }>>;
+    readonly navigate: (to: {
+      readonly to: "/session/$id";
+      readonly params: { readonly id: string };
+    }) => void;
+  },
+): Promise<void> => {
+  const exit = await deps.start(startSessionArgs(appId));
+  if (Exit.isSuccess(exit)) {
+    deps.navigate({ to: "/session/$id", params: { id: exit.value.id } });
+    return;
+  }
+  const tag = errorTag(exit.cause);
+  if (tag === "Unauthorized") {
+    window.location.assign("/");
+    return;
+  }
+  toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+};
+
 /** Пауза перед переподпиской на `session.watch` после обрыва сокета. */
 const RESUBSCRIBE_MS = 2_000;
 
@@ -128,21 +160,12 @@ function SessionPage() {
     toast.error("Не удалось завершить игру. Попробуйте ещё раз.");
   }, [stop, id]);
 
-  // Установщик не дождался входа в Steam (§3.2): «Готово» на экране QR запускает
-  // ту же игру заново, как если бы игрок сам нажал «Играть».
   const onPlayAgain = useCallback(async () => {
     if (view === undefined) return;
-    const exit = await start(startSessionArgs(view.appId));
-    if (Exit.isSuccess(exit)) {
-      void navigate({ to: "/session/$id", params: { id: exit.value.id } });
-      return;
-    }
-    const tag = errorTag(exit.cause);
-    if (tag === "Unauthorized") {
-      window.location.assign("/");
-      return;
-    }
-    toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+    await playAgain(view.appId, {
+      start,
+      navigate: (to) => void navigate(to),
+    });
   }, [start, view, navigate]);
 
   const retry = () => {

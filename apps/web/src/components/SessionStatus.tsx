@@ -177,6 +177,7 @@ export function SessionStatus({
                 <p className="text-sm text-muted-foreground">{gameName}</p>
               )}
               <QrLogin title="Войдите в Steam ещё раз" onDone={onPlayAgain} />
+              <LibraryButton onLibrary={onLibrary} />
             </div>
           </main>
         );

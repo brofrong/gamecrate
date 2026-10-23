@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import {
   type LibraryEntry,
   type SessionState,
@@ -12,6 +12,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { Exit } from "effect";
+import { toast } from "sonner";
 import { IdlePrompt } from "../src/components/IdlePrompt";
 import {
   type LibraryPlay,
@@ -27,6 +29,8 @@ import {
   snapshotGamepads,
   useInputActivity,
 } from "../src/lib/inputActivity";
+import { playAgain } from "../src/routes/session.$id";
+import { startSessionArgs } from "../src/rpc";
 
 const sessionId = "0b5c1a52-7f4e-4f1e-9a43-3c1d2e5f6a7b";
 
@@ -227,8 +231,9 @@ describe("session", () => {
     expect(ok.container.querySelector(".text-emerald-400")).not.toBeNull();
   });
 
-  it("steam login failure shows QR and plays again after done", () => {
+  it("steam login failure shows QR, offers a library escape, and plays again after done", () => {
     const onPlayAgain = mock(() => {});
+    const onLibrary = mock(() => {});
     const QrLogin = ({
       title,
       onDone,
@@ -249,7 +254,7 @@ describe("session", () => {
         })}
         onExit={noop}
         onHere={noop}
-        onLibrary={noop}
+        onLibrary={onLibrary}
         onPlayAgain={onPlayAgain}
         QrLogin={QrLogin}
       />,
@@ -257,8 +262,45 @@ describe("session", () => {
     expect(screen.getByText("Войдите в Steam ещё раз")).toBeTruthy();
     expect(screen.queryByText("Не удалось запустить игру")).toBeNull();
 
+    // Как у других терминальных состояний — есть путь назад, не только QR.
+    fireEvent.click(screen.getByRole("button", { name: "В библиотеку" }));
+    expect(onLibrary).toHaveBeenCalledTimes(1);
+
     fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
     expect(onPlayAgain).toHaveBeenCalledTimes(1);
+  });
+
+  describe("playAgain (route-level handler behind onPlayAgain)", () => {
+    it("starts the session with the session's appId and navigates to the new session", async () => {
+      const start = mock(async () => Exit.succeed({ id: "new-session-id" }));
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(start).toHaveBeenCalledWith(startSessionArgs(620));
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/session/$id",
+        params: { id: "new-session-id" },
+      });
+    });
+
+    it("shows a toast and does not navigate when starting the session fails", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () =>
+        Exit.fail({ _tag: "SessionServerUnavailable" } as const),
+      );
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        "Не удалось начать игру. Попробуйте ещё раз.",
+      );
+      toastError.mockRestore();
+    });
   });
 
   it("failed after real play says the game was interrupted and shows played time", () => {
