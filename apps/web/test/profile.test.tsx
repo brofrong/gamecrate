@@ -59,6 +59,7 @@ describe("LoginMethods", () => {
         providers={providers}
         onLink={noop}
         onUnlink={noopUnlink}
+        onSteamDone={noop}
         busy={null}
       />,
     );
@@ -76,6 +77,7 @@ describe("LoginMethods", () => {
         providers={{ ...providers, yandex: false }}
         onLink={noop}
         onUnlink={noopUnlink}
+        onSteamDone={noop}
         busy={null}
       />,
     );
@@ -93,6 +95,7 @@ describe("LoginMethods", () => {
         providers={providers}
         onLink={noop}
         onUnlink={noopUnlink}
+        onSteamDone={noop}
         busy={null}
       />,
     );
@@ -128,6 +131,7 @@ describe("LoginMethods", () => {
         providers={providers}
         onLink={noop}
         onUnlink={(a) => void handleUnlink(a, { reloadAccounts, reloadMe })}
+        onSteamDone={noop}
         busy={null}
       />,
     );
@@ -143,27 +147,50 @@ describe("LoginMethods", () => {
     unlinkProvider.mockRestore();
   });
 
-  it("link steam uses steam.link with /profile", async () => {
+  it("steam link opens the QR login", () => {
     const linkSteam = spyOn(auth, "linkSteam").mockResolvedValue(
       undefined as never,
+    );
+    const onSteamDone = mock(() => {});
+    const QrLogin = ({
+      title,
+      onDone,
+    }: {
+      title: string;
+      onDone: () => void;
+    }) => (
+      <div>
+        <p>{title}</p>
+        <button onClick={onDone}>готово (фейк)</button>
+      </div>
     );
     render(
       <LoginMethods
         user={user}
         accounts={[]}
         providers={providers}
-        onLink={(p) => void handleLink(p)}
+        onLink={noop}
         onUnlink={noopUnlink}
+        onSteamDone={onSteamDone}
         busy={null}
+        QrLogin={QrLogin}
       />,
     );
     const steamRow = screen
       .getByText("Steam — не привязан")
       .closest("div") as HTMLElement;
+    // Steam не идёт через общий `onLink` — своя подпись и свой экран с QR.
+    expect(
+      within(steamRow).queryByRole("button", { name: "Привязать" }),
+    ).toBeNull();
     fireEvent.click(
-      within(steamRow).getByRole("button", { name: "Привязать" }),
+      within(steamRow).getByRole("button", { name: "Подключить" }),
     );
-    await waitFor(() => expect(linkSteam).toHaveBeenCalledWith("/profile"));
+    expect(screen.getByText("Подключите Steam")).toBeTruthy();
+    expect(linkSteam).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
+    expect(onSteamDone).toHaveBeenCalledTimes(1);
     linkSteam.mockRestore();
   });
 

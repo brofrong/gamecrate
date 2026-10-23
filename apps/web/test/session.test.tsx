@@ -1,5 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
-import type { LibraryEntry, SessionState, SessionView } from "@cg/rpc";
+import {
+  type LibraryEntry,
+  type SessionState,
+  type SessionView,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import {
   fireEvent,
   render,
@@ -61,6 +66,7 @@ const renderPlayer = (
     onExit: () => void;
     onHere: () => void;
     onLibrary: () => void;
+    onPlayAgain: () => void;
   }> = {},
 ) =>
   render(
@@ -69,6 +75,7 @@ const renderPlayer = (
       onExit={handlers.onExit ?? noop}
       onHere={handlers.onHere ?? noop}
       onLibrary={handlers.onLibrary ?? noop}
+      onPlayAgain={handlers.onPlayAgain ?? noop}
     />,
   );
 
@@ -220,6 +227,40 @@ describe("session", () => {
     expect(ok.container.querySelector(".text-emerald-400")).not.toBeNull();
   });
 
+  it("steam login failure shows QR and plays again after done", () => {
+    const onPlayAgain = mock(() => {});
+    const QrLogin = ({
+      title,
+      onDone,
+    }: {
+      title: string;
+      onDone: () => void;
+    }) => (
+      <div>
+        <p>{title}</p>
+        <button onClick={onDone}>готово (фейк)</button>
+      </div>
+    );
+    render(
+      <Player
+        view={view("failed", {
+          failReason: steamLoginRequiredReason,
+          streamReady: false,
+        })}
+        onExit={noop}
+        onHere={noop}
+        onLibrary={noop}
+        onPlayAgain={onPlayAgain}
+        QrLogin={QrLogin}
+      />,
+    );
+    expect(screen.getByText("Войдите в Steam ещё раз")).toBeTruthy();
+    expect(screen.queryByText("Не удалось запустить игру")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
+    expect(onPlayAgain).toHaveBeenCalledTimes(1);
+  });
+
   it("failed after real play says the game was interrupted and shows played time", () => {
     const played = renderPlayer(
       view("failed", {
@@ -290,7 +331,13 @@ describe("session", () => {
       view("playing"),
     ]) {
       rerender(
-        <Player view={v} onExit={noop} onHere={noop} onLibrary={noop} />,
+        <Player
+          view={v}
+          onExit={noop}
+          onHere={noop}
+          onLibrary={noop}
+          onPlayAgain={noop}
+        />,
       );
       expect(streamFrame(container)).toBe(first);
     }

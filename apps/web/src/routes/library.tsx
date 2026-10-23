@@ -8,10 +8,14 @@ import { AsyncResult } from "effect/reactivity";
 import { Play, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { linkSteam } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
 import { type LibraryPlay, LibraryContent } from "@/components/LibraryContent";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
+import {
+  SteamQrLogin,
+  SteamQrLoginDialog,
+  type SteamQrLoginComponent,
+} from "@/components/SteamQrLogin";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { authErrorMessage } from "@/lib/authErrors";
@@ -44,17 +48,35 @@ function LibrarySkeleton() {
   );
 }
 
-/** Карточка для пользователя без привязанного Steam: без него библиотека пуста. */
-export function ConnectSteam({ onLink }: { onLink: () => void }) {
+/**
+ * Карточка для пользователя без привязанного Steam: без него библиотека пуста.
+ * Кнопка открывает `SteamQrLogin` в модальном окне вместо старой OpenID-привязки.
+ * `QrLogin` — только для тестов (подмена настоящего компонента фейком).
+ */
+export function ConnectSteam({
+  onDone,
+  QrLogin = SteamQrLogin,
+}: {
+  onDone: () => void;
+  QrLogin?: SteamQrLoginComponent;
+}) {
+  const [open, setOpen] = useState(false);
   return (
     <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-4 text-center">
-      <p className="text-lg font-medium">
-        Подключи Steam, чтобы увидеть свою библиотеку
-      </p>
+      <p className="text-lg font-medium">Подключите Steam</p>
       <p className="text-sm text-muted-foreground">
         Мы не просим пароль: Steam сам подтвердит, что аккаунт твой
       </p>
-      <Button onClick={onLink}>Привязать Steam</Button>
+      <Button onClick={() => setOpen(true)}>Подключить Steam</Button>
+      <SteamQrLoginDialog
+        open={open}
+        title="Подключите Steam"
+        onDone={() => {
+          setOpen(false);
+          onDone();
+        }}
+        QrLogin={QrLogin}
+      />
     </div>
   );
 }
@@ -190,7 +212,12 @@ function LibraryPage() {
         {unreachable ? (
           <ServerUnreachable onRetry={retry} />
         ) : user !== undefined && user.steamId === null ? (
-          <ConnectSteam onLink={() => void linkSteam("/library")} />
+          <ConnectSteam
+            onDone={() => {
+              reloadMe();
+              void refresh(refreshLibraryArgs);
+            }}
+          />
         ) : AsyncResult.isSuccess(library) ? (
           <LibraryContent
             view={library.value}

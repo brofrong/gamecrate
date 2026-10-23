@@ -19,6 +19,8 @@ import {
   heartbeatAtom,
   resultErrorTag,
   sessionWatchAtom,
+  startSessionArgs,
+  startSessionAtom,
   stopSessionAtom,
 } from "@/rpc";
 import { rootRoute } from "./__root";
@@ -71,6 +73,7 @@ function SessionPage() {
   const watch = useAtomValue(watchAtom);
   const resubscribe = useAtomRefresh(watchAtom);
   const stop = useAtomSet(stopSessionAtom, { mode: "promiseExit" });
+  const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
   const input = useInputActivity();
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
@@ -125,6 +128,23 @@ function SessionPage() {
     toast.error("Не удалось завершить игру. Попробуйте ещё раз.");
   }, [stop, id]);
 
+  // Установщик не дождался входа в Steam (§3.2): «Готово» на экране QR запускает
+  // ту же игру заново, как если бы игрок сам нажал «Играть».
+  const onPlayAgain = useCallback(async () => {
+    if (view === undefined) return;
+    const exit = await start(startSessionArgs(view.appId));
+    if (Exit.isSuccess(exit)) {
+      void navigate({ to: "/session/$id", params: { id: exit.value.id } });
+      return;
+    }
+    const tag = errorTag(exit.cause);
+    if (tag === "Unauthorized") {
+      window.location.assign("/");
+      return;
+    }
+    toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+  }, [start, view, navigate]);
+
   const retry = () => {
     restartWait();
     resubscribe();
@@ -150,6 +170,7 @@ function SessionPage() {
         onHere={onHere}
         onLibrary={toLibrary}
         onFrameLoad={input.attachFrame}
+        onPlayAgain={() => void onPlayAgain()}
       />
       {stalled && (
         // Стрим идёт отдельным соединением и может работать дальше — не закрываем его.

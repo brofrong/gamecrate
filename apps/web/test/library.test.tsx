@@ -1,10 +1,12 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { LibraryEntry, LibraryView } from "@cg/rpc";
 import { fireEvent, render, screen } from "@testing-library/react";
+import * as auth from "../src/auth";
 import {
   LibraryContent,
   type LibraryPlay,
 } from "../src/components/LibraryContent";
+import { ConnectSteam } from "../src/routes/library";
 
 const game: LibraryEntry = {
   appId: 620,
@@ -98,5 +100,35 @@ describe("library", () => {
     renderLibrary(ready([game]), () => {}, { ...idlePlay, startingAppId: 620 });
     const pending = screen.getByRole("button", { name: "Играть" });
     expect((pending as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("connect steam opens the QR login", () => {
+    const linkSteam = spyOn(auth, "linkSteam").mockResolvedValue(
+      undefined as never,
+    );
+    const onDone = mock(() => {});
+    const QrLogin = ({
+      title,
+      onDone: fire,
+    }: {
+      title: string;
+      onDone: () => void;
+    }) => (
+      <div>
+        <p>{title}</p>
+        <button onClick={fire}>готово (фейк)</button>
+      </div>
+    );
+    render(<ConnectSteam onDone={onDone} QrLogin={QrLogin} />);
+    expect(screen.getByText("Подключите Steam")).toBeTruthy();
+    expect(screen.queryByText("Ждём сканирования")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Подключить Steam" }));
+    expect(screen.getAllByText("Подключите Steam").length).toBeGreaterThan(1);
+    expect(linkSteam).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    linkSteam.mockRestore();
   });
 });

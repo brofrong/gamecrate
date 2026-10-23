@@ -1,5 +1,5 @@
 // Экраны сессии без стрима: очередь, запуск, сохранение, итог, ошибка, «сессия не найдена».
-import type { SessionView } from "@cg/rpc";
+import { type SessionView, steamLoginRequiredReason } from "@cg/rpc";
 import {
   CircleAlert,
   CircleCheck,
@@ -9,6 +9,10 @@ import {
   SearchX,
 } from "lucide-react";
 import type * as React from "react";
+import {
+  SteamQrLogin,
+  type SteamQrLoginComponent,
+} from "@/components/SteamQrLogin";
 import { Button } from "@/components/ui/button";
 
 /** Игровое время: «1 ч 12 мин», «1 ч 05 мин»; меньше часа — «10 мин». */
@@ -82,11 +86,16 @@ export function SessionStatus({
   view,
   onLibrary,
   onExit,
+  onPlayAgain,
+  QrLogin = SteamQrLogin,
 }: {
   view: SessionView;
   onLibrary: () => void;
   /** «Отменить» в `installing` — тот же `session.stop`, что и выход из игры. */
   onExit: () => void;
+  /** «Готово» на экране QR после пропавшего входа — запустить игру заново. */
+  onPlayAgain: () => void;
+  QrLogin?: SteamQrLoginComponent;
 }) {
   const { gameName } = view;
   switch (view.state) {
@@ -158,6 +167,20 @@ export function SessionStatus({
     case "failed": {
       // Игра успела идти — сбой прервал её, а не помешал запуску.
       const played = view.playedSeconds > 0;
+      // Установщик не дождался входа в Steam внутри контейнера: показываем тот же
+      // экран с QR, что и при первом подключении, вместо общей ошибки запуска (§3.2).
+      if (!played && view.failReason === steamLoginRequiredReason) {
+        return (
+          <main className="flex min-h-dvh items-center justify-center px-6">
+            <div className="flex max-w-md flex-col items-center gap-4 text-center">
+              {gameName && (
+                <p className="text-sm text-muted-foreground">{gameName}</p>
+              )}
+              <QrLogin title="Войдите в Steam ещё раз" onDone={onPlayAgain} />
+            </div>
+          </main>
+        );
+      }
       return (
         <StatusScreen
           icon={<CircleAlert className="size-6 text-destructive" />}

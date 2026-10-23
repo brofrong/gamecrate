@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { IdlePrompt } from "./IdlePrompt";
 import { SessionStatus } from "./SessionStatus";
+import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
 
 /** Состояния, в которых показывается стрим (если он готов). */
 const streamStates: ReadonlySet<SessionState> = new Set([
@@ -117,6 +118,8 @@ export function Player({
   onHere,
   onLibrary,
   onFrameLoad,
+  onPlayAgain,
+  QrLogin = SteamQrLogin,
 }: {
   view: SessionView;
   /** Пользователь подтвердил «Выйти из игры». */
@@ -126,9 +129,20 @@ export function Player({
   onLibrary: () => void;
   /** Документ стрима загружен (на каждую загрузку iframe). */
   onFrameLoad?: (frame: HTMLIFrameElement) => void;
+  /** Установщик не дождался входа в Steam: «Готово» на экране QR запускает игру заново. */
+  onPlayAgain: () => void;
+  QrLogin?: SteamQrLoginComponent;
 }) {
   if (!showsStream(view)) {
-    return <SessionStatus view={view} onLibrary={onLibrary} onExit={onExit} />;
+    return (
+      <SessionStatus
+        view={view}
+        onLibrary={onLibrary}
+        onExit={onExit}
+        onPlayAgain={onPlayAgain}
+        QrLogin={QrLogin}
+      />
+    );
   }
 
   // Порядок детей постоянный: iframe первым и без условий — React не пересоздаёт его

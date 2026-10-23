@@ -5,12 +5,7 @@ import { createRoute, Navigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import {
-  linkProvider,
-  linkSteam,
-  listLinkedAccounts,
-  unlinkProvider,
-} from "@/auth";
+import { linkProvider, listLinkedAccounts, unlinkProvider } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
 import { AccountSummary } from "@/components/profile/AccountSummary";
 import { EmailSection } from "@/components/profile/EmailSection";
@@ -24,12 +19,14 @@ import { useStalled } from "@/lib/useStalled";
 import { meAtom, providersAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
-/** Привязка способа входа: Steam — свой OpenID-поток, остальные — `linkSocial`. */
+/**
+ * Привязка способа входа через `linkSocial`. Steam через сюда не ходит: его
+ * «Подключить» открывает `SteamQrLogin` прямо в `LoginMethods` (OpenID-привязка
+ * убрана из интерфейса, `linkSteam` остаётся определённой, но не вызывается) —
+ * ранний выход ниже просто сужает тип для `linkProvider` и не должен срабатывать.
+ */
 export const handleLink = async (provider: LoginProviderId): Promise<void> => {
-  if (provider === "steam") {
-    await linkSteam("/profile");
-    return;
-  }
+  if (provider === "steam") return;
   await linkProvider(provider);
 };
 
@@ -119,6 +116,10 @@ function ProfilePage() {
                 providers={providers}
                 onLink={onLink}
                 onUnlink={onUnlink}
+                onSteamDone={() => {
+                  reloadAccounts();
+                  reloadMe();
+                }}
                 busy={busy}
               />
             )}
