@@ -10,6 +10,7 @@ import {
   syncLibrary,
 } from "./LibraryService";
 import { recentGames } from "./RecentRepo";
+import { trending } from "./TrendingRepo";
 
 export const LibraryRpcHandlers = LibraryRpcs.toLayer(
   Effect.gen(function* () {
@@ -58,8 +59,12 @@ export const LibraryRpcHandlers = LibraryRpcs.toLayer(
           const current = yield* CurrentUser;
           return yield* recentGames(current.id);
         }),
-      // TODO: подключается в задаче главной /app («В тренде»).
-      "library.trending": () => Effect.succeed({ now: [], week: [] }),
+      // Блок «В тренде» для главной /app.
+      "library.trending": () =>
+        Effect.gen(function* () {
+          const current = yield* CurrentUser;
+          return yield* trending(current.id, new Date());
+        }),
     });
   }),
 );
