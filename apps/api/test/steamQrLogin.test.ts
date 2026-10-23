@@ -4,8 +4,8 @@ import { describe, expect, it } from "bun:test";
 import { Db, steamLogins, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type CurrentUserShape, SteamLoginRpcs } from "@cg/rpc";
-import { eq } from "drizzle-orm";
-import { Effect, Layer, Option, type Scope } from "effect";
+import { eq, sql } from "drizzle-orm";
+import { Deferred, Effect, Fiber, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
@@ -103,29 +103,83 @@ describe("steamLogin rpc", () => {
     });
   });
 
-  it("concurrent starts do not crash on the active-attempt unique index", async () => {
+  /**
+   * Воспроизводит гонку двойного клика детерминированно, без надежды на
+   * совпадение по времени: вручную держим открытой "первую" транзакцию
+   * (взят advisory-лок по userId + вставлена незакоммиченная активная
+   * строка), запускаем `steamLogin.start` вторым клиентом и проверяем, что
+   * он не завершается, пока первая транзакция открыта (блокируется на
+   * локе, а не на уникальном индексе) — это и есть контрэвиденс для гонки
+   * из ревью. Коммитим первую — вторая должна тогда же успешно завершиться,
+   * увидеть уже закоммиченную активную строку и отменить именно её.
+   */
+  it("a concurrent start waits for the open transaction, then cancels its row", async () => {
     const result = await run(
       Effect.gen(function* () {
         yield* seed;
         const rpc = yield* client;
-        // Двойной клик: два одновременных вызова того же пользователя.
-        const [a, b] = yield* Effect.all(
-          [rpc["steamLogin.start"](), rpc["steamLogin.start"]()],
-          { concurrency: "unbounded" },
-        );
         const db = yield* Db;
+        const manualId = "manual-first-attempt";
+
+        const locked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+
+        // "Первый клиент": держит advisory-лок и незакоммиченную активную
+        // строку, пока мы не разрешим ему закоммититься.
+        const firstFiber = yield* db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx.execute(
+                sql`select pg_advisory_xact_lock(hashtext(${alice.id})::bigint)`,
+              );
+              yield* tx
+                .insert(steamLogins)
+                .values({ id: manualId, userId: alice.id });
+              yield* Deferred.succeed(locked, undefined);
+              yield* Deferred.await(release);
+            }),
+          )
+          .pipe(Effect.forkScoped);
+
+        yield* Deferred.await(locked);
+
+        // Пока первая транзакция открыта, её вставка не видна снаружи
+        // (READ COMMITTED) — активных строк пока не существует для внешнего наблюдателя.
+        const beforeCommit = yield* db
+          .select()
+          .from(steamLogins)
+          .where(eq(steamLogins.userId, alice.id));
+        expect(beforeCommit).toHaveLength(0);
+
+        // "Второй клиент" — конкурентный вызов того же пользователя.
+        // Должен заблокироваться на advisory-локе, а не упасть на индексе.
+        const secondFiber = yield* rpc["steamLogin.start"]().pipe(
+          Effect.forkScoped,
+        );
+        yield* Effect.sleep("200 millis");
+        const secondStillRunning = secondFiber.pollUnsafe() === undefined;
+
+        // Отпускаем первую транзакцию — только теперь она коммитится.
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(firstFiber);
+
+        const second = yield* Fiber.join(secondFiber).pipe(
+          Effect.timeout("5 seconds"),
+        );
         const rows = yield* db
           .select()
           .from(steamLogins)
           .where(eq(steamLogins.userId, alice.id));
-        return { a, b, rows };
+        return { secondStillRunning, second, rows };
       }),
     );
+    // Второй вызов не завершился, пока первая транзакция оставалась открытой.
+    expect(result.secondStillRunning).toBe(true);
     expect(result.rows).toHaveLength(2);
-    expect(result.rows.filter((r) => r.state === "pending")).toHaveLength(1);
-    expect(result.rows.filter((r) => r.state === "cancelled")).toHaveLength(
-      1,
-    );
+    const manualRow = result.rows.find((r) => r.id === "manual-first-attempt");
+    const secondRow = result.rows.find((r) => r.id === result.second.attemptId);
+    expect(manualRow?.state).toBe("cancelled");
+    expect(secondRow?.state).toBe("pending");
   });
 
   it("status of another user's attempt is SteamLoginNotFound", async () => {

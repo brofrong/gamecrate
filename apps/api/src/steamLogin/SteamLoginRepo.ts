@@ -2,7 +2,7 @@
 // одной транзакции вытеснив прежнюю активную того же пользователя) и прочитать
 // свою попытку по id.
 import { Db, type SteamLoginState, steamLogins } from "@cg/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 
 /** Активные (незавершённые) состояния — те же, что в частичном индексе БД `steam_logins_active_user_idx`. */
@@ -22,9 +22,16 @@ export interface SteamLoginRow {
 
 /**
  * Заводит новую попытку входа для пользователя: отмена прежней активной
- * попытки и вставка новой `pending` — одной транзакцией, иначе конкурентный
- * двойной клик (два параллельных `steamLogin.start` того же пользователя)
- * мог бы упасть на уникальном индексе `steam_logins_active_user_idx`.
+ * попытки и вставка новой `pending` — одной транзакцией. Простая транзакция
+ * этого не гарантирует сама по себе: при READ COMMITTED два параллельных
+ * `steamLogin.start` того же пользователя без активной строки оба увидят
+ * `UPDATE` без совпадений и дойдут до `INSERT`; второй `INSERT` дождётся
+ * коммита первого и упадёт на уникальном индексе `steam_logins_active_user_idx`
+ * (23505). Поэтому первым делом в транзакции берём advisory-лок по
+ * `userId` — конкурентный `start` того же пользователя ждёт на этом локе, а
+ * не на уникальном индексе, и после коммита первого видит уже вставленную
+ * активную строку и корректно её отменяет. Лок держится до конца
+ * транзакции и освобождается автоматически при commit/rollback.
  */
 export const start = (userId: string): Effect.Effect<string, never, Db> =>
   Effect.gen(function* () {
@@ -32,6 +39,9 @@ export const start = (userId: string): Effect.Effect<string, never, Db> =>
     const id = crypto.randomUUID();
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
+        yield* tx.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${userId})::bigint)`,
+        );
         yield* tx
           .update(steamLogins)
           .set({ state: "cancelled" })
