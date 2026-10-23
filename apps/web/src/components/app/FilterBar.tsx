@@ -45,8 +45,11 @@ const EXTRA_CHIPS: ReadonlyArray<{ value: Chip; label: string }> = [
   { value: "10h", label: "Больше 10 ч в игре" },
 ];
 
-/** Сравнение фильтров целиком (включая порядок `chips`) — для видимости «Сбросить». */
-function filtersEqual(a: Filters, b: Filters): boolean {
+/**
+ * Сравнение фильтров целиком (включая порядок `chips`) — для видимости «Сбросить»
+ * здесь и точки на кнопке «Фильтры» на телефоне (`MyGamesPage`).
+ */
+export function filtersEqual(a: Filters, b: Filters): boolean {
   return (
     a.status === b.status &&
     a.sort === b.sort &&

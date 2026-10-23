@@ -1,6 +1,9 @@
 // Полоска из двух-трёх плиток на телефоне (спека §4.6), замена правой колонки:
 // Steam (ведёт на `/profile`; без Steam — кнопка «Привязать Steam»), месяц (ведёт на
-// `/app/time`) и, когда у пользователя идёт установка, «Установка · N %».
+// `/app/time`) и, когда у пользователя идёт установка, «Установка · N %». Рисуется,
+// как только загрузился `me` — даже без Steam и до того, как подтянулась библиотека
+// (спека §4.6: «Привязать Steam» должна быть видна сразу), поэтому `view` опционален —
+// счётчики «N игр · M готовы» показываются только когда он есть и `_tag === "Ready"`.
 import type { CurrentUserShape, LibraryView, SessionView } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import type * as React from "react";
@@ -22,13 +25,13 @@ export function SummaryStrip({
   activeSession,
 }: {
   user: CurrentUserShape;
-  view: LibraryView;
+  view: LibraryView | undefined;
   monthMinutes: number;
   activeSession?: SessionView | null;
 }) {
-  const total = view._tag === "Ready" ? view.entries.length : 0;
+  const total = view?._tag === "Ready" ? view.entries.length : 0;
   const ready =
-    view._tag === "Ready"
+    view?._tag === "Ready"
       ? view.entries.filter((entry) => entry.cloud._tag === "Ready").length
       : 0;
   const month = formatMonth(currentMonth(new Date()));

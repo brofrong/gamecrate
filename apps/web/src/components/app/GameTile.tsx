@@ -3,9 +3,9 @@
 // Общий тип `TileGame` покрывает `LibraryEntry`, `RecentEntry` и `TrendingEntry`:
 // все три несут `appId`/`name`/`coverUrl`/`cloud`, время и Proton — не у всех.
 import { type CloudStatus, type ProtonTier, tierLabel } from "@cg/rpc";
-import { Gamepad2, LoaderCircle, Play } from "lucide-react";
-import { useState } from "react";
+import { LoaderCircle, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { GameCover } from "@/components/app/GameCover";
 import type { CardAction } from "@/lib/cardAction";
 import { formatHoursInGame } from "@/lib/formatTime";
 import { cn } from "@/lib/utils";
@@ -18,10 +18,6 @@ export type TileGame = {
   readonly playtimeMinutes?: number;
   readonly protonTier?: ProtonTier;
 };
-
-/** Горизонтальная шапка Steam — основная картинка карточки. */
-const headerUrl = (appId: number) =>
-  `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`;
 
 /**
  * Строка статуса под названием — ровно по таблице спеки §4.3. `dimmed`
@@ -46,39 +42,6 @@ export function cloudLabel(game: TileGame, dimmed: boolean): string {
 function dotClassName(game: TileGame, dimmed: boolean): string {
   if (dimmed) return "bg-[#8a90a8]";
   return game.cloud._tag === "Ready" ? "bg-[#3ddc97]" : "bg-[#ffd166]";
-}
-
-/** Какая картинка показана: шапка Steam, запасная вертикальная обложка или заглушка с именем. */
-type Art = "header" | "cover" | "none";
-
-function Cover({ game, dimmed }: { game: TileGame; dimmed: boolean }) {
-  const [art, setArt] = useState<Art>("header");
-
-  if (art === "none") {
-    return (
-      <div
-        role="img"
-        aria-label={game.name}
-        className="flex size-full flex-col items-center justify-center gap-2 bg-gradient-to-b from-secondary to-card p-3 text-center"
-      >
-        <Gamepad2 className="size-6 text-muted-foreground" />
-        <span className="line-clamp-3 text-xs font-medium">{game.name}</span>
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={art === "header" ? headerUrl(game.appId) : game.coverUrl}
-      alt={game.name}
-      loading="lazy"
-      onError={() => setArt(art === "header" ? "cover" : "none")}
-      className={cn(
-        "size-full object-cover transition duration-300 group-hover:scale-[1.03]",
-        dimmed && "opacity-70 saturate-50",
-      )}
-    />
-  );
 }
 
 function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
@@ -137,7 +100,7 @@ export function GameTile({
   return (
     <article className="group flex flex-col gap-2">
       <div className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26]">
-        <Cover game={game} dimmed={dimmed} />
+        <GameCover game={game} dimmed={dimmed} />
         {game.cloud._tag === "Ready" && !dimmed && (
           <span className="absolute top-2 left-2 rounded-[7px] border border-[#3ddc97]/35 bg-[#3ddc97]/18 px-2 py-1 text-[10px] font-bold tracking-wide text-[#3ddc97] backdrop-blur-sm">
             ГОТОВА

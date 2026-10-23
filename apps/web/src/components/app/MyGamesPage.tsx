@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import { linkSteam } from "@/auth";
 import { AsideSlot, StickySlot } from "@/components/app/AppShell";
 import { ConnectSteam } from "@/components/app/ConnectSteam";
-import { FilterBar } from "@/components/app/FilterBar";
+import { FilterBar, filtersEqual } from "@/components/app/FilterBar";
 import { FilterSheet } from "@/components/app/FilterSheet";
 import { GameSection } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
@@ -22,6 +22,7 @@ import { SummaryStrip } from "@/components/app/SummaryStrip";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { PrivateProfile } from "@/components/PrivateProfile";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { authErrorMessage } from "@/lib/authErrors";
 import { cardAction, type LibraryPlay } from "@/lib/cardAction";
 import { currentMonth, formatRelativeDate } from "@/lib/formatTime";
@@ -54,6 +55,21 @@ const SECTION_TITLES: Record<Section, string> = {
   installing: "Нужна установка",
   noprofile: "Нужен вход в Steam",
 };
+
+/** Пока `library.list` не ответил — заглушка в форме секции сетки, не пустой экран. */
+function LibrarySkeleton() {
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+      {Array.from({ length: 8 }, (_, i) => (
+        <div key={`skeleton-${i}`} className="flex flex-col gap-2">
+          <Skeleton className="aspect-[460/215] rounded-[14px]" />
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-3 w-1/2" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /** Те же тексты, что сейчас в `LibraryContent.Notice` (тот файл не трогаем). */
 function EmptyNotice({
@@ -180,21 +196,10 @@ export function MyGamesPage() {
   // в `Rail`/`BottomTabs` требовал бы все поля сразу) — `validateSearch` на самом деле
   // всегда возвращает их все через `parseSearch`; прогоняем через него же здесь, это no-op.
   const filters: Filters = parseSearch(search);
-  const isDefaultFilters =
-    filters.status === DEFAULT_FILTERS.status &&
-    filters.sort === DEFAULT_FILTERS.sort &&
-    filters.proton === DEFAULT_FILTERS.proton &&
-    filters.chips.length === 0 &&
-    filters.q.length === 0;
+  const isDefaultFilters = filtersEqual(filters, DEFAULT_FILTERS);
 
   const onFiltersChange = (next: Filters) => {
-    // `toSearch` отдаёт только отличающиеся от умолчаний поля как `Record<string, string>` —
-    // типы его строк шире буквальных юнионов (`StatusFilter` и т.п.) в search-схеме маршрута,
-    // хотя значения всегда из того же набора; явное приведение здесь безопасно.
-    void navigate({
-      search: () => toSearch(next) as Partial<Filters>,
-      replace: true,
-    });
+    void navigate({ search: () => toSearch(next), replace: true });
   };
 
   const user = AsyncResult.isSuccess(me) ? me.value : undefined;
@@ -297,16 +302,18 @@ export function MyGamesPage() {
         }
       />
 
-      {AsyncResult.isSuccess(library) && library.value._tag === "Ready" && (
-        <SummaryStrip
-          user={user}
-          view={library.value}
-          monthMinutes={
-            AsyncResult.isSuccess(summary) ? summary.value.totalMinutes : 0
-          }
-          activeSession={activeSession ?? null}
-        />
-      )}
+      <SummaryStrip
+        user={user}
+        view={
+          AsyncResult.isSuccess(library) && library.value._tag === "Ready"
+            ? library.value
+            : undefined
+        }
+        monthMinutes={
+          AsyncResult.isSuccess(summary) ? summary.value.totalMinutes : 0
+        }
+        activeSession={activeSession ?? null}
+      />
 
       {unreachable ? (
         <ServerUnreachable
@@ -319,8 +326,9 @@ export function MyGamesPage() {
         />
       ) : user.steamId === null ? (
         <ConnectSteam onLink={() => void linkSteam("/app")} />
-      ) : !AsyncResult.isSuccess(library) ? null : library.value._tag ===
-        "Private" ? (
+      ) : !AsyncResult.isSuccess(library) ? (
+        <LibrarySkeleton />
+      ) : library.value._tag === "Private" ? (
         <PrivateProfile
           onRefresh={() => void onRefresh()}
           refreshing={refreshing}
