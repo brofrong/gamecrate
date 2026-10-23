@@ -4,6 +4,7 @@
 import type { TimeSummary } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import { Clock } from "lucide-react";
+import { Panel, PanelHeader } from "@/components/app/Panel";
 import { currentMonth, formatMinutes, formatMonth } from "@/lib/formatTime";
 
 /** «7:40» — часы без паддинга, минуты всегда двузначные. */
@@ -18,19 +19,16 @@ export function TimePanel({ summary }: { summary: TimeSummary | undefined }) {
   const empty = summary === undefined || summary.totalMinutes <= 0;
 
   return (
-    <section className="flex flex-col gap-3 rounded-[20px] bg-[#13161d] p-[18px]">
-      <h2 className="flex items-center gap-2.5 text-[17px] font-bold text-[#eef1ff]">
-        <span
-          aria-hidden
-          className="flex size-[30px] items-center justify-center rounded-full bg-[#2a2e3a]"
-        >
-          <Clock className="size-4" />
-        </span>
-        Время
-        <span className="ml-auto rounded-xl bg-[#3cc2ff]/10 px-2.5 py-1 text-xs font-medium text-[#3cc2ff]">
-          {formatMonth(month).split(" ")[0]}
-        </span>
-      </h2>
+    <Panel>
+      <PanelHeader
+        icon={<Clock className="size-4" />}
+        title="Время"
+        pill={
+          <span className="rounded-xl bg-[#3cc2ff]/10 px-2.5 py-1 text-xs font-medium text-[#3cc2ff]">
+            {formatMonth(month).split(" ")[0]}
+          </span>
+        }
+      />
 
       {empty ? (
         <p className="text-sm text-[#8a90a8]">Ты ещё не играл в этом месяце</p>
@@ -63,6 +61,6 @@ export function TimePanel({ summary }: { summary: TimeSummary | undefined }) {
       >
         подробнее →
       </Link>
-    </section>
+    </Panel>
   );
 }

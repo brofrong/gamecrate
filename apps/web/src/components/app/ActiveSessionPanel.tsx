@@ -6,6 +6,7 @@
 import { isTerminalSessionState, type SessionView } from "@cg/rpc";
 import { Gamepad2 } from "lucide-react";
 import { GameCover, headerUrl } from "@/components/app/GameCover";
+import { Panel, PanelHeader } from "@/components/app/Panel";
 import { Button } from "@/components/ui/button";
 
 /** Русская подпись состояния сессии (спека §4.4). */
@@ -73,16 +74,8 @@ export function ActiveSessionPanel({
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-[20px] bg-[#13161d] p-[18px]">
-      <h2 className="flex items-center gap-2.5 text-[17px] font-bold text-[#eef1ff]">
-        <span
-          aria-hidden
-          className="flex size-[30px] items-center justify-center rounded-full bg-[#2a2e3a]"
-        >
-          <Gamepad2 className="size-4" />
-        </span>
-        Сессия
-      </h2>
+    <Panel>
+      <PanelHeader icon={<Gamepad2 className="size-4" />} title="Сессия" />
       <div className="aspect-[460/215] overflow-hidden rounded-[12px] bg-[#1a1d26]">
         <GameCover game={cover} showNameInPlaceholder={false} />
       </div>
@@ -98,6 +91,6 @@ export function ActiveSessionPanel({
       >
         Вернуться в игру
       </Button>
-    </section>
+    </Panel>
   );
 }

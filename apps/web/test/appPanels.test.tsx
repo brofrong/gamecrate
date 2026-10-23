@@ -1,16 +1,36 @@
 // Правая колонка `/app`: панели Steam/Время/активная сессия/установки/«Скоро».
 // Рендерим компоненты напрямую с пропсами (без атомов) — композицию в `aside`/`sticky`
 // проверяет `myGamesPage.test.tsx`. `Link` внутри (`TimePanel`) требует `RouterProvider`.
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { CurrentUserShape, SessionView, TimeSummary } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { ActiveSessionPanel } from "../src/components/app/ActiveSessionPanel";
 import { ComingSoonPanel } from "../src/components/app/ComingSoonPanel";
 import { InstallsPanel } from "../src/components/app/InstallsPanel";
-import { SteamPanel } from "../src/components/app/SteamPanel";
 import { TimePanel } from "../src/components/app/TimePanel";
 import { testRouter } from "./router";
+
+// `SteamPanel` зовёт `toast.success`/`toast.error` из "sonner" при копировании
+// Steam ID — подменяем модуль, чтобы проверить, какой тост вызван, без рендера
+// `<Toaster/>`. `mock.module` подменяет "sonner" на весь прогон `bun test` (как
+// `../src/rpc` в `myGamesPage.test.tsx`), поэтому мок несёт и `Toaster` (пусть и
+// заглушкой) — иначе падают другие файлы, чей `<Toaster/>` (`routes/__root.tsx`) эту
+// же подмену и получает. `SteamPanel` импортируем динамически, после `mock.module`:
+// статический импорт зафиксировал бы настоящий `sonner` до того, как подмена встанет.
+const toastSuccess = mock(() => {});
+const toastError = mock(() => {});
+mock.module("sonner", () => ({
+  toast: { success: toastSuccess, error: toastError },
+  Toaster: () => null,
+}));
+
+const { SteamPanel } = await import("../src/components/app/SteamPanel");
+
+beforeEach(() => {
+  toastSuccess.mockClear();
+  toastError.mockClear();
+});
 
 const user: CurrentUserShape = {
   id: "u1",
@@ -57,7 +77,7 @@ describe("SteamPanel", () => {
     ).toBeNull();
   });
 
-  it("shows stats, the refresh button and copies the Steam ID", () => {
+  it("shows stats, the refresh button and copies the Steam ID", async () => {
     const writeText = mock(() => Promise.resolve());
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText },
@@ -111,6 +131,40 @@ describe("SteamPanel", () => {
       screen.getByRole("button", { name: "Скопировать Steam ID" }),
     );
     expect(writeText).toHaveBeenCalledWith("76561198020550802");
+    await waitFor(() =>
+      expect(toastSuccess).toHaveBeenCalledWith("Скопировано"),
+    );
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("shows an error toast and no success toast when the copy fails", async () => {
+    const writeText = mock(() => Promise.reject(new Error("denied")));
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(
+      <SteamPanel
+        user={user}
+        view={{
+          _tag: "Ready",
+          entries: [],
+          syncedAt: null,
+          steamProfile: true,
+        }}
+        onRefresh={() => {}}
+        refreshing={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Скопировать Steam ID" }),
+    );
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Не удалось скопировать"),
+    );
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it("disables the refresh button while refreshing", () => {

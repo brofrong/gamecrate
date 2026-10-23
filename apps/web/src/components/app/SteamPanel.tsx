@@ -6,6 +6,7 @@ import type { CurrentUserShape, LibraryView } from "@cg/rpc";
 import { Copy } from "lucide-react";
 import { toast } from "sonner";
 import { linkSteam } from "@/auth";
+import { Panel, PanelHeader, Stat } from "@/components/app/Panel";
 import { Button } from "@/components/ui/button";
 import { formatRelativeDate } from "@/lib/formatTime";
 
@@ -28,39 +29,51 @@ export function SteamPanel({
       : 0;
   const syncedAt = view?._tag === "Ready" ? view.syncedAt : null;
 
-  const onCopy = () => {
+  const stats = [
+    { label: "игр", value: total },
+    { label: "готовы", value: ready },
+    {
+      label: "синхр.",
+      value: syncedAt === null ? "—" : formatRelativeDate(syncedAt, new Date()),
+    },
+  ];
+
+  const onCopy = async () => {
     if (user.steamId === null) return;
-    void navigator.clipboard.writeText(user.steamId);
-    toast.success("Скопировано");
+    try {
+      await navigator.clipboard.writeText(user.steamId);
+      toast.success("Скопировано");
+    } catch {
+      toast.error("Не удалось скопировать");
+    }
   };
 
   return (
-    <section className="flex flex-col gap-3 rounded-[20px] bg-[#13161d] p-[18px]">
-      <h2 className="flex items-center gap-2.5 text-[17px] font-bold text-[#eef1ff]">
-        <span
-          aria-hidden
-          className="flex size-[30px] items-center justify-center rounded-full bg-[#2a2e3a] font-mono text-[10px] font-bold"
-        >
-          ST
-        </span>
-        Steam
-        {linked ? (
-          <span className="ml-auto flex items-center gap-1.5 rounded-xl bg-[#3ddc97]/10 px-2.5 py-1 text-xs font-medium text-[#3ddc97]">
-            <span aria-hidden className="size-1.5 rounded-full bg-[#3ddc97]" />
-            Привязан
-          </span>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="ml-auto"
-            onClick={() => void linkSteam("/app")}
-          >
-            Привязать Steam
-          </Button>
-        )}
-      </h2>
+    <Panel>
+      <PanelHeader
+        icon="ST"
+        title="Steam"
+        pill={
+          linked ? (
+            <span className="flex items-center gap-1.5 rounded-xl bg-[#3ddc97]/10 px-2.5 py-1 text-xs font-medium text-[#3ddc97]">
+              <span
+                aria-hidden
+                className="size-1.5 rounded-full bg-[#3ddc97]"
+              />
+              Привязан
+            </span>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void linkSteam("/app")}
+            >
+              Привязать Steam
+            </Button>
+          )
+        }
+      />
 
       {linked && (
         <>
@@ -88,7 +101,7 @@ export function SteamPanel({
                 <button
                   type="button"
                   aria-label="Скопировать Steam ID"
-                  onClick={onCopy}
+                  onClick={() => void onCopy()}
                   className="text-[#8a90a8] hover:text-[#eef1ff]"
                 >
                   <Copy className="size-3.5" />
@@ -97,23 +110,10 @@ export function SteamPanel({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[11px] text-[#8a90a8]">игр</span>
-              <span className="text-lg font-bold text-[#eef1ff]">{total}</span>
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[11px] text-[#8a90a8]">готовы</span>
-              <span className="text-lg font-bold text-[#eef1ff]">{ready}</span>
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <span className="text-[11px] text-[#8a90a8]">синхр.</span>
-              <span className="text-lg font-bold text-[#eef1ff]">
-                {syncedAt === null
-                  ? "—"
-                  : formatRelativeDate(syncedAt, new Date())}
-              </span>
-            </div>
+          <div className="grid grid-cols-3 gap-2 border-t border-white/10 pt-3 text-center">
+            {stats.map((stat) => (
+              <Stat key={stat.label} {...stat} />
+            ))}
           </div>
 
           <Button
@@ -127,6 +127,6 @@ export function SteamPanel({
           </Button>
         </>
       )}
-    </section>
+    </Panel>
   );
 }
