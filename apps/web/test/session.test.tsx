@@ -303,6 +303,8 @@ describe("session", () => {
       playtimeMinutes: 0,
       protonTier: "platinum",
       coverUrl: `https://cdn.example/${appId}.jpg`,
+      cloud: { _tag: "Missing" },
+      lastPlayedAt: null,
     });
     const onPlay = mock((_appId: number) => {});
     const onResume = mock(() => {});
@@ -313,7 +315,12 @@ describe("session", () => {
       onResume,
     });
     const entries = [game(620, "Portal 2"), game(400, "Portal")];
-    const view_ = { _tag: "Ready", entries, syncedAt: null } as const;
+    const view_ = {
+      _tag: "Ready",
+      entries,
+      syncedAt: null,
+      steamProfile: true,
+    } as const;
 
     const free = render(
       <LibraryContent

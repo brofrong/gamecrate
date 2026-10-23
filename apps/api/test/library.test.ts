@@ -345,6 +345,8 @@ describe("library", () => {
       protonTier: "pending",
       coverUrl:
         "https://cdn.cloudflare.steamstatic.com/steam/apps/3/library_600x900_2x.jpg",
+      cloud: { _tag: "Missing" },
+      lastPlayedAt: null,
     });
   });
 

@@ -51,6 +51,9 @@ export const LibraryRpcHandlers = LibraryRpcs.toLayer(
             yield* sync(current.id, current.steamId);
           return yield* libraryView(current.id);
         }),
+      // TODO: подключаются в задаче главной /app («Недавние», «В тренде»).
+      "library.recent": () => Effect.succeed([]),
+      "library.trending": () => Effect.succeed({ now: [], week: [] }),
     });
   }),
 );

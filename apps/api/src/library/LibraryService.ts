@@ -125,17 +125,21 @@ export const libraryView = (
     const state = yield* LibraryRepo.libraryState(userId);
     if (state?.libraryPrivate) return { _tag: "Private" } as const;
     const rows = yield* LibraryRepo.listEntries(userId);
+    // TODO: статус облака и время последней игры подключаются в задаче главной /app.
     const entries = rows.map((row): LibraryEntry => ({
       appId: row.appId,
       name: row.name,
       playtimeMinutes: row.playtimeMinutes,
       protonTier: isProtonTier(row.protonTier) ? row.protonTier : "pending",
       coverUrl: coverUrl(row.appId),
+      cloud: { _tag: "Missing" },
+      lastPlayedAt: null,
     }));
     return {
       _tag: "Ready",
       entries,
       syncedAt: state?.librarySyncedAt?.toISOString() ?? null,
+      steamProfile: state?.steamId != null,
     } as const;
   }).pipe(Effect.orDie);
 

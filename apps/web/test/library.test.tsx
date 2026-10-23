@@ -13,12 +13,14 @@ const game: LibraryEntry = {
   protonTier: "platinum",
   coverUrl:
     "https://cdn.cloudflare.steamstatic.com/steam/apps/620/library_600x900_2x.jpg",
+  cloud: { _tag: "Missing" },
+  lastPlayedAt: null,
 };
 
 const ready = (
   entries: ReadonlyArray<LibraryEntry>,
   syncedAt: string | null = "2026-10-17T10:00:00.000Z",
-): LibraryView => ({ _tag: "Ready", entries, syncedAt });
+): LibraryView => ({ _tag: "Ready", entries, syncedAt, steamProfile: true });
 
 const idlePlay: LibraryPlay = {
   active: null,
