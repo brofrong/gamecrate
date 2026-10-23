@@ -218,6 +218,85 @@ describe("time.summary", () => {
     expect(summary.sessions.map((s) => s.minutes)).toEqual([45, 20, 30]);
   });
 
+  it("floors minutes per segment before summing, not the total", async () => {
+    const summary = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, timeUser.id);
+        yield* insertGames(db, [5, 6]);
+
+        // Game 5: two 50s segments. Floor per segment = 0 + 0 = 0; flooring
+        // the raw sum (100s ≈ 1.67 min) would wrongly give 1.
+        yield* insertSession(db, {
+          id: "s-floor-zero",
+          userId: timeUser.id,
+          appId: 5,
+          createdAt: new Date("2026-10-02T00:00:00Z"),
+        });
+        yield* insertSegment(db, {
+          sessionId: "s-floor-zero",
+          userId: timeUser.id,
+          appId: 5,
+          startedAt: new Date("2026-10-02T00:00:00Z"),
+          endedAt: new Date("2026-10-02T00:00:50Z"),
+          billable: true,
+          open: false,
+        });
+        yield* insertSegment(db, {
+          sessionId: "s-floor-zero",
+          userId: timeUser.id,
+          appId: 5,
+          startedAt: new Date("2026-10-02T00:01:00Z"),
+          endedAt: new Date("2026-10-02T00:01:50Z"),
+          billable: true,
+          open: false,
+        });
+
+        // Game 6: two 90s segments. Floor per segment = 1 + 1 = 2; flooring
+        // the raw sum (180s = 3 min exactly) would wrongly give 3.
+        yield* insertSession(db, {
+          id: "s-floor-two",
+          userId: timeUser.id,
+          appId: 6,
+          createdAt: new Date("2026-10-03T00:00:00Z"),
+        });
+        yield* insertSegment(db, {
+          sessionId: "s-floor-two",
+          userId: timeUser.id,
+          appId: 6,
+          startedAt: new Date("2026-10-03T00:00:00Z"),
+          endedAt: new Date("2026-10-03T00:01:30Z"),
+          billable: true,
+          open: false,
+        });
+        yield* insertSegment(db, {
+          sessionId: "s-floor-two",
+          userId: timeUser.id,
+          appId: 6,
+          startedAt: new Date("2026-10-03T00:02:00Z"),
+          endedAt: new Date("2026-10-03T00:03:30Z"),
+          billable: true,
+          open: false,
+        });
+
+        return yield* (yield* client)["time.summary"]({ month: "2026-10" });
+      }),
+    );
+
+    expect(summary.totalMinutes).toBe(2);
+    expect(summary.sessionCount).toBe(2);
+    expect(summary.byGame).toEqual([
+      { appId: 6, name: "Game 6", minutes: 2 },
+      { appId: 5, name: "Game 5", minutes: 0 },
+    ]);
+    expect(
+      summary.sessions.find((s) => s.sessionId === "s-floor-zero")?.minutes,
+    ).toBe(0);
+    expect(
+      summary.sessions.find((s) => s.sessionId === "s-floor-two")?.minutes,
+    ).toBe(2);
+  });
+
   it("month boundary is Moscow time", async () => {
     const summary = await run(
       Effect.gen(function* () {
