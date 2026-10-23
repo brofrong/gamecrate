@@ -1,17 +1,27 @@
 import { describe, expect, it } from "bun:test";
 import { Db, profiles, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
+import type { SteamLoginSeed } from "@cg/rpc";
 import { eq } from "drizzle-orm";
-import { Effect, References } from "effect";
+import { Effect, Redacted, References } from "effect";
+import { applyProfileCommit } from "../src/http";
 import * as SessionRepo from "../src/SessionRepo";
+import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 
-const run = <A, E>(body: Effect.Effect<A, E, Db>) =>
+const run = <A, E>(body: Effect.Effect<A, E, Db | SteamLoginSeeds>) =>
   Effect.runPromise(
     body.pipe(
       Effect.provide(DbTest),
+      Effect.provide(SteamLoginSeeds.layer),
       Effect.provideService(References.MinimumLogLevel, "Error"),
     ),
   );
+
+const makeSeed = (refreshToken: string): SteamLoginSeed => ({
+  accountName: Redacted.make("steamuser"),
+  steamId: "76561198000000000",
+  refreshToken: Redacted.make(refreshToken),
+});
 
 const seedUser = (id: string) =>
   Effect.gen(function* () {
@@ -137,6 +147,58 @@ describe("profile commit", () => {
           objectKey: "profiles/u1/v2.cgp",
           sizeBytes: 200,
         });
+      }),
+    ));
+
+  it("accepted seeded commit clears the pending login", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        const seed = makeSeed("t1");
+        yield* seeds.put("u1", seed);
+
+        const result = yield* applyProfileCommit({
+          userId: "u1",
+          baseVersion: null,
+          objectKey: "profiles/u1/a.cgp",
+          sizeBytes: 10,
+          steamLoginSeeded: true,
+        });
+        expect(result).toEqual({ accepted: true });
+        expect(yield* seeds.get("u1")).toBeNull();
+      }),
+    ));
+
+  it("rejected or unseeded commit keeps it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        const seed = makeSeed("t1");
+        yield* seeds.put("u1", seed);
+
+        // Отклонённый коммит (устаревшая база) вход не трогает.
+        const rejected = yield* applyProfileCommit({
+          userId: "u1",
+          baseVersion: 5,
+          objectKey: "profiles/u1/x.cgp",
+          sizeBytes: 1,
+          steamLoginSeeded: true,
+        });
+        expect(rejected).toEqual({ accepted: false });
+        expect(yield* seeds.get("u1")).toBe(seed);
+
+        // Принятый, но не посеянный коммит — тоже не трогает.
+        const unseeded = yield* applyProfileCommit({
+          userId: "u1",
+          baseVersion: null,
+          objectKey: "profiles/u1/y.cgp",
+          sizeBytes: 1,
+          steamLoginSeeded: false,
+        });
+        expect(unseeded).toEqual({ accepted: true });
+        expect(yield* seeds.get("u1")).toBe(seed);
       }),
     ));
 });

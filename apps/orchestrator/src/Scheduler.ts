@@ -9,6 +9,7 @@ import { AgentHub } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
 import * as SessionRepo from "./SessionRepo";
 import { isActive } from "./SessionRepo";
+import { SteamLoginSeeds } from "./SteamLoginSeeds";
 
 /** Период планировщика. */
 export const SCHEDULER_INTERVAL = "2 seconds";
@@ -233,6 +234,7 @@ const unplace = (placement: Placement) =>
 export const tick = (now: Date) =>
   Effect.gen(function* () {
     const hub = yield* AgentHub;
+    const seeds = yield* SteamLoginSeeds;
     let candidates = [...hub.connected()].filter(
       (id) => hub.info(id)?.roles.includes("worker") ?? false,
     );
@@ -250,6 +252,7 @@ export const tick = (now: Date) =>
         continue;
       }
       const { session, workerId, slot, udpPort, profile } = placement;
+      const steamLogin = yield* seeds.get(session.userId);
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
         sessionId: session.id,
@@ -258,8 +261,7 @@ export const tick = (now: Date) =>
         slot,
         udpPort,
         profile,
-        // Task 2 заведёт реальный посев Steam-профиля.
-        steamLogin: null,
+        steamLogin,
       });
       if (sent) {
         placed++;
@@ -282,7 +284,7 @@ export const tick = (now: Date) =>
   });
 
 /** Фоновый цикл планировщика (каждые 2 с); сбои прохода логируются. */
-export const layer: Layer.Layer<never, never, Db | AgentHub> =
+export const layer: Layer.Layer<never, never, Db | AgentHub | SteamLoginSeeds> =
   Layer.effectDiscard(
     DateTime.nowAsDate.pipe(
       Effect.flatMap(tick),

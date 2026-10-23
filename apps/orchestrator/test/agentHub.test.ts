@@ -25,6 +25,7 @@ import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
 import { OrchestratorConfig, orchestratorConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 
 const token = "test-agent-token-0123456789abcdef";
 
@@ -40,6 +41,7 @@ const TestServer = HttpRouter.serve(HttpApp, {
   disableListenLog: true,
 }).pipe(
   Layer.provideMerge(AgentHub.layer),
+  Layer.provideMerge(SteamLoginSeeds.layer),
   Layer.provideMerge(DbTest),
   Layer.provide(TestConfig),
   Layer.provideMerge(BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 })),

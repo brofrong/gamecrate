@@ -14,6 +14,7 @@ import {
   type AgentCommand,
   type AgentReport,
   type RunningSession,
+  type SteamLoginSeed,
   defaultSessionSettings,
   sessionSettingsKey,
 } from "@cg/rpc";
@@ -23,6 +24,7 @@ import {
   Layer,
   Logger,
   PubSub,
+  Redacted,
   References,
   type Scope,
   Stream,
@@ -41,6 +43,7 @@ import {
   type SessionRunnerOptions,
   lostOnRestartReason,
 } from "../src/SessionRunner";
+import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 
 /** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
 const makeFakeHub = () => {
@@ -75,7 +78,7 @@ const makeFakeHub = () => {
 };
 type FakeHub = ReturnType<typeof makeFakeHub>;
 
-type Env = Db | AgentHub | SessionRunner | Scope.Scope;
+type Env = Db | AgentHub | SessionRunner | SteamLoginSeeds | Scope.Scope;
 
 const run = <A, E>(
   body: (fake: FakeHub) => Effect.Effect<A, E, Env>,
@@ -88,6 +91,7 @@ const run = <A, E>(
       Effect.provide(
         SessionRunner.layerWithoutLoops(options).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
+          Layer.provideMerge(SteamLoginSeeds.layer),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),
@@ -379,6 +383,52 @@ describe("scheduler", () => {
           slot: 0,
         });
         expect(fake.sent.map((s) => s.command._tag)).toEqual(["StartSession"]);
+      }),
+    ));
+
+  it("StartSession carries the pending Steam login", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const seeds = yield* SteamLoginSeeds;
+        const seed: SteamLoginSeed = {
+          accountName: Redacted.make("steamuser"),
+          steamId: "76561198000000000",
+          refreshToken: Redacted.make("refresh-token"),
+        };
+        yield* seeds.put("u1", seed);
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 2);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -4) });
+
+        yield* Scheduler.tick(t0);
+
+        const starts = fake.sent.filter(
+          (s) => s.command._tag === "StartSession",
+        );
+        expect(starts.map((s) => s.command)).toEqual([
+          {
+            _tag: "StartSession",
+            sessionId: "s1",
+            userId: "u1",
+            appId: 570,
+            slot: 0,
+            udpPort: 59000,
+            profile: null,
+            steamLogin: seed,
+          },
+          {
+            _tag: "StartSession",
+            sessionId: "s2",
+            userId: "u2",
+            appId: 570,
+            slot: 1,
+            udpPort: 59001,
+            profile: null,
+            steamLogin: null,
+          },
+        ]);
       }),
     ));
 });

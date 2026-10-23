@@ -10,6 +10,7 @@ import { HttpApp } from "./http";
 import { InstallDispatcher } from "./InstallDispatcher";
 import * as Scheduler from "./Scheduler";
 import { SessionRunner } from "./SessionRunner";
+import { SteamLoginSeeds } from "./SteamLoginSeeds";
 
 const BunServer = Layer.unwrap(
   OrchestratorConfig.useSync((config) =>
@@ -25,10 +26,14 @@ const Sessions = Layer.mergeAll(
 );
 
 // `Layer.provide(Sessions)` строит ведение сессий раньше HTTP-сервера: раннер и
-// диспетчер установок подписаны на хаб до того, как подключится первый агент. Один AgentHub на всех.
+// диспетчер установок подписаны на хаб до того, как подключится первый агент.
+// Один AgentHub и один SteamLoginSeeds на всех: посеянный вход, положенный до
+// запуска сессии/установки (Scheduler/InstallDispatcher), и очищенный принятым
+// посеянным коммитом профиля (http.ts) — одна и та же память процесса.
 const Server = HttpRouter.serve(HttpApp).pipe(
   Layer.provide(Sessions),
   Layer.provide(AgentHub.layer),
+  Layer.provide(SteamLoginSeeds.layer),
   Layer.provide(Db.layer),
   Layer.provide(BunServer),
   Layer.provide(OrchestratorConfig.layer),

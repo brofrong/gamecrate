@@ -1,13 +1,14 @@
 // HTTP-роутер оркестратора: /healthz и RPC агентов по WebSocket (/agent).
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Db } from "@cg/db";
-import { AgentNotConnected, AgentRpcs } from "@cg/rpc";
+import { AgentNotConnected, AgentRpcs, type ProfileCommit } from "@cg/rpc";
 import { Effect, Layer, Redacted } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentHub } from "./AgentHub";
 import { OrchestratorConfig } from "./config";
 import * as SessionRepo from "./SessionRepo";
+import { SteamLoginSeeds } from "./SteamLoginSeeds";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -59,10 +60,25 @@ const AgentWebsocketProtocol = Layer.effect(
 );
 
 /**
+ * Коммит профиля (`SessionRepo.commitProfile`), затем — если его как раз
+ * приняли и он был посеян (`steamLoginSeeded`) — `SteamLoginSeeds.clear`:
+ * профиль пользователя уже хранит вход, сеять его снова незачем. Отклонённый
+ * (устаревшая `baseVersion`) или не посеянный коммит вход не трогает — он
+ * ждёт следующую попытку или истечёт по `SEED_TTL`.
+ */
+export const applyProfileCommit = (commit: ProfileCommit) =>
+  Effect.gen(function* () {
+    const seeds = yield* SteamLoginSeeds;
+    const result = yield* SessionRepo.commitProfile(commit);
+    if (result.accepted && commit.steamLoginSeeded)
+      yield* seeds.clear(commit.userId);
+    return result;
+  });
+
+/**
  * Хендлеры `agent.*`: делегируют AgentHub, соединение — по id WebSocket-клиента.
- * `agent.profileCommit` — compare-and-set версии в `profiles`
- * (`SessionRepo.commitProfile`); по соединению без `agent.connect` —
- * AgentNotConnected (агент повторит).
+ * `agent.profileCommit` — `applyProfileCommit`; по соединению без
+ * `agent.connect` — AgentNotConnected (агент повторит).
  */
 export const AgentRpcHandlers = AgentRpcs.toLayer(
   Effect.gen(function* () {
@@ -75,7 +91,7 @@ export const AgentRpcHandlers = AgentRpcs.toLayer(
         Effect.gen(function* () {
           const workerId = hub.workerOf(client.id);
           if (workerId === undefined) return yield* new AgentNotConnected();
-          const result = yield* SessionRepo.commitProfile(commit).pipe(
+          const result = yield* applyProfileCommit(commit).pipe(
             Effect.provideService(Db, db),
             Effect.orDie,
           );
