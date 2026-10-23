@@ -22,6 +22,8 @@ const admin: CurrentUserShape = {
   image: null,
   role: "admin",
   steamId: null,
+  email: "admin@example.com",
+  emailVerified: true,
 };
 const player: CurrentUserShape = { ...admin, id: "u-player", role: "player" };
 

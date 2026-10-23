@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { SteamUnavailable } from "@cg/rpc";
-import { Effect, Fiber, Layer, Redacted } from "effect";
+import { Effect, Fiber, Layer, Option, Redacted } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { AppConfig } from "../src/config";
@@ -51,6 +51,11 @@ const fakeConfig = Layer.succeed(AppConfig, {
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
   webDistDir: "unused",
+  smtpUrl: Redacted.make("log://"),
+  mailFrom: "GameCrate <test@example.com>",
+  google: Option.none(),
+  yandex: Option.none(),
+  telegram: Option.none(),
 });
 
 const run = (

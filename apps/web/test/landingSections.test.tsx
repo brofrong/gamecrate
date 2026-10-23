@@ -6,12 +6,18 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { RouterProvider } from "@tanstack/react-router";
 import { createRef } from "react";
+import { testRouter } from "./router";
 
 mock.module("../src/auth", () => ({
-  signInWithSteam: async () => ({ error: undefined }),
   signOut: async () => {},
-  signInWithPocketId: async () => {},
+  // Экспорты ниже не используются в этом файле, но `mock.module` подменяет
+  // «../src/auth» глобально на весь прогон `bun test` — без них падает
+  // test/login.test.tsx, которому они нужны (см. его комментарий к mock.module).
+  sendEmailCode: async () => ({ error: null }),
+  signInWithEmailCode: async () => ({ error: null }),
+  signInWithProvider: async () => {},
 }));
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");
@@ -114,12 +120,12 @@ describe("landing sections", () => {
     expect(row.classList.contains("hold")).toBe(false);
   });
 
-  it("hero renders platforms, perks and play button", () => {
+  it("hero renders platforms, perks and play button", async () => {
     stubMotion(true);
-    render(<Hero error={false} />);
+    render(<RouterProvider router={testRouter(<Hero />)} />);
+    expect(await screen.findByRole("link", { name: "Играть" })).toBeTruthy();
     for (const p of platforms) expect(screen.getByText(p)).toBeTruthy();
     expect(screen.getByText("До 4K · 60 FPS")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Играть" })).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/бесплатно|4090/);
   });
 
@@ -178,7 +184,11 @@ describe("landing sections", () => {
     stubMotion(false);
     render(<HowItWorks />);
     for (const s of steps) {
-      expect(screen.getByRole("heading", { name: s.title })).toBeTruthy();
+      // `level: 3` отличает заголовок шага от заголовка демо-фазы «Привяжи Steam»
+      // (у фазы QR тот же текст, но это `h4` внутри демо-сцены).
+      expect(
+        screen.getByRole("heading", { name: s.title, level: 3 }),
+      ).toBeTruthy();
     }
     fireEvent.click(screen.getByRole("heading", { name: "Нажми Играть" }));
     expect(screen.getByText("Поднимаем облако…")).toBeTruthy();
@@ -199,16 +209,18 @@ describe("landing sections", () => {
     ).toBeNull();
   });
 
-  it("plans show three tiers with placeholder badge", () => {
-    render(<Plans />);
-    expect(screen.getByText("цены и цифры — предварительные")).toBeTruthy();
+  it("plans show three tiers with placeholder badge", async () => {
+    render(<RouterProvider router={testRouter(<Plans />)} />);
+    expect(
+      await screen.findByText("цены и цифры — предварительные"),
+    ).toBeTruthy();
     for (const p of plans) {
       expect(screen.getByRole("heading", { name: p.name })).toBeTruthy();
     }
     expect(screen.getByText("ПОПУЛЯРНЫЙ")).toBeTruthy();
     expect(formatRub(1490)).toBe("1\u202f490\u00a0₽");
     expect(formatRub(37)).toBe("37\u00a0₽");
-    expect(screen.getAllByRole("button", { name: "Выбрать" }).length).toBe(3);
+    expect(screen.getAllByRole("link", { name: "Выбрать" }).length).toBe(3);
   });
 
   it("achievements render eight cards, two seasonal locked", () => {

@@ -1,18 +1,20 @@
 // `/library`: сетка игр пользователя, «Обновить» (синхронизация со Steam), шапка с выходом,
-// запуск игры («Играть» → session.start → /session/$id) и «Вернуться в игру».
+// запуск игры («Играть» → session.start → /session/$id), «Вернуться в игру» и привязка
+// Steam для пользователя без него (`ConnectSteam`); `?error=` из привязки — тост один раз.
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { Play, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { signInWithSteam } from "@/auth";
+import { linkSteam } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
 import { type LibraryPlay, LibraryContent } from "@/components/LibraryContent";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { authErrorMessage } from "@/lib/authErrors";
 import { useStalled } from "@/lib/useStalled";
 import { cn } from "@/lib/utils";
 import {
@@ -42,7 +44,23 @@ function LibrarySkeleton() {
   );
 }
 
+/** Карточка для пользователя без привязанного Steam: без него библиотека пуста. */
+export function ConnectSteam({ onLink }: { onLink: () => void }) {
+  return (
+    <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-4 text-center">
+      <p className="text-lg font-medium">
+        Подключи Steam, чтобы увидеть свою библиотеку
+      </p>
+      <p className="text-sm text-muted-foreground">
+        Мы не просим пароль: Steam сам подтвердит, что аккаунт твой
+      </p>
+      <Button onClick={onLink}>Привязать Steam</Button>
+    </div>
+  );
+}
+
 function LibraryPage() {
+  const { error } = libraryRoute.useSearch();
   const me = useAtomValue(meAtom);
   const library = useAtomValue(libraryAtom);
   const reloadMe = useAtomRefresh(meAtom);
@@ -59,6 +77,12 @@ function LibraryPage() {
       AsyncResult.isInitial(library) ||
       AsyncResult.isInitial(active),
   );
+
+  // Тост об ошибке привязки показываем один раз, на монтаж.
+  useEffect(() => {
+    if (error !== undefined) toast.error(authErrorMessage(error));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (
     resultErrorTag(me) === "Unauthorized" ||
@@ -166,15 +190,7 @@ function LibraryPage() {
         {unreachable ? (
           <ServerUnreachable onRetry={retry} />
         ) : user !== undefined && user.steamId === null ? (
-          // Pocket ID: у админа нет Steam-аккаунта, библиотеки быть не может.
-          <div className="mx-auto mt-16 flex max-w-md flex-col items-center gap-4 text-center">
-            <p className="text-lg font-medium">
-              Библиотека доступна после входа через Steam
-            </p>
-            <Button onClick={() => void signInWithSteam()}>
-              Войти через Steam
-            </Button>
-          </div>
+          <ConnectSteam onLink={() => void linkSteam("/library")} />
         ) : AsyncResult.isSuccess(library) ? (
           <LibraryContent
             view={library.value}
@@ -193,5 +209,8 @@ function LibraryPage() {
 export const libraryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/library",
+  // Better Auth возвращает ошибку привязки Steam как `/library?error=...` (errorCallbackURL).
+  validateSearch: (search: Record<string, unknown>): { error?: string } =>
+    typeof search.error === "string" ? { error: search.error } : {},
   component: LibraryPage,
 });

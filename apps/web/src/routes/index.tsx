@@ -1,4 +1,4 @@
-// `/`: лендинг с входом через Steam; вошедшего пользователя уводим в библиотеку.
+// `/`: лендинг; вошедшего пользователя уводим в библиотеку.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -26,11 +26,10 @@ function IndexPage() {
   const me = useAtomValue(meAtom);
   const refreshMe = useAtomRefresh(meAtom);
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
-  const { error } = indexRoute.useSearch();
 
   const view = indexView(me, stalled);
   if (view === "library") return <Navigate to="/library" />;
-  if (view === "landing") return <LandingPage error={error !== undefined} />;
+  if (view === "landing") return <LandingPage />;
   if (view === "unreachable") {
     return (
       <main className="flex min-h-dvh items-center justify-center px-6">
@@ -49,8 +48,5 @@ function IndexPage() {
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  // Better Auth возвращает ошибку входа как `/?error=...` (errorCallbackURL).
-  validateSearch: (search: Record<string, unknown>): { error?: string } =>
-    typeof search.error === "string" ? { error: search.error } : {},
   component: IndexPage,
 });

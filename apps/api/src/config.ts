@@ -1,5 +1,33 @@
 // Конфигурация сервера из окружения (`.env`). Секреты — только Redacted.
-import { Config, Context, Layer } from "effect";
+import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect";
+
+/**
+ * Пара переменных окружения, которые должны быть заданы вместе (id/secret
+ * OAuth-провайдера): `None`, если обе не заданы —
+ * пустая строка (`${VAR:-}` в docker compose) и отсутствие переменной для
+ * `ConfigProvider.fromEnv`/`fromUnknown` равнозначны, обе уже трактуются как
+ * «нет значения» — и `ConfigError`, если задана только одна.
+ */
+const pairOrNone = <A, B>(
+  a: Config.Config<A>,
+  b: Config.Config<B>,
+  label: string,
+): Config.Config<Option.Option<readonly [A, B]>> =>
+  Config.all([Config.option(a), Config.option(b)]).pipe(
+    Config.mapEffect(([optA, optB]) => {
+      if (Option.isSome(optA) && Option.isSome(optB))
+        return Effect.succeed(Option.some([optA.value, optB.value] as const));
+      if (Option.isNone(optA) && Option.isNone(optB))
+        return Effect.succeed(Option.none());
+      return Effect.fail(
+        new Config.ConfigError(
+          new ConfigProvider.SourceError({
+            message: `${label}: переменные должны быть заданы вместе или не заданы вовсе`,
+          }),
+        ),
+      );
+    }),
+  );
 
 /** Описание переменных окружения сервера. */
 export const appConfig = Config.all({
@@ -29,6 +57,49 @@ export const appConfig = Config.all({
   ),
   /** Папка собранной SPA (`apps/web/dist`). */
   webDistDir: Config.String("WEB_DIST_DIR"),
+  /** SMTP для отправки писем (коды входа и т.п.); `log://` — см. `mail/Mailer.ts`. */
+  smtpUrl: Config.Redacted("SMTP_URL"),
+  /** Заголовок `From` писем, например `GameCrate <no-reply@brofrong.ru>`. */
+  mailFrom: Config.String("MAIL_FROM"),
+  /** OAuth-вход через Google: `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`. */
+  google: pairOrNone(
+    Config.String("GOOGLE_CLIENT_ID"),
+    Config.Redacted("GOOGLE_CLIENT_SECRET"),
+    "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET",
+  ).pipe(
+    Config.map(
+      Option.map(([clientId, clientSecret]) => ({
+        clientId,
+        clientSecret,
+      })),
+    ),
+  ),
+  /** OAuth-вход через Яндекс: `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`. */
+  yandex: pairOrNone(
+    Config.String("YANDEX_CLIENT_ID"),
+    Config.Redacted("YANDEX_CLIENT_SECRET"),
+    "YANDEX_CLIENT_ID/YANDEX_CLIENT_SECRET",
+  ).pipe(
+    Config.map(
+      Option.map(([clientId, clientSecret]) => ({
+        clientId,
+        clientSecret,
+      })),
+    ),
+  ),
+  /** OIDC-вход через Telegram: `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` (BotFather → Login Widget). */
+  telegram: pairOrNone(
+    Config.String("TELEGRAM_CLIENT_ID"),
+    Config.Redacted("TELEGRAM_CLIENT_SECRET"),
+    "TELEGRAM_CLIENT_ID/TELEGRAM_CLIENT_SECRET",
+  ).pipe(
+    Config.map(
+      Option.map(([clientId, clientSecret]) => ({
+        clientId,
+        clientSecret,
+      })),
+    ),
+  ),
 });
 
 export type AppConfigValues = Config.Success<typeof appConfig>;

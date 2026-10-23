@@ -25,6 +25,9 @@ export const CurrentUserShape = Schema.Struct({
   role: Role,
   /** SteamID64; у пользователей Pocket ID — null. */
   steamId: Schema.NullOr(Schema.String),
+  /** Настоящий email пользователя; null — только синтетический (Steam/Telegram) или нет. */
+  email: Schema.NullOr(Schema.String),
+  emailVerified: Schema.Boolean,
 });
 export type CurrentUserShape = typeof CurrentUserShape.Type;
 
@@ -49,3 +52,17 @@ export class AdminMiddleware extends RpcMiddleware.Service<
 export const AuthRpcs = RpcGroup.make(
   Rpc.make("auth.me", { success: CurrentUserShape }),
 ).middleware(AuthMiddleware);
+
+/** Какие способы входа включены на сервере — для страницы логина (до сессии). */
+export const AuthProviders = Schema.Struct({
+  google: Schema.Boolean,
+  yandex: Schema.Boolean,
+  pocketId: Schema.Boolean,
+  telegram: Schema.Boolean,
+});
+export type AuthProviders = typeof AuthProviders.Type;
+
+/** Публичная группа `auth.*`: без мидлваров, доступна без сессии. */
+export const PublicAuthRpcs = RpcGroup.make(
+  Rpc.make("auth.providers", { success: AuthProviders }),
+);

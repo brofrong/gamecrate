@@ -112,6 +112,16 @@ cg-sessions` → подсеть) доступ к локальной сети и 
      что в `POSTGRES_PASSWORD`.
    - Необязательно: `ALLOWED_ORIGINS` — дополнительные Origin для WebSocket `/rpc` через запятую;
      без неё разрешён только origin `PUBLIC_URL`, для прода этого достаточно.
+   - `SMTP_URL` — настоящий SMTP для писем с кодом входа (например
+     `smtps://user:pass@smtp.example:465`). **`SMTP_URL=log://` только для dev** (пишет письма в
+     лог вместо отправки) — `apps/api/src/config.ts` разрешает его лишь когда `PUBLIC_URL` —
+     `localhost`/`127.0.0.1`, в проде с `PUBLIC_URL=https://game.brofrong.ru` сервис не стартует.
+   - `MAIL_FROM` — заголовок `From` писем, например `GameCrate <no-reply@brofrong.ru>`.
+   - Необязательно (каждая пара — вместе или не задавать вовсе, пустая строка тоже считается «не
+     задано»): `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`,
+     `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` — ключи провайдеров входа, завести их на сервере
+     владелец может и после первого деплоя (шаг 2 ниже, п. 3–5): провайдер без ключей просто не
+     появится на `/login`.
 
    - `AGENT_TOKEN` — новый случайный, не короче 32 символов (без вывода на экран):
      `grep -q '^AGENT_TOKEN=' .env.production || printf 'AGENT_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env.production`.
@@ -162,8 +172,39 @@ cg-sessions` → подсеть) доступ к локальной сети и 
    Создать группу `cloud_gaming_admins`, добавить в неё себя. Client id/secret этого клиента
    записать в `POCKET_ID_CLIENT_ID`/`POCKET_ID_CLIENT_SECRET` в `.env.production` (шаг 1) ещё до
    копирования `.env` на сервер.
+3. **Google** (Google Cloud Console): OAuth-клиент «Web application», redirect-адрес
+   **`https://game.brofrong.ru/api/auth/callback/google`** → `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`.
+4. **Яндекс** (oauth.yandex.ru): приложение с правами «доступ к адресу электронной почты, имени,
+   аватару», redirect-адрес **`https://game.brofrong.ru/api/auth/callback/yandex`** →
+   `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`.
+5. **Telegram** (BotFather → бот → «Login Widget»): Telegram теперь обычный OIDC-провайдер. В
+   списке разрешённых адресов (Allowed URLs) должен быть redirect
+   **`https://game.brofrong.ru/api/auth/callback/telegram`**; там же BotFather показывает Client ID и
+   Client Secret → `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET`. Бот-токен серверу не нужен.
 
-## Шаг 3: деплой
+   Ключи из пунктов 3–5 дописать в `.env.production` (шаг 1) и скопировать на сервер тем же `scp`;
+   провайдер без ключей просто не появится на `/login`, так что эти пункты можно делать по одному,
+   в любом порядке, и после первого деплоя.
+
+## Шаг 3 (один раз, перед первым деплоем этой работы): чистка старых Steam-пользователей
+
+Сейчас в проде есть пользователи, созданные Steam-входом: синтетическая почта `steam_<id>@…`,
+единственная привязка — Steam. Перенос таких записей не делается (их не жалко — см.
+`docs/superpowers/specs/2026-10-22-auth-login-and-linking-design.md`, §3.5); перед первым деплоем
+этой работы их нужно один раз удалить вручную, иначе привязка Steam к новому аккаунту не пройдёт
+(плагин ответит «Steam уже привязан к другому аккаунту»). Удаление `user` каскадом уносит его
+`account`, `session`, `user_games` и остальные таблицы с `user_id`.
+
+```sh
+ssh brofrong "cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env exec cg-postgres psql -U cg -d cloud_gaming -c \"DELETE FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam')\""
+```
+
+(`~/cloud-gaming` и контейнер `cg-postgres` на сервере уже есть — это чистка перед деплоем
+**новой версии входа**, а не перед первым деплоем вообще.) Если такой пользователь всё же
+останется, привязка его Steam даст ту же штатную ошибку плагина — данные никуда не переезжают,
+просто придётся почистить руками позже.
+
+## Шаг 4: деплой
 
 > **Внимание: GPU-слот начинает принимать настоящие сессии, как только `cg-agent` подключится к
 > оркестратору** (через несколько секунд после `up`). На brofrong одна GPU и один слот (UDP
@@ -231,7 +272,7 @@ curl -s -X POST https://game.brofrong.ru/api/auth/steam/login \
   -H 'Content-Type: application/json' -d '{"callbackURL":"/library"}'   # {"url":"https://steamcommunity.com/..."}
 ```
 
-Реальный вход через Steam/Pocket ID не проверяется деплоем — это делает владелец сервера (шаг 4,
+Реальный вход через Steam/Pocket ID не проверяется деплоем — это делает владелец сервера (шаг 5,
 ниже), у него есть нужные аккаунты.
 
 ## Сессии: как посмотреть
@@ -446,7 +487,7 @@ lower overlay `~/.local/share/Steam` каждой сессии и установ
    новый образ.
 5. Старый образ `cg-session:<старая версия>` удалить вручную (`docker rmi`), когда на нём нет сессий.
 
-## Шаг 4 (приёмка, делает владелец)
+## Шаг 5 (приёмка, делает владелец)
 
 MVP-1:
 

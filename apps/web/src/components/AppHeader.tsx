@@ -6,6 +6,7 @@ import type * as React from "react";
 import { signOut } from "@/auth";
 import { Logo } from "@/components/brand/Logo";
 import { Button } from "@/components/ui/button";
+import { avatarInitial } from "@/lib/accountDisplay";
 
 export function AppHeader({
   user,
@@ -32,7 +33,11 @@ export function AppHeader({
         <div className="ml-auto flex items-center gap-3">
           {children}
           {user && (
-            <div className="flex items-center gap-2">
+            <Link
+              to="/profile"
+              aria-label="Профиль"
+              className="flex items-center gap-2 rounded-md hover:opacity-80"
+            >
               {user.image ? (
                 <img
                   src={user.image}
@@ -41,13 +46,13 @@ export function AppHeader({
                 />
               ) : (
                 <div className="flex size-8 items-center justify-center rounded-full bg-muted text-sm">
-                  {user.name.slice(0, 1).toUpperCase()}
+                  {avatarInitial(user)}
                 </div>
               )}
               <span className="hidden max-w-40 truncate text-sm md:inline">
                 {user.name}
               </span>
-            </div>
+            </Link>
           )}
           <Button variant="ghost" size="sm" onClick={() => void signOut()}>
             <LogOut />

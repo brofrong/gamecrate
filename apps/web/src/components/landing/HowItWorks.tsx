@@ -226,7 +226,7 @@ export function HowItWorks() {
                 </div>
                 <div>
                   <h4 className="mb-2 text-xl font-bold tracking-[-0.02em]">
-                    Войти через Steam
+                    Привяжи Steam
                   </h4>
                   <p className="mb-3.5 max-w-[260px] text-sm leading-normal text-brand-muted max-[599px]:max-w-none">
                     Открой Steam на телефоне → Steam Guard → отсканируй.
