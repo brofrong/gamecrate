@@ -14,6 +14,7 @@
     "@cg/rpc": "workspace:*",
     "@effect/platform-bun": "4.0.5",
     "drizzle-orm": "1.0.0-rc.4",
-    "effect": "4.0.5"
+    "effect": "4.0.5",
+    "steam-session": "1.9.4"
   }
 }
