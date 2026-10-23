@@ -3,7 +3,7 @@ import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect";
 
 /**
  * Пара переменных окружения, которые должны быть заданы вместе (id/secret
- * OAuth-провайдера, токен/имя бота Telegram): `None`, если обе не заданы —
+ * OAuth-провайдера): `None`, если обе не заданы —
  * пустая строка (`${VAR:-}` в docker compose) и отсутствие переменной для
  * `ConfigProvider.fromEnv`/`fromUnknown` равнозначны, обе уже трактуются как
  * «нет значения» — и `ConfigError`, если задана только одна.
@@ -87,16 +87,16 @@ export const appConfig = Config.all({
       })),
     ),
   ),
-  /** Вход через Telegram: `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME`. */
+  /** OIDC-вход через Telegram: `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` (BotFather → Login Widget). */
   telegram: pairOrNone(
-    Config.Redacted("TELEGRAM_BOT_TOKEN"),
-    Config.String("TELEGRAM_BOT_USERNAME"),
-    "TELEGRAM_BOT_TOKEN/TELEGRAM_BOT_USERNAME",
+    Config.String("TELEGRAM_CLIENT_ID"),
+    Config.Redacted("TELEGRAM_CLIENT_SECRET"),
+    "TELEGRAM_CLIENT_ID/TELEGRAM_CLIENT_SECRET",
   ).pipe(
     Config.map(
-      Option.map(([botToken, botUsername]) => ({
-        botToken,
-        botUsername,
+      Option.map(([clientId, clientSecret]) => ({
+        clientId,
+        clientSecret,
       })),
     ),
   ),

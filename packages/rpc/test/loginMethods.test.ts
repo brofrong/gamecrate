@@ -5,6 +5,7 @@ describe("isSyntheticEmail", () => {
   it("synthetic emails are recognised", () => {
     expect(isSyntheticEmail("steam_7656@steam.local")).toBe(true);
     expect(isSyntheticEmail("tg_42@telegram.invalid")).toBe(true);
+    expect(isSyntheticEmail("tg_AbC-9_x@telegram.invalid")).toBe(true);
     expect(isSyntheticEmail("ivan@gmail.com")).toBe(false);
   });
 });

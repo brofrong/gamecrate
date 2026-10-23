@@ -1,6 +1,6 @@
 // `/profile`: способы входа, смена почты, выход — для вошедшего пользователя.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import type { AuthProviders, LoginProviderId } from "@cg/rpc";
+import type { LoginProviderId } from "@cg/rpc";
 import { createRoute, Navigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -9,7 +9,6 @@ import {
   linkProvider,
   linkSteam,
   listLinkedAccounts,
-  signInWithTelegram,
   unlinkProvider,
 } from "@/auth";
 import { AppHeader } from "@/components/AppHeader";
@@ -21,26 +20,14 @@ import {
 } from "@/components/profile/LoginMethods";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { authErrorMessage } from "@/lib/authErrors";
-import { telegramAuth } from "@/lib/telegramWidget";
 import { useStalled } from "@/lib/useStalled";
 import { meAtom, providersAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
-/** Привязка способа входа: Steam — свой OAuth-поток, Telegram — виджет, остальные — `linkSocial`. */
-export const handleLink = async (
-  provider: LoginProviderId,
-  providers: AuthProviders | undefined,
-): Promise<void> => {
+/** Привязка способа входа: Steam — свой OpenID-поток, остальные — `linkSocial`. */
+export const handleLink = async (provider: LoginProviderId): Promise<void> => {
   if (provider === "steam") {
     await linkSteam("/profile");
-    return;
-  }
-  if (provider === "telegram") {
-    if (!providers?.telegram) return;
-    const data = await telegramAuth(providers.telegram.botId);
-    if (!data) return;
-    const { error } = await signInWithTelegram(data, "/profile", true);
-    if (error) toast.error(authErrorMessage(error));
     return;
   }
   await linkProvider(provider);
@@ -98,7 +85,7 @@ function ProfilePage() {
 
   const onLink = (p: LoginProviderId) => {
     setBusy(p);
-    void handleLink(p, providers).finally(() => setBusy(null));
+    void handleLink(p).finally(() => setBusy(null));
   };
 
   const onUnlink = (account: LinkedAccount) => {

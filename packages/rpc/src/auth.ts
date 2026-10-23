@@ -58,9 +58,7 @@ export const AuthProviders = Schema.Struct({
   google: Schema.Boolean,
   yandex: Schema.Boolean,
   pocketId: Schema.Boolean,
-  telegram: Schema.NullOr(
-    Schema.Struct({ botId: Schema.String, botUsername: Schema.String }),
-  ),
+  telegram: Schema.Boolean,
 });
 export type AuthProviders = typeof AuthProviders.Type;
 
@@ -68,19 +66,3 @@ export type AuthProviders = typeof AuthProviders.Type;
 export const PublicAuthRpcs = RpcGroup.make(
   Rpc.make("auth.providers", { success: AuthProviders }),
 );
-
-/**
- * Подписанные поля Telegram Login Widget. Telegram отдаёт `id` и `auth_date`
- * числами — на входе эндпоинта (`apps/api/src/auth/telegram.ts`) их приводят
- * `String(value)` до декодирования этой схемой.
- */
-export const TelegramAuthData = Schema.Struct({
-  id: Schema.String,
-  first_name: Schema.optional(Schema.String),
-  last_name: Schema.optional(Schema.String),
-  username: Schema.optional(Schema.String),
-  photo_url: Schema.optional(Schema.String),
-  auth_date: Schema.String,
-  hash: Schema.String,
-});
-export type TelegramAuthData = typeof TelegramAuthData.Type;

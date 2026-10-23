@@ -19,7 +19,7 @@ import { changeEmailCodeMail, loginCodeMail } from "../mail/templates";
 import type { ProtonDb } from "../steam/ProtonDb";
 import type { SteamApi } from "../steam/SteamApi";
 import { authHooks } from "./hooks";
-import { telegramPlugin } from "./telegram";
+import { telegramProvider } from "./telegram";
 import { yandexProvider } from "./yandex";
 
 /** Роль пользователя Pocket ID по claim `groups`. */
@@ -197,6 +197,14 @@ export const makeAuth = (
                 ),
               ]
             : []),
+          ...(Option.isSome(config.telegram)
+            ? [
+                telegramProvider(
+                  config.telegram.value.clientId,
+                  Redacted.value(config.telegram.value.clientSecret),
+                ),
+              ]
+            : []),
         ],
       }),
       emailOTP({
@@ -215,13 +223,6 @@ export const makeAuth = (
               : loginCodeMail(otp)),
           }),
       }),
-      ...(Option.isSome(config.telegram)
-        ? [
-            telegramPlugin({
-              botToken: Redacted.value(config.telegram.value.botToken),
-            }),
-          ]
-        : []),
     ],
   });
 };

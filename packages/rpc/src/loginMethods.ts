@@ -1,7 +1,7 @@
 // Общие правила способов входа: синтетические email, какие провайдеры дают вход, когда можно отвязать.
 
 /** Синтетический email Steam/Telegram (`steam_<id>@...`, `tg_<id>@...`) — не настоящая почта пользователя. */
-export const SYNTHETIC_EMAIL = /^(steam|tg)_\d+@/i;
+export const SYNTHETIC_EMAIL = /^(steam|tg)_[^@]+@/i;
 
 export const isSyntheticEmail = (email: string): boolean =>
   SYNTHETIC_EMAIL.test(email);

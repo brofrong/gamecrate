@@ -14,7 +14,6 @@ mock.module("../src/auth", () => ({
   sendEmailCode: async () => ({ error: null }),
   signInWithEmailCode: async () => ({ error: null }),
   signInWithProvider: async () => {},
-  signInWithTelegram: async () => ({ error: null }),
 }));
 
 const { LandingPage } = await import("../src/components/landing/LandingPage");

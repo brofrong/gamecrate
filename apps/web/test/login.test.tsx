@@ -6,10 +6,9 @@
 // глобально на весь прогон `bun test`) — так подмена не ломает другие тестовые файлы,
 // которым от «../src/auth» нужны другие функции (`landing.test.tsx` и соседи).
 import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import type { AuthProviders, TelegramAuthData } from "@cg/rpc";
+import type { AuthProviders } from "@cg/rpc";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import * as auth from "../src/auth";
-import * as telegramWidget from "../src/lib/telegramWidget";
 import { LoginPanel } from "../src/components/login/LoginPanel";
 import { loginNext } from "../src/routes/login";
 
@@ -23,18 +22,12 @@ const signInWithEmailCode = spyOn(
 const signInWithProvider = spyOn(auth, "signInWithProvider").mockImplementation(
   () => Promise.resolve() as never,
 );
-const signInWithTelegram = spyOn(auth, "signInWithTelegram").mockImplementation(
-  async () => ({ error: null }),
-);
-const telegramAuth = spyOn(telegramWidget, "telegramAuth").mockImplementation(
-  async () => null,
-);
 
 const providers: AuthProviders = {
   google: true,
   yandex: false,
   pocketId: true,
-  telegram: null,
+  telegram: false,
 };
 
 const noop = () => {};
@@ -45,8 +38,6 @@ beforeEach(() => {
   signInWithEmailCode.mockClear();
   signInWithEmailCode.mockImplementation(async () => ({ error: null }));
   signInWithProvider.mockClear();
-  signInWithTelegram.mockClear();
-  telegramAuth.mockClear();
 });
 
 describe("login panel", () => {
@@ -291,29 +282,22 @@ describe("login panel", () => {
     await waitFor(() => expect(onLevel).toHaveBeenCalledWith(2));
   });
 
-  it("telegram click opens the widget and signs in", async () => {
-    const tgProviders: AuthProviders = {
-      ...providers,
-      telegram: { botId: "123:abc", botUsername: "gc_bot" },
-    };
-    const data: TelegramAuthData = { id: "1", auth_date: "0", hash: "h" };
-    telegramAuth.mockImplementationOnce(async () => data);
+  it("telegram is a plain OAuth redirect like the other providers", () => {
+    const onLit = mock(() => {});
     render(
       <LoginPanel
-        providers={tgProviders}
+        providers={{ ...providers, telegram: true }}
         next="/library"
         onLevel={noop}
         onTint={noop}
-        onLit={noop}
+        onLit={onLit}
       />,
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Войти через Telegram" }),
     );
-    await waitFor(() => expect(telegramAuth).toHaveBeenCalledWith("123:abc"));
-    await waitFor(() =>
-      expect(signInWithTelegram).toHaveBeenCalledWith(data, "/library"),
-    );
+    expect(signInWithProvider).toHaveBeenCalledWith("telegram", "/library");
+    expect(onLit).toHaveBeenCalled();
   });
 
   it("login route rejects unsafe next", () => {
@@ -329,7 +313,7 @@ describe("login panel", () => {
           google: false,
           yandex: false,
           pocketId: true,
-          telegram: null,
+          telegram: false,
         }}
         next="/library"
         onLevel={noop}

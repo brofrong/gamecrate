@@ -3,16 +3,10 @@
 // провайдера и момент успешного входа («зажигание» куба).
 import { useEffect, useRef, useState } from "react";
 import type { AuthProviders } from "@cg/rpc";
-import {
-  sendEmailCode,
-  signInWithEmailCode,
-  signInWithProvider,
-  signInWithTelegram,
-} from "@/auth";
+import { sendEmailCode, signInWithEmailCode, signInWithProvider } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
-import { telegramAuth } from "@/lib/telegramWidget";
 import { ProviderButtons } from "./ProviderButtons";
 
 export type PanelStep =
@@ -76,27 +70,6 @@ export function LoginPanel({
   };
 
   const handleProvider = (p: Provider) => {
-    if (p === "telegram") {
-      if (!providers?.telegram) return;
-      setSubmitted(true);
-      setPending(true);
-      setError(null);
-      void telegramAuth(providers.telegram.botId).then(async (data) => {
-        if (!data) {
-          setPending(false);
-          setSubmitted(false);
-          return;
-        }
-        const result = await signInWithTelegram(data, next);
-        setPending(false);
-        if (result.error) {
-          setError(authErrorMessage(result.error));
-          return;
-        }
-        onLit();
-      });
-      return;
-    }
     setSubmitted(true);
     onLit();
     void signInWithProvider(p, next);

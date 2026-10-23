@@ -160,8 +160,8 @@ describe("rpc auth.providers", () => {
       }),
       yandex: Option.none(),
       telegram: Option.some({
-        botToken: Redacted.make("123456:ABC"),
-        botUsername: "gamecrate_bot",
+        clientId: "123456",
+        clientSecret: Redacted.make("t-secret"),
       }),
     });
     const layer = PublicAuthRpcHandlers.pipe(
@@ -177,7 +177,7 @@ describe("rpc auth.providers", () => {
       google: true,
       yandex: false,
       pocketId: true,
-      telegram: { botId: "123456", botUsername: "gamecrate_bot" },
+      telegram: true,
     });
   });
 

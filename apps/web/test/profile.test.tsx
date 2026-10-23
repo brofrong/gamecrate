@@ -29,7 +29,7 @@ const providers: AuthProviders = {
   google: true,
   yandex: true,
   pocketId: true,
-  telegram: { botId: "123:abc", botUsername: "gc_bot" },
+  telegram: true,
 };
 
 const user: CurrentUserShape = {
@@ -152,7 +152,7 @@ describe("LoginMethods", () => {
         user={user}
         accounts={[]}
         providers={providers}
-        onLink={(p) => void handleLink(p, providers)}
+        onLink={(p) => void handleLink(p)}
         onUnlink={noopUnlink}
         busy={null}
       />,
@@ -165,6 +165,15 @@ describe("LoginMethods", () => {
     );
     await waitFor(() => expect(linkSteam).toHaveBeenCalledWith("/profile"));
     linkSteam.mockRestore();
+  });
+
+  it("telegram link goes through linkSocial like other OAuth providers", async () => {
+    const linkProvider = spyOn(auth, "linkProvider").mockImplementation(
+      () => Promise.resolve() as never,
+    );
+    await handleLink("telegram");
+    expect(linkProvider).toHaveBeenCalledWith("telegram");
+    linkProvider.mockRestore();
   });
 });
 

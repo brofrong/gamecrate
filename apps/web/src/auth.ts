@@ -1,7 +1,6 @@
-// Клиент Better Auth: вход по коду на email, через соцпровайдеров (Google/Яндекс/Pocket ID)
-// и Telegram, привязка/отвязка способов входа в профиле, выход.
+// Клиент Better Auth: вход по коду на email, через соцпровайдеров (Google/Яндекс/Telegram/
+// Pocket ID), привязка/отвязка способов входа в профиле, выход.
 // Адрес не задаём: клиент ходит на `/api/auth` того же origin (в dev — через прокси dev.ts).
-import type { TelegramAuthData } from "@cg/rpc";
 import { steamOpenIDClient } from "better-auth-steam/client";
 import { createAuthClient } from "better-auth/client";
 import { emailOTPClient } from "better-auth/client/plugins";
@@ -10,8 +9,8 @@ export const authClient = createAuthClient({
   plugins: [steamOpenIDClient(), emailOTPClient()],
 });
 
-/** Соцпровайдеры входа/привязки через `signIn.social`/`linkSocial` (без Steam и Telegram — у них свой поток). */
-export type SocialProvider = "google" | "yandex" | "pocket-id";
+/** Соцпровайдеры входа/привязки через `signIn.social`/`linkSocial` (без Steam — у него свой поток, и он только привязка). */
+export type SocialProvider = "google" | "yandex" | "telegram" | "pocket-id";
 
 /** Вход через соцпровайдера; `next` — куда вернуться после успеха (см. `safeNext`). */
 export const signInWithProvider = (provider: SocialProvider, next: string) =>
@@ -84,37 +83,6 @@ export const requestEmailChange = (newEmail: string) =>
 /** Подтверждение смены email кодом, присланным `requestEmailChange`. */
 export const confirmEmailChange = (newEmail: string, otp: string) =>
   authClient.emailOtp.changeEmail({ newEmail, otp });
-
-/**
- * Вход/привязка через Telegram Login Widget: в отличие от остальных провайдеров
- * у Better Auth нет готового клиентского метода — зовём наш эндпоинт напрямую.
- * При успехе сервер отдаёт cookie сессии и адрес для перехода.
- */
-export const signInWithTelegram = async (
-  user: TelegramAuthData,
-  next: string,
-  link = false,
-): Promise<{ error: string | null }> => {
-  try {
-    const response = await fetch("/api/auth/telegram/callback", {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ user, callbackURL: next, link }),
-    });
-    if (response.ok) {
-      const { redirect } = (await response.json()) as { redirect: string };
-      window.location.assign(redirect);
-      return { error: null };
-    }
-    const body = (await response.json().catch(() => null)) as {
-      code?: string;
-    } | null;
-    return { error: body?.code ?? "UNKNOWN" };
-  } catch {
-    return { error: "NETWORK" };
-  }
-};
 
 /**
  * Выход. Сессия RPC-сокета привязана к cookie апгрейда, поэтому после выхода

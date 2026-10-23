@@ -42,11 +42,28 @@ describe("appConfig", () => {
     expect(Redacted.value(config.google.value.clientSecret)).toBe("g-secret");
   });
 
-  it("telegram requires both token and username", async () => {
+  it("telegram requires both client id and secret", async () => {
     const result = await Effect.runPromise(
-      parse({ ...base, TELEGRAM_BOT_TOKEN: "t-token" }).pipe(Effect.result),
+      parse({ ...base, TELEGRAM_CLIENT_ID: "t-id" }).pipe(Effect.result),
     );
     expect(result._tag).toBe("Failure");
+  });
+
+  it("telegram provider is Some when both vars set", async () => {
+    const config = await Effect.runPromise(
+      parse({
+        ...base,
+        TELEGRAM_CLIENT_ID: "t-id",
+        TELEGRAM_CLIENT_SECRET: "t-secret",
+      }),
+    );
+    expect(Option.isSome(config.telegram)).toBe(true);
+    if (Option.isSome(config.telegram)) {
+      expect(config.telegram.value.clientId).toBe("t-id");
+      expect(Redacted.value(config.telegram.value.clientSecret)).toBe(
+        "t-secret",
+      );
+    }
   });
 
   it("smtp url and mail from are required", async () => {

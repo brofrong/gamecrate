@@ -18,7 +18,6 @@ mock.module("../src/auth", () => ({
   sendEmailCode: async () => ({ error: null }),
   signInWithEmailCode: async () => ({ error: null }),
   signInWithProvider: async () => {},
-  signInWithTelegram: async () => ({ error: null }),
 }));
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");

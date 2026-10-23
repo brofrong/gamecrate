@@ -20,6 +20,17 @@
 - `patches/better-auth-steam@0.2.3.patch` расширен: в флоу привязки плагин вызывал удалённый
   `internalAdapter.findAccountByProviderId`; заменён на `findAccountByKey`.
 - `SteamButton` на лендинге стал `PlayButton` — ссылкой на `/login`.
+- 2026-10-23: Telegram Login Widget (§6.3, свой плагин с проверкой HMAC и `POST /telegram/callback`)
+  заменён на OIDC-вход Telegram через тот же `genericOAuth`, что Pocket ID и Яндекс: discovery
+  `https://oauth.telegram.org/.well-known/openid-configuration`, scope `openid profile`, PKCE,
+  обязательная проверка ID-токена по JWKS. Userinfo-эндпоинта у Telegram нет — профиль
+  (`sub`, `name`, `preferred_username`, `picture`) читается из ID-токена; почта по-прежнему
+  синтетическая `tg_<sub>@telegram.invalid`, автосклейки нет. Переменные `TELEGRAM_BOT_TOKEN`/
+  `TELEGRAM_BOT_USERNAME` заменены на `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` (BotFather →
+  Login Widget), callback — `/api/auth/callback/telegram`, в BotFather он должен быть в Allowed URLs.
+  `auth.providers.telegram` стал `boolean`, сторонний скрипт виджета и `signInWithTelegram` удалены;
+  вход и привязка идут через `signIn.social`/`linkSocial` как у Яндекса. Регулярка синтетической
+  почты ослаблена до `tg_<любой sub>@` [моё решение].
 
 Пометка **[моё решение]** — выбор, сделанный при проектировании, а не владельцем продукта; его можно оспорить. Всё без пометки — решено владельцем на брейншторме.
 

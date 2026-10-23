@@ -46,8 +46,8 @@ const baseConfig = () => ({
     clientSecret: Redacted.Redacted<string>;
   }>(),
   telegram: Option.none<{
-    botToken: Redacted.Redacted<string>;
-    botUsername: string;
+    clientId: string;
+    clientSecret: Redacted.Redacted<string>;
   }>(),
 });
 

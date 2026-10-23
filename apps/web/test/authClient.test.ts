@@ -48,21 +48,6 @@ describe("authErrorMessage", () => {
     expect(authErrorMessage("TOO_MANY_ATTEMPTS")).toBe(
       "Слишком много попыток, запроси новый код",
     );
-    expect(authErrorMessage("TELEGRAM_INVALID_SIGNATURE")).toBe(
-      "Telegram не подтвердил вход",
-    );
-    expect(authErrorMessage("TELEGRAM_EXPIRED")).toBe(
-      "Telegram не подтвердил вход",
-    );
-    expect(authErrorMessage("TELEGRAM_INVALID_BODY")).toBe(
-      "Telegram не подтвердил вход",
-    );
-    expect(authErrorMessage("TELEGRAM_ALREADY_LINKED")).toBe(
-      "Этот Telegram уже привязан к другому аккаунту",
-    );
-    expect(authErrorMessage("TELEGRAM_SESSION_REQUIRED")).toBe(
-      "Чтобы привязать Telegram, сначала войди",
-    );
     expect(authErrorMessage("MAIL_FAILED")).toBe(
       "Не удалось отправить письмо, попробуй позже",
     );

@@ -77,7 +77,7 @@ cg-sessions` → подсеть) доступ к локальной сети и 
    - `MAIL_FROM` — заголовок `From` писем, например `GameCrate <no-reply@brofrong.ru>`.
    - Необязательно (каждая пара — вместе или не задавать вовсе, пустая строка тоже считается «не
      задано»): `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`,
-     `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_USERNAME` — ключи провайдеров входа, завести их на сервере
+     `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` — ключи провайдеров входа, завести их на сервере
      владелец может и после первого деплоя (шаг 2 ниже, п. 3–5): провайдер без ключей просто не
      появится на `/login`.
 
@@ -115,8 +115,10 @@ cg-sessions` → подсеть) доступ к локальной сети и 
 4. **Яндекс** (oauth.yandex.ru): приложение с правами «доступ к адресу электронной почты, имени,
    аватару», redirect-адрес **`https://game.brofrong.ru/api/auth/callback/yandex`** →
    `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`.
-5. **Telegram** (BotFather): бот для входа, `/setdomain game.brofrong.ru` → `TELEGRAM_BOT_TOKEN`,
-   `TELEGRAM_BOT_USERNAME`.
+5. **Telegram** (BotFather → бот → «Login Widget»): Telegram теперь обычный OIDC-провайдер. В
+   списке разрешённых адресов (Allowed URLs) должен быть redirect
+   **`https://game.brofrong.ru/api/auth/callback/telegram`**; там же BotFather показывает Client ID и
+   Client Secret → `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET`. Бот-токен серверу не нужен.
 
    Ключи из пунктов 3–5 дописать в `.env.production` (шаг 1) и скопировать на сервер тем же `scp`;
    провайдер без ключей просто не появится на `/login`, так что эти пункты можно делать по одному,

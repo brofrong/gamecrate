@@ -36,7 +36,7 @@ const isConfigured = (
   if (providerId === "pocket-id" || providerId === "steam") return true;
   if (providerId === "yandex") return providers.yandex;
   if (providerId === "google") return providers.google;
-  return providers.telegram !== null;
+  return providers.telegram;
 };
 
 export function LoginMethods({
