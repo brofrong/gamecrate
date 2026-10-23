@@ -1,15 +1,12 @@
 // Хендлер группы `time.*`: сводка игрового времени для главной /app.
-import { TimeRpcs } from "@cg/rpc";
+import { CurrentUser, TimeRpcs } from "@cg/rpc";
 import { Effect } from "effect";
+import { monthSummary } from "./TimeRepo";
 
-// TODO: реальная сводка (запрос по play_segments) подключается в задаче главной /app.
 export const TimeRpcHandlers = TimeRpcs.toLayer({
   "time.summary": ({ month }) =>
-    Effect.succeed({
-      month,
-      totalMinutes: 0,
-      sessionCount: 0,
-      byGame: [],
-      sessions: [],
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      return yield* monthSummary(current.id, month);
     }),
 });
