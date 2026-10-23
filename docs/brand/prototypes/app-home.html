@@ -1,0 +1,83 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>GameCrate — /app, прототип (вариация «один в один» на GameHub, 2026-10-23)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0d0f14;--bg2:#13161d;--card:#1a1d26;--line:rgba(255,255,255,.08);--fg:#eef1ff;--muted:#8a90a8;--c1:#3cc2ff;--ok:#3ddc97;--warn:#ffd166;--grad:linear-gradient(135deg,#3cc2ff,#3a6cff 50%,#5b2fff)}
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:#05060f;color:var(--fg);padding:32px}
+.note{max-width:1280px;margin:0 auto 16px;color:var(--muted);font-size:13px;line-height:1.5}
+.frame{position:relative;width:100%;max-width:1280px;margin:0 auto;overflow:hidden;border-radius:16px}
+.screen{position:absolute;left:0;top:0;width:1280px;height:900px;transform-origin:0 0;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:22px;overflow:hidden;font-size:14px;-webkit-font-smoothing:antialiased;display:grid;grid-template-columns:84px 1fr 330px;gap:0 22px;padding:22px 22px 0 0;box-sizing:border-box}
+.rail{margin:0 0 22px 20px;border-radius:40px;background:var(--bg2);display:flex;flex-direction:column;align-items:center;padding:18px 0;gap:10px}
+.rail .logo{width:30px;height:32px;background:var(--grad);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);margin-bottom:28px}
+.rail a{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;color:var(--muted);position:relative}.rail a.on{background:#262a36;color:var(--fg)}.rail svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.rail a .n{position:absolute;right:6px;top:6px;width:8px;height:8px;border-radius:50%;background:var(--warn)}
+.rail .sp{flex:1}.rail .av{width:40px;height:40px;border-radius:50%;background:var(--grad)}
+.main{overflow:hidden}.main h1{margin:10px 0 16px;font-size:38px;letter-spacing:-.03em;font-weight:800;display:flex;align-items:baseline;gap:14px}.main h1 small{font-size:13px;color:var(--muted);font-weight:500}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}.chip{height:36px;padding:0 14px;border-radius:18px;background:var(--bg2);display:flex;align-items:center;gap:6px;font-weight:500;color:#cfd3e6;font-size:13px;white-space:nowrap}.chip.on{background:rgba(60,194,255,.14);color:var(--fg);box-shadow:inset 0 0 0 1px rgba(60,194,255,.45)}.chip .k{color:var(--muted)}.sep{width:1px;height:24px;background:var(--line)}.search{margin-left:auto;width:200px;height:36px;border-radius:18px;background:var(--bg2);display:flex;align-items:center;padding:0 14px;color:var(--muted);font-size:13px;flex:none}
+.bar2{display:flex;gap:8px;margin-bottom:24px}.bar2 .chip{height:30px;font-size:12px;padding:0 12px}.bar2 .chip i{width:7px;height:7px;border-radius:2px;background:var(--ok)}.bar2 .chip.w i{background:var(--warn)}.bar2 .chip.m i{background:var(--muted)}
+.sec{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:21px;font-weight:700}.sec small{font-size:13px;color:var(--muted);font-weight:500}.sec::after{content:"";flex:1;height:1px;background:var(--line);margin-left:10px}.sec .all{font-size:13px;color:var(--c1);font-weight:600;order:3;margin-left:10px}
+.recent{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px}.rc{background:var(--bg2);border-radius:18px;padding:10px;display:grid;grid-template-columns:118px 1fr;gap:12px;min-width:0}.rc .img{aspect-ratio:460/215;border-radius:10px;background:#222 center/cover;align-self:center}.rc>div:last-child{min-width:0}.rc .k{font:10px "JetBrains Mono";letter-spacing:.08em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rc h3{margin:3px 0 3px;font-size:15px;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rc .ready{font-size:11px;color:var(--ok);display:flex;gap:5px;align-items:center;margin-bottom:7px;white-space:nowrap}.rc .ready::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--ok);box-shadow:0 0 8px var(--ok)}.play{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:14px;background:var(--grad);color:#fff;font:700 12px Inter}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px 20px;margin-bottom:26px}
+.g .img{aspect-ratio:460/215;border-radius:14px;background:#222 center/cover;position:relative;overflow:hidden}.g .t{margin-top:9px;font-weight:600;font-size:15px}.g .s{font-size:12px;color:var(--muted);margin-top:2px;display:flex;gap:6px;align-items:center}.g .s i{width:6px;height:6px;border-radius:2px;background:var(--ok);box-shadow:0 0 8px var(--ok)}.g .s.w i{background:var(--warn);box-shadow:0 0 8px var(--warn)}.g .s.m i{background:var(--muted);box-shadow:none}
+.ready-pill{position:absolute;left:8px;top:8px;font:700 10px Inter;letter-spacing:.04em;padding:4px 8px;border-radius:7px;background:rgba(61,220,151,.18);color:var(--ok);backdrop-filter:blur(6px);border:1px solid rgba(61,220,151,.35)}
+.pt{position:absolute;right:8px;top:8px;font:600 10px "JetBrains Mono";padding:3px 6px;border-radius:6px;background:rgba(0,0,0,.6);color:#cfd3e6}
+.side{display:grid;gap:16px;align-content:start}
+.panel{background:var(--bg2);border-radius:20px;padding:18px}.panel .h{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}.panel .h .ic{width:30px;height:30px;border-radius:50%;background:#2a2e3a;display:grid;place-items:center;font:700 10px "JetBrains Mono"}.pill{margin-left:auto;font-size:12px;padding:5px 10px;border-radius:12px;background:rgba(61,220,151,.12);color:var(--ok);display:flex;gap:6px;align-items:center;white-space:nowrap}.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ok)}.pill.off{background:rgba(255,255,255,.06);color:var(--muted)}.pill.off::before{background:var(--muted)}
+.who{display:flex;gap:12px;align-items:center;margin-top:16px}.who .av{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,#ffb36b,#ff6b6b)}.who b{display:block;font-size:16px}.who small{color:var(--muted);font-family:"JetBrains Mono";font-size:11px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}.stats div{text-align:center}.stats small{display:block;color:var(--muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase}.stats b{display:block;margin-top:6px;font-size:17px}
+.btn{height:42px;border-radius:21px;border:1px solid rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;font-weight:600;margin-top:16px;color:#cfd3e6;font-size:13px}
+.ring{width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--c1) 0 42%,rgba(255,255,255,.1) 42% 100%);display:grid;place-items:center;flex:none}.ring i{width:48px;height:48px;border-radius:50%;background:var(--bg2);display:grid;place-items:center;font:600 11px "JetBrains Mono"}
+.time{display:flex;gap:14px;align-items:center;margin-top:14px}.time b{font-size:22px;letter-spacing:-.02em;display:block}.time small{color:var(--muted);font-size:12px}
+.rows{margin-top:12px;display:grid;gap:8px}.rows div{display:flex;justify-content:space-between;font-size:13px}.rows div b{font:500 12px "JetBrains Mono"}
+.q{display:flex;gap:10px;align-items:center;margin-top:12px;font-size:13px}.q .bar3{flex:1;height:6px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden}.q .bar3 i{display:block;height:100%;width:63%;background:var(--warn)}.q b{font:500 12px "JetBrains Mono"}
+</style></head><body>
+<p class="note">Прототип главной страницы <code>/app</code>, выбранный владельцем 2026-10-23 (вариация «один в один» на GameHub для macOS с правками: больше фильтров, блок «Запускал недавно», заметный статус «Готова»). Спека: <code>docs/superpowers/specs/2026-10-23-app-home-design.md</code>. Кольцо «осталось из 30 ч» в карточке «Время» — на будущее, в первой версии только потраченное.</p>
+<div class="frame"><div class="screen">
+<aside class="rail"><div class="logo"></div>
+<a class="on" title="Мои игры"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></a>
+<a title="В тренде"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg></a>
+<a title="Из ящика"><svg viewBox="0 0 24 24"><path d="M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"/></svg></a>
+<a title="Время"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></a>
+<div class="sp"></div>
+<a title="Поиск"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></a>
+<a title="Установки"><span class="n"></span><svg viewBox="0 0 24 24"><path d="M12 4v12m0 0 4-4m-4 4-4-4M4 20h16"/></svg></a>
+<div class="av" title="Профиль"></div></aside>
+<main class="main"><h1>Мои игры <small>148 игр · 12 готовы · обновлено 5 мин назад</small></h1>
+<div class="bar"><span class="chip"><span class="k">Статус:</span> все ▾</span><span class="chip"><span class="k">Сортировка:</span> недавние ▾</span><span class="chip"><span class="k">Proton:</span> любой ▾</span><span class="sep"></span><span class="chip">⊕ Привязать аккаунт</span><span class="search">Найти игру… <span style="margin-left:auto;font:10px 'JetBrains Mono';opacity:.6">⌘K</span></span></div>
+<div class="bar2"><span class="chip on"><i></i>Готовы к запуску</span><span class="chip w"><i></i>Нужна установка</span><span class="chip m"><i></i>Нужен вход в Steam</span><span class="chip">Не запускались</span><span class="chip">Больше 10 ч в игре</span><span class="chip">Из ящика</span></div>
+<div class="sec">Запускал недавно<span class="all">все сессии →</span></div>
+<div class="recent">
+<div class="rc"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1086940/header.jpg)"></div><div><div class="k">вчера · 2 ч 14 м</div><h3>Baldur's Gate 3</h3><div class="ready">Готова · запуск 8 с</div><span class="play">▶ Играть</span></div></div>
+<div class="rc"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/header.jpg)"></div><div><div class="k">21 окт · 1 ч 52 м</div><h3>Elden Ring</h3><div class="ready">Готова · запуск 8 с</div><span class="play">▶ Играть</span></div></div>
+<div class="rc"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1145360/header.jpg)"></div><div><div class="k">20 окт · 38 м</div><h3>Hades</h3><div class="ready">Готова · запуск 8 с</div><span class="play">▶ Играть</span></div></div>
+</div>
+<div class="sec">Готовы к запуску <small>(12)</small></div>
+<div class="grid">
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/2379780/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">platinum</span></div><div class="t">Balatro</div><div class="s"><i></i>готова · 14 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/413150/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">platinum</span></div><div class="t">Stardew Valley</div><div class="s"><i></i>готова · 61 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1794680/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">gold</span></div><div class="t">Vampire Survivors</div><div class="s"><i></i>готова · 9 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/292030/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">platinum</span></div><div class="t">The Witcher 3</div><div class="s"><i></i>готова · 120 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1091500/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">gold</span></div><div class="t">Cyberpunk 2077</div><div class="s"><i></i>готова · 44 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1593500/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">platinum</span></div><div class="t">God of War</div><div class="s"><i></i>готова · не запускалась</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/105600/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">platinum</span></div><div class="t">Terraria</div><div class="s"><i></i>готова · 200 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/892970/header.jpg)"><span class="ready-pill">ГОТОВА</span><span class="pt">gold</span></div><div class="t">Valheim</div><div class="s"><i></i>готова · 30 ч в игре</div></div>
+</div>
+<div class="sec">Нужна установка <small>(31)</small></div>
+<div class="grid">
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/2358720/header.jpg)"><span class="pt">gold</span></div><div class="t">Black Myth: Wukong</div><div class="s w"><i></i>качается · 63 %</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1174180/header.jpg)"><span class="pt">gold</span></div><div class="t">Red Dead Redemption 2</div><div class="s w"><i></i>нужна установка · 120 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/2050650/header.jpg)"><span class="pt">platinum</span></div><div class="t">Resident Evil 4</div><div class="s w"><i></i>нужна установка · 12 ч в игре</div></div>
+<div class="g"><div class="img" style="background-image:url(https://cdn.cloudflare.steamstatic.com/steam/apps/1551360/header.jpg);filter:saturate(.6)"><span class="pt">borked</span></div><div class="t">Forza Horizon 5</div><div class="s m"><i></i>нужен вход в Steam</div></div>
+</div></main>
+<aside class="side">
+<div class="panel"><div class="h"><span class="ic">ST</span>Steam<span class="pill">Привязан</span></div>
+<div class="who"><div class="av"></div><div><b>Brofrong</b><small>76561198020550802</small></div></div>
+<div class="stats"><div><small>игр</small><b>148</b></div><div><small>готовы</small><b>12</b></div><div><small>синхр.</small><b>5 мин</b></div></div>
+<div class="btn">↻ Обновить библиотеку</div></div>
+<div class="panel"><div class="h"><span class="ic">⏱</span>Время<span class="pill" style="background:rgba(60,194,255,.12);color:var(--c1)">октябрь</span></div>
+<div class="time"><div class="ring"><i>42%</i></div><div><b>14 ч 57 м</b><small>за октябрь (кольцо — когда появится баланс)</small></div></div>
+<div class="rows"><div><span>Baldur's Gate 3</span><b>7:40</b></div><div><span>Elden Ring</span><b>5:12</b></div><div><span>Hades</span><b>2:05</b></div></div></div>
+<div class="panel"><div class="h"><span class="ic">⇣</span>Установки<span class="pill" style="background:rgba(255,209,102,.12);color:var(--warn)">1 идёт</span></div>
+<div class="q"><span>Black Myth: Wukong</span><div class="bar3"><i></i></div><b>63%</b></div></div>
+<div class="panel" style="padding:12px 18px"><div class="h" style="font-size:15px"><span class="ic">EP</span>Epic Games<span class="pill off">Скоро</span></div></div>
+</aside></div></div>
+<script>const fit=()=>{for(const f of document.querySelectorAll('.frame')){const s=Math.min(1,f.clientWidth/1280);f.style.height=(900*s)+'px';f.querySelector('.screen').style.transform='scale('+s+')'}};fit();new ResizeObserver(fit).observe(document.body);</script>
+</body></html>
