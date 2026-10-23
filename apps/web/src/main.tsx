@@ -6,6 +6,13 @@ import { createRoot } from "react-dom/client";
 import { loadBrandFonts } from "./fonts";
 import { rootRoute } from "./routes/__root";
 import { adminRoute } from "./routes/admin";
+import {
+  appCrateRoute,
+  appIndexRoute,
+  appRoute,
+  appTimeRoute,
+  appTrendingRoute,
+} from "./routes/app";
 import { indexRoute } from "./routes/index";
 import { libraryRoute } from "./routes/library";
 import { loginRoute } from "./routes/login";
@@ -19,6 +26,12 @@ const routeTree = rootRoute.addChildren([
   profileRoute,
   sessionRoute,
   adminRoute,
+  appRoute.addChildren([
+    appIndexRoute,
+    appTrendingRoute,
+    appCrateRoute,
+    appTimeRoute,
+  ]),
 ]);
 
 const router = createRouter({ routeTree });

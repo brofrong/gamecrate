@@ -41,6 +41,19 @@ export const refreshLibraryArgs = {
   reactivityKeys: libraryKeys,
 } as const;
 
+/** Блок «Запускал недавно» на главной `/app`. */
+export const recentAtom = Api.query("library.recent", undefined, {
+  reactivityKeys: libraryKeys,
+});
+
+/** Блок «В тренде» на главной `/app`: сейчас и за неделю. */
+export const trendingAtom = Api.query("library.trending", undefined);
+
+/** Сводка времени за месяц (`"YYYY-MM"`) для страницы «Время». */
+export const timeSummaryAtom = Atom.family((month: string) =>
+  Api.query("time.summary", { month }),
+);
+
 /** Проверка доступа к `admin.*` (только роль admin). */
 export const adminPingAtom = Api.query("admin.ping", undefined);
 

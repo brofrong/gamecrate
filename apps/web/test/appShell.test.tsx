@@ -1,0 +1,118 @@
+// Каркас /app: полоска разделов (Rail), нижняя панель (BottomTabs) и сетка AppShell.
+// Страницы под маршрутами — заглушки из других задач; здесь проверяем только атомы вёрстки.
+//
+// `RouterProvider` резолвит первый матч асинхронно — как и в profile.test.tsx, первый
+// запрос в каждом тесте через `findBy*`, остальные синхронно.
+import { describe, expect, it } from "bun:test";
+import { render, screen } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
+import { AppShell } from "../src/components/app/AppShell";
+import { BottomTabs } from "../src/components/app/BottomTabs";
+import { Rail } from "../src/components/app/Rail";
+import { testRouter } from "./router";
+
+describe("Rail", () => {
+  it("renders the four sections with their hrefs", async () => {
+    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
+    expect(
+      (await screen.findByRole("link", { name: "Мои игры" })).getAttribute(
+        "href",
+      ),
+    ).toBe("/app");
+    expect(
+      screen.getByRole("link", { name: "В тренде" }).getAttribute("href"),
+    ).toBe("/app/trending");
+    expect(
+      screen.getByRole("link", { name: "Из ящика" }).getAttribute("href"),
+    ).toBe("/app/crate");
+    expect(
+      screen.getByRole("link", { name: "Время" }).getAttribute("href"),
+    ).toBe("/app/time");
+  });
+
+  it("marks the active section with aria-current", async () => {
+    const root = createRootRoute({
+      component: () => <Rail installing={false} />,
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({ initialEntries: ["/app/trending"] }),
+    });
+    render(<RouterProvider router={router} />);
+    const trending = await screen.findByRole("link", { name: "В тренде" });
+    expect(trending.getAttribute("aria-current")).toBe("page");
+    const myGames = screen.getByRole("link", { name: "Мои игры" });
+    expect(myGames.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("shows an installs indicator when something is installing", async () => {
+    render(<RouterProvider router={testRouter(<Rail installing={true} />)} />);
+    expect(await screen.findByTestId("installs-dot")).toBeTruthy();
+  });
+
+  it("does not show the installs indicator otherwise", async () => {
+    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
+    await screen.findByRole("link", { name: "Установки" });
+    expect(screen.queryByTestId("installs-dot")).toBeNull();
+  });
+
+  it("links the profile avatar to /profile", async () => {
+    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
+    expect(
+      (await screen.findByRole("link", { name: "Профиль" })).getAttribute(
+        "href",
+      ),
+    ).toBe("/profile");
+  });
+});
+
+describe("BottomTabs", () => {
+  it("renders five tabs by label", async () => {
+    render(<RouterProvider router={testRouter(<BottomTabs />)} />);
+    expect(await screen.findByRole("link", { name: "Мои игры" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "В тренде" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Из ящика" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Время" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Профиль" })).toBeTruthy();
+  });
+});
+
+describe("AppShell", () => {
+  it("places aside after children in the DOM", async () => {
+    const { container } = render(
+      <RouterProvider
+        router={testRouter(
+          <AppShell
+            user={{
+              id: "u1",
+              name: "Gamer",
+              image: null,
+              role: "player",
+              steamId: "7656",
+              email: null,
+              emailVerified: false,
+            }}
+            aside={<div data-testid="aside">aside</div>}
+          >
+            <div data-testid="main">main</div>
+          </AppShell>,
+        )}
+      />,
+    );
+    const main = await screen.findByTestId("main");
+    const aside = container.querySelector('[data-testid="aside"]');
+    expect(aside).not.toBeNull();
+    // `compareDocumentPosition` с битом 4 (FOLLOWING) — aside идёт после main в DOM.
+    expect(
+      Boolean(
+        aside &&
+        main.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+  });
+});
