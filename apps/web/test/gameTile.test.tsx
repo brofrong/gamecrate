@@ -79,6 +79,14 @@ describe("GameTile", () => {
     expect(screen.queryByText("ГОТОВА")).toBeNull();
   });
 
+  it("не показывает плашку «ГОТОВА» для Ready, если dimmed (нет облачного профиля)", () => {
+    render(
+      <GameTile game={game({ cloud: ready })} action={playAction} dimmed />,
+    );
+    expect(screen.queryByText("ГОТОВА")).toBeNull();
+    expect(screen.getByText("нужен вход в Steam")).toBeTruthy();
+  });
+
   it('кнопка «Играть» имеет aria-label "Играть: <name>"', () => {
     render(<GameTile game={game()} action={playAction} />);
     expect(
@@ -128,14 +136,14 @@ describe("GameTile", () => {
 
   it("без Proton-плашки, когда tier не указан", () => {
     render(<GameTile game={game()} action={playAction} />);
-    expect(screen.queryByText("gold")).toBeNull();
+    expect(screen.queryByTestId("proton-tag")).toBeNull();
   });
 
   it('без Proton-плашки для "pending"', () => {
     render(
       <GameTile game={game({ protonTier: "pending" })} action={playAction} />,
     );
-    expect(screen.queryByText("pending")).toBeNull();
+    expect(screen.queryByTestId("proton-tag")).toBeNull();
   });
 
   it("показывает уровень Proton моно-шрифтом", () => {

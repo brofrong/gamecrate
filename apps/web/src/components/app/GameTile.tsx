@@ -85,6 +85,7 @@ function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
   if (tier === undefined || tier === "pending") return null;
   return (
     <span
+      data-testid="proton-tag"
       title={tierLabel[tier]}
       className="absolute top-2 right-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#cfd3e6]"
     >
@@ -137,7 +138,7 @@ export function GameTile({
     <article className="group flex flex-col gap-2">
       <div className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26]">
         <Cover game={game} dimmed={dimmed} />
-        {game.cloud._tag === "Ready" && (
+        {game.cloud._tag === "Ready" && !dimmed && (
           <span className="absolute top-2 left-2 rounded-[7px] border border-[#3ddc97]/35 bg-[#3ddc97]/18 px-2 py-1 text-[10px] font-bold tracking-wide text-[#3ddc97] backdrop-blur-sm">
             ГОТОВА
           </span>
