@@ -221,6 +221,7 @@ describe("agent hub", () => {
           slot: 0,
           udpPort: 59000,
           profile: null,
+          steamLogin: null,
         };
         expect(yield* hub.send("w-connect", command)).toBe(true);
         const received = yield* Queue.take(commands).pipe(
@@ -332,6 +333,7 @@ describe("agent hub", () => {
           baseVersion: null,
           objectKey: "profiles/u-commit/a.cgp",
           sizeBytes: 42,
+          steamLoginSeeded: false,
         };
 
         // Соединение без agent.connect — не обработан (агент повторит).

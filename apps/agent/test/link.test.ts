@@ -193,6 +193,7 @@ describe("OrchestratorLink", () => {
             baseVersion: 4,
             objectKey: "profiles/u1/a.cgp",
             sizeBytes: 10,
+            steamLoginSeeded: false,
           }),
         );
         const handled: Array<AgentCommand> = [];
@@ -256,6 +257,7 @@ describe("OrchestratorLink", () => {
             baseVersion: 3,
             objectKey: "profiles/u1/b.cgp",
             sizeBytes: 11,
+            steamLoginSeeded: false,
           }),
         ).toBe(false);
         expect(server.commits.map((c) => c.objectKey)).toEqual([
@@ -271,6 +273,7 @@ describe("OrchestratorLink", () => {
           slot: 0,
           udpPort: 59000,
           profile: null,
+          steamLogin: null,
         };
         yield* Queue.offer(server.streams[0]!, start);
         yield* waitUntil(() => handled.length === 1);
@@ -283,6 +286,8 @@ describe("OrchestratorLink", () => {
           appId: 736260,
           userId: "u1",
           profile: null,
+          steamLogin: null,
+          steamLoginTimeoutSeconds: 90,
         };
         yield* Queue.offerAll(server.streams[0]!, [
           installGame,
@@ -355,6 +360,7 @@ describe("OrchestratorLink", () => {
             baseVersion: 4,
             objectKey: "profiles/u1/c.cgp",
             sizeBytes: 12,
+            steamLoginSeeded: false,
           }),
         );
         yield* waitUntil(() => server.connects.length === 3);

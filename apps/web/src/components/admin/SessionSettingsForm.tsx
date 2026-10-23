@@ -15,6 +15,10 @@ const fields: ReadonlyArray<{ key: Key; label: string }> = [
   { key: "disconnectGraceMinutes", label: "Ожидание после отключения, мин" },
   { key: "startTimeoutMinutes", label: "Таймаут запуска, мин" },
   { key: "installTimeoutMinutes", label: "Таймаут установки, мин" },
+  {
+    key: "steamLoginTimeoutSeconds",
+    label: "Ожидание входа в Steam установщиком, с",
+  },
 ];
 
 type Bounds = { readonly minimum?: number; readonly maximum?: number };
@@ -45,6 +49,7 @@ const toValues = (settings: SessionSettings): Values => ({
   disconnectGraceMinutes: String(settings.disconnectGraceMinutes),
   startTimeoutMinutes: String(settings.startTimeoutMinutes),
   installTimeoutMinutes: String(settings.installTimeoutMinutes),
+  steamLoginTimeoutSeconds: String(settings.steamLoginTimeoutSeconds),
 });
 
 /**

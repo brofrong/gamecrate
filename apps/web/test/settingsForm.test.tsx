@@ -22,6 +22,7 @@ describe("session settings form", () => {
     expect(field("Ожидание после отключения, мин").value).toBe("5");
     expect(field("Таймаут запуска, мин").value).toBe("15");
     expect(field("Таймаут установки, мин").value).toBe("180");
+    expect(field("Ожидание входа в Steam установщиком, с").value).toBe("90");
 
     fireEvent.change(field("Простой до предупреждения, мин"), {
       target: { value: "121" },
@@ -59,6 +60,7 @@ describe("session settings form", () => {
       disconnectGraceMinutes: 5,
       startTimeoutMinutes: 20,
       installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
+      steamLoginTimeoutSeconds: defaultSessionSettings.steamLoginTimeoutSeconds,
     });
     expect(screen.queryByText(/Целое число от/)).toBeNull();
   });
@@ -82,6 +84,30 @@ describe("session settings form", () => {
 
     fireEvent.change(field("Таймаут установки, мин"), {
       target: { value: "180" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  });
+
+  it("settings form rejects steam login timeout 29", async () => {
+    const onSubmit = mock(
+      async (_settings: SessionSettings): Promise<string | null> => null,
+    );
+    render(
+      <SessionSettingsForm
+        initial={defaultSessionSettings}
+        onSubmit={onSubmit}
+      />,
+    );
+    fireEvent.change(field("Ожидание входа в Steam установщиком, с"), {
+      target: { value: "29" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    expect(await screen.findByText("Целое число от 30 до 600")).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(field("Ожидание входа в Steam установщиком, с"), {
+      target: { value: "90" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));

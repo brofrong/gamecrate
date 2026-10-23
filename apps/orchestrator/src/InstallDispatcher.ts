@@ -2,6 +2,7 @@
 // отменяет брошенные и валит потерянные; отчёты агентов об установке (прогресс,
 // итог) переводит в задачи и ждущие их сессии.
 import { Db } from "@cg/db";
+import { defaultSessionSettings } from "@cg/rpc";
 import { Context, DateTime, Effect, Layer, PubSub, Schedule } from "effect";
 import { AgentHub, type AgentHubEvent } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
@@ -310,6 +311,10 @@ const make = (options: InstallDispatcherOptions) =>
             appId: job.appId,
             userId: job.userId,
             profile,
+            // Task 2 заведёт реальный посев; Task 4 возьмёт таймаут из live
+            // настроек (ruling P1) — пока дефолт.
+            steamLogin: null,
+            steamLoginTimeoutSeconds: defaultSessionSettings.steamLoginTimeoutSeconds,
           });
           if (sent) {
             dispatchedAt.set(job.id, now);

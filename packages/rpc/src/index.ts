@@ -4,6 +4,7 @@ import { AdminRpcs } from "./admin";
 import { AuthRpcs, PublicAuthRpcs } from "./auth";
 import { LibraryRpcs } from "./library";
 import { SessionRpcs } from "./session";
+import { SteamLoginRpcs } from "./steamLogin";
 
 export * from "./admin";
 export * from "./agent";
@@ -12,6 +13,7 @@ export * from "./library";
 export * from "./loginMethods";
 export * from "./session";
 export * from "./settings";
+export * from "./steamLogin";
 
 /** Все RPC-группы приложения; сервер обслуживает их на `/rpc`, SPA строит по ней клиента. */
 export const AppRpcs = AuthRpcs.merge(
@@ -19,4 +21,5 @@ export const AppRpcs = AuthRpcs.merge(
   AdminRpcs,
   LibraryRpcs,
   SessionRpcs,
+  SteamLoginRpcs,
 );

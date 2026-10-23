@@ -230,6 +230,8 @@ export const saveProfile = (options: {
         baseVersion: options.baseVersion,
         objectKey,
         sizeBytes,
+        // Task 2 заведёт реальный посев и передаст сюда, был ли он в этом запуске.
+        steamLoginSeeded: false,
       })
       .pipe(Effect.mapError(failed("commit")));
     if (!accepted) {

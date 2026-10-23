@@ -384,6 +384,7 @@ const start: Extract<AgentCommand, { _tag: "StartSession" }> = {
   slot: 1,
   udpPort: 59001,
   profile: null,
+  steamLogin: null,
 };
 
 const streamUrl = "http://cg-session-s1:8080";
@@ -1057,6 +1058,7 @@ describe("SessionSupervisor", () => {
               baseVersion: 3,
               objectKey: "profiles/ua/new.cgp",
               sizeBytes: expect.any(Number),
+              steamLoginSeeded: false,
             },
           ]);
           expect(callsFrom(h.fake, "stop cg-session-a 15")).toEqual(
@@ -1348,6 +1350,7 @@ describe("SessionSupervisor", () => {
             baseVersion: 7,
             objectKey: "profiles/u1/new.cgp",
             sizeBytes: bytes("session-home-tar").length + 32,
+            steamLoginSeeded: false,
           },
         ]);
         expect(yield* h.drain).toEqual([

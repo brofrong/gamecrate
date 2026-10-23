@@ -1,7 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { Effect, Exit, Queue } from "effect";
-import { Db, games, installJobs, sessions, user } from "../src/index";
+import {
+  Db,
+  games,
+  installJobs,
+  sessions,
+  steamLogins,
+  user,
+} from "../src/index";
 import { DbTest } from "./testDb";
 
 const run = <A, E>(eff: Effect.Effect<A, E, Db>) =>
@@ -95,6 +102,48 @@ describe("install_jobs", () => {
           );
           expect(notification.payload).toBe(sessionId);
         }).pipe(Effect.scoped);
+      }),
+    ));
+});
+
+describe("steam_logins", () => {
+  it("allows one active attempt per user", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+
+        const firstId = crypto.randomUUID();
+        yield* db
+          .insert(steamLogins)
+          .values({ id: firstId, userId: "u1", state: "waiting" });
+
+        // Вторая активная попытка того же пользователя нарушает частичный индекс.
+        const result = yield* db
+          .insert(steamLogins)
+          .values({ id: crypto.randomUUID(), userId: "u1", state: "waiting" })
+          .pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+
+        // Прежняя отменена — новая активная попытка проходит.
+        yield* db
+          .update(steamLogins)
+          .set({ state: "cancelled" })
+          .where(eq(steamLogins.id, firstId));
+        yield* db
+          .insert(steamLogins)
+          .values({ id: crypto.randomUUID(), userId: "u1", state: "waiting" });
+
+        // Терминальные done/failed того же пользователя не мешают.
+        yield* db
+          .insert(steamLogins)
+          .values({ id: crypto.randomUUID(), userId: "u1", state: "done" });
+        yield* db
+          .insert(steamLogins)
+          .values({ id: crypto.randomUUID(), userId: "u1", state: "failed" });
+
+        const rows = yield* db.select().from(steamLogins);
+        expect(rows).toHaveLength(4);
       }),
     ));
 });

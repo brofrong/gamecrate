@@ -264,6 +264,7 @@ describe("install jobs", () => {
               slot: 0,
               udpPort: 59000,
               profile: { version: 3, objectKey: "profiles/u2/p3.cgp" },
+              steamLogin: null,
             },
           },
         ]);
@@ -317,6 +318,8 @@ describe("install jobs", () => {
               appId: DOTA,
               userId: "u1",
               profile: null,
+              steamLogin: null,
+              steamLoginTimeoutSeconds: 90,
             },
           },
         ]);
@@ -426,6 +429,8 @@ describe("install jobs", () => {
               appId: DOTA,
               userId: "u1",
               profile: { version: 2, objectKey: "profiles/u1/p2.cgp" },
+              steamLogin: null,
+              steamLoginTimeoutSeconds: 90,
             },
           },
         ]);

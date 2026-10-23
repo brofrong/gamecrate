@@ -394,6 +394,8 @@ const install: InstallGame = {
   appId: 736260,
   userId: "u1",
   profile: { version: 7, objectKey: "profiles/u1/v7.cgp" },
+  steamLogin: null,
+  steamLoginTimeoutSeconds: 90,
 };
 
 const callsFrom = (fake: Fake, from: string) =>
@@ -606,6 +608,7 @@ describe("Installer", () => {
             baseVersion: 7,
             objectKey: "profiles/u1/new.cgp",
             sizeBytes: bytes("installer-home-tar").length,
+            steamLoginSeeded: false,
           },
         ]);
         // Пока тома не удалены (overlay смонтирован), библиотека не менялась.
@@ -1073,9 +1076,7 @@ describe("Installer", () => {
       Effect.gen(function* () {
         yield* h.installer.install({ ...install, profile: null });
         yield* h.tick("0 seconds");
-        expect(installReasons.steamLogin).toBe(
-          "Сначала войдите в Steam: запустите любую уже установленную игру",
-        );
+        expect(installReasons.steamLogin).toBe("Войдите в Steam");
         expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
         // Steam без входа ждал бы невидимый QR — контейнер не запускается.
         expect(h.fake.state.calls).not.toContain("start cg-install-j1");

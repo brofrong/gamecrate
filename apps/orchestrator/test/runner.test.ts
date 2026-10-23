@@ -283,6 +283,7 @@ describe("scheduler", () => {
               slot: 1,
               udpPort: 59001,
               profile: null,
+              steamLogin: null,
             },
           },
           {
@@ -295,6 +296,7 @@ describe("scheduler", () => {
               slot: 0,
               udpPort: 59000,
               profile: null,
+              steamLogin: null,
             },
           },
         ]);
@@ -679,6 +681,8 @@ describe("session runner", () => {
         expect(yield* SessionRepo.loadSettings()).toEqual({
           ...mvp2,
           installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
+          steamLoginTimeoutSeconds:
+            defaultSessionSettings.steamLoginTimeoutSeconds,
         });
       }),
     ));

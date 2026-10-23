@@ -50,6 +50,7 @@ describe("profile commit", () => {
           baseVersion: null,
           objectKey: "profiles/u1/a.cgp",
           sizeBytes: 7_000_000,
+          steamLoginSeeded: false,
         });
         expect(first).toEqual({ accepted: true });
         expect(yield* profileRow("u1")).toEqual({
@@ -68,6 +69,7 @@ describe("profile commit", () => {
           baseVersion: null,
           objectKey: "profiles/u1/b.cgp",
           sizeBytes: 1,
+          steamLoginSeeded: false,
         });
         expect(again).toEqual({ accepted: false });
         expect((yield* profileRow("u1"))?.objectKey).toBe("profiles/u1/a.cgp");
@@ -83,6 +85,7 @@ describe("profile commit", () => {
           baseVersion: null,
           objectKey: "profiles/u1/v1.cgp",
           sizeBytes: 100,
+          steamLoginSeeded: false,
         });
 
         const second = yield* SessionRepo.commitProfile({
@@ -90,6 +93,7 @@ describe("profile commit", () => {
           baseVersion: 1,
           objectKey: "profiles/u1/v2.cgp",
           sizeBytes: 200,
+          steamLoginSeeded: false,
         });
         expect(second).toEqual({ accepted: true });
         expect(yield* profileRow("u1")).toEqual({
@@ -104,6 +108,7 @@ describe("profile commit", () => {
           baseVersion: 1,
           objectKey: "profiles/u1/stale.cgp",
           sizeBytes: 300,
+          steamLoginSeeded: false,
         });
         expect(stale).toEqual({ accepted: false });
         // Базовая версия из будущего и профиль, которого нет, — тоже отказ.
@@ -113,6 +118,7 @@ describe("profile commit", () => {
             baseVersion: 5,
             objectKey: "profiles/u1/future.cgp",
             sizeBytes: 1,
+            steamLoginSeeded: false,
           }),
         ).toEqual({ accepted: false });
         yield* seedUser("u2");
@@ -122,6 +128,7 @@ describe("profile commit", () => {
             baseVersion: 1,
             objectKey: "profiles/u2/x.cgp",
             sizeBytes: 1,
+            steamLoginSeeded: false,
           }),
         ).toEqual({ accepted: false });
         expect(yield* profileRow("u2")).toBeUndefined();

@@ -18,6 +18,7 @@ import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
 import { SessionRpcHandlers } from "./session/rpc";
 import { StreamProxyRoute } from "./session/streamProxy";
+import { SteamLoginRpcHandlers } from "./steamLogin/rpc";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -47,6 +48,7 @@ export const RpcHandlers = Layer.mergeAll(
   AdminRpcHandlers,
   LibraryRpcHandlers,
   SessionRpcHandlers.pipe(Layer.provide(SessionEvents.layer)),
+  SteamLoginRpcHandlers,
   RpcMiddlewares,
 );
 

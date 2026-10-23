@@ -258,6 +258,8 @@ export const tick = (now: Date) =>
         slot,
         udpPort,
         profile,
+        // Task 2 заведёт реальный посев Steam-профиля.
+        steamLogin: null,
       });
       if (sent) {
         placed++;

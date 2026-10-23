@@ -93,3 +93,49 @@ export const profiles = pgTable("profiles", {
     .defaultNow()
     .$onUpdate(() => new Date()),
 });
+
+/** Состояния попытки входа в Steam через QR-код установщика (спека §4). */
+export const steamLoginStates = [
+  "pending",
+  "waiting",
+  "scanned",
+  "done",
+  "expired",
+  "failed",
+  "cancelled",
+] as const;
+export type SteamLoginState = (typeof steamLoginStates)[number];
+
+/**
+ * Попытка входа в Steam по QR для установщика (спека §4): пользователь
+ * открывает `/login-steam`, видит код `qrUrl`, сканирует приложением Steam —
+ * агент сеет полученный профиль. Частичный уникальный индекс гарантирует не
+ * более одной активной попытки (`pending`/`waiting`/`scanned`) на
+ * пользователя — новая попытка требует сначала завершить (отменить) прежнюю,
+ * а не плодит параллельные строки. `done`/`expired`/`failed`/`cancelled` —
+ * терминальные, не мешают следующей попытке.
+ */
+export const steamLogins = pgTable(
+  "steam_logins",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    state: text("state", { enum: steamLoginStates })
+      .notNull()
+      .default("pending"),
+    qrUrl: text("qr_url"),
+    error: text("error"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("steam_logins_active_user_idx")
+      .on(t.userId)
+      .where(sql`${t.state} in ('pending', 'waiting', 'scanned')`),
+  ],
+);
