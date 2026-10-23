@@ -9,6 +9,7 @@ import {
 import { Cause, DateTime, Effect, Schema } from "effect";
 import { ProtonDb } from "../steam/ProtonDb";
 import { SteamApi } from "../steam/SteamApi";
+import * as CloudRepo from "./CloudRepo";
 import * as LibraryRepo from "./LibraryRepo";
 
 /** Вертикальная обложка Steam 600×900 (фолбэк на `header.jpg` — на фронте). */
@@ -125,21 +126,24 @@ export const libraryView = (
     const state = yield* LibraryRepo.libraryState(userId);
     if (state?.libraryPrivate) return { _tag: "Private" } as const;
     const rows = yield* LibraryRepo.listEntries(userId);
-    // TODO: статус облака и время последней игры подключаются в задаче главной /app.
+    const appIds = rows.map((row) => row.appId);
+    const cloud = yield* CloudRepo.cloudStatuses(appIds);
+    const lastPlayed = yield* CloudRepo.lastPlayedAt(userId, appIds);
+    const steamProfile = yield* CloudRepo.hasSteamProfile(userId);
     const entries = rows.map((row): LibraryEntry => ({
       appId: row.appId,
       name: row.name,
       playtimeMinutes: row.playtimeMinutes,
       protonTier: isProtonTier(row.protonTier) ? row.protonTier : "pending",
       coverUrl: coverUrl(row.appId),
-      cloud: { _tag: "Missing" },
-      lastPlayedAt: null,
+      cloud: CloudRepo.cloudStatusOf(cloud, row.appId),
+      lastPlayedAt: lastPlayed.get(row.appId) ?? null,
     }));
     return {
       _tag: "Ready",
       entries,
       syncedAt: state?.librarySyncedAt?.toISOString() ?? null,
-      steamProfile: state?.steamId != null,
+      steamProfile,
     } as const;
   }).pipe(Effect.orDie);
 
