@@ -116,6 +116,15 @@ describe("FilterBar", () => {
     expect(chip.getAttribute("title")).toBe("Скоро");
   });
 
+  it("первая строка (селекты/привязать/поиск) переносится, а не вылезает за экран", async () => {
+    renderBar();
+    const select = await screen.findByLabelText("Статус");
+    // Первая строка — общий родитель `<select>`'ов, «Привязать аккаунт» и поиска.
+    const row = select.closest("div");
+    expect(row).not.toBeNull();
+    expect(Array.from(row?.classList ?? [])).toContain("flex-wrap");
+  });
+
   it("⌘K фокусирует поле поиска", async () => {
     renderBar();
     const input = await screen.findByLabelText("Найти игру");

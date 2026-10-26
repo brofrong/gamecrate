@@ -115,4 +115,32 @@ describe("AppShell", () => {
       ),
     ).toBe(true);
   });
+
+  it("средняя колонка сетки — minmax(0,1fr) на md и xl, иначе 1fr не сжимается ниже min-content контента и сетка вылезает за экран (1280 px)", async () => {
+    const { container } = render(
+      <RouterProvider
+        router={testRouter(
+          <AppShell
+            user={{
+              id: "u1",
+              name: "Gamer",
+              image: null,
+              role: "player",
+              steamId: "7656",
+              email: null,
+              emailVerified: false,
+            }}
+          >
+            <div data-testid="main">main</div>
+          </AppShell>,
+        )}
+      />,
+    );
+    await screen.findByTestId("main");
+    const grid = container.querySelector(".min-h-dvh");
+    expect(grid).not.toBeNull();
+    const classList = Array.from(grid?.classList ?? []);
+    expect(classList).toContain("md:grid-cols-[84px_minmax(0,1fr)]");
+    expect(classList).toContain("xl:grid-cols-[84px_minmax(0,1fr)_330px]");
+  });
 });

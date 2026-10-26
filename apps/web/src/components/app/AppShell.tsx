@@ -1,5 +1,7 @@
 // Сетка главной `/app`: полоска (Rail) + контент + правая колонка (aside) на десктопе
-// (`xl`: 84px/1fr/330px), без правой колонки в сетке на планшете (aside — под контентом),
+// (`xl`: 84px/minmax(0,1fr)/330px — `minmax(0,1fr)`, а не просто `1fr`, иначе средняя
+// колонка не сжимается ниже min-content содержимого (FilterBar) и сетка вылезает за
+// экран на 1280 px), без правой колонки в сетке на планшете (aside — под контентом),
 // без полоски и с нижней панелью (BottomTabs) и `sticky`-слотом над ней на телефоне.
 //
 // Страницы под `/app/*` рендерятся через `Outlet` и не могут передать `aside`/`sticky`
@@ -55,11 +57,11 @@ export function AppShell(props: {
 
   return (
     <SlotContext.Provider value={{ aside: asideEl, sticky: stickyEl }}>
-      <div className="min-h-dvh bg-[#0d0f14] text-[#eef1ff] md:grid md:grid-cols-[84px_1fr] md:items-start md:gap-6 md:p-6 xl:grid-cols-[84px_1fr_330px]">
+      <div className="min-h-dvh bg-[#0d0f14] text-[#eef1ff] md:grid md:grid-cols-[84px_minmax(0,1fr)] md:items-start md:gap-6 md:p-6 xl:grid-cols-[84px_minmax(0,1fr)_330px]">
         <div className="hidden md:block">
           <Rail installing={installing} />
         </div>
-        <div className="flex flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">
+        <div className="flex min-w-0 flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">
           {children}
         </div>
         <div
