@@ -72,7 +72,18 @@ export function SteamQrLoginView({
     setSvg(null);
     doneFired.current = false;
     void start().then((result) => {
-      if (result !== null) setAttemptId(result.attemptId);
+      if (result !== null) {
+        setAttemptId(result.attemptId);
+        return;
+      }
+      // Попытку завести не удалось — показываем ошибку и «Показать новый код»,
+      // а не вечный спиннер (опрашивать нечего, `attemptId` пустой и не используется).
+      setView({
+        attemptId: "",
+        status: "failed",
+        qrUrl: null,
+        reason: steamLoginReasons.steamError,
+      });
     });
   };
 
@@ -83,6 +94,8 @@ export function SteamQrLoginView({
   }, []);
 
   // Опрос раз в `pollMs`, пока статус не терминальный (done/expired/failed).
+  // Опросы идут строго по очереди: следующий планируется только после ответа на
+  // предыдущий, так медленные ответы не накладываются и не приходят не по порядку.
   // `notFound` сдаётся сразу (попытки больше нет — ждать нечего); прочие ошибки
   // (сеть и т.п.) переживаем до `MAX_CONSECUTIVE_FAILURES` подряд, иначе крутили бы
   // спиннер вечно без видимого результата.
@@ -90,9 +103,12 @@ export function SteamQrLoginView({
     if (attemptId === null) return;
     let stopped = false;
     let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const next = () => {
+      if (!stopped) timer = setTimeout(() => void tick(), pollMs);
+    };
     const giveUp = () => {
       stopped = true;
-      clearInterval(timer);
       setView({
         attemptId,
         status: "failed",
@@ -110,23 +126,22 @@ export function SteamQrLoginView({
       if (result.kind === "error") {
         failures += 1;
         if (failures >= MAX_CONSECUTIVE_FAILURES) giveUp();
+        else next();
         return;
       }
       failures = 0;
       setView(result.view);
       if (
-        result.view.status !== "waiting" &&
-        result.view.status !== "scanned"
+        result.view.status === "waiting" ||
+        result.view.status === "scanned"
       ) {
-        stopped = true;
-        clearInterval(timer);
+        next();
       }
     };
-    const timer = setInterval(() => void tick(), pollMs);
     void tick();
     return () => {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [attemptId, status, pollMs]);
 
@@ -215,24 +230,42 @@ export const SteamQrLogin: SteamQrLoginComponent = ({ title, onDone }) => {
 
 /**
  * Модальная обёртка для карточки `/library` и строки Steam в `/profile`.
+ * Закрывается кнопкой «Отмена» или Escape (`onClose`).
  * `QrLogin` подменяется в тестах, чтобы не тянуть настоящий RPC-клиент.
  */
 export function SteamQrLoginDialog({
   open,
   title,
   onDone,
+  onClose,
   QrLogin = SteamQrLogin,
 }: {
   open: boolean;
   title: string;
   onDone: () => void;
+  onClose: () => void;
   QrLogin?: SteamQrLoginComponent;
 }) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCloseRef.current();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-sm rounded-lg border bg-background p-6 shadow-lg">
+      <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-background p-6 shadow-lg">
         <QrLogin title={title} onDone={onDone} />
+        <Button variant="ghost" className="self-center" onClick={onClose}>
+          Отмена
+        </Button>
       </div>
     </div>
   );

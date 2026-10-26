@@ -12,6 +12,7 @@ import type { SteamLoginView } from "@cg/rpc";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   type SteamLoginStatusResult,
+  SteamQrLoginDialog,
   SteamQrLoginView,
 } from "../src/components/SteamQrLogin";
 
@@ -178,5 +179,100 @@ describe("SteamQrLogin", () => {
     const callsAtGiveUp = status.mock.calls.length;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS * 10));
     expect(status.mock.calls.length).toBe(callsAtGiveUp);
+  });
+
+  it("failed start shows the Steam error and offers a new code, not an endless spinner", async () => {
+    let n = 0;
+    const start = mock(async () => (++n === 1 ? null : { attemptId: "a2" }));
+    const status = mock(async () => viewResult({ attemptId: "a2" }));
+
+    render(
+      <SteamQrLoginView
+        title="Подключите Steam"
+        onDone={() => {}}
+        start={start}
+        status={status}
+        pollMs={POLL_MS}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Steam не ответил, попробуйте ещё раз"),
+      ).toBeTruthy(),
+    );
+    expect(status).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать новый код" }));
+    await waitFor(() =>
+      expect(screen.getByText("Ждём сканирования")).toBeTruthy(),
+    );
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls sequentially: a slow status call is never overlapped by the next one", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const start = mock(async () => ({ attemptId: "a1" }));
+    const status = mock(async (): Promise<SteamLoginStatusResult> => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Ответ медленнее интервала опроса — при `setInterval` следующий опрос ушёл бы,
+      // не дождавшись этого.
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS * 4));
+      inFlight -= 1;
+      return viewResult();
+    });
+
+    render(
+      <SteamQrLoginView
+        title="Подключите Steam"
+        onDone={() => {}}
+        start={start}
+        status={status}
+        pollMs={POLL_MS}
+      />,
+    );
+
+    await waitFor(() => expect(status.mock.calls.length).toBeGreaterThan(3));
+    expect(maxInFlight).toBe(1);
+  });
+});
+
+describe("SteamQrLoginDialog", () => {
+  const Stub = ({ title }: { title: string; onDone: () => void }) => (
+    <p>{title}</p>
+  );
+
+  it("«Отмена» closes the dialog", () => {
+    const onClose = mock(() => {});
+    render(
+      <SteamQrLoginDialog
+        open
+        title="Подключите Steam"
+        onDone={() => {}}
+        onClose={onClose}
+        QrLogin={Stub}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape closes the dialog", () => {
+    const onClose = mock(() => {});
+    render(
+      <SteamQrLoginDialog
+        open
+        title="Подключите Steam"
+        onDone={() => {}}
+        onClose={onClose}
+        QrLogin={Stub}
+      />,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

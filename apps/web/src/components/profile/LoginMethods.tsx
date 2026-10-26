@@ -127,6 +127,7 @@ export function LoginMethods({
           setSteamOpen(false);
           onSteamDone();
         }}
+        onClose={() => setSteamOpen(false)}
         QrLogin={QrLogin}
       />
     </div>

@@ -75,6 +75,7 @@ export function ConnectSteam({
           setOpen(false);
           onDone();
         }}
+        onClose={() => setOpen(false)}
         QrLogin={QrLogin}
       />
     </div>
