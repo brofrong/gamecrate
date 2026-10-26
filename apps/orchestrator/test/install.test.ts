@@ -405,12 +405,10 @@ describe("install jobs", () => {
         const CS = 730;
         yield* seed("userA", "userB");
         yield* db.insert(games).values({ appId: CS, name: "Counter-Strike" });
-        yield* db
-          .insert(settings)
-          .values({
-            key: sessionSettingsKey,
-            value: { steamLoginTimeoutSeconds: 120 },
-          });
+        yield* db.insert(settings).values({
+          key: sessionSettingsKey,
+          value: { steamLoginTimeoutSeconds: 120 },
+        });
         const steamLogin: SteamLoginSeed = {
           accountName: Redacted.make("steamuser"),
           steamId: "76561198000000001",

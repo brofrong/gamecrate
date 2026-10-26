@@ -214,7 +214,9 @@ export const filesTar = (
     const name =
       isDir && !entry.path.endsWith("/") ? `${entry.path}/` : entry.path;
     const data = entry.data ?? new Uint8Array(0);
-    chunks.push(tarHeader(name, isDir ? "5" : "0", data.length, entry.mode, options));
+    chunks.push(
+      tarHeader(name, isDir ? "5" : "0", data.length, entry.mode, options),
+    );
     if (!isDir) {
       chunks.push(data);
       const padding = Math.ceil(data.length / 512) * 512 - data.length;

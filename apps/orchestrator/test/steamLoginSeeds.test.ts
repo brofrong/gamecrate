@@ -12,7 +12,10 @@ const makeSeed = (refreshToken: string): SteamLoginSeed => ({
 
 const run = <A, E>(body: Effect.Effect<A, E, SteamLoginSeeds>) =>
   Effect.runPromise(
-    body.pipe(Effect.provide(SteamLoginSeeds.layer), Effect.provide(TestClock.layer())),
+    body.pipe(
+      Effect.provide(SteamLoginSeeds.layer),
+      Effect.provide(TestClock.layer()),
+    ),
   );
 
 describe("SteamLoginSeeds", () => {

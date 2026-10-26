@@ -21,7 +21,10 @@ export interface SteamLoginSeedsShape {
 }
 
 const make = Effect.sync(() => {
-  const entries = new Map<string, { seed: SteamLoginSeed; expiresAt: number }>();
+  const entries = new Map<
+    string,
+    { seed: SteamLoginSeed; expiresAt: number }
+  >();
 
   const put: SteamLoginSeedsShape["put"] = (userId, seed) =>
     Effect.map(Clock.currentTimeMillis, (now) => {

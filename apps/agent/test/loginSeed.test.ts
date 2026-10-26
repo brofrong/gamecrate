@@ -103,9 +103,7 @@ describe("applyLoginSeed", () => {
     expect(
       getPath(loginUsers, ["users", seed.steamId, "SkipOfflineModeWarning"]),
     ).toBe("0");
-    expect(getPath(loginUsers, ["users", seed.steamId, "AutoLogin"])).toBe(
-      "1",
-    );
+    expect(getPath(loginUsers, ["users", seed.steamId, "AutoLogin"])).toBe("1");
     expect(getPath(loginUsers, ["users", seed.steamId, "MostRecent"])).toBe(
       "1",
     );
@@ -230,9 +228,7 @@ describe("applyLoginSeed", () => {
     expect(getPath(loginUsers, ["users", seed.steamId, "MostRecent"])).toBe(
       "1",
     );
-    expect(getPath(loginUsers, ["users", seed.steamId, "AutoLogin"])).toBe(
-      "1",
-    );
+    expect(getPath(loginUsers, ["users", seed.steamId, "AutoLogin"])).toBe("1");
 
     const registry = parseVdf(files.registry);
     expect(
@@ -279,7 +275,11 @@ describe("applyLoginSeed", () => {
   });
 
   it("falls back to creating from scratch when a file is unreadable", () => {
-    const files = applyLoginSeed({ loginUsers: "garbage" }, seed, 1_760_000_000);
+    const files = applyLoginSeed(
+      { loginUsers: "garbage" },
+      seed,
+      1_760_000_000,
+    );
     const loginUsers = parseVdf(files.loginUsers);
     expect(loginUsers).toBeDefined();
     expect(getPath(loginUsers, ["users", seed.steamId, "AccountName"])).toBe(

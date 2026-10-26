@@ -158,8 +158,7 @@ describe("admin.settings", () => {
     expect(read).toEqual({
       ...mvp2,
       installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
-      steamLoginTimeoutSeconds:
-        defaultSessionSettings.steamLoginTimeoutSeconds,
+      steamLoginTimeoutSeconds: defaultSessionSettings.steamLoginTimeoutSeconds,
     });
   });
 

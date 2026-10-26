@@ -68,7 +68,15 @@ describe("getPath/setPath", () => {
     const nodes = parseVdf(configFixture) ?? [];
     const updated = setPath(
       nodes,
-      ["InstallConfigStore", "Software", "valve", "Steam", "Accounts", "new", "SteamID"],
+      [
+        "InstallConfigStore",
+        "Software",
+        "valve",
+        "Steam",
+        "Accounts",
+        "new",
+        "SteamID",
+      ],
       "1",
     );
     // существующий путь ("valve" строчными) сохранил регистр.

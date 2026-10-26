@@ -616,8 +616,7 @@ const make = Effect.gen(function* () {
         }).pipe(
           withServices,
           Effect.mapError(
-            (cause) =>
-              new Abort({ reason: failReasons.profileRestore, cause }),
+            (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
           ),
         );
         session.seeded = true;

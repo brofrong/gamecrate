@@ -27,8 +27,6 @@ describe("SteamLoginView", () => {
       qrUrl: null,
       reason: null,
     } as const;
-    expect(Schema.decodeUnknownSync(SteamLoginView)(waiting)).toEqual(
-      waiting,
-    );
+    expect(Schema.decodeUnknownSync(SteamLoginView)(waiting)).toEqual(waiting);
   });
 });
