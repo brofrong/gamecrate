@@ -1,8 +1,8 @@
 // Хендлеры группы `steamLogin.*`: заводят попытку входа в Steam (строку в
 // таблице `steam_logins`) и отдают её текущее состояние на поллинг экрана
-// `/login-steam`. QR-код и исход сюда не приходят напрямую — оркестратор сам
-// проводит Steam QR-логин и обновляет эту строку (Task 5); сайт только
-// опрашивает `steamLogin.status`.
+// «Вход в Steam по QR» (`/library`, профиль, экран сессии). QR-код и исход
+// сюда не приходят напрямую — оркестратор сам проводит Steam QR-логин и
+// обновляет эту строку; сайт только опрашивает `steamLogin.status`.
 import { CurrentUser, SteamLoginNotFound, SteamLoginRpcs } from "@cg/rpc";
 import type { SteamLoginView } from "@cg/rpc";
 import { Effect } from "effect";

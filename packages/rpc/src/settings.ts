@@ -12,8 +12,9 @@ export const sessionSettingsKey = "session";
  * - `disconnectGraceMinutes` — ожидание возврата после отключения (1–60 мин).
  * - `startTimeoutMinutes` — таймаут запуска сессии (5–60 мин).
  * - `installTimeoutMinutes` — таймаут установки игры в `installing` (10–720 мин).
- * - `steamLoginTimeoutSeconds` — сколько установщик ждёт сканирования QR
- *   входа в Steam, прежде чем провалить установку (30–600 с, спека §4).
+ * - `steamLoginTimeoutSeconds` — сколько установщик ждёт входа клиента Steam
+ *   (отсчёт — с первых строк его журнала подключения), прежде чем провалить
+ *   установку «Войдите в Steam» (30–600 с, спека §5.4).
  */
 export const SessionSettings = Schema.Struct({
   idleWarningMinutes: Schema.Int.check(

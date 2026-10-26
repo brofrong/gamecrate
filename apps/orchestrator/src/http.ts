@@ -64,14 +64,23 @@ const AgentWebsocketProtocol = Layer.effect(
  * приняли и он был посеян (`steamLoginSeeded`) — `SteamLoginSeeds.clear`:
  * профиль пользователя уже хранит вход, сеять его снова незачем. Отклонённый
  * (устаревшая `baseVersion`) или не посеянный коммит вход не трогает — он
- * ждёт следующую попытку или истечёт по `SEED_TTL`.
+ * ждёт следующую попытку или истечёт по `SEED_TTL`. Итог — в лог (только
+ * флаги, без самого входа); `workerId` — агент, приславший коммит.
  */
-export const applyProfileCommit = (commit: ProfileCommit) =>
+export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
   Effect.gen(function* () {
     const seeds = yield* SteamLoginSeeds;
     const result = yield* SessionRepo.commitProfile(commit);
-    if (result.accepted && commit.steamLoginSeeded)
-      yield* seeds.clear(commit.userId);
+    const seedCleared = result.accepted && commit.steamLoginSeeded;
+    if (seedCleared) yield* seeds.clear(commit.userId);
+    yield* Effect.logInfo("Profile commit", {
+      userId: commit.userId,
+      baseVersion: commit.baseVersion,
+      accepted: result.accepted,
+      steamLoginSeeded: commit.steamLoginSeeded,
+      seedCleared,
+      workerId,
+    });
     return result;
   });
 
@@ -91,17 +100,10 @@ export const AgentRpcHandlers = AgentRpcs.toLayer(
         Effect.gen(function* () {
           const workerId = hub.workerOf(client.id);
           if (workerId === undefined) return yield* new AgentNotConnected();
-          const result = yield* applyProfileCommit(commit).pipe(
+          return yield* applyProfileCommit(commit, workerId).pipe(
             Effect.provideService(Db, db),
             Effect.orDie,
           );
-          yield* Effect.logInfo("Profile commit", {
-            userId: commit.userId,
-            baseVersion: commit.baseVersion,
-            accepted: result.accepted,
-            workerId,
-          });
-          return result;
         }),
     });
   }),

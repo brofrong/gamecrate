@@ -93,9 +93,10 @@ export const ProfileRef = Schema.Struct({
 export type ProfileRef = typeof ProfileRef.Type;
 
 /**
- * Профиль Steam, который агент сеет в дом контейнера перед запуском сессии
- * или установщика: вместо (или до) QR-входа установщик сразу использует этот
- * аккаунт (спека §4). `accountName` и `refreshToken` никогда не должны
+ * Вход в Steam, который агент вписывает в дом контейнера перед запуском
+ * сессии или установщика (спека §4): оркестратор получил его QR-входом на
+ * сайте и прикладывает к следующей команде пользователя — клиент Steam
+ * в контейнере входит этим аккаунтом сам. `accountName` и `refreshToken` никогда не должны
  * попасть в лог, БД или браузер — отсюда `Redacted`; по WebSocket агенту они
  * всё равно уходят (кодирование `SteamLoginSeed` отдаёт исходную строку),
  * только `console.log`/`String()`/`JSON.stringify` их не печатают.
@@ -115,9 +116,11 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
 /**
  * Команда оркестратора агенту: поднять или погасить контейнер сессии,
  * запустить или отменить установку игры в общую библиотеку (роль `gamestore`).
- * `steamLogin` — профиль для посева (Task 2); `null`, пока вызывающая сторона
- * не завела его. `InstallGame.steamLoginTimeoutSeconds` — сколько установщик
- * ждёт сканирования QR до `InstallFailed` (из `SessionSettings`, ruling P1).
+ * `steamLogin` — ожидающий вход пользователя для посева (`SteamLoginSeeds`
+ * оркестратора); `null` — его нет. `InstallGame.steamLoginTimeoutSeconds` —
+ * сколько установщик ждёт входа клиента Steam (признака в его журнале
+ * подключения, отсчёт — с первых строк журнала) до `InstallFailed` «Войдите
+ * в Steam» (из текущих `SessionSettings`).
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -145,7 +148,7 @@ export type AgentCommand = typeof AgentCommand.Type;
 /**
  * Причина `InstallFailed`, когда у пользователя нет профиля и установщику
  * нужен вход в Steam (спека §4: раньше — «запустите любую уже установленную
- * игру», теперь — QR на `/login-steam`). Оркестратор показывает её владельцу
+ * игру», теперь — вход по QR на сайте: `/library`, профиль, экран сессии). Оркестратор показывает её владельцу
  * задачи как есть (а не общую «Не удалось установить игру»).
  */
 export const steamLoginRequiredReason = "Войдите в Steam";
@@ -203,8 +206,9 @@ export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
  * которой агент отталкивался (`null` — профиля ещё не было); принимается,
  * только если она совпадает с текущей версией в `profiles` (устаревшая
  * базовая версия отклоняется — спека §6). `steamLoginSeeded` — профиль
- * сохранён после посева `steamLogin` этой сессией/установкой (Task 2):
- * оркестратор привяжет `steamId` к аккаунту только для таких коммитов.
+ * сохранён после посева `steamLogin` этой сессией/установкой: принятый такой
+ * коммит снимает ожидающий вход пользователя у оркестратора (профиль уже
+ * хранит вход, сеять его снова незачем).
  */
 export const ProfileCommit = Schema.Struct({
   userId: Schema.String,
