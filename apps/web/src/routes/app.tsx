@@ -1,11 +1,13 @@
 // `/app`: новая главная после входа — сетка AppShell (полоска разделов/нижняя панель)
-// и четыре дочерних маршрута. «Мои игры» — страница целиком (Task 10); «В тренде»,
-// «Из ящика», «Время» — пока заглушки (`data-testid`), их содержимое добавит Task 12.
+// и четыре дочерних маршрута: «Мои игры», «В тренде», «Из ящика», «Время» (Task 10, Task 12).
 import { useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate, Outlet } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { AppShell } from "@/components/app/AppShell";
+import { CratePage } from "@/components/app/CratePage";
 import { MyGamesPage } from "@/components/app/MyGamesPage";
+import { TimePage } from "@/components/app/TimePage";
+import { TrendingPage } from "@/components/app/TrendingPage";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { parseSearch, toSearch } from "@/lib/libraryFilters";
 import { useStalled } from "@/lib/useStalled";
@@ -34,18 +36,6 @@ function AppLayout() {
       <Outlet />
     </AppShell>
   );
-}
-
-function TrendingPage() {
-  return <div data-testid="trending" />;
-}
-
-function CratePage() {
-  return <div data-testid="crate" />;
-}
-
-function TimePage() {
-  return <div data-testid="time" />;
 }
 
 export const appRoute = createRoute({
