@@ -3,12 +3,9 @@
 // статус облака. Нет в библиотеке Steam у пользователя — кнопка скрыта («blocked»).
 // Перезапрашивает `trendingAtom` раз в 30 с, пока страница смонтирована.
 import type { TrendingEntry } from "@cg/rpc";
-import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
-import { Exit } from "effect";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useEffect } from "react";
 import { GameSection } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
 import {
@@ -17,13 +14,8 @@ import {
   type LibraryPlay,
 } from "@/lib/cardAction";
 import { pluralize } from "@/lib/plural";
-import {
-  activeSessionAtom,
-  errorTag,
-  startSessionArgs,
-  startSessionAtom,
-  trendingAtom,
-} from "@/rpc";
+import { usePlaySession } from "@/lib/usePlaySession";
+import { trendingAtom } from "@/rpc";
 
 /** Раз в 30 с, пока компонент смонтирован, — см. спеку §4.2 и Task 12. */
 const TRENDING_REFRESH_MS = 30_000;
@@ -45,48 +37,12 @@ function trendingAction(entry: TrendingEntry, play: LibraryPlay): CardAction {
 export function TrendingPage() {
   const trending = useAtomValue(trendingAtom);
   const refresh = useAtomRefresh(trendingAtom);
-  const active = useAtomValue(activeSessionAtom);
-  const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
-  const navigate = useNavigate();
-  const [startingAppId, setStartingAppId] = useState<number | null>(null);
+  const { play } = usePlaySession();
 
   useEffect(() => {
     const timer = setInterval(() => refresh(), TRENDING_REFRESH_MS);
     return () => clearInterval(timer);
   }, [refresh]);
-
-  const activeSession = AsyncResult.isSuccess(active)
-    ? active.value
-    : undefined;
-
-  const onPlay = async (appId: number) => {
-    setStartingAppId(appId);
-    const exit = await start(startSessionArgs(appId));
-    setStartingAppId(null);
-    if (Exit.isSuccess(exit)) {
-      void navigate({ to: "/session/$id", params: { id: exit.value.id } });
-      return;
-    }
-    const tag = errorTag(exit.cause);
-    if (tag === "GameNotOwned") {
-      toast.error("Эта игра не найдена в вашей библиотеке Steam");
-    } else if (tag === "Unauthorized") {
-      window.location.assign("/");
-    } else {
-      toast.error("Не удалось начать игру. Попробуйте ещё раз.");
-    }
-  };
-
-  const play: LibraryPlay = {
-    active: activeSession,
-    startingAppId,
-    onPlay: (appId) => void onPlay(appId),
-    onResume: () => {
-      if (activeSession) {
-        void navigate({ to: "/session/$id", params: { id: activeSession.id } });
-      }
-    },
-  };
 
   const view = AsyncResult.isSuccess(trending) ? trending.value : undefined;
   const empty =

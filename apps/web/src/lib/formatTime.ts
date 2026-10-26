@@ -41,6 +41,13 @@ export function formatMinutes(min: number): string {
   return rest === 0 ? `${hours} ч` : `${hours} ч ${rest} м`;
 }
 
+/** «7:40» — часы без паддинга, минуты всегда двузначные (панель и страница «Время»). */
+export function formatHM(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${hours}:${String(rest).padStart(2, "0")}`;
+}
+
 /** «14 ч в игре», «38 мин в игре», «не запускалась». */
 export function formatHoursInGame(min: number): string {
   if (min <= 0) return "не запускалась";

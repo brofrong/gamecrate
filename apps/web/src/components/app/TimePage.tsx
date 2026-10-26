@@ -4,9 +4,10 @@
 // телефон). `month` переживает перезагрузку страницы — живёт в адресе, не в стейте.
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   currentMonth,
+  formatHM,
   formatMinutes,
   formatMonth,
   formatRelativeDate,
@@ -17,13 +18,6 @@ import { appTimeRoute } from "@/routes/app";
 
 /** Сколько сессий видно до клика «показать ещё N». */
 const VISIBLE_SESSIONS = 30;
-
-/** «7:40» — часы без паддинга, минуты всегда двузначные (как в `TimePanel`). */
-function formatHM(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return `${hours}:${String(rest).padStart(2, "0")}`;
-}
 
 /** «21:10» — местное время начала сессии, двузначные часы и минуты. */
 function formatClock(iso: string): string {
@@ -42,6 +36,13 @@ export function TimePage() {
   const result = useAtomValue(timeSummaryAtom(month));
   const summary = AsyncResult.isSuccess(result) ? result.value : undefined;
   const [expanded, setExpanded] = useState(false);
+
+  // Переключение месяца держит тот же смонтированный компонент (`month` —
+  // часть адреса, не ключ страницы) — без этого «показать ещё» в новом месяце
+  // осталось бы раскрытым от предыдущего.
+  useEffect(() => {
+    setExpanded(false);
+  }, [month]);
 
   const goTo = (target: string) =>
     void navigate({ to: "/app/time", search: { month: target } });

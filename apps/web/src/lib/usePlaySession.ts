@@ -1,0 +1,60 @@
+// Запуск игры с главной `/app` — общий для `MyGamesPage` (библиотека, «Запускал
+// недавно») и `TrendingPage` («В тренде»): активная сессия пользователя, запуск
+// новой («Играть») и переход к активной («Вернуться в игру»), с теми же текстами
+// ошибок (`GameNotOwned`/`Unauthorized`/остальное), что были продублированы в
+// обоих компонентах до вынесения сюда.
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useNavigate } from "@tanstack/react-router";
+import { Exit } from "effect";
+import { AsyncResult } from "effect/reactivity";
+import { useState } from "react";
+import { toast } from "sonner";
+import type { LibraryPlay } from "@/lib/cardAction";
+import {
+  activeSessionAtom,
+  errorTag,
+  startSessionArgs,
+  startSessionAtom,
+} from "@/rpc";
+
+export function usePlaySession() {
+  const active = useAtomValue(activeSessionAtom);
+  const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
+  const navigate = useNavigate();
+  const [startingAppId, setStartingAppId] = useState<number | null>(null);
+
+  const activeSession = AsyncResult.isSuccess(active)
+    ? active.value
+    : undefined;
+  const openSession = (id: string) =>
+    void navigate({ to: "/session/$id", params: { id } });
+
+  const onPlay = async (appId: number) => {
+    setStartingAppId(appId);
+    const exit = await start(startSessionArgs(appId));
+    setStartingAppId(null);
+    if (Exit.isSuccess(exit)) {
+      openSession(exit.value.id);
+      return;
+    }
+    const tag = errorTag(exit.cause);
+    if (tag === "GameNotOwned") {
+      toast.error("Эта игра не найдена в вашей библиотеке Steam");
+    } else if (tag === "Unauthorized") {
+      window.location.assign("/");
+    } else {
+      toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+    }
+  };
+
+  const play: LibraryPlay = {
+    active: activeSession,
+    startingAppId,
+    onPlay: (appId) => void onPlay(appId),
+    onResume: () => {
+      if (activeSession) openSession(activeSession.id);
+    },
+  };
+
+  return { active, activeSession, play };
+}

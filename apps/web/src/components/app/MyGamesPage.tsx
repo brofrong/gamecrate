@@ -29,7 +29,7 @@ import { PrivateProfile } from "@/components/PrivateProfile";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { authErrorMessage } from "@/lib/authErrors";
-import { cardAction, type LibraryPlay } from "@/lib/cardAction";
+import { cardAction } from "@/lib/cardAction";
 import { currentMonth, formatRelativeDate } from "@/lib/formatTime";
 import {
   applyFilters,
@@ -40,6 +40,7 @@ import {
   type Section,
   toSearch,
 } from "@/lib/libraryFilters";
+import { usePlaySession } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import {
   activeSessionAtom,
@@ -49,8 +50,6 @@ import {
   recentAtom,
   refreshLibraryArgs,
   refreshLibraryAtom,
-  startSessionArgs,
-  startSessionAtom,
   timeSummaryAtom,
 } from "@/rpc";
 import { appIndexRoute } from "@/routes/app";
@@ -123,14 +122,12 @@ export function MyGamesPage() {
   const reloadLibrary = useAtomRefresh(libraryAtom);
   const recent = useAtomValue(recentAtom);
   const reloadRecent = useAtomRefresh(recentAtom);
-  const active = useAtomValue(activeSessionAtom);
   const reloadActive = useAtomRefresh(activeSessionAtom);
   const summary = useAtomValue(timeSummaryAtom(currentMonth(new Date())));
   const refresh = useAtomSet(refreshLibraryAtom, { mode: "promiseExit" });
-  const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
+  const { active, activeSession, play } = usePlaySession();
 
   const [refreshing, setRefreshing] = useState(false);
-  const [startingAppId, setStartingAppId] = useState<number | null>(null);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(
     search.focus === "q",
   );
@@ -146,39 +143,6 @@ export function MyGamesPage() {
     if (search.error !== undefined) toast.error(authErrorMessage(search.error));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const activeSession = AsyncResult.isSuccess(active)
-    ? active.value
-    : undefined;
-  const openSession = (id: string) =>
-    void navigate({ to: "/session/$id", params: { id } });
-
-  const onPlay = async (appId: number) => {
-    setStartingAppId(appId);
-    const exit = await start(startSessionArgs(appId));
-    setStartingAppId(null);
-    if (Exit.isSuccess(exit)) {
-      openSession(exit.value.id);
-      return;
-    }
-    const tag = errorTag(exit.cause);
-    if (tag === "GameNotOwned") {
-      toast.error("Эта игра не найдена в вашей библиотеке Steam");
-    } else if (tag === "Unauthorized") {
-      window.location.assign("/");
-    } else {
-      toast.error("Не удалось начать игру. Попробуйте ещё раз.");
-    }
-  };
-
-  const play: LibraryPlay = {
-    active: activeSession,
-    startingAppId,
-    onPlay: (appId) => void onPlay(appId),
-    onResume: () => {
-      if (activeSession) openSession(activeSession.id);
-    },
-  };
 
   const onRefresh = async () => {
     setRefreshing(true);

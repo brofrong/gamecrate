@@ -14,16 +14,21 @@
 // работает `invalidate()` для не-эффектного атома), отбрасывая то, что до этого
 // задал `RegistryProvider` через `initialValues`. Тест на 30-секундный опрос
 // («requeries trending...») использует это намеренно: «после» зашито в сам атом,
-// «до» приходит через `initialValues` — так проверяется настоящий путь
-// `useAtomRefresh` → `registry.refresh` → `setInterval`, без подмены React-хуков.
-import { describe, expect, it, jest, mock } from "bun:test";
+// «до» приходит через `initialValues`. Сам интервал там же проверяется через
+// `spyOn(globalThis, "setInterval"/"clearInterval")` — без фейковых таймеров:
+// связка bun + React 19 + `act()` + `jest.useFakeTimers()` однажды дала
+// интервалу сработать на 1 мс раньше срока (воспроизвели на синтетическом
+// компоненте без атомов — баг самой связки, не этого кода), так что фейковый
+// таймер здесь не нужен — важно, с каким `timeout` вызван `setInterval` и что
+// `clearInterval` снимает ровно этот `id` при размонтировании.
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type {
   CurrentUserShape,
   SessionView,
   TimeSummary,
   TrendingEntry,
 } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRouter,
@@ -82,8 +87,14 @@ const trendingAtom = Atom.make(
 );
 const adminPingAtom = Atom.make(AsyncResult.initial());
 const sessionSettingsAtom = Atom.make(AsyncResult.initial());
+// `keepAlive`: без подписчика (пока пользователь не переключил месяц) узел
+// семейного атома иначе снимается сразу после монтажа (без подписки на него),
+// и `initialValues`, которым тест заранее засевает соседний месяц, пропадает
+// до того, как `TimePage` до него доберётся.
 const timeSummaryAtom = Atom.family((_month: string) =>
-  Atom.make(AsyncResult.initial<TimeSummary, { readonly _tag: string }>()),
+  Atom.keepAlive(
+    Atom.make(AsyncResult.initial<TimeSummary, { readonly _tag: string }>()),
+  ),
 );
 const sessionWatchAtom = Atom.family((_sessionId: string) =>
   Atom.make(AsyncResult.initial()),
@@ -272,7 +283,7 @@ describe("TrendingPage", () => {
     ).toBeTruthy();
   });
 
-  it("requeries trending every 30s while mounted, not sooner", async () => {
+  it("sets up a 30s setInterval for the refresh and clears it on unmount", async () => {
     const before = {
       now: [
         trendingEntry({
@@ -284,29 +295,59 @@ describe("TrendingPage", () => {
       ],
       week: [],
     };
-    jest.useFakeTimers();
+
+    // `findByText`/`waitFor` из Testing Library сами опрашивают DOM через
+    // `setInterval(…, 50)` — мок должен не трогать их, иначе он же и ломает
+    // собственные `await screen.findByText(...)` в этом тесте. Перехватываем
+    // только вызов с `timeout === 30_000` (ровно `TRENDING_REFRESH_MS` из
+    // `TrendingPage.tsx`), остальные — настоящему `setInterval`/`clearInterval`.
+    // Смотрим на `globalThis` через свой узкий интерфейс — у настоящих
+    // `setInterval`/`clearInterval` в этом проекте смешаны перегрузки DOM,
+    // Node и Bun (разные типы id), которые здесь не нужны.
+    interface IntervalGlobals {
+      setInterval(handler: () => void, timeout?: number): number;
+      clearInterval(id?: number): void;
+    }
+    const globals = globalThis as unknown as IntervalGlobals;
+    const realSetInterval = globals.setInterval.bind(globals);
+    const realClearInterval = globals.clearInterval.bind(globals);
+    let tick: (() => void) | undefined;
+    const trendingIntervalId = 999_999;
+
+    const setIntervalSpy = spyOn(globals, "setInterval").mockImplementation(
+      (handler, timeout) => {
+        if (timeout === 30_000) {
+          tick = handler;
+          return trendingIntervalId;
+        }
+        return realSetInterval(handler, timeout);
+      },
+    );
+    const clearIntervalSpy = spyOn(globals, "clearInterval").mockImplementation(
+      (id) => {
+        if (id !== trendingIntervalId) realClearInterval(id);
+      },
+    );
+
     try {
       const { unmount } = renderApp("/app/trending", { trending: before });
       expect(await screen.findByText("Before Game")).toBeTruthy();
-      expect(screen.queryByText("After Refresh Game")).toBeNull();
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 30_000);
+      expect(tick).toBeInstanceOf(Function);
 
-      // Без `act()`: под фейковыми таймерами в этой связке (bun + React 19) оно
-      // пересчитывает интервал раньше срока (проверено отдельно — баг именно
-      // связки, не нашего кода). До срабатывания ничего не меняется, поэтому
-      // синхронная проверка ниже корректна и без `act`; после срабатывания
-      // `findByText` сам дождётся настоящего обновления (как и реальный браузер).
-      jest.advanceTimersByTime(29_999);
-      expect(screen.getByText("Before Game")).toBeTruthy();
-      expect(screen.queryByText("After Refresh Game")).toBeNull();
-
-      jest.advanceTimersByTime(1);
+      // Срабатывание интервала — руками, внутри `act`, без фейковых таймеров
+      // (см. комментарий в начале файла про баг связки bun + React 19).
+      act(() => {
+        tick?.();
+      });
       expect(await screen.findByText("After Refresh Game")).toBeTruthy();
       expect(screen.queryByText("Before Game")).toBeNull();
 
       unmount();
-      expect(() => jest.advanceTimersByTime(120_000)).not.toThrow();
+      expect(clearIntervalSpy).toHaveBeenCalledWith(trendingIntervalId);
     } finally {
-      jest.useRealTimers();
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
     }
   });
 });
@@ -347,6 +388,35 @@ describe("TimePage", () => {
     fireEvent.click(more);
     expect(screen.getAllByTestId("time-session-row")).toHaveLength(35);
     expect(screen.queryByRole("button", { name: /показать ещё/ })).toBeNull();
+  });
+
+  it("resets «показать ещё» when navigating to another month (expanded state must not leak)", async () => {
+    const month = currentMonth(new Date());
+    const prevMonth = monthShift(month, -1);
+    const summaryFor = (m: string) =>
+      timeSummary({
+        month: m,
+        totalMinutes: 35 * 30,
+        sessionCount: 35,
+        byGame: [{ appId: 1, name: "Hades", minutes: 35 * 30 }],
+        sessions: sessionsForMonth(m, 35),
+      });
+    renderApp("/app/time", {
+      time: [
+        [month, summaryFor(month)],
+        [prevMonth, summaryFor(prevMonth)],
+      ],
+    });
+
+    expect(await screen.findByText(formatMonth(month))).toBeTruthy();
+    expect(screen.getAllByTestId("time-session-row")).toHaveLength(30);
+    fireEvent.click(screen.getByRole("button", { name: "показать ещё 5" }));
+    expect(screen.getAllByTestId("time-session-row")).toHaveLength(35);
+
+    fireEvent.click(screen.getByRole("button", { name: "Предыдущий месяц" }));
+    expect(await screen.findByText(formatMonth(prevMonth))).toBeTruthy();
+    expect(screen.getAllByTestId("time-session-row")).toHaveLength(30);
+    expect(screen.getByRole("button", { name: "показать ещё 5" })).toBeTruthy();
   });
 
   it("disables the forward arrow on the current month only", async () => {

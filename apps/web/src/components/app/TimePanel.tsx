@@ -5,14 +5,12 @@ import type { TimeSummary } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import { Clock } from "lucide-react";
 import { Panel, PanelHeader } from "@/components/app/Panel";
-import { currentMonth, formatMinutes, formatMonth } from "@/lib/formatTime";
-
-/** «7:40» — часы без паддинга, минуты всегда двузначные. */
-function formatHM(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return `${hours}:${String(rest).padStart(2, "0")}`;
-}
+import {
+  currentMonth,
+  formatHM,
+  formatMinutes,
+  formatMonth,
+} from "@/lib/formatTime";
 
 export function TimePanel({ summary }: { summary: TimeSummary | undefined }) {
   const month = summary?.month ?? currentMonth(new Date());

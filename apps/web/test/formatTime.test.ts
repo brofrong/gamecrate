@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   currentMonth,
+  formatHM,
   formatHoursInGame,
   formatMinutes,
   formatMonth,
@@ -25,6 +26,24 @@ describe("formatMinutes", () => {
 
   it("exact hours, no remainder", () => {
     expect(formatMinutes(120)).toBe("2 ч");
+  });
+});
+
+describe("formatHM", () => {
+  it("hours without padding, minutes always two digits", () => {
+    expect(formatHM(460)).toBe("7:40");
+  });
+
+  it("pads single-digit minutes", () => {
+    expect(formatHM(305)).toBe("5:05");
+  });
+
+  it("zero hours", () => {
+    expect(formatHM(38)).toBe("0:38");
+  });
+
+  it("zero", () => {
+    expect(formatHM(0)).toBe("0:00");
   });
 });
 
