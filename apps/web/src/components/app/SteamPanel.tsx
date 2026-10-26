@@ -1,12 +1,18 @@
 // Панель «Steam» в правой колонке `/app` (прототип `docs/brand/prototypes/app-home.html`):
-// без привязанного Steam — заголовок с кнопкой «Привязать Steam» вместо остальной
-// карточки; привязан — аватар/имя/SteamID (с копированием), три числа («игр»/«готовы»/
-// «синхр.») и кнопка «Обновить библиотеку».
+// без привязанного Steam — заголовок с кнопкой «Подключить Steam» вместо остальной
+// карточки (открывает QR-вход, как `ConnectSteam` в основной сетке); привязан —
+// аватар/имя/SteamID (с копированием), три числа («игр»/«готовы»/«синхр.») и кнопка
+// «Обновить библиотеку».
 import type { CurrentUserShape, LibraryView } from "@cg/rpc";
 import { Copy } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
-import { linkSteam } from "@/auth";
 import { Panel, PanelHeader, Stat } from "@/components/app/Panel";
+import {
+  SteamQrLogin,
+  SteamQrLoginDialog,
+  type SteamQrLoginComponent,
+} from "@/components/SteamQrLogin";
 import { Button } from "@/components/ui/button";
 import { formatRelativeDate } from "@/lib/formatTime";
 
@@ -15,12 +21,17 @@ export function SteamPanel({
   view,
   onRefresh,
   refreshing,
+  onConnected,
+  QrLogin = SteamQrLogin,
 }: {
   user: CurrentUserShape;
   view: LibraryView | undefined;
   onRefresh: () => void;
   refreshing: boolean;
+  onConnected: () => void;
+  QrLogin?: SteamQrLoginComponent;
 }) {
+  const [open, setOpen] = useState(false);
   const linked = user.steamId !== null;
   const total = view?._tag === "Ready" ? view.entries.length : 0;
   const ready =
@@ -67,13 +78,26 @@ export function SteamPanel({
               type="button"
               size="sm"
               variant="outline"
-              onClick={() => void linkSteam("/app")}
+              onClick={() => setOpen(true)}
             >
-              Привязать Steam
+              Подключить Steam
             </Button>
           )
         }
       />
+
+      {!linked && (
+        <SteamQrLoginDialog
+          open={open}
+          title="Подключите Steam"
+          onDone={() => {
+            setOpen(false);
+            onConnected();
+          }}
+          onClose={() => setOpen(false)}
+          QrLogin={QrLogin}
+        />
+      )}
 
       {linked && (
         <>

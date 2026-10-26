@@ -59,22 +59,57 @@ const session = (patch: Partial<SessionView> = {}): SessionView => ({
 describe("SteamPanel", () => {
   // `SteamPanel` не рендерит `Link` — в отличие от `TimePanel`, рендерим его без
   // `RouterProvider` и запрашиваем синхронно (`getBy*`, не `findBy*`).
-  it("shows a link button when the user has no Steam linked", () => {
+  it("shows a connect button when the user has no Steam linked", () => {
     render(
       <SteamPanel
         user={{ ...user, steamId: null }}
         view={undefined}
         onRefresh={() => {}}
         refreshing={false}
+        onConnected={() => {}}
       />,
     );
     expect(
-      screen.getByRole("button", { name: "Привязать Steam" }),
+      screen.getByRole("button", { name: "Подключить Steam" }),
     ).toBeTruthy();
     expect(screen.queryByText("Привязан")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Обновить библиотеку" }),
     ).toBeNull();
+  });
+
+  it("opens the QR login and calls onConnected when done", () => {
+    const onConnected = mock(() => {});
+    const QrLogin = ({
+      title,
+      onDone: fire,
+    }: {
+      title: string;
+      onDone: () => void;
+    }) => (
+      <div>
+        <p>{title}</p>
+        <button type="button" onClick={fire}>
+          готово (фейк)
+        </button>
+      </div>
+    );
+    render(
+      <SteamPanel
+        user={{ ...user, steamId: null }}
+        view={undefined}
+        onRefresh={() => {}}
+        refreshing={false}
+        onConnected={onConnected}
+        QrLogin={QrLogin}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Подключить Steam" }));
+    expect(screen.getAllByText("Подключите Steam").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
+    expect(onConnected).toHaveBeenCalledTimes(1);
   });
 
   it("shows stats, the refresh button and copies the Steam ID", async () => {
@@ -115,6 +150,7 @@ describe("SteamPanel", () => {
         }}
         onRefresh={onRefresh}
         refreshing={false}
+        onConnected={() => {}}
       />,
     );
 
@@ -155,6 +191,7 @@ describe("SteamPanel", () => {
         }}
         onRefresh={() => {}}
         refreshing={false}
+        onConnected={() => {}}
       />,
     );
 
@@ -179,6 +216,7 @@ describe("SteamPanel", () => {
         }}
         onRefresh={() => {}}
         refreshing={true}
+        onConnected={() => {}}
       />,
     );
     expect(

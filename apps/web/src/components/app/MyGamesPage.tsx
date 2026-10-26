@@ -348,6 +348,10 @@ export function MyGamesPage() {
           view={readyLibrary}
           onRefresh={() => void onRefresh()}
           refreshing={refreshing}
+          onConnected={() => {
+            reloadMe();
+            void onRefresh();
+          }}
         />
         {activeSession && (
           <ActiveSessionPanel
