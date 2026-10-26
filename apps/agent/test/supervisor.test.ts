@@ -21,7 +21,11 @@ import {
   DockerError,
   type DockerClientShape,
 } from "../src/DockerClient";
-import { PROFILE_MAX_BYTES, saveProfile } from "../src/profile/HomeProfile";
+import {
+  PACK_OUTPUT,
+  PROFILE_MAX_BYTES,
+  saveProfile,
+} from "../src/profile/HomeProfile";
 import {
   ProfileCommitError,
   ProfileCommitter,
@@ -36,7 +40,8 @@ import {
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
-import { tarOfFile, testConfig, unusedDocker } from "./fakes";
+import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
+import { findTarEntry } from "./tar";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -169,19 +174,40 @@ const makeFake = () => {
         state.put.push({ container, path, tar });
       }),
     getArchive: (container, path) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         record(`getArchive ${container} ${path}`);
-        return tarOfFile(
-          "cg-profile.tar",
-          container.endsWith("-import") ? state.legacy : state.packed,
+        // Файлы входа Steam (посев) до записи отсутствуют: пустой дом.
+        if (path !== PACK_OUTPUT)
+          return Effect.fail(
+            new DockerError({
+              operation: "getArchive",
+              status: 404,
+              message: "no such file",
+            }),
+          );
+        return Effect.succeed(
+          tarOfFile(
+            "cg-profile.tar",
+            container.endsWith("-import") ? state.legacy : state.packed,
+          ),
         );
       }),
     archiveSize: (container, path) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         record(`archiveSize ${container} ${path}`);
-        return container.endsWith("-import")
-          ? (state.legacySize ?? state.legacy.length)
-          : (state.packedSize ?? state.packed.length);
+        if (path !== PACK_OUTPUT)
+          return Effect.fail(
+            new DockerError({
+              operation: "archiveSize",
+              status: 404,
+              message: "no such file",
+            }),
+          );
+        return Effect.succeed(
+          container.endsWith("-import")
+            ? (state.legacySize ?? state.legacy.length)
+            : (state.packedSize ?? state.packed.length),
+        );
       }),
     exec: (name, cmd) =>
       Effect.suspend(() => {
@@ -384,6 +410,7 @@ const start: Extract<AgentCommand, { _tag: "StartSession" }> = {
   slot: 1,
   udpPort: 59001,
   profile: null,
+  steamLogin: null,
 };
 
 const streamUrl = "http://cg-session-s1:8080";
@@ -1057,6 +1084,7 @@ describe("SessionSupervisor", () => {
               baseVersion: 3,
               objectKey: "profiles/ua/new.cgp",
               sizeBytes: expect.any(Number),
+              steamLoginSeeded: false,
             },
           ]);
           expect(callsFrom(h.fake, "stop cg-session-a 15")).toEqual(
@@ -1225,6 +1253,45 @@ describe("SessionSupervisor", () => {
       }),
     ));
 
+  it("session seeds the Steam login before start", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLogin = testSteamLogin();
+        yield* h.supervisor.handle({ ...start, steamLogin });
+        yield* h.tick("0 seconds");
+        expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+          "create cg-session-s1",
+          "volumeExists cg-home-u1",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
+          "putArchive cg-session-s1 /home/ubuntu",
+          "start cg-session-s1",
+        ]);
+        const seeded = h.fake.state.put.find((p) => p.path === "/home/ubuntu");
+        if (seeded === undefined) throw new Error("no login seed archive");
+        const local = findTarEntry(seeded.tar, "local.vdf");
+        if (local === undefined) throw new Error("no local.vdf in archive");
+        expect(new TextDecoder().decode(local)).toContain("ConnectCache");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits[0]?.steamLoginSeeded).toBe(true);
+      }),
+    ));
+
+  it("session without a Steam login does not touch login files", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle(start);
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.put).toEqual([]);
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits[0]?.steamLoginSeeded).toBe(false);
+      }),
+    ));
+
   it("start imports legacy cg-home volume when no profile", () =>
     run(
       (h) =>
@@ -1348,6 +1415,7 @@ describe("SessionSupervisor", () => {
             baseVersion: 7,
             objectKey: "profiles/u1/new.cgp",
             sizeBytes: bytes("session-home-tar").length + 32,
+            steamLoginSeeded: false,
           },
         ]);
         expect(yield* h.drain).toEqual([
@@ -1500,6 +1568,7 @@ describe("SessionSupervisor", () => {
             container: "cg-session-s1",
             userId: "u1",
             baseVersion: 7,
+            steamLoginSeeded: false,
           }).pipe(
             Effect.provideService(DockerClient, fake.docker),
             Effect.provideService(ProfileStore, fake.store),

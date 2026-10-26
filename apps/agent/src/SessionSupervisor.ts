@@ -10,6 +10,7 @@ import type {
   AgentReport,
   ProfileRef,
   RunningSession,
+  SteamLoginSeed,
 } from "@cg/rpc";
 import {
   Context,
@@ -44,6 +45,7 @@ import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
 import type { ProfileStore } from "./profile/ProfileStore";
+import { seedSteamLogin } from "./steam/seedContainer";
 
 /** Журнал облака Steam в доме пользователя (контракт образа). */
 export const CLOUD_LOG = "/home/ubuntu/.local/share/Steam/logs/cloud_log.txt";
@@ -230,6 +232,8 @@ interface Session {
    */
   created: boolean;
   phase: Phase;
+  /** Вход §4 вписан этим агентом перед стартом (для `ProfileCommit.steamLoginSeeded`). */
+  seeded: boolean;
   gameRunning: boolean;
   /**
    * Число маркеров облака при последнем опросе, где игра ещё шла, или перед
@@ -470,6 +474,7 @@ const make = Effect.gen(function* () {
         container: session.name,
         userId: session.userId,
         baseVersion: session.baseVersion,
+        steamLoginSeeded: session.seeded,
       }).pipe(withServices, Effect.result);
       if (Result.isFailure(saved)) {
         yield* Effect.logError("profile-unsaved", {
@@ -571,11 +576,12 @@ const make = Effect.gen(function* () {
       });
     });
 
-  /** Новый контейнер: слои → create → профиль → start. */
+  /** Новый контейнер: слои → create → профиль → посев входа → start. */
   const launch = (
     session: Session,
     spec: ContainerSpec,
     profile: ProfileRef | null,
+    steamLogin: SteamLoginSeed | null,
   ) =>
     Effect.gen(function* () {
       const dockerStart = (cause: unknown) =>
@@ -603,11 +609,24 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+      if (steamLogin !== null) {
+        yield* seedSteamLogin({
+          container: session.name,
+          seed: steamLogin,
+        }).pipe(
+          withServices,
+          Effect.mapError(
+            (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
+          ),
+        );
+        session.seeded = true;
+      }
       yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
       yield* Effect.logInfo("Session container started", {
         sessionId: session.sessionId,
         slot: session.slot,
         profile: from,
+        steamLoginSeeded: session.seeded,
       });
     });
 
@@ -615,12 +634,21 @@ const make = Effect.gen(function* () {
   const lifecycle = (
     session: Session,
     launchWith:
-      | { readonly spec: ContainerSpec; readonly profile: ProfileRef | null }
+      | {
+          readonly spec: ContainerSpec;
+          readonly profile: ProfileRef | null;
+          readonly steamLogin: SteamLoginSeed | null;
+        }
       | undefined,
   ) =>
     Effect.gen(function* () {
       if (launchWith !== undefined)
-        yield* launch(session, launchWith.spec, launchWith.profile);
+        yield* launch(
+          session,
+          launchWith.spec,
+          launchWith.profile,
+          launchWith.steamLogin,
+        );
       // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
       if (yield* Deferred.isDone(session.stopRequested))
         return yield* finish(session);
@@ -650,6 +678,7 @@ const make = Effect.gen(function* () {
         streamUrl: streamUrlFor(fields.sessionId),
         created: fields.created ?? false,
         phase: "starting",
+        seeded: false,
         gameRunning: fields.gameRunning ?? false,
         cloudBaseline: fields.cloudBaseline,
         stopRequested: yield* Deferred.make<void>(),
@@ -737,6 +766,7 @@ const make = Effect.gen(function* () {
         lifecycle(session, {
           spec: sessionSpec(config, command, sessionPassword()),
           profile: command.profile,
+          steamLogin: command.steamLogin,
         }),
         scope,
       );

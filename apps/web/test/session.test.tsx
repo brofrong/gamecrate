@@ -1,5 +1,9 @@
-import { describe, expect, it, mock } from "bun:test";
-import type { SessionState, SessionView } from "@cg/rpc";
+import { describe, expect, it, mock, spyOn } from "bun:test";
+import {
+  type SessionState,
+  type SessionView,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import {
   fireEvent,
   render,
@@ -7,6 +11,8 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { Exit } from "effect";
+import { toast } from "sonner";
 import { GameTile, type TileGame } from "../src/components/app/GameTile";
 import { IdlePrompt } from "../src/components/IdlePrompt";
 import { cardAction, type LibraryPlay } from "../src/lib/cardAction";
@@ -20,6 +26,8 @@ import {
   snapshotGamepads,
   useInputActivity,
 } from "../src/lib/inputActivity";
+import { playAgain } from "../src/routes/session.$id";
+import { startSessionArgs } from "../src/rpc";
 
 const sessionId = "0b5c1a52-7f4e-4f1e-9a43-3c1d2e5f6a7b";
 
@@ -59,6 +67,7 @@ const renderPlayer = (
     onExit: () => void;
     onHere: () => void;
     onLibrary: () => void;
+    onPlayAgain: () => void;
   }> = {},
 ) =>
   render(
@@ -67,6 +76,7 @@ const renderPlayer = (
       onExit={handlers.onExit ?? noop}
       onHere={handlers.onHere ?? noop}
       onLibrary={handlers.onLibrary ?? noop}
+      onPlayAgain={handlers.onPlayAgain ?? noop}
     />,
   );
 
@@ -218,6 +228,78 @@ describe("session", () => {
     expect(ok.container.querySelector(".text-emerald-400")).not.toBeNull();
   });
 
+  it("steam login failure shows QR, offers a library escape, and plays again after done", () => {
+    const onPlayAgain = mock(() => {});
+    const onLibrary = mock(() => {});
+    const QrLogin = ({
+      title,
+      onDone,
+    }: {
+      title: string;
+      onDone: () => void;
+    }) => (
+      <div>
+        <p>{title}</p>
+        <button onClick={onDone}>готово (фейк)</button>
+      </div>
+    );
+    render(
+      <Player
+        view={view("failed", {
+          failReason: steamLoginRequiredReason,
+          streamReady: false,
+        })}
+        onExit={noop}
+        onHere={noop}
+        onLibrary={onLibrary}
+        onPlayAgain={onPlayAgain}
+        QrLogin={QrLogin}
+      />,
+    );
+    expect(screen.getByText("Войдите в Steam ещё раз")).toBeTruthy();
+    expect(screen.queryByText("Не удалось запустить игру")).toBeNull();
+
+    // Как у других терминальных состояний — есть путь назад, не только QR.
+    fireEvent.click(screen.getByRole("button", { name: "В библиотеку" }));
+    expect(onLibrary).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "готово (фейк)" }));
+    expect(onPlayAgain).toHaveBeenCalledTimes(1);
+  });
+
+  describe("playAgain (route-level handler behind onPlayAgain)", () => {
+    it("starts the session with the session's appId and navigates to the new session", async () => {
+      const start = mock(async () => Exit.succeed({ id: "new-session-id" }));
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(start).toHaveBeenCalledWith(startSessionArgs(620));
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/session/$id",
+        params: { id: "new-session-id" },
+      });
+    });
+
+    it("shows a toast and does not navigate when starting the session fails", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () =>
+        Exit.fail({ _tag: "SessionServerUnavailable" } as const),
+      );
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        "Не удалось начать игру. Попробуйте ещё раз.",
+      );
+      toastError.mockRestore();
+    });
+  });
+
   it("failed after real play says the game was interrupted and shows played time", () => {
     const played = renderPlayer(
       view("failed", {
@@ -288,7 +370,13 @@ describe("session", () => {
       view("playing"),
     ]) {
       rerender(
-        <Player view={v} onExit={noop} onHere={noop} onLibrary={noop} />,
+        <Player
+          view={v}
+          onExit={noop}
+          onHere={noop}
+          onLibrary={noop}
+          onPlayAgain={noop}
+        />,
       );
       expect(streamFrame(container)).toBe(first);
     }

@@ -1,0 +1,5 @@
+[2026-10-23 10:00:01] Initializing connection manager
+[2026-10-23 10:00:02] [Logged Off, 4, 0] [U:1:1] LogOn() called; not connected yet, scheduling connection.
+[2026-10-23 10:00:02] UI Request: connect
+[2026-10-23 10:00:03] 'Try another CM' / 'Failure', ignored since we're not waiting for a logon response
+[2026-10-23 10:00:10] Received logon failure response

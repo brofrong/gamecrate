@@ -1,10 +1,18 @@
 // Способы входа в профиле: статус привязки по рядам, привязать/отвязать с правилом «последний способ».
+// Steam не идёт через общий `onLink` (OpenID убран из интерфейса) — свой экран с QR
+// в модальном окне, своя подпись кнопки «Подключить».
 import {
   canUnlink,
   type AuthProviders,
   type CurrentUserShape,
   type LoginProviderId,
 } from "@cg/rpc";
+import { useState } from "react";
+import {
+  SteamQrLogin,
+  SteamQrLoginDialog,
+  type SteamQrLoginComponent,
+} from "@/components/SteamQrLogin";
 import { Button } from "@/components/ui/button";
 
 export interface LinkedAccount {
@@ -45,15 +53,21 @@ export function LoginMethods({
   providers,
   onLink,
   onUnlink,
+  onSteamDone,
   busy,
+  QrLogin = SteamQrLogin,
 }: {
   user: CurrentUserShape;
   accounts: ReadonlyArray<LinkedAccount>;
   providers: AuthProviders;
   onLink: (p: LoginProviderId) => void;
   onUnlink: (a: LinkedAccount) => void;
+  /** Steam-попытка дошла до «Готово»: обновить список способов входа и `meAtom`. */
+  onSteamDone: () => void;
   busy: string | null;
+  QrLogin?: SteamQrLoginComponent;
 }) {
+  const [steamOpen, setSteamOpen] = useState(false);
   return (
     <div className="grid gap-2">
       {ORDER.filter((providerId) => isConfigured(providerId, providers)).map(
@@ -61,6 +75,7 @@ export function LoginMethods({
           const account = accounts.find((a) => a.providerId === providerId);
           const linked = account !== undefined;
           const allowed = linked && canUnlink(accounts, providerId, user);
+          const isSteamLink = providerId === "steam" && !linked;
           return (
             <div
               key={providerId}
@@ -83,6 +98,14 @@ export function LoginMethods({
                 >
                   Отвязать
                 </Button>
+              ) : isSteamLink ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSteamOpen(true)}
+                >
+                  Подключить
+                </Button>
               ) : (
                 <Button
                   variant="outline"
@@ -97,6 +120,16 @@ export function LoginMethods({
           );
         },
       )}
+      <SteamQrLoginDialog
+        open={steamOpen}
+        title="Подключите Steam"
+        onDone={() => {
+          setSteamOpen(false);
+          onSteamDone();
+        }}
+        onClose={() => setSteamOpen(false)}
+        QrLogin={QrLogin}
+      />
     </div>
   );
 }

@@ -64,6 +64,17 @@ const refreshLibraryAtom = Atom.fn(() =>
 );
 const heartbeatAtom = Atom.fn((_arg: unknown) => Effect.succeed(undefined));
 const stopSessionAtom = Atom.fn((_arg: unknown) => Effect.succeed(undefined));
+const startSteamLoginAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed({ attemptId: "attempt-1" }),
+);
+const steamLoginStatusAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed({
+    attemptId: "attempt-1",
+    status: "waiting" as const,
+    qrUrl: "https://s.team/q/1/abc",
+    reason: null,
+  }),
+);
 const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed(undefined),
 );
@@ -95,6 +106,8 @@ mock.module("../src/rpc", () => ({
   sessionWatchAtom,
   heartbeatAtom,
   stopSessionAtom,
+  startSteamLoginAtom,
+  steamLoginStatusAtom,
   sessionSettingsAtom,
   updateSessionSettingsAtom,
   updateSessionSettingsArgs: (payload: unknown) => ({
@@ -271,9 +284,7 @@ describe("MyGamesPage", () => {
 
   it("shows ConnectSteam when the user has no steamId", async () => {
     renderMyGames("/app", { me: { ...user, steamId: null } });
-    expect(
-      await screen.findByText("Подключи Steam, чтобы увидеть свою библиотеку"),
-    ).toBeTruthy();
+    expect(await screen.findByText("Подключите Steam")).toBeTruthy();
   });
 
   it("lights the Rail installs dot when the active session is installing", async () => {

@@ -6,6 +6,7 @@ import {
   installJobs,
   profiles,
   sessions,
+  settings,
   user,
   workers,
 } from "@cg/db";
@@ -14,10 +15,20 @@ import {
   type AgentCommand,
   type AgentReport,
   type AgentRoles,
+  type SteamLoginSeed,
+  sessionSettingsKey,
   steamLoginRequiredReason,
 } from "@cg/rpc";
 import { asc, eq } from "drizzle-orm";
-import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
+import {
+  Effect,
+  Layer,
+  PubSub,
+  Redacted,
+  References,
+  type Scope,
+  Stream,
+} from "effect";
 import {
   AgentHub,
   type AgentHubEvent,
@@ -33,6 +44,7 @@ import {
 import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
+import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 
 /** Фейковый хаб: подключённые агенты и отправленные команды — в памяти. */
 const makeFakeHub = () => {
@@ -62,7 +74,13 @@ const makeFakeHub = () => {
 };
 type FakeHub = ReturnType<typeof makeFakeHub>;
 
-type Env = Db | AgentHub | InstallDispatcher | SessionRunner | Scope.Scope;
+type Env =
+  | Db
+  | AgentHub
+  | InstallDispatcher
+  | SessionRunner
+  | SteamLoginSeeds
+  | Scope.Scope;
 
 const run = <A, E>(
   body: (fake: FakeHub) => Effect.Effect<A, E, Env>,
@@ -78,6 +96,7 @@ const run = <A, E>(
           SessionRunner.layerWithoutLoops(),
         ).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
+          Layer.provideMerge(SteamLoginSeeds.layer),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),
@@ -264,6 +283,7 @@ describe("install jobs", () => {
               slot: 0,
               udpPort: 59000,
               profile: { version: 3, objectKey: "profiles/u2/p3.cgp" },
+              steamLogin: null,
             },
           },
         ]);
@@ -317,6 +337,8 @@ describe("install jobs", () => {
               appId: DOTA,
               userId: "u1",
               profile: null,
+              steamLogin: null,
+              steamLoginTimeoutSeconds: 90,
             },
           },
         ]);
@@ -373,6 +395,70 @@ describe("install jobs", () => {
       }),
     ));
 
+  it("InstallGame carries the user's pending Steam login and timeout", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const seeds = yield* SteamLoginSeeds;
+        const dispatcher = yield* InstallDispatcher;
+        const CS = 730;
+        yield* seed("userA", "userB");
+        yield* db.insert(games).values({ appId: CS, name: "Counter-Strike" });
+        yield* db.insert(settings).values({
+          key: sessionSettingsKey,
+          value: { steamLoginTimeoutSeconds: 120 },
+        });
+        const steamLogin: SteamLoginSeed = {
+          accountName: Redacted.make("steamuser"),
+          steamId: "76561198000000001",
+          refreshToken: Redacted.make("refresh-a"),
+        };
+        yield* seeds.put("userA", steamLogin);
+
+        // Два разных appid — две отдельные задачи, можно дать их двум агентам
+        // за один проход диспетчера (claimNext выбирает воркер по возрастанию id).
+        yield* insertSession({ id: "sA", userId: "userA" });
+        yield* Scheduler.tick(t0);
+        yield* insertSession({ id: "sB", userId: "userB", appId: CS });
+        yield* Scheduler.tick(at(t0, 2));
+
+        yield* connectAgent(fake, "gs-a", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs-b", ["gamestore"], 0);
+        yield* dispatcher.tick(at(t0, 4));
+
+        const [jobA, jobB] = yield* jobs();
+        if (jobA === undefined || jobB === undefined)
+          return yield* Effect.die("expected two jobs");
+        expect(installCommands(fake)).toEqual([
+          {
+            workerId: "gs-a",
+            command: {
+              _tag: "InstallGame",
+              jobId: jobA.id,
+              appId: DOTA,
+              userId: "userA",
+              profile: null,
+              steamLogin,
+              steamLoginTimeoutSeconds: 120,
+            },
+          },
+          {
+            workerId: "gs-b",
+            command: {
+              _tag: "InstallGame",
+              jobId: jobB.id,
+              appId: CS,
+              userId: "userB",
+              profile: null,
+              steamLogin: null,
+              steamLoginTimeoutSeconds: 120,
+            },
+          },
+        ]);
+      }),
+    ));
+
   it("dispatcher sends InstallGame only to a gamestore agent", () =>
     run((fake) =>
       Effect.gen(function* () {
@@ -426,6 +512,8 @@ describe("install jobs", () => {
               appId: DOTA,
               userId: "u1",
               profile: { version: 2, objectKey: "profiles/u1/p2.cgp" },
+              steamLogin: null,
+              steamLoginTimeoutSeconds: 90,
             },
           },
         ]);

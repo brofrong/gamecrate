@@ -153,21 +153,21 @@ export const extractSingleFile = (
     return Effect.succeed(tar.subarray(HEADER_SIZE, HEADER_SIZE + size));
   });
 
-/**
- * Ustar tar с одним файлом `name` (для `PUT /containers/{id}/archive`):
- * заголовок 512 байт, данные с выравниванием, два нулевых блока. Владелец и права
- * — из `options` (Docker распаковывает с ними). `name` — до 100 байт ASCII.
- */
-export const singleFileTar = (
+/** Общие для `filesTar`/`singleFileTar` параметры владельца и времени. */
+interface TarOwner {
+  readonly uid: number;
+  readonly gid: number;
+  /** Время изменения, секунды Unix. */
+  readonly mtime: number;
+}
+
+/** Один заголовок ustar (512 байт) с правильной контрольной суммой. */
+const tarHeader = (
   name: string,
-  data: Uint8Array,
-  options: {
-    readonly uid: number;
-    readonly gid: number;
-    readonly mode: number;
-    /** Время изменения, секунды Unix. */
-    readonly mtime: number;
-  },
+  typeflag: "0" | "5",
+  size: number,
+  mode: number,
+  owner: TarOwner,
 ): Uint8Array => {
   const encoder = new TextEncoder();
   const nameBytes = encoder.encode(name);
@@ -177,20 +177,71 @@ export const singleFileTar = (
     encoder.encode(`${value.toString(8).padStart(width - 1, "0")}\0`);
   const header = new Uint8Array(512);
   header.set(nameBytes, 0);
-  header.set(octal(options.mode, 8), 100);
-  header.set(octal(options.uid, 8), 108);
-  header.set(octal(options.gid, 8), 116);
-  header.set(octal(data.length, 12), 124);
-  header.set(octal(options.mtime, 12), 136);
+  header.set(octal(mode, 8), 100);
+  header.set(octal(owner.uid, 8), 108);
+  header.set(octal(owner.gid, 8), 116);
+  header.set(octal(size, 12), 124);
+  header.set(octal(owner.mtime, 12), 136);
   header.set(encoder.encode("        "), 148);
-  header[156] = "0".charCodeAt(0);
+  header[156] = typeflag.charCodeAt(0);
   header.set(encoder.encode("ustar\0"), 257);
   header.set(encoder.encode("00"), 263);
   let sum = 0;
   for (const byte of header) sum += byte;
   header.set(encoder.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
-  const tar = new Uint8Array(512 + Math.ceil(data.length / 512) * 512 + 1024);
-  tar.set(header, 0);
-  tar.set(data, 512);
+  return header;
+};
+
+/**
+ * Ustar tar с несколькими записями (для `PUT /containers/{id}/archive`):
+ * запись без `data` — каталог (typeflag `'5'`, имя дописывается `/`, если его
+ * не было), с `data` — обычный файл (typeflag `'0'`). Заголовок 512 байт,
+ * данные с выравниванием по 512, в конце два нулевых блока. Владелец и время
+ * — общие (`options`), права — у каждой записи свои (`mode`). Пути — до 100
+ * байт ASCII (ограничение ustar).
+ */
+export const filesTar = (
+  entries: ReadonlyArray<{
+    readonly path: string;
+    readonly data?: Uint8Array;
+    readonly mode: number;
+  }>,
+  options: TarOwner,
+): Uint8Array => {
+  const chunks: Array<Uint8Array> = [];
+  for (const entry of entries) {
+    const isDir = entry.data === undefined;
+    const name =
+      isDir && !entry.path.endsWith("/") ? `${entry.path}/` : entry.path;
+    const data = entry.data ?? new Uint8Array(0);
+    chunks.push(
+      tarHeader(name, isDir ? "5" : "0", data.length, entry.mode, options),
+    );
+    if (!isDir) {
+      chunks.push(data);
+      const padding = Math.ceil(data.length / 512) * 512 - data.length;
+      if (padding > 0) chunks.push(new Uint8Array(padding));
+    }
+  }
+  chunks.push(new Uint8Array(1024));
+  const tar = new Uint8Array(
+    chunks.reduce((total, chunk) => total + chunk.length, 0),
+  );
+  let offset = 0;
+  for (const chunk of chunks) {
+    tar.set(chunk, offset);
+    offset += chunk.length;
+  }
   return tar;
 };
+
+/**
+ * Ustar tar с одним файлом `name` (для `PUT /containers/{id}/archive`):
+ * заголовок 512 байт, данные с выравниванием, два нулевых блока. Владелец и права
+ * — из `options` (Docker распаковывает с ними). `name` — до 100 байт ASCII.
+ */
+export const singleFileTar = (
+  name: string,
+  data: Uint8Array,
+  options: TarOwner & { readonly mode: number },
+): Uint8Array => filesTar([{ path: name, data, mode: options.mode }], options);

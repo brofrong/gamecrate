@@ -1,16 +1,13 @@
-// Полоска на телефоне (`SummaryStrip`, спека §4.6): плитка Steam/«Привязать Steam»,
+// Полоска на телефоне (`SummaryStrip`, спека §4.6): плитка Steam/«Подключить Steam»,
 // месяц, «Установка · N %». Без привязанного Steam плитки показываются сразу — не
-// ждут, пока подтянется библиотека (`view` может быть `undefined`).
-//
-// `spyOn` на реальный модуль «../src/auth» (а не `mock.module`, которая подменяет
-// модуль целиком и глобально на весь прогон `bun test` — см. комментарий в
-// login.test.tsx), чтобы не ломать другие тестовые файлы.
-import { describe, expect, it, spyOn } from "bun:test";
+// ждут, пока подтянется библиотека (`view` может быть `undefined`). Без Steam плитка
+// ведёт на `/profile` — там живёт QR-подключение (`ConnectSteam` на `/app` — тоже
+// туда же, но сразу в карточке сетки).
+import { describe, expect, it } from "bun:test";
 import type { CurrentUserShape, LibraryView, SessionView } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import type * as React from "react";
-import * as auth from "../src/auth";
 import { SummaryStrip } from "../src/components/app/SummaryStrip";
 import { testRouter } from "./router";
 
@@ -75,10 +72,7 @@ describe("SummaryStrip", () => {
     expect(link.closest("a")?.getAttribute("href")).toBe("/profile");
   });
 
-  it("shows «Привязать Steam» without a linked Steam account, even without a view", async () => {
-    const linkSteam = spyOn(auth, "linkSteam").mockResolvedValue(
-      undefined as never,
-    );
+  it("shows «Подключить Steam» linking to /profile without a linked Steam account, even without a view", async () => {
     renderStrip(
       <SummaryStrip
         user={{ ...user, steamId: null }}
@@ -86,12 +80,8 @@ describe("SummaryStrip", () => {
         monthMinutes={0}
       />,
     );
-    const button = await screen.findByRole("button", {
-      name: "Привязать Steam",
-    });
-    fireEvent.click(button);
-    expect(linkSteam).toHaveBeenCalledWith("/app");
-    linkSteam.mockRestore();
+    const link = await screen.findByText("Подключить Steam");
+    expect(link.closest("a")?.getAttribute("href")).toBe("/profile");
   });
 
   it("the month tile always links to /app/time, with or without a view", async () => {

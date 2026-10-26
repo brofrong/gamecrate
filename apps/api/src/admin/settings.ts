@@ -52,6 +52,7 @@ export const saveSessionSettings = (
       disconnectGraceMinutes: value.disconnectGraceMinutes,
       startTimeoutMinutes: value.startTimeoutMinutes,
       installTimeoutMinutes: value.installTimeoutMinutes,
+      steamLoginTimeoutSeconds: value.steamLoginTimeoutSeconds,
     };
     yield* db
       .insert(settings)

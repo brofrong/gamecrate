@@ -93,8 +93,35 @@ export const ProfileRef = Schema.Struct({
 export type ProfileRef = typeof ProfileRef.Type;
 
 /**
+ * Вход в Steam, который агент вписывает в дом контейнера перед запуском
+ * сессии или установщика (спека §4): оркестратор получил его QR-входом на
+ * сайте и прикладывает к следующей команде пользователя — клиент Steam
+ * в контейнере входит этим аккаунтом сам. `accountName` и `refreshToken` никогда не должны
+ * попасть в лог, БД или браузер — отсюда `Redacted`; по WebSocket агенту они
+ * всё равно уходят (кодирование `SteamLoginSeed` отдаёт исходную строку),
+ * только `console.log`/`String()`/`JSON.stringify` их не печатают.
+ *
+ * `Schema.Redacted` ожидает на входе уже обёрнутый `Redacted` (не декодируется
+ * из простого JSON-значения), поэтому для сырых значений с провода нужен
+ * `RedactedFromValue` — он декодирует значение в `Redacted` и кодирует его
+ * обратно в исходное значение (P2 из общего контекста плана).
+ */
+export const SteamLoginSeed = Schema.Struct({
+  accountName: Schema.RedactedFromValue(Schema.String),
+  steamId: Schema.String,
+  refreshToken: Schema.RedactedFromValue(Schema.String),
+});
+export type SteamLoginSeed = typeof SteamLoginSeed.Type;
+
+/**
  * Команда оркестратора агенту: поднять или погасить контейнер сессии,
  * запустить или отменить установку игры в общую библиотеку (роль `gamestore`).
+ * `steamLogin` — ожидающий вход пользователя для посева (`SteamLoginSeeds`
+ * оркестратора); `null` — его нет. `InstallGame.steamLoginTimeoutSeconds` —
+ * сколько установщик ждёт входа клиента Steam (ответа на его попытку входа
+ * в журнале подключения, отсчёт — с этой попытки, а не с первых строк
+ * журнала: клиенту может потребоваться время, чтобы начать её) до
+ * `InstallFailed` «Войдите в Steam» (из текущих `SessionSettings`).
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -104,6 +131,7 @@ export const AgentCommand = Schema.Union([
     slot: NonNegativeInt,
     udpPort: Schema.Int,
     profile: Schema.NullOr(ProfileRef),
+    steamLogin: Schema.NullOr(SteamLoginSeed),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
   Schema.TaggedStruct("InstallGame", {
@@ -111,18 +139,21 @@ export const AgentCommand = Schema.Union([
     appId: Schema.Int,
     userId: Schema.String,
     profile: Schema.NullOr(ProfileRef),
+    steamLogin: Schema.NullOr(SteamLoginSeed),
+    steamLoginTimeoutSeconds: Schema.Int,
   }),
   Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
 ]);
 export type AgentCommand = typeof AgentCommand.Type;
 
 /**
- * Причина `InstallFailed`, когда у пользователя нет профиля (он ни разу не входил
- * в Steam): установщик без входа ждал бы невидимый QR. Оркестратор показывает её
+ * Причина `InstallFailed`, когда установщику нужен вход в Steam: профиля и
+ * посеянного входа нет или Steam не вошёл за `steamLoginTimeoutSeconds` (спека
+ * §4: раньше — «запустите любую уже установленную игру», теперь — вход по QR
+ * на сайте: `/library`, профиль, экран сессии). Оркестратор показывает её
  * владельцу задачи как есть (а не общую «Не удалось установить игру»).
  */
-export const steamLoginRequiredReason =
-  "Сначала войдите в Steam: запустите любую уже установленную игру";
+export const steamLoginRequiredReason = "Войдите в Steam";
 
 /**
  * Отчёт агента: стрим готов (`streamUrl` — внутренний адрес Selkies), состояние
@@ -176,13 +207,17 @@ export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
  * Выгрузка новой версии профиля пользователя. `baseVersion` — версия, от
  * которой агент отталкивался (`null` — профиля ещё не было); принимается,
  * только если она совпадает с текущей версией в `profiles` (устаревшая
- * базовая версия отклоняется — спека §6).
+ * базовая версия отклоняется — спека §6). `steamLoginSeeded` — профиль
+ * сохранён после посева `steamLogin` этой сессией/установкой: принятый такой
+ * коммит снимает ожидающий вход пользователя у оркестратора (профиль уже
+ * хранит вход, сеять его снова незачем).
  */
 export const ProfileCommit = Schema.Struct({
   userId: Schema.String,
   baseVersion: Schema.NullOr(Schema.Int),
   objectKey: Schema.String,
   sizeBytes: NonNegativeInt,
+  steamLoginSeeded: Schema.Boolean,
 });
 export type ProfileCommit = typeof ProfileCommit.Type;
 

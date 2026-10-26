@@ -1,13 +1,13 @@
 // Полоска из двух-трёх плиток на телефоне (спека §4.6), замена правой колонки:
-// Steam (ведёт на `/profile`; без Steam — кнопка «Привязать Steam»), месяц (ведёт на
-// `/app/time`) и, когда у пользователя идёт установка, «Установка · N %». Рисуется,
-// как только загрузился `me` — даже без Steam и до того, как подтянулась библиотека
-// (спека §4.6: «Привязать Steam» должна быть видна сразу), поэтому `view` опционален —
-// счётчики «N игр · M готовы» показываются только когда он есть и `_tag === "Ready"`.
+// Steam (ведёт на `/profile`; без Steam — ссылка «Подключить Steam» туда же, подключение
+// по QR живёт на `/profile`), месяц (ведёт на `/app/time`) и, когда у пользователя идёт
+// установка, «Установка · N %». Рисуется, как только загрузился `me` — даже без Steam и
+// до того, как подтянулась библиотека (спека §4.6: ссылка на подключение должна быть
+// видна сразу), поэтому `view` опционален — счётчики «N игр · M готовы» показываются
+// только когда он есть и `_tag === "Ready"`.
 import type { CurrentUserShape, LibraryView, SessionView } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import type * as React from "react";
-import { linkSteam } from "@/auth";
 import { currentMonth, formatMinutes, formatMonth } from "@/lib/formatTime";
 
 function Tile({ children }: { children: React.ReactNode }) {
@@ -41,11 +41,9 @@ export function SummaryStrip({
   return (
     <div className="flex gap-2 md:hidden">
       {user.steamId === null ? (
-        <Tile>
-          <button type="button" onClick={() => void linkSteam("/app")}>
-            Привязать Steam
-          </button>
-        </Tile>
+        <Link to="/profile" className="flex-1">
+          <Tile>Подключить Steam</Tile>
+        </Link>
       ) : (
         <Link to="/profile" className="flex-1">
           <Tile>

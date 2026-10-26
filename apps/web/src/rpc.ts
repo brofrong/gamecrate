@@ -92,6 +92,12 @@ export const heartbeatAtom = Api.mutation("session.heartbeat");
 /** Попросить остановить сессию («Выйти из игры»). */
 export const stopSessionAtom = Api.mutation("session.stop");
 
+/** Завести новую попытку входа в Steam по QR (отменяет прежнюю активную). */
+export const startSteamLoginAtom = Api.mutation("steamLogin.start");
+
+/** Текущее состояние попытки входа в Steam по QR — опрашивается вручную, не атомом-запросом. */
+export const steamLoginStatusAtom = Api.mutation("steamLogin.status");
+
 /** Ключ реактивности настроек сессий в админке. */
 const settingsKeys = ["settings"] as const;
 

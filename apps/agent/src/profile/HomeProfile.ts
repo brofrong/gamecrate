@@ -180,6 +180,8 @@ export const saveProfile = (options: {
   readonly container: string;
   readonly userId: string;
   readonly baseVersion: number | null;
+  /** Вход в Steam §4 был вписан в этот запуск (Task 3, `seedSteamLogin`). */
+  readonly steamLoginSeeded: boolean;
 }): Effect.Effect<
   void,
   ProfileError,
@@ -230,6 +232,7 @@ export const saveProfile = (options: {
         baseVersion: options.baseVersion,
         objectKey,
         sizeBytes,
+        steamLoginSeeded: options.steamLoginSeeded,
       })
       .pipe(Effect.mapError(failed("commit")));
     if (!accepted) {

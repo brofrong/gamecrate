@@ -6,7 +6,9 @@ import { Context, DateTime, Effect, Layer, PubSub, Schedule } from "effect";
 import { AgentHub, type AgentHubEvent } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
 import { AGENT_TIMEOUT_MS } from "./lifecycle";
+import * as SessionRepo from "./SessionRepo";
 import { logFailure, RECONCILE_GRACE_MS } from "./SessionRunner";
+import { SteamLoginSeeds } from "./SteamLoginSeeds";
 
 /** Период диспетчера установок. */
 export const DISPATCH_INTERVAL = "2 seconds";
@@ -47,6 +49,7 @@ const make = (options: InstallDispatcherOptions) =>
   Effect.gen(function* () {
     const db = yield* Db;
     const hub = yield* AgentHub;
+    const seeds = yield* SteamLoginSeeds;
     const startedAt = options.startedAt ?? (yield* DateTime.nowAsDate);
 
     /**
@@ -290,7 +293,10 @@ const make = (options: InstallDispatcherOptions) =>
 
     /**
      * Выдача: по одной задаче за транзакцию (`claimNext`), InstallGame — после
-     * коммита. Не доставлен — задача снова `queued`, агент до конца прохода не
+     * коммита. `steamLogin` — посеянный вход пользователя задачи
+     * (`SteamLoginSeeds.get`, `null` — нет или просрочен); `steamLoginTimeoutSeconds`
+     * — из текущих настроек сессий (ruling P1), читаются раз на проход. Не
+     * доставлен — задача снова `queued`, агент до конца прохода не
      * используется. Если процесс упадёт между коммитом и отправкой, задачу
      * провалит сверка при переподключении агента или таймаут его молчания.
      */
@@ -299,17 +305,22 @@ const make = (options: InstallDispatcherOptions) =>
         let candidates = [...hub.connected()].filter(
           (id) => hub.info(id)?.roles.includes("gamestore") ?? false,
         );
+        if (candidates.length === 0) return;
+        const settings = yield* withDb(SessionRepo.loadSettings());
         while (candidates.length > 0) {
           const claim = yield* withDb(InstallRepo.claimNext(candidates));
           if (claim === undefined) return;
           const { job, workerId, profile } = claim;
           candidates = candidates.filter((id) => id !== workerId);
+          const steamLogin = yield* seeds.get(job.userId);
           const sent = yield* hub.send(workerId, {
             _tag: "InstallGame",
             jobId: job.id,
             appId: job.appId,
             userId: job.userId,
             profile,
+            steamLogin,
+            steamLoginTimeoutSeconds: settings.steamLoginTimeoutSeconds,
           });
           if (sent) {
             dispatchedAt.set(job.id, now);
@@ -369,10 +380,13 @@ export class InstallDispatcher extends Context.Service<
   /** Сервис без фоновых циклов (тесты вызывают `handle`/`tick` сами). */
   static readonly layerWithoutLoops = (
     options: InstallDispatcherOptions = {},
-  ): Layer.Layer<InstallDispatcher, never, Db | AgentHub> =>
+  ): Layer.Layer<InstallDispatcher, never, Db | AgentHub | SteamLoginSeeds> =>
     Layer.effect(InstallDispatcher, make(options));
 
   /** Сервис + подписка на события хаба + проход раз в 2 с. */
-  static readonly layer: Layer.Layer<InstallDispatcher, never, Db | AgentHub> =
-    Layer.effect(InstallDispatcher, make({}).pipe(Effect.tap(startLoops)));
+  static readonly layer: Layer.Layer<
+    InstallDispatcher,
+    never,
+    Db | AgentHub | SteamLoginSeeds
+  > = Layer.effect(InstallDispatcher, make({}).pipe(Effect.tap(startLoops)));
 }

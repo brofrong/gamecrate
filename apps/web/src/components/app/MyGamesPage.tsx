@@ -10,7 +10,6 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { linkSteam } from "@/auth";
 import { ActiveSessionPanel } from "@/components/app/ActiveSessionPanel";
 import { AsideSlot, StickySlot } from "@/components/app/AppShell";
 import { ComingSoonPanel } from "@/components/app/ComingSoonPanel";
@@ -118,6 +117,7 @@ export function MyGamesPage() {
   const navigate = appIndexRoute.useNavigate();
 
   const me = useAtomValue(meAtom);
+  const reloadMe = useAtomRefresh(meAtom);
   const library = useAtomValue(libraryAtom);
   const reloadLibrary = useAtomRefresh(libraryAtom);
   const recent = useAtomValue(recentAtom);
@@ -294,7 +294,12 @@ export function MyGamesPage() {
           }}
         />
       ) : user.steamId === null ? (
-        <ConnectSteam onLink={() => void linkSteam("/app")} />
+        <ConnectSteam
+          onDone={() => {
+            reloadMe();
+            void onRefresh();
+          }}
+        />
       ) : !AsyncResult.isSuccess(library) ? (
         <LibrarySkeleton />
       ) : library.value._tag === "Private" ? (

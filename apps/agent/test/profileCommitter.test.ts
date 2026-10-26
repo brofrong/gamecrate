@@ -9,6 +9,7 @@ const payload = {
   baseVersion: 1,
   objectKey: "profiles/u1/a.cgp",
   sizeBytes: 1,
+  steamLoginSeeded: false,
 };
 
 const run = <A, E>(effect: Effect.Effect<A, E, ProfileCommitter>) =>

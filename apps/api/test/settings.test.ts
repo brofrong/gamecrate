@@ -62,6 +62,7 @@ const custom: SessionSettings = {
   disconnectGraceMinutes: 10,
   startTimeoutMinutes: 20,
   installTimeoutMinutes: 45,
+  steamLoginTimeoutSeconds: 120,
 };
 
 describe("admin.settings", () => {
@@ -93,6 +94,7 @@ describe("admin.settings", () => {
           disconnectGraceMinutes: 60,
           startTimeoutMinutes: 5,
           installTimeoutMinutes: 10,
+          steamLoginTimeoutSeconds: 30,
         });
         return {
           initial,
@@ -119,6 +121,7 @@ describe("admin.settings", () => {
       disconnectGraceMinutes: 60,
       startTimeoutMinutes: 5,
       installTimeoutMinutes: 10,
+      steamLoginTimeoutSeconds: 30,
     });
   });
 
@@ -155,6 +158,7 @@ describe("admin.settings", () => {
     expect(read).toEqual({
       ...mvp2,
       installTimeoutMinutes: defaultSessionSettings.installTimeoutMinutes,
+      steamLoginTimeoutSeconds: defaultSessionSettings.steamLoginTimeoutSeconds,
     });
   });
 

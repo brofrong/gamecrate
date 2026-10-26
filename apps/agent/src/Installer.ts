@@ -18,6 +18,7 @@ import {
   type AgentCommand,
   type AgentReport,
   type ProfileRef,
+  type SteamLoginSeed,
   steamLoginRequiredReason,
 } from "@cg/rpc";
 import {
@@ -50,6 +51,7 @@ import {
   prepare,
   removeScratch,
   removeVolumes,
+  STEAM_DIR,
   STEAMAPPS_DIR,
 } from "./Overlay";
 import { singleFileTar } from "./profile/codec";
@@ -62,6 +64,8 @@ import {
   sessionPassword,
   USER_LABEL,
 } from "./SessionSupervisor";
+import { seedSteamLogin } from "./steam/seedContainer";
+import { tokenize } from "./steam/vdf";
 
 /** Метка контейнеров и томов установки: `cg.install=<jobId>`. */
 export const INSTALL_LABEL = "cg.install";
@@ -71,6 +75,16 @@ export const INSTALL_POLL = Duration.seconds(2);
  * загрузка считается остановившейся.
  */
 export const STALL_TIMEOUT = Duration.minutes(10);
+/**
+ * С первых строк журнала подключения (клиент пишет его, только закончив
+ * bootstrap/самообновление) — сколько ждать, что клиент хотя бы попробует
+ * войти (`STEAM_LOGON_ATTEMPT`), прежде чем считать его застрявшим в своём
+ * окне входа. На части железа (проба на brofrong, 2026-10-26) UI Steam готов
+ * звать `LogOn()` только спустя ~80 с после первых строк журнала — заметно
+ * дольше, чем сам `steamLoginTimeoutSeconds` (который отсчитывается от этой
+ * попытки, а не от первых строк, см. `waitForSteamLogon`).
+ */
+export const STEAM_CLIENT_START_TIMEOUT = Duration.minutes(5);
 
 /** Причины `InstallFailed` (их видит пользователь). */
 export const installReasons = {
@@ -91,6 +105,25 @@ export const installReasons = {
 } as const;
 
 export const installContainerName = (jobId: string) => `cg-install-${jobId}`;
+
+/** Журнал подключения клиента Steam (спека §5.4): признак входа/невхода. */
+export const CONNECTION_LOG = `${STEAM_DIR}/logs/connection_log.txt`;
+
+/**
+ * Строка принятого входа в `connection_log.txt` (проба на brofrong, спека
+ * §5.4): `RecvMsgClientLogOnResponse() : [U:1:…] 'OK'` на одной строке
+ * (`'OK'` — не `'Failure'`/другой код отказа).
+ */
+export const STEAM_LOGON_OK = /RecvMsgClientLogOnResponse\(\).*'OK'/;
+
+/**
+ * Строка попытки входа в `connection_log.txt` (проба на brofrong,
+ * 2026-10-26): клиент зовёт `LogOn()` (нет подключения — «scheduling
+ * connection») или уже на стадии `Logging on [U:…]`. До этой строки
+ * `steamLoginTimeoutSeconds` не считается — клиент ещё готовит своё UI, а не
+ * ждёт ответ сервера (см. `waitForSteamLogon`).
+ */
+export const STEAM_LOGON_ATTEMPT = /LogOn\(\) called|Logging on \[U:/;
 
 const manifestName = (appId: number) => `appmanifest_${appId}.acf`;
 /** Манифест игры в контейнере установщика. */
@@ -113,44 +146,6 @@ export const stubManifest = (appId: number) =>
     "}",
     "",
   ].join("\n");
-
-type Token =
-  | { readonly kind: "string"; readonly value: string }
-  | { readonly kind: "open" }
-  | { readonly kind: "close" };
-
-/** Лексемы KeyValues (VDF) Steam: строки в кавычках, `{`, `}`, `//`-комментарии. */
-const tokenize = (text: string): Array<Token> | undefined => {
-  const tokens: Array<Token> = [];
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i] ?? "";
-    if (char === '"') {
-      let value = "";
-      i++;
-      while (i < text.length && text[i] !== '"') {
-        if (text[i] === "\\" && i + 1 < text.length) {
-          const next = text[i + 1];
-          value += next === "n" ? "\n" : next === "t" ? "\t" : next;
-          i += 2;
-        } else {
-          value += text[i];
-          i++;
-        }
-      }
-      if (i >= text.length) return undefined;
-      i++;
-      tokens.push({ kind: "string", value });
-    } else if (char === "{" || char === "}") {
-      tokens.push(char === "{" ? { kind: "open" } : { kind: "close" });
-      i++;
-    } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (/\s/.test(char)) i++;
-    else return undefined;
-  }
-  return tokens;
-};
 
 /**
  * Поля верхнего уровня блока `"AppState" { … }` манифеста Steam (вложенные
@@ -336,12 +331,18 @@ interface Job {
   readonly appId: number;
   readonly userId: string;
   readonly profile: ProfileRef | null;
+  /** Вход для посева (спека §5.3); `null` — оркестратор его не завёл. */
+  readonly steamLogin: SteamLoginSeed | null;
+  /** Сколько ждать признак входа после старта клиента (спека §5.4). */
+  readonly steamLoginTimeoutSeconds: number;
   readonly name: string;
   readonly overlays: Overlays;
   /** Пришёл `CancelInstall`. */
   readonly cancelRequested: Deferred.Deferred<void>;
   /** `finishing` — игра скачана: отмена больше не принимается. */
   phase: "downloading" | "finishing";
+  /** Вход §4 вписан в этот запуск (для `ProfileCommit.steamLoginSeeded` и предупреждения). */
+  seeded: boolean;
 }
 
 type Services = AgentConfig | DockerClient | ProfileStore | ProfileCommitter;
@@ -469,8 +470,97 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Слои → контейнер → профиль (нет профиля — сразу `steamLogin`) → заготовка
-   * манифеста → старт → загрузка.
+   * Журнал подключения после `offset` байт (журнал дописывается, а не
+   * перезаписывается — старые строки шаблона клиента до этого смещения не
+   * считаются); контейнера нет — `Abort(containerGone)`, иначе сбой — только
+   * лог (следующий опрос попробует снова).
+   */
+  const readConnectionLog = (job: Job, offset: number) =>
+    docker
+      .exec(job.name, ["tail", "-c", `+${offset + 1}`, CONNECTION_LOG])
+      .pipe(
+        Effect.map(({ stdout }) => stdout),
+        Effect.catchIf(isGone, (cause) =>
+          Effect.fail(
+            new Abort({ reason: installReasons.containerGone, cause }),
+          ),
+        ),
+        Effect.catchTag("DockerError", (error: DockerError) =>
+          Effect.logWarning("Reading the Steam connection log failed", {
+            jobId: job.jobId,
+            error: error.message,
+          }).pipe(Effect.as("")),
+        ),
+      );
+
+  /**
+   * Ждёт признак входа Steam (спека §5.4, уточнено 2026-10-26 по пробе на
+   * brofrong). Три фазы, считая только байты журнала подключения после
+   * `offset` (старые строки шаблона клиента до старта этого контейнера не
+   * считаются):
+   * 1. До первых строк журнала — клиент пишет его, только закончив свой
+   *    bootstrap/самообновление и начав подключаться; ждём не дольше
+   *    STALL_TIMEOUT от старта (иначе `Abort(stalled)` — это не отказ во
+   *    входе).
+   * 2. От первых строк до строки попытки входа (`STEAM_LOGON_ATTEMPT`) — не
+   *    дольше `STEAM_CLIENT_START_TIMEOUT`: на части железа UI Steam готов
+   *    звать `LogOn()` только спустя ~80 с после первых строк — дольше, чем
+   *    сам `steamLoginTimeoutSeconds`, который тут ещё не должен тикать.
+   * 3. От строки попытки — не дольше `steamLoginTimeoutSeconds`: это и есть
+   *    ожидание ответа сервера на попытку входа.
+   * Истечение фазы 2 или 3 — `Abort(steamLogin)`, и если вход был вписан
+   * этим запуском, предупреждение в лог (владелец узнает о поломке
+   * формата). `'OK'`, замеченный в любой момент, — успех сразу, независимо
+   * от фазы.
+   */
+  const waitForSteamLogon = (job: Job, offset: number) =>
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      let stdout = yield* readConnectionLog(job, offset);
+      while (stdout === "") {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - startedAt >= Duration.toMillis(STALL_TIMEOUT))
+          return yield* new Abort({ reason: installReasons.stalled });
+        yield* Effect.sleep(INSTALL_POLL);
+        stdout = yield* readConnectionLog(job, offset);
+      }
+      const bytesAt = yield* Clock.currentTimeMillis;
+      if (STEAM_LOGON_OK.test(stdout)) return;
+      const loginFailed = () =>
+        Effect.gen(function* () {
+          if (job.seeded)
+            yield* Effect.logWarning("Seeded Steam login was not accepted", {
+              jobId: job.jobId,
+              userId: job.userId,
+            });
+          return yield* new Abort({ reason: installReasons.steamLogin });
+        });
+      while (!STEAM_LOGON_ATTEMPT.test(stdout)) {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - bytesAt >= Duration.toMillis(STEAM_CLIENT_START_TIMEOUT))
+          return yield* loginFailed();
+        yield* Effect.sleep(INSTALL_POLL);
+        stdout = yield* readConnectionLog(job, offset);
+        if (STEAM_LOGON_OK.test(stdout)) return;
+      }
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(INSTALL_POLL);
+          if (STEAM_LOGON_OK.test(yield* readConnectionLog(job, offset)))
+            return;
+        }
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.seconds(job.steamLoginTimeoutSeconds),
+          orElse: loginFailed,
+        }),
+      );
+    });
+
+  /**
+   * Слои → контейнер → профиль (нет профиля и входа — сразу `steamLogin`) →
+   * посев входа (есть что сеять) → заготовка манифеста → смещение журнала →
+   * старт → ждём вход Steam → загрузка.
    */
   const download = (job: Job) =>
     Effect.gen(function* () {
@@ -494,10 +584,23 @@ const make = Effect.gen(function* () {
             new Abort({ reason: installReasons.profileRestore, cause }),
         ),
       );
-      // Пустой дом — пользователь ни разу не входил в Steam: установщик без
-      // входа ждал бы QR, которого никто не видит, и упал бы через STALL_TIMEOUT.
-      if (from === "empty")
+      // Пустой дом и нечем войти — установщик без входа ждал бы QR, которого
+      // никто не видит, и упал бы через STALL_TIMEOUT.
+      if (from === "empty" && job.steamLogin === null)
         return yield* new Abort({ reason: installReasons.steamLogin });
+      if (job.steamLogin !== null) {
+        yield* seedSteamLogin({
+          container: job.name,
+          seed: job.steamLogin,
+        }).pipe(
+          withServices,
+          Effect.mapError(
+            (cause) =>
+              new Abort({ reason: installReasons.profileRestore, cause }),
+          ),
+        );
+        job.seeded = true;
+      }
       const mtime = Math.floor((yield* Clock.currentTimeMillis) / 1000);
       yield* docker
         .putArchive(
@@ -510,12 +613,22 @@ const make = Effect.gen(function* () {
           ),
         )
         .pipe(Effect.mapError(startFailed));
+      // Overlay дома уже смонтирован (его lower — общий шаблон клиента):
+      // журнал может содержать старые строки до старта этого контейнера.
+      const logOffset = yield* docker
+        .archiveSize(job.name, CONNECTION_LOG)
+        .pipe(
+          Effect.catchIf(isGone, () => Effect.succeed(0)),
+          Effect.mapError(startFailed),
+        );
       yield* docker.start(job.name).pipe(Effect.mapError(startFailed));
       yield* Effect.logInfo("Installer container started", {
         jobId: job.jobId,
         appId: job.appId,
         profile: from,
+        steamLoginSeeded: job.seeded,
       });
+      yield* waitForSteamLogon(job, logOffset);
       return yield* watch(job);
     });
 
@@ -533,6 +646,7 @@ const make = Effect.gen(function* () {
         container: job.name,
         userId: job.userId,
         baseVersion: job.profile?.version ?? null,
+        steamLoginSeeded: job.seeded,
       }).pipe(withServices, Effect.result);
       if (Result.isFailure(saved))
         yield* Effect.logError("profile-unsaved", {
@@ -690,10 +804,13 @@ const make = Effect.gen(function* () {
         appId: command.appId,
         userId: command.userId,
         profile: command.profile,
+        steamLogin: command.steamLogin,
+        steamLoginTimeoutSeconds: command.steamLoginTimeoutSeconds,
         name: installContainerName(command.jobId),
         overlays: installLayers(config, command.jobId),
         cancelRequested: yield* Deferred.make<void>(),
         phase: "downloading",
+        seeded: false,
       };
       current = job;
       yield* Effect.logInfo("InstallGame accepted", {
