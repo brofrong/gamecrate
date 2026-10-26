@@ -75,6 +75,16 @@ export const INSTALL_POLL = Duration.seconds(2);
  * загрузка считается остановившейся.
  */
 export const STALL_TIMEOUT = Duration.minutes(10);
+/**
+ * С первых строк журнала подключения (клиент пишет его, только закончив
+ * bootstrap/самообновление) — сколько ждать, что клиент хотя бы попробует
+ * войти (`STEAM_LOGON_ATTEMPT`), прежде чем считать его застрявшим в своём
+ * окне входа. На части железа (проба на brofrong, 2026-10-26) UI Steam готов
+ * звать `LogOn()` только спустя ~80 с после первых строк журнала — заметно
+ * дольше, чем сам `steamLoginTimeoutSeconds` (который отсчитывается от этой
+ * попытки, а не от первых строк, см. `waitForSteamLogon`).
+ */
+export const STEAM_CLIENT_START_TIMEOUT = Duration.minutes(5);
 
 /** Причины `InstallFailed` (их видит пользователь). */
 export const installReasons = {
@@ -105,6 +115,15 @@ export const CONNECTION_LOG = `${STEAM_DIR}/logs/connection_log.txt`;
  * (`'OK'` — не `'Failure'`/другой код отказа).
  */
 export const STEAM_LOGON_OK = /RecvMsgClientLogOnResponse\(\).*'OK'/;
+
+/**
+ * Строка попытки входа в `connection_log.txt` (проба на brofrong,
+ * 2026-10-26): клиент зовёт `LogOn()` (нет подключения — «scheduling
+ * connection») или уже на стадии `Logging on [U:…]`. До этой строки
+ * `steamLoginTimeoutSeconds` не считается — клиент ещё готовит своё UI, а не
+ * ждёт ответ сервера (см. `waitForSteamLogon`).
+ */
+export const STEAM_LOGON_ATTEMPT = /LogOn\(\) called|Logging on \[U:/;
 
 const manifestName = (appId: number) => `appmanifest_${appId}.acf`;
 /** Манифест игры в контейнере установщика. */
@@ -475,13 +494,24 @@ const make = Effect.gen(function* () {
       );
 
   /**
-   * Ждёт признак входа Steam (спека §5.4). Сначала — первых строк журнала
-   * подключения после `offset`: клиент пишет его, только закончив свой
-   * bootstrap/самообновление и начав подключаться; до этого ждём не дольше
-   * STALL_TIMEOUT от старта (иначе `Abort(stalled)` — это не отказ во входе).
-   * С первых строк — не дольше `steamLoginTimeoutSeconds`: принятый вход —
-   * успех; истекло — `Abort(steamLogin)`, и если вход был вписан этим запуском,
-   * предупреждение в лог (владелец узнает о поломке формата).
+   * Ждёт признак входа Steam (спека §5.4, уточнено 2026-10-26 по пробе на
+   * brofrong). Три фазы, считая только байты журнала подключения после
+   * `offset` (старые строки шаблона клиента до старта этого контейнера не
+   * считаются):
+   * 1. До первых строк журнала — клиент пишет его, только закончив свой
+   *    bootstrap/самообновление и начав подключаться; ждём не дольше
+   *    STALL_TIMEOUT от старта (иначе `Abort(stalled)` — это не отказ во
+   *    входе).
+   * 2. От первых строк до строки попытки входа (`STEAM_LOGON_ATTEMPT`) — не
+   *    дольше `STEAM_CLIENT_START_TIMEOUT`: на части железа UI Steam готов
+   *    звать `LogOn()` только спустя ~80 с после первых строк — дольше, чем
+   *    сам `steamLoginTimeoutSeconds`, который тут ещё не должен тикать.
+   * 3. От строки попытки — не дольше `steamLoginTimeoutSeconds`: это и есть
+   *    ожидание ответа сервера на попытку входа.
+   * Истечение фазы 2 или 3 — `Abort(steamLogin)`, и если вход был вписан
+   * этим запуском, предупреждение в лог (владелец узнает о поломке
+   * формата). `'OK'`, замеченный в любой момент, — успех сразу, независимо
+   * от фазы.
    */
   const waitForSteamLogon = (job: Job, offset: number) =>
     Effect.gen(function* () {
@@ -494,7 +524,25 @@ const make = Effect.gen(function* () {
         yield* Effect.sleep(INSTALL_POLL);
         stdout = yield* readConnectionLog(job, offset);
       }
+      const bytesAt = yield* Clock.currentTimeMillis;
       if (STEAM_LOGON_OK.test(stdout)) return;
+      const loginFailed = () =>
+        Effect.gen(function* () {
+          if (job.seeded)
+            yield* Effect.logWarning("Seeded Steam login was not accepted", {
+              jobId: job.jobId,
+              userId: job.userId,
+            });
+          return yield* new Abort({ reason: installReasons.steamLogin });
+        });
+      while (!STEAM_LOGON_ATTEMPT.test(stdout)) {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - bytesAt >= Duration.toMillis(STEAM_CLIENT_START_TIMEOUT))
+          return yield* loginFailed();
+        yield* Effect.sleep(INSTALL_POLL);
+        stdout = yield* readConnectionLog(job, offset);
+        if (STEAM_LOGON_OK.test(stdout)) return;
+      }
       yield* Effect.gen(function* () {
         while (true) {
           yield* Effect.sleep(INSTALL_POLL);
@@ -504,15 +552,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.timeoutOrElse({
           duration: Duration.seconds(job.steamLoginTimeoutSeconds),
-          orElse: () =>
-            Effect.gen(function* () {
-              if (job.seeded)
-                yield* Effect.logWarning(
-                  "Seeded Steam login was not accepted",
-                  { jobId: job.jobId, userId: job.userId },
-                );
-              return yield* new Abort({ reason: installReasons.steamLogin });
-            }),
+          orElse: loginFailed,
         }),
       );
     });

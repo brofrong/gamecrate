@@ -118,9 +118,10 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * запустить или отменить установку игры в общую библиотеку (роль `gamestore`).
  * `steamLogin` — ожидающий вход пользователя для посева (`SteamLoginSeeds`
  * оркестратора); `null` — его нет. `InstallGame.steamLoginTimeoutSeconds` —
- * сколько установщик ждёт входа клиента Steam (признака в его журнале
- * подключения, отсчёт — с первых строк журнала) до `InstallFailed` «Войдите
- * в Steam» (из текущих `SessionSettings`).
+ * сколько установщик ждёт входа клиента Steam (ответа на его попытку входа
+ * в журнале подключения, отсчёт — с этой попытки, а не с первых строк
+ * журнала: клиенту может потребоваться время, чтобы начать её) до
+ * `InstallFailed` «Войдите в Steam» (из текущих `SessionSettings`).
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {

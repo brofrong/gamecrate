@@ -13,8 +13,10 @@ export const sessionSettingsKey = "session";
  * - `startTimeoutMinutes` — таймаут запуска сессии (5–60 мин).
  * - `installTimeoutMinutes` — таймаут установки игры в `installing` (10–720 мин).
  * - `steamLoginTimeoutSeconds` — сколько установщик ждёт входа клиента Steam
- *   (отсчёт — с первых строк его журнала подключения), прежде чем провалить
- *   установку «Войдите в Steam» (30–600 с, спека §5.4).
+ *   после того, как клиент начал попытку входа (а не с первых строк его
+ *   журнала подключения — до попытки отдельный фиксированный таймаут,
+ *   `STEAM_CLIENT_START_TIMEOUT` агента), прежде чем провалить установку
+ *   «Войдите в Steam» (30–600 с, спека §5.4).
  */
 export const SessionSettings = Schema.Struct({
   idleWarningMinutes: Schema.Int.check(

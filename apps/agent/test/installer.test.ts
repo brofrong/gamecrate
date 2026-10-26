@@ -1292,6 +1292,81 @@ describe("Installer", () => {
       }),
     ));
 
+  it("installer waits for Steam's logon attempt before the logon timeout", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        yield* h.installer.install(install); // steamLoginTimeoutSeconds: 90
+        yield* h.tick("0 seconds");
+        // t0: клиент начал подключаться (журнал пошёл), но ещё не позвал
+        // LogOn() — на части железа UI Steam готовится к этому ~80 с.
+        h.fake.state.connectionLog +=
+          "[2026-10-26 12:34:16] Client version 1792618285\n" +
+          "[2026-10-26 12:34:16] CCMInterface::SetSteamID [U:1:1]\n";
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([]);
+        // t0+80s: только теперь клиент зовёт LogOn(). Таймаут прежнего кода
+        // отсчитывался от t0 и истёк бы на t0+90 — до ответа сервера.
+        yield* h.tick("78 seconds");
+        h.fake.state.connectionLog +=
+          "[2026-10-26 12:35:36] [Logged Off, 4, 0] [U:1:1] LogOn() called; " +
+          "not connected yet, scheduling connection.\n";
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([]);
+        // t0+100s: сервер ответил `'OK'` — через 20 с после попытки, задолго
+        // до steamLoginTimeoutSeconds (90), который отсчитывается от попытки.
+        yield* h.tick("18 seconds");
+        expect(yield* h.drain).toEqual([]);
+        h.fake.state.connectionLog +=
+          "[2026-10-26 12:37:16] RecvMsgClientLogOnResponse() : [U:1:1] 'OK'\n";
+        yield* h.tick("2 seconds");
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallFinished",
+            jobId: "j1",
+            sizeBytes: 88382496,
+            buildId: "12345",
+          },
+        ]);
+      }),
+    ));
+
+  it("installer fails with steamLogin when Steam never attempts to log on", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          h.fake.state.autoLogin = false;
+          yield* h.installer.install({
+            ...install,
+            profile: null,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          // Клиент начал подключаться, но так и не позвал LogOn(): застрял в
+          // своём окне входа (посев не распознан) — это не STALL_TIMEOUT.
+          h.fake.state.connectionLog +=
+            "[2026-10-23 10:00:01] Initializing connection manager\n" +
+            "[2026-10-23 10:00:02] UI Request: connect\n";
+          yield* h.tick("2 seconds");
+          expect(yield* h.drain).toEqual([]);
+          yield* h.tick("4 minutes");
+          expect(yield* h.drain).toEqual([]);
+          yield* h.tick("58 seconds");
+          expect(yield* h.drain).toEqual([]);
+          yield* h.tick("2 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+          const warning = logs.find((line) =>
+            line.text.includes("Seeded Steam login was not accepted"),
+          );
+          expect(warning?.level).toBe("Warn");
+        }),
+      { logs },
+    );
+  });
+
   it("connection log that never appears fails as stalled after STALL_TIMEOUT", () => {
     const logs: Array<{ level: string; text: string }> = [];
     return run(
