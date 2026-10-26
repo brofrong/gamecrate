@@ -14,9 +14,10 @@ import { dirname, join, relative } from "node:path";
 import type { AgentCommand, AgentReport, ProfileCommit } from "@cg/rpc";
 import {
   Context,
-  type Duration,
+  Duration,
   Effect,
   Layer,
+  Logger,
   Option,
   Queue,
   References,
@@ -36,6 +37,7 @@ import {
   type InstallerShape,
   installReasons,
   parseAppManifest,
+  STALL_TIMEOUT,
   stubManifest,
 } from "../src/Installer";
 import { extractSingleFile } from "../src/profile/codec";
@@ -47,10 +49,7 @@ import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
 const fixture = (name: string) =>
-  readFileSync(
-    new URL(`fixtures/steam-logs/${name}`, import.meta.url),
-    "utf8",
-  );
+  readFileSync(new URL(`fixtures/steam-logs/${name}`, import.meta.url), "utf8");
 
 /** Строка принятого входа (спека §5.4, проба на brofrong). */
 const LOGGED_ON = fixture("connection_log_logged_on.txt");
@@ -121,6 +120,8 @@ const makeFake = () => {
     gone: false,
     /** `putArchive` заготовки падает дефектом (ошибка в коде, не в Docker). */
     dieOnStub: false,
+    /** `putArchive` посева входа в `/home/ubuntu` отвечает ошибкой Docker (не 404). */
+    failSeed: false,
     /** Контейнеры `cg.install`, оставшиеся с прошлого запуска. */
     existing: [] as ContainerInfo[],
     labelledVolumes: [] as Array<{
@@ -221,11 +222,20 @@ const makeFake = () => {
         return false;
       }),
     putArchive: (container, path, tar) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         record(`putArchive ${container} ${path}`);
         if (state.dieOnStub && path === STEAMAPPS)
           throw new Error("unexpected bug");
+        if (state.failSeed && path === "/home/ubuntu")
+          return Effect.fail(
+            new DockerError({
+              operation: "putArchive",
+              status: 500,
+              message: "no space left on device",
+            }),
+          );
         state.put.push({ container, path, tar });
+        return Effect.void;
       }),
     getArchive: (container, path) =>
       Effect.suspend(() => {
@@ -391,6 +401,8 @@ const run = (
   options: {
     readonly setup?: (fake: Fake) => void;
     readonly config?: Partial<AgentConfigValues>;
+    /** Сюда пишется лог установщика (уровень и `Bun.inspect` сообщения); нет — лог выключен. */
+    readonly logs?: Array<{ level: string; text: string }>;
   } = {},
 ) => {
   const fake = makeFake();
@@ -437,7 +449,22 @@ const run = (
             : Effect.succeed(fake.disk.freeBytes);
         }),
       ),
-      Effect.provideService(References.MinimumLogLevel, "None"),
+      (effect) => {
+        const logs = options.logs;
+        if (logs === undefined)
+          return Effect.provideService(
+            effect,
+            References.MinimumLogLevel,
+            "None",
+          );
+        const capture = Logger.make(({ logLevel, message }) => {
+          logs.push({ level: logLevel, text: Bun.inspect(message) });
+        });
+        return effect.pipe(
+          Effect.provide(Logger.layer([capture])),
+          Effect.provideService(References.MinimumLogLevel, "All"),
+        );
+      },
       Effect.ensuring(
         Effect.sync(() =>
           rmSync(fake.state.root, { recursive: true, force: true }),
@@ -521,7 +548,9 @@ describe("Installer", () => {
         // слой steamapps — в INSTALL_SCRATCH_DIR (ФС библиотеки, перенос `rename`).
         for (const dir of ["upper", "work"]) {
           expect(
-            existsSync(join(h.fake.state.scratch, ".install", "j1", "client", dir)),
+            existsSync(
+              join(h.fake.state.scratch, ".install", "j1", "client", dir),
+            ),
           ).toBe(true);
           expect(
             existsSync(join(h.fake.state.installScratch, "j1", "apps", dir)),
@@ -530,7 +559,9 @@ describe("Installer", () => {
             existsSync(join(h.fake.state.installScratch, "j1", "client", dir)),
           ).toBe(false);
           expect(
-            existsSync(join(h.fake.state.scratch, ".install", "j1", "apps", dir)),
+            existsSync(
+              join(h.fake.state.scratch, ".install", "j1", "apps", dir),
+            ),
           ).toBe(false);
         }
         expect(readdirSync(h.fake.state.scratch)).toEqual([".install"]);
@@ -1175,21 +1206,157 @@ describe("Installer", () => {
       }),
     ));
 
-  it("installer fails with steamLogin when Steam does not log on in time", () =>
+  it("installer fails with steamLogin when Steam does not log on in time", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          h.fake.state.autoLogin = false;
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          // Клиент начал подключаться (журнал пошёл), но входа нет.
+          h.fake.state.connectionLog += WAITING_FOR_CREDENTIALS;
+          yield* h.tick("2 seconds");
+          // Таймаут отсчитывается от первых строк журнала, а не от старта.
+          yield* h.tick("88 seconds");
+          expect(yield* h.drain).toEqual([]);
+          yield* h.tick("2 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+          expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+            removedWithScratch,
+          );
+          // До загрузки не дошли — профиль не сохраняется.
+          expect(h.fake.state.calls).not.toContain("store.put u1");
+          // Вход взят из профиля, этим запуском не вписан — предупреждения о
+          // сломанном посеве нет.
+          expect(
+            logs.some((line) =>
+              line.text.includes("Seeded Steam login was not accepted"),
+            ),
+          ).toBe(false);
+        }),
+      { logs },
+    );
+  });
+
+  it("seeded login that Steam does not accept fails with steamLogin and a warning", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          h.fake.state.autoLogin = false;
+          yield* h.installer.install({
+            ...install,
+            profile: null,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          h.fake.state.connectionLog += WAITING_FOR_CREDENTIALS;
+          yield* h.tick("2 seconds");
+          yield* h.tick("90 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+          const warning = logs.find((line) =>
+            line.text.includes("Seeded Steam login was not accepted"),
+          );
+          expect(warning?.level).toBe("Warn");
+          expect(warning?.text).toContain("j1");
+          expect(warning?.text).toContain("u1");
+        }),
+      { logs },
+    );
+  });
+
+  it("Steam bootstrap before the connection log does not eat the logon timeout", () =>
     run((h) =>
       Effect.gen(function* () {
         h.fake.state.autoLogin = false;
-        h.fake.state.connectionLog = WAITING_FOR_CREDENTIALS;
         yield* h.installer.install(install);
-        yield* h.tick("90 seconds");
-        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
-        expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
-          removedWithScratch,
-        );
-        // Вход не был вписан этим запуском (из профиля) — без предупреждения.
-        expect(h.fake.state.calls).not.toContain("store.put u1");
+        yield* h.tick("0 seconds");
+        // Клиент обновляется/распаковывается: журнал подключения пока пуст —
+        // это не «не вошёл», 90 с ещё не пошли.
+        yield* h.tick("5 minutes");
+        expect(yield* h.drain).toEqual([]);
+        expect(h.installer.running()).toEqual(["j1"]);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallFinished",
+            jobId: "j1",
+            sizeBytes: 88382496,
+            buildId: "12345",
+          },
+        ]);
       }),
     ));
+
+  it("connection log that never appears fails as stalled after STALL_TIMEOUT", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          // Тест считает 10 минут — ровно STALL_TIMEOUT.
+          expect(Duration.toMillis(STALL_TIMEOUT)).toBe(10 * 60_000);
+          h.fake.state.autoLogin = false;
+          yield* h.installer.install({
+            ...install,
+            profile: null,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          yield* h.tick("9 minutes");
+          expect(yield* h.drain).toEqual([]);
+          yield* h.tick("1 minute");
+          expect(yield* h.drain).toEqual([failed(installReasons.stalled)]);
+          expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+            removedWithScratch,
+          );
+          // Клиент так и не начал подключаться — это не отказ во входе:
+          // предупреждения о посеве нет.
+          expect(
+            logs.some((line) =>
+              line.text.includes("Seeded Steam login was not accepted"),
+            ),
+          ).toBe(false);
+        }),
+      { logs },
+    );
+  });
+
+  it("failed login seed write fails with profileRestore and never logs the secrets", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          h.fake.state.failSeed = true;
+          yield* h.installer.install({
+            ...install,
+            profile: null,
+            steamLogin: testSteamLogin({
+              accountName: "s3cr3t-account-name",
+              refreshToken: "SECRET-REFRESH-TOKEN",
+            }),
+          });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            failed(installReasons.profileRestore),
+          ]);
+          expect(h.fake.state.calls).not.toContain("start cg-install-j1");
+          expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+            removedWithScratch,
+          );
+          const text = logs.map((line) => line.text).join("\n");
+          // Причина сбоя в логе есть…
+          expect(text).toContain("putArchive failed (500)");
+          // …а токена и имени аккаунта — нет.
+          expect(text).not.toContain("SECRET-REFRESH-TOKEN");
+          expect(text).not.toContain("s3cr3t-account-name");
+        }),
+      { logs },
+    );
+  });
 
   it("installer ignores Logged On lines written before start", () =>
     run((h) =>
@@ -1202,8 +1369,9 @@ describe("Installer", () => {
           steamLoginTimeoutSeconds: 5,
         });
         yield* h.tick("0 seconds");
-        // После старта в журнал ничего нового не дописано.
+        // После старта дописаны строки без входа (старый `'OK'` до смещения не считается).
         h.fake.state.connectionLog += WAITING_FOR_CREDENTIALS;
+        yield* h.tick("2 seconds");
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
       }),

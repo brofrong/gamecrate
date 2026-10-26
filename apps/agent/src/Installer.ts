@@ -475,33 +475,47 @@ const make = Effect.gen(function* () {
       );
 
   /**
-   * Ждёт признак входа Steam (спека §5.4) не дольше
-   * `steamLoginTimeoutSeconds`: строки журнала после `offset` содержат
-   * принятый вход — успех; истекло — `Abort(steamLogin)`, и если вход был
-   * вписан этим запуском, предупреждение в лог (владелец узнает о поломке
-   * формата).
+   * Ждёт признак входа Steam (спека §5.4). Сначала — первых строк журнала
+   * подключения после `offset`: клиент пишет его, только закончив свой
+   * bootstrap/самообновление и начав подключаться; до этого ждём не дольше
+   * STALL_TIMEOUT от старта (иначе `Abort(stalled)` — это не отказ во входе).
+   * С первых строк — не дольше `steamLoginTimeoutSeconds`: принятый вход —
+   * успех; истекло — `Abort(steamLogin)`, и если вход был вписан этим запуском,
+   * предупреждение в лог (владелец узнает о поломке формата).
    */
   const waitForSteamLogon = (job: Job, offset: number) =>
     Effect.gen(function* () {
-      while (true) {
-        const stdout = yield* readConnectionLog(job, offset);
-        if (STEAM_LOGON_OK.test(stdout)) return;
+      const startedAt = yield* Clock.currentTimeMillis;
+      let stdout = yield* readConnectionLog(job, offset);
+      while (stdout === "") {
+        const now = yield* Clock.currentTimeMillis;
+        if (now - startedAt >= Duration.toMillis(STALL_TIMEOUT))
+          return yield* new Abort({ reason: installReasons.stalled });
         yield* Effect.sleep(INSTALL_POLL);
+        stdout = yield* readConnectionLog(job, offset);
       }
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: Duration.seconds(job.steamLoginTimeoutSeconds),
-        orElse: () =>
-          Effect.gen(function* () {
-            if (job.seeded)
-              yield* Effect.logWarning(
-                "Seeded Steam login was not accepted",
-                { jobId: job.jobId, userId: job.userId },
-              );
-            return yield* new Abort({ reason: installReasons.steamLogin });
-          }),
-      }),
-    );
+      if (STEAM_LOGON_OK.test(stdout)) return;
+      yield* Effect.gen(function* () {
+        while (true) {
+          yield* Effect.sleep(INSTALL_POLL);
+          if (STEAM_LOGON_OK.test(yield* readConnectionLog(job, offset)))
+            return;
+        }
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.seconds(job.steamLoginTimeoutSeconds),
+          orElse: () =>
+            Effect.gen(function* () {
+              if (job.seeded)
+                yield* Effect.logWarning(
+                  "Seeded Steam login was not accepted",
+                  { jobId: job.jobId, userId: job.userId },
+                );
+              return yield* new Abort({ reason: installReasons.steamLogin });
+            }),
+        }),
+      );
+    });
 
   /**
    * Слои → контейнер → профиль (нет профиля и входа — сразу `steamLogin`) →
@@ -561,10 +575,12 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(startFailed));
       // Overlay дома уже смонтирован (его lower — общий шаблон клиента):
       // журнал может содержать старые строки до старта этого контейнера.
-      const logOffset = yield* docker.archiveSize(job.name, CONNECTION_LOG).pipe(
-        Effect.catchIf(isGone, () => Effect.succeed(0)),
-        Effect.mapError(startFailed),
-      );
+      const logOffset = yield* docker
+        .archiveSize(job.name, CONNECTION_LOG)
+        .pipe(
+          Effect.catchIf(isGone, () => Effect.succeed(0)),
+          Effect.mapError(startFailed),
+        );
       yield* docker.start(job.name).pipe(Effect.mapError(startFailed));
       yield* Effect.logInfo("Installer container started", {
         jobId: job.jobId,

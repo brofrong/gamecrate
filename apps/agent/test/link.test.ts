@@ -381,66 +381,64 @@ describe("OrchestratorLink", () => {
     15_000,
   );
 
-  it(
-    "command log never contains the Steam token or account name",
-    () => {
-      const secretToken = "SECRET-TOKEN";
-      const secretAccount = "s3cr3t-account-name";
-      const logged: Array<unknown> = [];
-      const capture = Logger.make(({ message }) => {
-        logged.push(message);
-      });
-      return Effect.gen(function* () {
-        const reports = yield* Queue.unbounded<AgentReport>();
-        const supervisor: SessionSupervisorShape = {
-          handle: () => Effect.void,
-          snapshot: Effect.succeed([]),
-          reports,
-        };
-        const installed: Array<AgentCommand> = [];
-        const installReports = yield* Queue.unbounded<AgentReport>();
-        const installer: InstallerShape = {
-          install: (command) => Effect.sync(() => void installed.push(command)),
-          cancel: () => Effect.void,
-          running: () => [],
-          reports: installReports,
-        };
-        const before = server.streams.length;
-        yield* Layer.build(
-          OrchestratorLink.layer.pipe(
-            Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
-            Layer.provide(Layer.succeed(Installer, installer)),
-            Layer.provide(ProfileCommitter.layer),
-            Layer.provide(Layer.succeed(AgentConfig, config())),
-          ),
-        );
-        yield* waitUntil(() => server.streams.length > before);
-        const installGame: AgentCommand = {
-          _tag: "InstallGame",
-          jobId: "secret-job",
-          appId: 1,
-          userId: "u1",
-          profile: null,
-          steamLogin: {
-            accountName: Redacted.make(secretAccount),
-            steamId: "1",
-            refreshToken: Redacted.make(secretToken),
-          },
-          steamLoginTimeoutSeconds: 90,
-        };
-        yield* Queue.offer(server.streams.at(-1)!, installGame);
-        yield* waitUntil(() => installed.length === 1);
-
-        const text = JSON.stringify(logged);
-        expect(text).not.toContain(secretToken);
-        expect(text).not.toContain(secretAccount);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(Logger.layer([capture])),
-        Effect.provideService(References.MinimumLogLevel, "Info"),
-        Effect.runPromise,
+  it("command log never contains the Steam token or account name", () => {
+    const secretToken = "SECRET-TOKEN";
+    const secretAccount = "s3cr3t-account-name";
+    const logged: Array<unknown> = [];
+    const capture = Logger.make(({ message }) => {
+      logged.push(message);
+    });
+    return Effect.gen(function* () {
+      const reports = yield* Queue.unbounded<AgentReport>();
+      const supervisor: SessionSupervisorShape = {
+        handle: () => Effect.void,
+        snapshot: Effect.succeed([]),
+        reports,
+      };
+      const installed: Array<AgentCommand> = [];
+      const installReports = yield* Queue.unbounded<AgentReport>();
+      const installer: InstallerShape = {
+        install: (command) => Effect.sync(() => void installed.push(command)),
+        cancel: () => Effect.void,
+        running: () => [],
+        reports: installReports,
+      };
+      const before = server.streams.length;
+      yield* Layer.build(
+        OrchestratorLink.layer.pipe(
+          Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+          Layer.provide(Layer.succeed(Installer, installer)),
+          Layer.provide(ProfileCommitter.layer),
+          Layer.provide(Layer.succeed(AgentConfig, config())),
+        ),
       );
-    },
-    15_000,
-  );
+      yield* waitUntil(() => server.streams.length > before);
+      const installGame: AgentCommand = {
+        _tag: "InstallGame",
+        jobId: "secret-job",
+        appId: 1,
+        userId: "u1",
+        profile: null,
+        steamLogin: {
+          accountName: Redacted.make(secretAccount),
+          steamId: "1",
+          refreshToken: Redacted.make(secretToken),
+        },
+        steamLoginTimeoutSeconds: 90,
+      };
+      yield* Queue.offer(server.streams.at(-1)!, installGame);
+      yield* waitUntil(() => installed.length === 1);
+
+      const text = JSON.stringify(logged);
+      // Лог правда записан (иначе проверка ниже прошла бы на пустом захвате).
+      expect(text).toContain("Command received");
+      expect(text).not.toContain(secretToken);
+      expect(text).not.toContain(secretAccount);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Logger.layer([capture])),
+      Effect.provideService(References.MinimumLogLevel, "Info"),
+      Effect.runPromise,
+    );
+  }, 15_000);
 });

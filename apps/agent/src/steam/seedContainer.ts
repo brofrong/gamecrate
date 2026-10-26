@@ -2,13 +2,15 @@
 // контейнера: `applyLoginSeed` (Task 2) собирает четыре файла из текущего
 // содержимого (нет файла — пропуск, начинаем с пустого) и посеянного входа,
 // один `putArchive` кладёт их в `/home/ubuntu` с правами и владельцем, которых
-// ждёт клиент Steam.
+// ждёт клиент Steam. Нечитаемый файл — предупреждение в лог; `config.vdf` тогда
+// не трогаем (в нём и прочие настройки клиента), остальные три — с нуля.
 import type { SteamLoginSeed } from "@cg/rpc";
 import { Clock, Data, Effect, Redacted } from "effect";
 import { DockerClient, isGone } from "../DockerClient";
 import { extractSingleFile, filesTar } from "../profile/codec";
 import { HOME_DIR } from "../profile/HomeProfile";
 import { applyLoginSeed, LOGIN_FILES } from "./loginSeed";
+import { parseVdf } from "./vdf";
 
 /**
  * Посев входа не удался (чтение или запись файлов в контейнере). `message`
@@ -20,7 +22,8 @@ export class SeedError extends Data.TaggedError("SeedError")<{
 }> {}
 
 /** Имя записи в tar для файла по пути `relPath` (Docker отдаёт только basename). */
-const entryName = (relPath: string) => relPath.slice(relPath.lastIndexOf("/") + 1);
+const entryName = (relPath: string) =>
+  relPath.slice(relPath.lastIndexOf("/") + 1);
 
 /** Каталоги-родители четырёх файлов входа (спека §5.3: права — как у профиля). */
 const PARENT_DIRS = [
@@ -34,11 +37,15 @@ const PARENT_DIRS = [
 /** Владелец всех записей архива (пользователь `ubuntu` в контейнере). */
 const OWNER = { uid: 1000, gid: 1000 } as const;
 
+type LoginFile = keyof typeof LOGIN_FILES;
+
 /**
  * Вписывает вход §4 в `container` (созданный, не запущенный): читает четыре
  * файла (нет файла — не ошибка, начинаем с пустого дерева), собирает их
  * `applyLoginSeed` и кладёт одним архивом в `/home/ubuntu` — каталоги-родители
- * 0700, файлы 0600, владелец 1000:1000.
+ * 0700, файлы 0600, владелец 1000:1000. Файл есть, но не разбирается —
+ * `logWarning` с ключом файла (не содержимым); нечитаемый `config.vdf` в архив
+ * не попадает и остаётся как был, остальные пересобираются с нуля.
  */
 export const seedSteamLogin = (options: {
   readonly container: string;
@@ -61,12 +68,17 @@ export const seedSteamLogin = (options: {
         ),
       );
 
-    const current: Partial<Record<keyof typeof LOGIN_FILES, string>> = {};
-    for (const key of Object.keys(LOGIN_FILES) as Array<
-      keyof typeof LOGIN_FILES
-    >) {
+    const keys = Object.keys(LOGIN_FILES) as Array<LoginFile>;
+    const current: Partial<Record<LoginFile, string>> = {};
+    const unreadable = new Set<LoginFile>();
+    for (const key of keys) {
       const text = yield* readLoginFile(LOGIN_FILES[key]);
-      if (text !== undefined) current[key] = text;
+      if (text === undefined) continue;
+      current[key] = text;
+      if (parseVdf(text) === undefined) {
+        unreadable.add(key);
+        yield* Effect.logWarning("Steam login file unreadable", { file: key });
+      }
     }
 
     const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
@@ -84,13 +96,13 @@ export const seedSteamLogin = (options: {
     const tar = filesTar(
       [
         ...PARENT_DIRS.map((path) => ({ path, mode: 0o700 })),
-        ...(Object.keys(LOGIN_FILES) as Array<keyof typeof LOGIN_FILES>).map(
-          (key) => ({
+        ...keys
+          .filter((key) => !(key === "config" && unreadable.has(key)))
+          .map((key) => ({
             path: LOGIN_FILES[key],
             data: encoder.encode(files[key]),
             mode: 0o600,
-          }),
-        ),
+          })),
       ],
       { ...OWNER, mtime: now },
     );

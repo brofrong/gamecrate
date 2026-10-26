@@ -42,10 +42,7 @@ export const encryptConnectCache = (
   const key = deriveKey(accountName);
   const ivCipher = createCipheriv("aes-256-ecb", key, null);
   ivCipher.setAutoPadding(false);
-  const encryptedIv = Buffer.concat([
-    ivCipher.update(iv),
-    ivCipher.final(),
-  ]);
+  const encryptedIv = Buffer.concat([ivCipher.update(iv), ivCipher.final()]);
   const bodyCipher = createCipheriv("aes-256-cbc", key, iv);
   const body = Buffer.concat([
     bodyCipher.update(token, "utf8"),
@@ -219,7 +216,8 @@ const applyRegistry = (text: string | undefined, seed: Seed): string => {
 /**
  * Собирает все четыре файла входа (спека §4) из текущего содержимого (может
  * отсутствовать — пустой дом, или не парситься — повреждён, в обоих случаях
- * файл создаётся с нуля без исключения) и посеянного входа.
+ * файл создаётся с нуля без исключения) и посеянного входа. Нечитаемый
+ * `config.vdf` вызывающий (`seedSteamLogin`) не записывает — оставляет как был.
  */
 export const applyLoginSeed = (
   current: Partial<Record<keyof typeof LOGIN_FILES, string>>,
