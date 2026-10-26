@@ -1,12 +1,23 @@
 # GameCrate — главная страница `/app` (библиотека, тренды, часы) — дизайн
 
-Дата: 2026-10-23. Статус: одобрено владельцем 2026-10-23, план `docs/superpowers/plans/2026-10-23-app-home.md`.
+Дата: 2026-10-23. Статус: реализовано 2026-10-26 (ветка `feat/app-library`), план `docs/superpowers/plans/2026-10-23-app-home.md`.
 
 Пометка **[моё решение]** — выбор, сделанный при проектировании, а не владельцем продукта; его можно оспорить. Всё без пометки — решено владельцем на брейншторме 2026-10-23.
 
 Макет, по которому принято решение: вариация «Один в один, по-нашему» на GameHub для macOS (три вариации показаны владельцу в чате; выбрана первая с правками: больше фильтров, блок «Запускал недавно», заметный статус «Готова»). Прототипы: `docs/brand/prototypes/app-home.html` (десктоп, 1280×900) и `docs/brand/prototypes/app-home-mobile.html` (телефон 390 px: «Мои игры», шторка фильтров, «Время»), открываются в браузере.
 
 Связанные документы: основная спека `docs/superpowers/specs/2026-10-16-cloud-gaming-mvp-design.md` (экран библиотеки `/library` из неё этот документ **заменяет**), спека входа `docs/superpowers/specs/2026-10-22-auth-login-and-linking-design.md` (плашка «Подключи Steam» и `/profile` остаются как там), план MVP-3 `docs/superpowers/plans/2026-10-22-mvp-3-gamestore-profiles.md` (общая библиотека `gamestore_apps`, установки `install_jobs`, профили `profiles`).
+
+**Отклонения от текста ниже при реализации:**
+
+- У каждого `LibraryEntry` есть `lastPlayedAt` (ISO 8601 последней не-failed сессии, `null` — ещё не играл) — он используется для сортировки «недавние», а не только у `RecentEntry`.
+- `steamProfile` в `library.list` на деле означает «есть строка в `profiles`» (облачный профиль, MVP-3), а не «привязан Steam» — та же модель, что у `auth.providers`: у Steam-аккаунта может не быть ещё облачного профиля.
+- «В тренде» за неделю считает разных пользователей (`countDistinct(sessions.userId)`), а не число сессий — «сейчас играют» (`now`) по-прежнему считает сессии.
+- `time.summary` отдаёт все сессии месяца целиком одним ответом, без курсора/пагинации (`TimeRepo.monthSummary`).
+- Панели правой колонки (`SteamPanel`, `TimePanel`, `ActiveSessionPanel`, `InstallsPanel`, `ComingSoonPanel`) используют общие атомы `Panel`/`PanelHeader`/`Stat` (`components/app/Panel.tsx`).
+- `GameTile` принимает общий `TileGame` (а не `LibraryEntry` напрямую) и необязательную `caption`, которая целиком заменяет строку статуса (например, «2 играют» в «В тренде»).
+- Копирование Steam ID в `SteamPanel` — через `navigator.clipboard.writeText`, с тостом об ошибке, если не получилось.
+- `/library` не удалён, а стал редиректом на `/app` (с сохранением `?error=`); старые `LibraryContent.tsx`/`GameCard.tsx` удалены.
 
 ## 1. Зачем
 

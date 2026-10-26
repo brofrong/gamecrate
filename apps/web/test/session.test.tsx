@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import type { LibraryEntry, SessionState, SessionView } from "@cg/rpc";
+import type { SessionState, SessionView } from "@cg/rpc";
 import {
   fireEvent,
   render,
@@ -7,11 +7,9 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { GameTile, type TileGame } from "../src/components/app/GameTile";
 import { IdlePrompt } from "../src/components/IdlePrompt";
-import {
-  type LibraryPlay,
-  LibraryContent,
-} from "../src/components/LibraryContent";
+import { cardAction, type LibraryPlay } from "../src/lib/cardAction";
 import { Player } from "../src/components/Player";
 import { formatPlayed } from "../src/components/SessionStatus";
 import {
@@ -296,15 +294,12 @@ describe("session", () => {
     }
   });
 
-  it("play disabled on other games while a session is active", async () => {
-    const game = (appId: number, name: string): LibraryEntry => ({
+  it("play disabled on other games while a session is active", () => {
+    const game = (appId: number, name: string): TileGame => ({
       appId,
       name,
-      playtimeMinutes: 0,
-      protonTier: "platinum",
       coverUrl: `https://cdn.example/${appId}.jpg`,
       cloud: { _tag: "Missing" },
-      lastPlayedAt: null,
     });
     const onPlay = mock((_appId: number) => {});
     const onResume = mock(() => {});
@@ -314,42 +309,32 @@ describe("session", () => {
       onPlay,
       onResume,
     });
-    const entries = [game(620, "Portal 2"), game(400, "Portal")];
-    const view_ = {
-      _tag: "Ready",
-      entries,
-      syncedAt: null,
-      steamProfile: true,
-    } as const;
+    const games = [game(620, "Portal 2"), game(400, "Portal")];
 
     const free = render(
-      <LibraryContent
-        view={view_}
-        onRefresh={noop}
-        refreshing={false}
-        play={play(null)}
-      />,
+      <>
+        {games.map((g) => (
+          <GameTile key={g.appId} game={g} action={cardAction(g, play(null))} />
+        ))}
+      </>,
     );
-    const buttons = screen.getAllByRole("button", { name: "Играть" });
+    const buttons = screen.getAllByRole("button", { name: /^Играть/ });
     expect(buttons).toHaveLength(2);
     fireEvent.click(buttons[1] as HTMLElement);
     expect(onPlay).toHaveBeenCalledWith(400);
     free.unmount();
 
+    // Активная сессия у Portal 2 (620): Portal (400) заблокирован — кнопки нет
+    // вовсе (см. `gameTile.test.tsx` «blocked — без кнопки»), у Portal 2 — «Вернуться в игру».
+    const activePlay = play(view("playing"));
     render(
-      <LibraryContent
-        view={view_}
-        onRefresh={noop}
-        refreshing={false}
-        play={play(view("playing"))}
-      />,
+      <>
+        {games.map((g) => (
+          <GameTile key={g.appId} game={g} action={cardAction(g, activePlay)} />
+        ))}
+      </>,
     );
-    const blocked = screen.getByRole("button", { name: "Играть" });
-    expect((blocked as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.focus(blocked.parentElement as HTMLElement);
-    expect(
-      (await screen.findAllByText("Сначала завершите текущую игру")).length,
-    ).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Играть: Portal" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Вернуться в игру" }));
     expect(onResume).toHaveBeenCalledTimes(1);
     expect(onPlay).toHaveBeenCalledTimes(1);

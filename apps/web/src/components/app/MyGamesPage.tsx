@@ -75,7 +75,7 @@ function LibrarySkeleton() {
   );
 }
 
-/** Те же тексты, что сейчас в `LibraryContent.Notice` (тот файл не трогаем). */
+/** Пустая библиотека: Steam недоступен (ещё не было синхронизации) или игр пока нет. */
 function EmptyNotice({
   view,
   onRefresh,

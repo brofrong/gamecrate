@@ -104,7 +104,7 @@ function SessionPage() {
   );
 
   const toLibrary = useCallback(
-    () => void navigate({ to: "/library" }),
+    () => void navigate({ to: "/app" }),
     [navigate],
   );
 

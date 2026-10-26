@@ -1,4 +1,4 @@
-// `/`: лендинг; вошедшего пользователя уводим в библиотеку.
+// `/`: лендинг; вошедшего пользователя уводим на главную `/app`.
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -28,7 +28,7 @@ function IndexPage() {
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
 
   const view = indexView(me, stalled);
-  if (view === "library") return <Navigate to="/library" />;
+  if (view === "library") return <Navigate to="/app" />;
   if (view === "landing") return <LandingPage />;
   if (view === "unreachable") {
     return (

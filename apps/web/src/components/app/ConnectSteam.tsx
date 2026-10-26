@@ -1,6 +1,5 @@
 // Карточка «Подключи Steam» для пользователя без привязанного Steam — без него
-// библиотека недоступна. Копия `ConnectSteam` из `routes/library.tsx` (тот файл не
-// трогаем, им владеет другой поток до переключения на `/app`) — те же тексты и кнопка.
+// библиотека недоступна.
 import { Button } from "@/components/ui/button";
 
 export function ConnectSteam({ onLink }: { onLink: () => void }) {

@@ -301,9 +301,9 @@ describe("login panel", () => {
   });
 
   it("login route rejects unsafe next", () => {
-    expect(loginNext({ next: "//evil.com" })).toBe("/library");
+    expect(loginNext({ next: "//evil.com" })).toBe("/app");
     expect(loginNext({ next: "/profile" })).toBe("/profile");
-    expect(loginNext({})).toBe("/library");
+    expect(loginNext({})).toBe("/app");
   });
 
   it("hides the email divider when no provider buttons are configured", () => {

@@ -270,7 +270,7 @@ ssh brofrong 'docker ps --format "{{.Names}}" | sort'           # сравнит
                                                                   # остальных контейнеров не изменились
 curl -s https://game.brofrong.ru/ | head -c 200                 # отдаёт SPA (index.html)
 curl -s -X POST https://game.brofrong.ru/api/auth/steam/login \
-  -H 'Content-Type: application/json' -d '{"callbackURL":"/library"}'   # {"url":"https://steamcommunity.com/..."}
+  -H 'Content-Type: application/json' -d '{"callbackURL":"/app"}'   # {"url":"https://steamcommunity.com/..."}
 ```
 
 Реальный вход через Steam/Pocket ID не проверяется деплоем — это делает владелец сервера (шаг 5,
@@ -489,6 +489,9 @@ lower overlay `~/.local/share/Steam` каждой сессии и установ
 5. Старый образ `cg-session:<старая версия>` удалить вручную (`docker rmi`), когда на нём нет сессий.
 
 ## Шаг 5 (приёмка, делает владелец)
+
+Главная страница после входа — `/app` (библиотека «Мои игры», «В тренде», «Из ящика», «Время»);
+старый `/library` перенаправляет на неё.
 
 MVP-1:
 

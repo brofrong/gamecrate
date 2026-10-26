@@ -10,15 +10,15 @@ describe("safeNext", () => {
   });
 
   it("rejects protocol-relative and absolute urls", () => {
-    expect(safeNext("//evil.com")).toBe("/library");
-    expect(safeNext("https://evil.com")).toBe("/library");
-    expect(safeNext(undefined)).toBe("/library");
+    expect(safeNext("//evil.com")).toBe("/app");
+    expect(safeNext("https://evil.com")).toBe("/app");
+    expect(safeNext(undefined)).toBe("/app");
   });
 
   it("rejects values with a backslash and non-string values", () => {
-    expect(safeNext("/ok\\evil.com")).toBe("/library");
-    expect(safeNext("relative/path")).toBe("/library");
-    expect(safeNext(42)).toBe("/library");
+    expect(safeNext("/ok\\evil.com")).toBe("/app");
+    expect(safeNext("relative/path")).toBe("/app");
+    expect(safeNext(42)).toBe("/app");
   });
 
   it("uses a custom fallback", () => {

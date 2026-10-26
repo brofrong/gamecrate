@@ -18,7 +18,7 @@ export function AppHeader({
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-screen-2xl items-center gap-4 px-4 sm:px-6">
-        <Link to="/library" className="flex items-center gap-2 font-semibold">
+        <Link to="/app" className="flex items-center gap-2 font-semibold">
           <Logo iconOnly height={28} />
           <span className="hidden sm:inline">GameCrate</span>
         </Link>

@@ -47,7 +47,8 @@ export const appRoute = createRoute({
 /**
  * Поля фильтров библиотеки (`lib/libraryFilters.ts`) плюс `focus` (фокус на поле
  * поиска — ссылка «Поиск» в полоске разделов) и `error` (ошибка привязки Steam,
- * возвращается в `errorCallbackURL` у `linkSteam("/app")`, см. `routes/library.tsx`).
+ * возвращается в `errorCallbackURL` у `linkSteam("/app")`; старый `/library?error=...`
+ * редиректит сюда же, см. `routes/library.tsx`).
  * Поля фильтров — `string | undefined` (не `Filters`): это ровно то, что несёт URL —
  * `chips` в адресе — одна строка через запятую (`toSearch`), а не массив. TanStack
  * Router держит адрес синхронным с тем, что вернул `validateSearch`, поэтому «пустой

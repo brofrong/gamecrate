@@ -1,5 +1,5 @@
 // Фильтры библиотеки: состояние ⇄ URL search params и применение к списку игр.
-// Чистая логика без React — используется /app и /library.
+// Чистая логика без React — используется главной `/app`.
 import type { LibraryEntry } from "@cg/rpc";
 import { describe, expect, it } from "bun:test";
 import {

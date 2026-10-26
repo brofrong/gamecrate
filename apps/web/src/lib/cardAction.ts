@@ -1,6 +1,5 @@
-// Копия `CardAction`/`cardAction` из `GameCard.tsx` и `LibraryPlay`/`cardAction` из
-// `LibraryContent.tsx` — чистая версия без React, для тестов и для главной `/app`.
-// Исходные файлы не трогаем: ими владеет другой поток до переключения на эту копию.
+// Действие кнопки карточки игры (`play`/`resume`/`blocked`) — чистая логика без
+// React, используется `GameTile` на главной `/app`.
 import type { SessionView } from "@cg/rpc";
 
 /**

@@ -1,5 +1,5 @@
 // `/login`: сцена «сборка куба» слева, панель входа справа; вошедшего пользователя
-// уводит на `next`/`/library` полной навигацией (сокет RPC привязан к cookie сессии).
+// уводит на `next`/`/app` полной навигацией (сокет RPC привязан к cookie сессии).
 import { useAtomValue } from "@effect/atom-react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -14,7 +14,7 @@ import { safeNext } from "@/lib/safeNext";
 import { meAtom, providersAtom } from "@/rpc";
 import { rootRoute } from "./__root";
 
-/** `next` из query — только относительный путь на этом же origin, иначе `/library`. */
+/** `next` из query — только относительный путь на этом же origin, иначе `/app`. */
 export const loginNext = (search: { next?: string }): string =>
   safeNext(search.next);
 

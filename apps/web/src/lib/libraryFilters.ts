@@ -1,6 +1,6 @@
 // Фильтры библиотеки: состояние ⇄ URL search params (`parseSearch`/`toSearch`) и
 // применение фильтров/сортировки/группировки к списку игр (`applyFilters`,
-// `countMatching`). Чистая логика без React — используется /app и /library.
+// `countMatching`). Чистая логика без React — используется главной `/app`.
 import type { LibraryEntry, ProtonTier } from "@cg/rpc";
 
 export type StatusFilter = "all" | "ready" | "installing" | "noprofile";

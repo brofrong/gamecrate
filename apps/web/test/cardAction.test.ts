@@ -1,5 +1,4 @@
-// Копия `cardAction` (кнопка карточки игры) из GameCard.tsx/LibraryContent.tsx — чистая
-// версия без React, для /app. Исходные файлы не трогаем, они под другим потоком.
+// `cardAction` — действие кнопки карточки игры на главной `/app`, чистая логика без React.
 import { describe, expect, it } from "bun:test";
 import type { SessionView } from "@cg/rpc";
 import { cardAction, type LibraryPlay } from "../src/lib/cardAction";
