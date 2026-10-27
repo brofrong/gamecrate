@@ -94,3 +94,14 @@ export const appTimeRoute = createRoute({
     typeof search.month === "string" ? { month: search.month } : {},
   component: TimePage,
 });
+
+/**
+ * Страница игры `/app/game/$appId` (спека 2026-10-27 §3.5). Пока заглушка: сам маршрут
+ * нужен уже сейчас, чтобы типизированные `Link` в `GameTile` компилировались; компонент
+ * и разбор параметра — следующие задачи плана.
+ */
+export const appGameRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/game/$appId",
+  component: () => null,
+});
