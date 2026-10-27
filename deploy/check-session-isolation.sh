@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Проверка сетевой изоляции cg-sessions без sudo (deploy/session-isolation.sh правила сам не
+# применяет — эта проверка просто показывает, что сейчас открыто/закрыто).
+#
+#   ./deploy/check-session-isolation.sh [ssh-хост=brofrong]
+#
+# Поднимает на воркере два временных контейнера в сети cg-sessions (образ SESSION_IMAGE из
+# ~/cloud-gaming/.env, явный --entrypoint sleep … infinity, своя метка cg.isolation-check, без
+# GPU) и изнутри первого (`docker exec curl -m 3`, TCP) проверяет:
+#   - шлюз моста cg-sessions :22 (адрес хоста с моста);
+#   - LAN-адрес хоста :22 и LAN-шлюз хоста :80 (`ip route get 1.1.1.1` на самом хосте: `src` и
+#     `via`) — тоже адреса хоста/LAN, просто не через мост cg-sessions;
+#   - второй контейнер :8080 (в нём поднят `python3 -m http.server 8080`) — другой контейнер
+#     моста, не cg-api;
+#   - cg-api:3000 — контейнеру моста, которому разрешён только исходящий к сессиям :8080, не
+#     входящий от них;
+#   - https://store.steampowered.com — интернет, должен остаться открытым.
+# Печатает таблицу «цель | ожидается | факт»; код 0 — всё совпало, 1 — где-то открыто то, что
+# должно быть закрыто. На сервере без применённых правил (см. deploy/session-isolation.sh и
+# раздел в deploy/README.md) ожидаемо код 1 — это не баг, а отсутствие правил.
+# Контейнеры удаляются в trap при любом выходе; ничего, кроме них (по метке cg.isolation-check),
+# скрипт не трогает.
+set -euo pipefail
+
+REMOTE_HOST="${1:-brofrong}"
+REMOTE_DIR="cloud-gaming"
+
+ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" <<'REMOTE'
+set -euo pipefail
+REMOTE_DIR="$1"
+envval() {
+  local v=""
+  [ -f ~/"${REMOTE_DIR}"/.env ] && v="$(sed -n "s/^$1=//p" ~/"${REMOTE_DIR}"/.env | tail -n 1)"
+  printf '%s' "${v:-$2}"
+}
+image="$(envval SESSION_IMAGE cg-session:550.163.01)"
+label_key="cg.isolation-check"
+a="cg-isolation-check-a"
+b="cg-isolation-check-b"
+
+cleanup() { docker rm -f "${a}" "${b}" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+# Остаток прошлого прерванного запуска — только свой (по метке), чужой одноимённый не трогаем.
+for n in "${a}" "${b}"; do
+  if docker inspect "${n}" >/dev/null 2>&1; then
+    if [ "$(docker inspect -f "{{index .Config.Labels \"${label_key}\"}}" "${n}")" != 1 ]; then
+      echo "ОШИБКА: контейнер ${n} без метки ${label_key} — не наш, не трогаем" >&2
+      exit 1
+    fi
+    docker rm -f "${n}" >/dev/null
+  fi
+done
+
+docker network inspect cg-sessions >/dev/null 2>&1 || {
+  echo "ОШИБКА: сети cg-sessions нет на этом сервере" >&2
+  exit 1
+}
+
+bridge_gw="$(docker network inspect cg-sessions -f '{{(index .IPAM.Config 0).Gateway}}')"
+# `ip route get 1.1.1.1` на самом хосте: "1.1.1.1 via <gw> dev <if> src <ip> ..."
+lan_gw="$(ip route get 1.1.1.1 | sed -n 's/.* via \([0-9.]*\).*/\1/p' | head -n 1)"
+host_ip="$(ip route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+if [ -z "${bridge_gw}" ] || [ -z "${lan_gw}" ] || [ -z "${host_ip}" ]; then
+  echo "ОШИБКА: не удалось определить шлюз моста (${bridge_gw}) / LAN хоста (${host_ip} via ${lan_gw})" >&2
+  exit 1
+fi
+
+echo "==> временные контейнеры ${a}/${b} (образ ${image}, без GPU)"
+docker run -d --name "${b}" --label "${label_key}=1" --network cg-sessions \
+  --security-opt no-new-privileges:true --entrypoint sleep "${image}" infinity >/dev/null
+docker exec -d "${b}" python3 -m http.server 8080
+docker run -d --name "${a}" --label "${label_key}=1" --network cg-sessions \
+  --security-opt no-new-privileges:true --entrypoint sleep "${image}" infinity >/dev/null
+
+# Подождать, пока ${a} сможет exec (контейнер поднялся) — без этого первый curl может промахнуться.
+for ((i = 0; i < 50; i++)); do
+  docker exec "${a}" true >/dev/null 2>&1 && break
+  sleep 0.2
+done
+
+# curl -m 3 изнутри ${a}: любое TCP-соединение (даже с протокольной ошибкой HTTP) — "открыто";
+# "не достучались"/таймаут (коды 7, 28) — "закрыто".
+tcp_check() {
+  local url="$1" rc
+  set +e
+  docker exec "${a}" curl -m 3 -s -o /dev/null "${url}" >/dev/null 2>&1
+  rc=$?
+  set -e
+  case "${rc}" in
+  7 | 28) echo closed ;;
+  *) echo open ;;
+  esac
+}
+
+printf '%-32s | %-9s | %-6s\n' "цель" "ожидается" "факт"
+printf '%-32s-+-%-9s-+-%-6s\n' "--------------------------------" "---------" "------"
+ok=0
+row() {
+  local name="$1" url="$2" expect="$3" actual
+  actual="$(tcp_check "${url}")"
+  printf '%-32s | %-9s | %-6s\n' "${name}" "${expect}" "${actual}"
+  [ "${actual}" = "${expect}" ] || ok=1
+}
+
+row "шлюз моста cg-sessions:22" "http://${bridge_gw}:22" closed
+row "LAN-адрес хоста:22" "http://${host_ip}:22" closed
+row "LAN-шлюз хоста:80" "http://${lan_gw}:80" closed
+row "второй контейнер моста:8080" "http://${b}:8080" closed
+row "cg-api:3000" "http://cg-api:3000" closed
+row "интернет (store.steampowered.com)" "https://store.steampowered.com" open
+
+exit "${ok}"
+REMOTE
