@@ -1,16 +1,12 @@
-// Карточка игры на `/app` (спека 2026-10-27 §3.3, вариант C): вся плитка — ссылка на
-// страницу игры, под обложкой ничего нет. На обложке: затемнённый низ с названием слева
-// и одним коротким значением справа (`tileValue` или `caption` секции), полоса установки
-// по нижнему краю, тег Proton в углу, кнопка «Играть»/«Установить» по центру при
-// наведении (на тач-экранах — всегда). Клик по кнопке не всплывает в ссылку.
+// Карточка игры на `/app` (спека 2026-10-27 §3.3, правка владельца от 2026-10-27):
+// вся плитка — ссылка на страницу игры. Обложка 460×215 с тегом Proton в углу и полосой
+// установки по нижнему краю; под обложкой строка: слева название (одна строка,
+// многоточие), справа одно короткое значение (`tileValue` или `caption` секции).
+// Кнопок на плитке нет — «Играть»/«Установить» живут только на странице игры.
 // Общий тип `TileGame` покрывает `LibraryEntry`, `RecentEntry` и `TrendingEntry`.
 import { type CloudStatus, type ProtonTier, tierLabel } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
-import { Download, LoaderCircle, Play } from "lucide-react";
-import type * as React from "react";
-import { Button } from "@/components/ui/button";
 import { GameCover } from "@/components/app/GameCover";
-import type { CardAction } from "@/lib/cardAction";
 import { type TileTone, tileValue } from "@/lib/tileValue";
 import { cn } from "@/lib/utils";
 
@@ -42,58 +38,12 @@ function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
   );
 }
 
-/** «Играть» у установленной игры, «Установить» у остальных — запрос один и тот же. */
-export function playLabel(cloud: CloudStatus): "Играть" | "Установить" {
-  return cloud._tag === "Ready" ? "Играть" : "Установить";
-}
-
-function CardButton({ action, game }: { action: CardAction; game: TileGame }) {
-  // Кнопка живёт внутри ссылки: гасим переход по ссылке и всплытие клика.
-  const stop = (e: React.MouseEvent, run: () => void) => {
-    e.preventDefault();
-    e.stopPropagation();
-    run();
-  };
-  switch (action.kind) {
-    case "play": {
-      const label = playLabel(game.cloud);
-      return (
-        <Button
-          aria-label={`${label}: ${game.name}`}
-          disabled={action.pending || action.disabled}
-          onClick={(e) => stop(e, action.onPlay)}
-        >
-          {action.pending ? (
-            <LoaderCircle className="animate-spin" />
-          ) : label === "Играть" ? (
-            <Play />
-          ) : (
-            <Download />
-          )}
-          {label}
-        </Button>
-      );
-    }
-    case "resume":
-      return (
-        <Button onClick={(e) => stop(e, action.onResume)}>
-          <Play />
-          Вернуться в игру
-        </Button>
-      );
-    case "blocked":
-      return null;
-  }
-}
-
 export function GameTile({
   game,
-  action,
   dimmed = false,
   caption,
 }: {
   game: TileGame;
-  action: CardAction;
   dimmed?: boolean;
   /** Подпись секции («вчера · 1 ч 20 м», «12 играют») — заменяет значение статуса. */
   caption?: string;
@@ -108,29 +58,11 @@ export function GameTile({
       to="/app/game/$appId"
       params={{ appId: game.appId }}
       aria-label={`Игра: ${game.name}`}
-      className="group block rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-[#3cc2ff]"
+      className="group flex flex-col gap-2 rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-[#3cc2ff]"
     >
-      <article className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26]">
+      <article className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26] ring-1 ring-white/5 transition group-hover:ring-white/20">
         <GameCover game={game} dimmed={dimmed} />
         <ProtonTag tier={game.protonTier} />
-        <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-2.5 pt-7 pb-2">
-          <h3
-            className="min-w-0 truncate text-[13px] font-semibold text-[#eef1ff]"
-            title={game.name}
-          >
-            {game.name}
-          </h3>
-          {value.text !== "" && (
-            <span
-              className={cn(
-                "shrink-0 text-xs font-medium",
-                toneClassName[value.tone],
-              )}
-            >
-              {value.text}
-            </span>
-          )}
-        </div>
         {value.percent !== null && (
           <span
             data-testid="install-bar"
@@ -139,16 +71,25 @@ export function GameTile({
             style={{ width: `${value.percent}%` }}
           />
         )}
-        <div
-          className={cn(
-            "absolute inset-0 flex items-center justify-center opacity-0 transition",
-            "group-hover:opacity-100 focus-within:opacity-100",
-            "[@media(hover:none)]:opacity-100",
-          )}
-        >
-          <CardButton action={action} game={game} />
-        </div>
       </article>
+      <div className="flex items-baseline justify-between gap-2 px-0.5">
+        <h3
+          className="min-w-0 truncate text-[13px] font-semibold text-[#eef1ff] transition group-hover:text-white"
+          title={game.name}
+        >
+          {game.name}
+        </h3>
+        {value.text !== "" && (
+          <span
+            className={cn(
+              "shrink-0 text-xs font-medium",
+              toneClassName[value.tone],
+            )}
+          >
+            {value.text}
+          </span>
+        )}
+      </div>
     </Link>
   );
 }

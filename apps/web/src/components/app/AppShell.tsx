@@ -45,9 +45,9 @@ export function StickySlot({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * `user` пока не рендерится напрямую (следующие задачи — приветствие/аватар), но
- * обязателен в сигнатуре: `AppLayout` передаёт его только после проверки `meAtom`,
- * поэтому сам тип гарантирует, что AppShell не смонтируют для неавторизованного.
+ * `user` идёт в полоску и нижнюю панель (аватар); `AppLayout` передаёт его только после
+ * проверки `meAtom`, поэтому сам тип гарантирует, что AppShell не смонтируют для
+ * неавторизованного.
  */
 export function AppShell(props: {
   user: CurrentUserShape;
@@ -56,7 +56,7 @@ export function AppShell(props: {
   sticky?: React.ReactNode;
   wide?: boolean;
 }) {
-  const { children, aside, sticky, wide = false } = props;
+  const { user, children, aside, sticky, wide = false } = props;
   const [asideEl, setAsideEl] = useState<HTMLDivElement | null>(null);
   const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
 
@@ -71,7 +71,7 @@ export function AppShell(props: {
         )}
       >
         <div className="hidden md:sticky md:top-6 md:block">
-          <Rail />
+          <Rail user={user} />
         </div>
         <div className="flex min-w-0 flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">
           {children}
@@ -86,7 +86,7 @@ export function AppShell(props: {
         )}
         <div className="fixed inset-x-0 bottom-0 z-40 md:hidden">
           <div ref={setStickyEl}>{sticky}</div>
-          <BottomTabs />
+          <BottomTabs user={user} />
         </div>
       </div>
     </SlotContext.Provider>

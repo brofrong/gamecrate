@@ -1,14 +1,13 @@
 // Шапка страницы игры (спека 2026-10-27 §3.5): широкая картинка Steam с затемнением,
 // название, ряд чипов (облако, ProtonDB, часы, последний запуск) и кнопка
-// «Играть»/«Установить»/«Вернуться в игру» — та же `cardAction`, что у плиток.
+// «Играть»/«Установить»/«Вернуться в игру» (`cardAction`) — единственное место запуска.
 // `library_hero.jpg` не загрузилась → `header.jpg` размытой подложкой.
 import type { GameView } from "@cg/rpc";
 import { Download, LoaderCircle, Play } from "lucide-react";
 import { useState } from "react";
 import { headerUrl } from "@/components/app/GameCover";
-import { playLabel } from "@/components/app/GameTile";
 import { Button } from "@/components/ui/button";
-import type { CardAction } from "@/lib/cardAction";
+import { type CardAction, playLabel } from "@/lib/cardAction";
 import {
   formatHoursShort,
   formatMinutes,

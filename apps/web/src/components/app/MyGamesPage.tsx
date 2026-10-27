@@ -29,7 +29,6 @@ import { PrivateProfile } from "@/components/PrivateProfile";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { authErrorMessage } from "@/lib/authErrors";
-import { cardAction } from "@/lib/cardAction";
 import { currentMonth, formatRelativeDate } from "@/lib/formatTime";
 import { recentCaption } from "@/lib/tileValue";
 import {
@@ -339,7 +338,6 @@ export function MyGamesPage() {
                   <GameTile
                     key={entry.appId}
                     game={entry}
-                    action={cardAction(entry, play)}
                     caption={recentCaption(entry, new Date())}
                   />
                 ))}
@@ -358,7 +356,6 @@ export function MyGamesPage() {
                 <GameTile
                   key={entry.appId}
                   game={entry}
-                  action={cardAction(entry, play)}
                   dimmed={group.section === "noprofile"}
                 />
               ))}

@@ -14,9 +14,6 @@ import {
 } from "@testing-library/react";
 import { Exit } from "effect";
 import { toast } from "sonner";
-import { RouterProvider } from "@tanstack/react-router";
-import { GameTile, type TileGame } from "../src/components/app/GameTile";
-import { testRouter } from "./router";
 import { IdlePrompt } from "../src/components/IdlePrompt";
 import { cardAction, type LibraryPlay } from "../src/lib/cardAction";
 import { Player } from "../src/components/Player";
@@ -511,13 +508,7 @@ describe("session", () => {
     expect(screen.queryByText(qr)).toBeNull();
   });
 
-  it("play disabled on other games while a session is active", async () => {
-    const game = (appId: number, name: string): TileGame => ({
-      appId,
-      name,
-      coverUrl: `https://cdn.example/${appId}.jpg`,
-      cloud: { _tag: "Missing" },
-    });
+  it("cardAction: play for free games, resume for the active one, blocked for the rest", () => {
     const onPlay = mock((_appId: number) => {});
     const onResume = mock(() => {});
     const play = (active: SessionView | null): LibraryPlay => ({
@@ -526,42 +517,21 @@ describe("session", () => {
       onPlay,
       onResume,
     });
-    const games = [game(620, "Portal 2"), game(400, "Portal")];
-    // Плитка — `Link`, ей нужен роутер; первый запрос через `findBy*`.
-    const tiles = (p: LibraryPlay) => (
-      <RouterProvider
-        router={testRouter(
-          <>
-            {games.map((g) => (
-              <GameTile key={g.appId} game={g} action={cardAction(g, p)} />
-            ))}
-          </>,
-        )}
-      />
-    );
 
-    const free = render(tiles(play(null)));
-    // Неустановленные игры: кнопка называется «Установить», запрос тот же.
-    const buttons = await screen.findAllByRole("button", {
-      name: /^Установить/,
-    });
-    expect(buttons).toHaveLength(2);
-    fireEvent.click(buttons[1] as HTMLElement);
+    // Нет активной сессии: у каждой игры «Играть»/«Установить» (запрос один и тот же).
+    const free = cardAction({ appId: 400 }, play(null));
+    expect(free.kind).toBe("play");
+    if (free.kind === "play") free.onPlay();
     expect(onPlay).toHaveBeenCalledWith(400);
-    free.unmount();
 
-    // Активная сессия у Portal 2 (620): Portal (400) заблокирован — кнопки нет
-    // вовсе (см. `gameTile.test.tsx` «blocked action renders no button»), у Portal 2 —
-    // «Вернуться в игру».
-    render(tiles(play(view("playing"))));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Вернуться в игру" }),
-    );
-    expect(
-      screen.queryByRole("button", { name: "Установить: Portal" }),
-    ).toBeNull();
+    // Активная сессия у Portal 2 (620): у неё «Вернуться в игру», Portal (400) заблокирован.
+    const resume = cardAction({ appId: 620 }, play(view("playing")));
+    expect(resume.kind).toBe("resume");
+    if (resume.kind === "resume") resume.onResume();
     expect(onResume).toHaveBeenCalledTimes(1);
-    expect(onPlay).toHaveBeenCalledTimes(1);
+    expect(cardAction({ appId: 400 }, play(view("playing"))).kind).toBe(
+      "blocked",
+    );
   });
 
   it("gamepad noise inside the dead zone is not input", () => {

@@ -5,6 +5,8 @@
 import { Link } from "@tanstack/react-router";
 import { BarChart3, Clock, LayoutGrid, Package, Search } from "lucide-react";
 import type { ComponentType } from "react";
+import type { CurrentUserShape } from "@cg/rpc";
+import { UserAvatar } from "@/components/app/UserAvatar";
 import { Logo } from "@/components/brand/Logo";
 import {
   Tooltip,
@@ -45,7 +47,7 @@ function RailIcon({
 const linkClassName =
   "relative flex size-11 items-center justify-center rounded-2xl text-[#8a90a8] transition-colors hover:bg-white/5 hover:text-[#eef1ff]";
 
-export function Rail() {
+export function Rail({ user }: { user: CurrentUserShape }) {
   return (
     <nav
       aria-label="Разделы"
@@ -87,11 +89,9 @@ export function Rail() {
         </TooltipTrigger>
         <TooltipContent side="right">Поиск</TooltipContent>
       </Tooltip>
-      <Link
-        to="/profile"
-        aria-label="Профиль"
-        className="mt-1 size-10 rounded-full bg-gradient-to-br from-[#3cc2ff] via-[#3a6cff] to-[#5b2fff]"
-      />
+      <Link to="/profile" aria-label="Профиль" className="mt-1">
+        <UserAvatar user={user} className="size-10" />
+      </Link>
     </nav>
   );
 }

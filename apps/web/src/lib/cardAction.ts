@@ -1,6 +1,11 @@
-// Действие кнопки карточки игры (`play`/`resume`/`blocked`) — чистая логика без
-// React, используется `GameTile` на главной `/app`.
-import type { SessionView } from "@cg/rpc";
+// Действие кнопки «Играть»/«Установить»/«Вернуться в игру» (`play`/`resume`/`blocked`)
+// — чистая логика без React; используется кнопкой на странице игры (`GameHero`).
+import type { CloudStatus, SessionView } from "@cg/rpc";
+
+/** «Играть» у установленной игры, «Установить» у остальных — запрос один и тот же. */
+export function playLabel(cloud: CloudStatus): "Играть" | "Установить" {
+  return cloud._tag === "Ready" ? "Играть" : "Установить";
+}
 
 /**
  * Что делает кнопка карточки:
