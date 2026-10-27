@@ -11,12 +11,11 @@ import { TrendingPage } from "@/components/app/TrendingPage";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { parseSearch, toSearch } from "@/lib/libraryFilters";
 import { useStalled } from "@/lib/useStalled";
-import { activeSessionAtom, meAtom, resultErrorTag } from "@/rpc";
+import { meAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
 function AppLayout() {
   const me = useAtomValue(meAtom);
-  const active = useAtomValue(activeSessionAtom);
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
 
   if (resultErrorTag(me) === "Unauthorized") {
@@ -29,10 +28,8 @@ function AppLayout() {
 
   if (!AsyncResult.isSuccess(me)) return null;
 
-  const session = AsyncResult.isSuccess(active) ? active.value : null;
-
   return (
-    <AppShell user={me.value} installing={session?.state === "installing"}>
+    <AppShell user={me.value}>
       <Outlet />
     </AppShell>
   );
