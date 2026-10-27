@@ -59,17 +59,31 @@ const installSteps: ReadonlyArray<readonly [InstallStage, string]> = [
 ];
 
 /**
- * Строки списка и индекс текущей; доля внутри текущей — `fraction(ms)`.
+ * Доля общей полоски на установку, если она была. Полоска одна на установку и
+ * запуск: пока идёт установка, её строки заполняют `[0, INSTALL_SHARE)`; после
+ * неё строка «Игра установлена» занимает тот же отрезок, и запуск продолжает с
+ * того места, где кончилась установка, — полоска не отъезжает назад.
+ */
+const INSTALL_SHARE = 0.5;
+
+/** `n` строк поровну на отрезке `[from, to]`: `n + 1` границ. */
+const evenBounds = (n: number, from: number, to: number) =>
+  Array.from({ length: n + 1 }, (_, i) => from + ((to - from) * i) / n);
+
+/**
+ * Строки списка, индекс текущей, доля внутри текущей — `fraction(ms)` — и
+ * `bounds`: где на общей полоске начинается и кончается каждая строка.
  * - `queued` — «Ждём свободный сервер», дальше этапы запуска;
  * - `installing` — только этапы установки (с этапами запуска список вышел бы
- *   в девять строк);
+ *   в девять строк), на полоске — `[0, INSTALL_SHARE]`;
  * - дальше — этапы запуска, а после установки перед ними одна строка
- *   «Игра установлена».
+ *   «Игра установлена» на месте этапов установки.
  */
 function plan(view: SessionView): {
   labels: ReadonlyArray<string>;
   current: number;
   fraction: (msInStage: number) => number;
+  bounds: ReadonlyArray<number>;
 } {
   const timed = (stageMs: number) => (ms: number) =>
     1 - Math.exp(-Math.max(0, ms) / stageMs);
@@ -81,6 +95,7 @@ function plan(view: SessionView): {
       labels: ["Ждём свободный сервер", ...launchLabels],
       current: 0,
       fraction: () => 0,
+      bounds: evenBounds(launchLabels.length + 1, 0, 1),
     };
   }
 
@@ -99,22 +114,28 @@ function plan(view: SessionView): {
         stage === "downloading"
           ? () => percent / 100
           : timed(STAGE_MS.install[stage]),
+      bounds: evenBounds(installSteps.length, 0, INSTALL_SHARE),
     };
   }
 
   const prefix = view.hadInstall ? ["Игра установлена"] : [];
+  const bounds = view.hadInstall
+    ? [0, ...evenBounds(launchLabels.length, INSTALL_SHARE, 1)]
+    : evenBounds(launchLabels.length, 0, 1);
   const stage = view.stage ?? "computer";
   if (stage === "visible") {
     return {
       labels: [...prefix, ...launchLabels],
       current: prefix.length + launchLabels.length,
       fraction: () => 0,
+      bounds,
     };
   }
   return {
     labels: [...prefix, ...launchLabels],
     current: prefix.length + launchSteps.findIndex(([key]) => key === stage),
     fraction: timed(STAGE_MS.launch[stage]),
+    bounds,
   };
 }
 
@@ -128,15 +149,17 @@ export function loadingSteps(view: SessionView): ReadonlyArray<LoadingStep> {
 }
 
 /**
- * Общая полоска, 0..1: сделанные строки плюс доля текущей. Внутри этапа по
- * времени — `1 − exp(−msInStage / STAGE_MS)`, не больше `STAGE_CAP`;
+ * Общая полоска, 0..1: начало текущей строки плюс доля её отрезка. Внутри этапа
+ * по времени — `1 − exp(−msInStage / STAGE_MS)`, не больше `STAGE_CAP`;
  * скачивание — по `installPercent`.
  */
 export function loadingProgress(view: SessionView, msInStage: number): number {
-  const { labels, current, fraction } = plan(view);
+  const { labels, current, fraction, bounds } = plan(view);
   if (current >= labels.length) return 1;
+  const from = bounds[current] ?? 0;
+  const to = bounds[current + 1] ?? 1;
   const inStage = Math.min(STAGE_CAP, Math.max(0, fraction(msInStage)));
-  return (current + inStage) / labels.length;
+  return from + (to - from) * inStage;
 }
 
 /** Состояния, где трансляции ещё нет вовсе: экран загрузки — единственное, что показать. */

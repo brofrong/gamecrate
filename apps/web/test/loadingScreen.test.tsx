@@ -170,6 +170,41 @@ describe("loading screen", () => {
     expect(at(10)).toBeGreaterThan(at(0));
   });
 
+  it("one bar across install and launch: it does not slide back after install", () => {
+    const forever = 10 ** 9;
+    const moving = loadingProgress(
+      view("installing", { installStage: "moving", hadInstall: true }),
+      forever,
+    );
+    const launched = loadingProgress(
+      view("starting", { stage: "computer", hadInstall: true }),
+      0,
+    );
+    expect(moving).toBeLessThanOrEqual(launched);
+    // Весь путь по порядку — полоска не убывает ни на одном переходе.
+    const path: ReadonlyArray<SessionView> = [
+      view("queued"),
+      view("installing", { hadInstall: true }),
+      view("installing", { installStage: "login", hadInstall: true }),
+      view("installing", {
+        installStage: "downloading",
+        installPercent: 100,
+        hadInstall: true,
+      }),
+      view("installing", { installStage: "moving", hadInstall: true }),
+      view("starting", { stage: "computer", hadInstall: true }),
+      view("starting", { stage: "login", hadInstall: true }),
+      view("playing", { stage: "loading", hadInstall: true }),
+    ];
+    for (const [i, v] of path.entries()) {
+      const next = path[i + 1];
+      if (next === undefined) break;
+      expect(loadingProgress(v, forever)).toBeLessThanOrEqual(
+        loadingProgress(next, 0),
+      );
+    }
+  });
+
   it("cancel calls onExit", () => {
     for (const v of [
       view("queued"),
