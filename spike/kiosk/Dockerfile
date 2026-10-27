@@ -65,6 +65,10 @@ COPY --chmod=0644 cg-nm-stub.conf /etc/dbus-1/system.d/cg-nm-stub.conf
 COPY --chown=1000:1000 --chmod=0755 cg-nm-stub.run /etc/service/cg-nm-stub/run
 COPY --chown=1000:1000 --chmod=0755 cg-nm-stub.finish /etc/service/cg-nm-stub/finish
 
+# Этап загрузки для агента (как в images/session/Dockerfile): окружение берёт у процесса Steam,
+# рабочий стол ему не нужен — проба проверяет, что он видит окно игры и под labwc.
+COPY --chmod=0755 cg-session-stage /usr/local/bin/
+
 # Каталоги дома заранее, владелец ubuntu (как в images/session/Dockerfile — иначе Docker создаёт
 # недостающие точки монтирования от root, и Steam молча выходит).
 RUN install -d -o 1000 -g 1000 \
