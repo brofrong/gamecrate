@@ -167,7 +167,8 @@
   - `docker exec … dbus-send --system … NetworkManager … State` → `uint32 70`;
   - Steam стартовал, окно входа Steam видно: `xdotool search --onlyvisible --class steam` с
     окружением из процесса Steam;
-  - `/proc/<steam>/environ`: `LD_PRELOAD` с интерпозером Selkies;
+  - `/proc/<steam>/environ`: `LD_PRELOAD` с интерпозером Selkies, `DISPLAY` Xwayland и
+    `XAUTHORITY` (их берёт `cg-session-stage`; оконный менеджер с EWMH ему не нужен);
   - трансляция в браузере владельца (`ssh -L` на `:8080` контейнера, как в
     `images/session/README.md`, «Ручная проверка»): нет рабочего стола и панели, окно Steam во
     весь экран, мышь и клавиатура работают;
@@ -272,7 +273,11 @@
   - runner: `just scheduled session keeps its slot on reconnect` — `starting` моложе
     `RECONCILE_GRACE_MS`, reconnect без неё → `slotReleasedAt` null.
 - [ ] **Step 2:** `cd packages/db && bun run test`, `cd apps/orchestrator && bun run test` → новые FAIL.
-- [ ] **Step 3:** схема + `bunx drizzle-kit generate --name slot_released_at`; затем
+- [ ] **Step 3:** (только после Task 4: иначе разойдётся цепочка `prevIds` в `snapshot.json` с
+  миграциями `20261027075844_loading_stages` и `20261027075851_sessions_notify_stage` ветки экрана
+  загрузки) схема + `bunx drizzle-kit generate --name slot_released_at`. Триггер
+  `session_changed_update_trigger` не трогать: выпуск слота сайту не виден. Если всё же понадобится —
+  брать за основу список `WHEN` из `20261027075851_sessions_notify_stage`. Затем
   `bunx drizzle-kit generate --custom --name slot_released_backfill` с
   `update sessions set slot_released_at = coalesce(ended_at, now()) where state in ('ended','failed') and slot is not null;`
 - [ ] **Step 4:** `SessionRepo` (`holdsSlot`, `releaseSlot`, `releaseStaleSlots`), `Scheduler.placeOne`
@@ -366,7 +371,9 @@ Task 8 не начинать.
   `deploy/README.md` (оркестратор со слотом, агент — тот же контракт); запрос
   `select count(*) from sessions where state in ('ended','failed') and slot is not null and slot_released_at is null`
   → `0`.
-- [ ] **Step 2:** перетег: `docker tag cg-session:550.163.01 cg-session:550.163.01-kde`,
+- [ ] **Step 2:** перетег (ветка экрана загрузки к этому времени уже пересобрала
+  `cg-session:550.163.01` со своим скриптом и сохранила прежний как `-prev2` — его не трогать):
+  `docker tag cg-session:550.163.01 cg-session:550.163.01-kde`,
   `docker tag cg-session:550.163.01-kiosk cg-session:550.163.01`.
 - [ ] **Step 3:** `./deploy/build-steam-client.sh` (сервис простаивает) — шаблон собран новым
   образом.
