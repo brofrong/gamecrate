@@ -1,0 +1,22 @@
+#!/bin/sh
+# Проба (план 4, задача 2, throwaway) — не прод.
+#
+# Автостарт labwc: /etc/xdg/labwc/autostart, читается композитором на старте сессии, когда в
+# профиле игрока (~/.config/labwc/autostart) своего автостарта нет — так же, как rc.xml
+# (labwc-rc.xml в этом каталоге), всегда для этого образа. Заменяет KDE-автостарт
+# (/etc/xdg/autostart/cg-launch.desktop) из images/session: тот обрабатывается только сессией
+# systemd/KDE, которой здесь нет (служба wayland/run из базового образа просто запускает
+# labwc напрямую, без systemd user).
+#
+# ОТКРЫТЫЙ ВОПРОС для шага 3 (не проверено без GPU): в этом базовом образе служба /etc/service/dbus
+# поднимает только СИСТЕМНУЮ шину (её видит cg-nm-stub). Сессионной шины D-Bus никто не поднимает
+# (в отличие от KDE Plasma, где это делает сама сессия) — Steam и cg-steam-shutdown её ищут
+# (DBUS_SESSION_BUS_ADDRESS). dbus-x11 уже есть в базовом образе (проверено шагом 1), поэтому
+# здесь пробуем поднять сессионную шину через dbus-launch, если её ещё нет. Работает ли Steam без
+# неё вообще и работает ли это — проверить живым запуском.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+  eval "$(dbus-launch --sh-syntax --exit-with-session)"
+  export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
+fi
+
+/usr/local/bin/cg-launch &
