@@ -55,6 +55,13 @@ export function formatHoursInGame(min: number): string {
   return hours > 0 ? `${hours} ч в игре` : `${min} мин в игре`;
 }
 
+/** «41 ч», «38 мин», пусто при нуле — компактное значение на плитке игры (спека 2026-10-27 §3.3). */
+export function formatHoursShort(min: number): string {
+  if (min <= 0) return "";
+  const hours = Math.floor(min / 60);
+  return hours > 0 ? `${hours} ч` : `${min} мин`;
+}
+
 /** Полночь местного дня — для сравнения календарных дат без учёта времени суток. */
 function startOfLocalDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();

@@ -11,6 +11,7 @@ import {
   appIndexRoute,
   appRoute,
   appTimeRoute,
+  appGameRoute,
   appTrendingRoute,
 } from "./routes/app";
 import { indexRoute } from "./routes/index";
@@ -31,6 +32,7 @@ const routeTree = rootRoute.addChildren([
     appTrendingRoute,
     appCrateRoute,
     appTimeRoute,
+    appGameRoute,
   ]),
 ]);
 

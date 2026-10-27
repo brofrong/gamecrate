@@ -16,6 +16,7 @@ import { AppConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { StreamUpstream } from "../src/session/streamProxy";
 import { ProtonDb } from "../src/steam/ProtonDb";
+import { SteamStoreApi } from "../src/steam/SteamStoreApi";
 import { SteamApi } from "../src/steam/SteamApi";
 
 const player = (id: string): CurrentUserShape => ({
@@ -64,6 +65,7 @@ const appDeps = (
     DbTest,
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
+    Layer.mock(SteamStoreApi)({}),
     Layer.succeed(AppConfig, {
       port: 0,
       publicUrl: `${publicOrigin}/app`,

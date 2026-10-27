@@ -23,7 +23,7 @@ const TRENDING_REFRESH_MS = 30_000;
 /** Подпись карточки: число игроков (своя форма слова у каждой секции) или, если игры
  * нет в библиотеке Steam, фиксированный текст вместо кнопки. */
 function caption(entry: TrendingEntry, kind: "now" | "week"): string {
-  if (!entry.inLibrary) return "нет в твоей библиотеке Steam";
+  if (!entry.inLibrary) return "нет в библиотеке";
   return kind === "now"
     ? `${entry.players} ${pluralize(entry.players, "играет", "играют", "играют")}`
     : `${entry.players} ${pluralize(entry.players, "игрок", "игрока", "игроков")}`;

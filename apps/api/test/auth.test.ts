@@ -30,6 +30,7 @@ import { AppConfig, type AppConfigValues, appConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { Mailer } from "../src/mail/Mailer";
 import { ProtonDb } from "../src/steam/ProtonDb";
+import { SteamStoreApi } from "../src/steam/SteamStoreApi";
 import { SteamApi } from "../src/steam/SteamApi";
 
 const player: CurrentUserShape = {
@@ -205,6 +206,7 @@ const appDeps = (webDistDir: string) =>
     DbTest,
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
+    Layer.mock(SteamStoreApi)({}),
     Layer.succeed(Mailer, { send: () => Effect.void }),
   ).pipe(
     Layer.provideMerge(

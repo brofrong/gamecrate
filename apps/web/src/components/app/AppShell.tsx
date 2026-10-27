@@ -1,4 +1,7 @@
 // Сетка главной `/app`: полоска (Rail) + контент + правая колонка (aside) на десктопе
+// (обе закреплены: полоска — на весь экран, правая колонка — `xl:sticky` с прокруткой
+// внутри себя, если панелей больше, чем влезает; на планшете колонка под контентом и
+// не закрепляется — спека 2026-10-27 §3.1–3.2)
 // (`xl`: 84px/minmax(0,1fr)/330px — `minmax(0,1fr)`, а не просто `1fr`, иначе средняя
 // колонка не сжимается ниже min-content содержимого (FilterBar) и сетка вылезает за
 // экран на 1280 px), без правой колонки в сетке на планшете (aside — под контентом),
@@ -48,25 +51,23 @@ export function AppShell(props: {
   children: React.ReactNode;
   aside?: React.ReactNode;
   sticky?: React.ReactNode;
-  /** Полоска подсвечивает «Установки» (`Rail`), когда активная сессия устанавливается. */
-  installing?: boolean;
 }) {
-  const { children, aside, sticky, installing = false } = props;
+  const { children, aside, sticky } = props;
   const [asideEl, setAsideEl] = useState<HTMLDivElement | null>(null);
   const [stickyEl, setStickyEl] = useState<HTMLDivElement | null>(null);
 
   return (
     <SlotContext.Provider value={{ aside: asideEl, sticky: stickyEl }}>
       <div className="min-h-dvh bg-[#0d0f14] text-[#eef1ff] md:grid md:grid-cols-[84px_minmax(0,1fr)] md:items-start md:gap-6 md:p-6 xl:grid-cols-[84px_minmax(0,1fr)_330px]">
-        <div className="hidden md:block">
-          <Rail installing={installing} />
+        <div className="hidden md:sticky md:top-6 md:block">
+          <Rail />
         </div>
         <div className="flex min-w-0 flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">
           {children}
         </div>
         <div
           ref={setAsideEl}
-          className="hidden md:col-start-2 md:flex md:flex-col md:gap-4 xl:col-start-3"
+          className="hidden md:col-start-2 md:flex md:flex-col md:gap-4 xl:sticky xl:top-6 xl:col-start-3 xl:max-h-[calc(100dvh-3rem)] xl:overflow-y-auto"
         >
           {aside}
         </div>

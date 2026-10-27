@@ -261,7 +261,7 @@ describe("TrendingPage", () => {
     expect(screen.getByText("1 игрок")).toBeTruthy();
   });
 
-  it("shows «нет в твоей библиотеке Steam» and no button when inLibrary is false", async () => {
+  it("shows «нет в библиотеке» and no button when inLibrary is false", async () => {
     const outside = trendingEntry({
       appId: 3,
       name: "Outside Game",
@@ -270,9 +270,7 @@ describe("TrendingPage", () => {
     });
     renderApp("/app/trending", { trending: { now: [outside], week: [] } });
 
-    expect(
-      await screen.findByText("нет в твоей библиотеке Steam"),
-    ).toBeTruthy();
+    expect(await screen.findByText("нет в библиотеке")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Играть/ })).toBeNull();
   });
 

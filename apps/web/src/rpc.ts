@@ -54,6 +54,11 @@ export const timeSummaryAtom = Atom.family((month: string) =>
   Api.query("time.summary", { month }),
 );
 
+/** Страница игры `/app/game/<appId>` (`library.game`); обновляется вместе с библиотекой. */
+export const gameAtom = Atom.family((appId: number) =>
+  Api.query("library.game", { appId }, { reactivityKeys: libraryKeys }),
+);
+
 /** Проверка доступа к `admin.*` (только роль admin). */
 export const adminPingAtom = Api.query("admin.ping", undefined);
 

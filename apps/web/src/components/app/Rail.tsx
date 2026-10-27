@@ -1,14 +1,9 @@
 // Полоска разделов слева на десктопе/планшете (`/app`): четыре основных раздела,
-// «Поиск»/«Установки» (оба ведут на /app с нужным search) и аватар-ссылка на /profile.
+// «Поиск» (ведёт на /app с `?focus=q`) и аватар-ссылка на /profile. Закреплена на весь
+// экран минус отступы сетки (`h-[calc(100dvh-3rem)]`): логотип всегда у верха, аватар
+// у низа, при прокрутке содержимого не уезжает (спека 2026-10-27 §3.1).
 import { Link } from "@tanstack/react-router";
-import {
-  BarChart3,
-  Clock,
-  Download,
-  LayoutGrid,
-  Package,
-  Search,
-} from "lucide-react";
+import { BarChart3, Clock, LayoutGrid, Package, Search } from "lucide-react";
 import type { ComponentType } from "react";
 import {
   Tooltip,
@@ -49,11 +44,11 @@ function RailIcon({
 const linkClassName =
   "relative flex size-11 items-center justify-center rounded-2xl text-[#8a90a8] transition-colors hover:bg-white/5 hover:text-[#eef1ff]";
 
-export function Rail({ installing }: { installing: boolean }) {
+export function Rail() {
   return (
     <nav
       aria-label="Разделы"
-      className="sticky top-6 flex w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
+      className="flex h-[calc(100dvh-3rem)] w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
     >
       <div
         aria-hidden
@@ -91,26 +86,6 @@ export function Rail({ installing }: { installing: boolean }) {
           </Link>
         </TooltipTrigger>
         <TooltipContent side="right">Поиск</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Link
-            to="/app"
-            search={{ status: "installing" }}
-            aria-label="Установки"
-            className={linkClassName}
-          >
-            <RailIcon icon={Download}>
-              {installing && (
-                <span
-                  data-testid="installs-dot"
-                  className="absolute top-1.5 right-1.5 size-2 rounded-full bg-[#ffd166]"
-                />
-              )}
-            </RailIcon>
-          </Link>
-        </TooltipTrigger>
-        <TooltipContent side="right">Установки</TooltipContent>
       </Tooltip>
       <Link
         to="/profile"

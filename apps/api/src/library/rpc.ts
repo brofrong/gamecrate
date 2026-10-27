@@ -1,8 +1,9 @@
 // Хендлеры группы `library.*`: библиотека текущего пользователя.
 import type { Db } from "@cg/db";
 import { CurrentUser, LibraryRpcs } from "@cg/rpc";
-import { Effect, FiberSet } from "effect";
+import { DateTime, Effect, FiberSet } from "effect";
 import type { ProtonDb } from "../steam/ProtonDb";
+import { gameView } from "./GameService";
 import {
   libraryView,
   needsInitialSync,
@@ -64,6 +65,13 @@ export const LibraryRpcHandlers = LibraryRpcs.toLayer(
         Effect.gen(function* () {
           const current = yield* CurrentUser;
           return yield* trending(current.id, new Date());
+        }),
+      // Страница игры /app/game/<appId>.
+      "library.game": ({ appId }) =>
+        Effect.gen(function* () {
+          const current = yield* CurrentUser;
+          const now = yield* DateTime.nowAsDate;
+          return yield* gameView(current.id, current.steamId, appId, now);
         }),
     });
   }),

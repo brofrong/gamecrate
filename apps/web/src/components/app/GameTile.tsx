@@ -1,13 +1,17 @@
-// Карточка игры на главной `/app`: горизонтальная обложка 460×215, плашка «ГОТОВА»,
-// уровень Proton, название и строка статуса с цветной точкой — см. спеку §4.3.
-// Общий тип `TileGame` покрывает `LibraryEntry`, `RecentEntry` и `TrendingEntry`:
-// все три несут `appId`/`name`/`coverUrl`/`cloud`, время и Proton — не у всех.
+// Карточка игры на `/app` (спека 2026-10-27 §3.3, вариант C): вся плитка — ссылка на
+// страницу игры, под обложкой ничего нет. На обложке: затемнённый низ с названием слева
+// и одним коротким значением справа (`tileValue` или `caption` секции), полоса установки
+// по нижнему краю, тег Proton в углу, кнопка «Играть»/«Установить» по центру при
+// наведении (на тач-экранах — всегда). Клик по кнопке не всплывает в ссылку.
+// Общий тип `TileGame` покрывает `LibraryEntry`, `RecentEntry` и `TrendingEntry`.
 import { type CloudStatus, type ProtonTier, tierLabel } from "@cg/rpc";
-import { LoaderCircle, Play } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Download, LoaderCircle, Play } from "lucide-react";
+import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import { GameCover } from "@/components/app/GameCover";
 import type { CardAction } from "@/lib/cardAction";
-import { formatHoursInGame } from "@/lib/formatTime";
+import { type TileTone, tileValue } from "@/lib/tileValue";
 import { cn } from "@/lib/utils";
 
 export type TileGame = {
@@ -19,30 +23,11 @@ export type TileGame = {
   readonly protonTier?: ProtonTier;
 };
 
-/**
- * Строка статуса под названием — ровно по таблице спеки §4.3. `dimmed`
- * (нет облачного профиля у пользователя) перекрывает статус облака.
- */
-export function cloudLabel(game: TileGame, dimmed: boolean): string {
-  if (dimmed) return "нужен вход в Steam";
-  const hours = formatHoursInGame(game.playtimeMinutes ?? 0);
-  switch (game.cloud._tag) {
-    case "Ready":
-      return `готова · ${hours}`;
-    case "Installing":
-      return game.cloud.percent === null
-        ? "качается"
-        : `качается · ${game.cloud.percent} %`;
-    case "Missing":
-      return `нужна установка · ${hours}`;
-  }
-}
-
-/** Цвет точки статуса (зелёная/жёлтая/серая) — та же таблица §4.3. */
-function dotClassName(game: TileGame, dimmed: boolean): string {
-  if (dimmed) return "bg-[#8a90a8]";
-  return game.cloud._tag === "Ready" ? "bg-[#3ddc97]" : "bg-[#ffd166]";
-}
+const toneClassName: Record<TileTone, string> = {
+  muted: "text-[#aab0c6]",
+  ok: "text-[#3ddc97]",
+  warn: "text-[#ffd166]",
+};
 
 function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
   if (tier === undefined || tier === "pending") return null;
@@ -57,26 +42,41 @@ function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
   );
 }
 
-function CardButton({ action, name }: { action: CardAction; name: string }) {
+/** «Играть» у установленной игры, «Установить» у остальных — запрос один и тот же. */
+export function playLabel(cloud: CloudStatus): "Играть" | "Установить" {
+  return cloud._tag === "Ready" ? "Играть" : "Установить";
+}
+
+function CardButton({ action, game }: { action: CardAction; game: TileGame }) {
+  // Кнопка живёт внутри ссылки: гасим переход по ссылке и всплытие клика.
+  const stop = (e: React.MouseEvent, run: () => void) => {
+    e.preventDefault();
+    e.stopPropagation();
+    run();
+  };
   switch (action.kind) {
-    case "play":
+    case "play": {
+      const label = playLabel(game.cloud);
       return (
         <Button
-          aria-label={`Играть: ${name}`}
+          aria-label={`${label}: ${game.name}`}
           disabled={action.pending || action.disabled}
-          onClick={action.onPlay}
+          onClick={(e) => stop(e, action.onPlay)}
         >
           {action.pending ? (
             <LoaderCircle className="animate-spin" />
-          ) : (
+          ) : label === "Играть" ? (
             <Play />
+          ) : (
+            <Download />
           )}
-          Играть
+          {label}
         </Button>
       );
+    }
     case "resume":
       return (
-        <Button onClick={action.onResume}>
+        <Button onClick={(e) => stop(e, action.onResume)}>
           <Play />
           Вернуться в игру
         </Button>
@@ -95,43 +95,60 @@ export function GameTile({
   game: TileGame;
   action: CardAction;
   dimmed?: boolean;
+  /** Подпись секции («вчера · 1 ч 20 м», «12 играют») — заменяет значение статуса. */
   caption?: string;
 }) {
+  const value =
+    caption === undefined
+      ? tileValue(game, dimmed)
+      : { text: caption, tone: "muted" as const, percent: null };
+
   return (
-    <article className="group flex flex-col gap-2">
-      <div className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26]">
+    <Link
+      to="/app/game/$appId"
+      params={{ appId: game.appId }}
+      aria-label={`Игра: ${game.name}`}
+      className="group block rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-[#3cc2ff]"
+    >
+      <article className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26]">
         <GameCover game={game} dimmed={dimmed} />
-        {game.cloud._tag === "Ready" && !dimmed && (
-          <span className="absolute top-2 left-2 rounded-[7px] border border-[#3ddc97]/35 bg-[#3ddc97]/18 px-2 py-1 text-[10px] font-bold tracking-wide text-[#3ddc97] backdrop-blur-sm">
-            ГОТОВА
-          </span>
-        )}
         <ProtonTag tier={game.protonTier} />
+        <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/85 via-black/50 to-transparent px-2.5 pt-7 pb-2">
+          <h3
+            className="min-w-0 truncate text-[13px] font-semibold text-[#eef1ff]"
+            title={game.name}
+          >
+            {game.name}
+          </h3>
+          {value.text !== "" && (
+            <span
+              className={cn(
+                "shrink-0 text-xs font-medium",
+                toneClassName[value.tone],
+              )}
+            >
+              {value.text}
+            </span>
+          )}
+        </div>
+        {value.percent !== null && (
+          <span
+            data-testid="install-bar"
+            aria-hidden
+            className="absolute bottom-0 left-0 h-[3px] bg-[#ffd166]"
+            style={{ width: `${value.percent}%` }}
+          />
+        )}
         <div
           className={cn(
-            "absolute inset-x-0 bottom-0 flex justify-center p-2.5 opacity-0 transition",
+            "absolute inset-0 flex items-center justify-center opacity-0 transition",
             "group-hover:opacity-100 focus-within:opacity-100",
             "[@media(hover:none)]:opacity-100",
           )}
         >
-          <CardButton action={action} name={game.name} />
+          <CardButton action={action} game={game} />
         </div>
-      </div>
-      <h3
-        className="truncate text-sm font-semibold text-[#eef1ff]"
-        title={game.name}
-      >
-        {game.name}
-      </h3>
-      <span className="flex items-center gap-1.5 text-xs text-[#8a90a8]">
-        {caption === undefined && (
-          <span
-            aria-hidden
-            className={cn("size-1.5 rounded-sm", dotClassName(game, dimmed))}
-          />
-        )}
-        {caption ?? cloudLabel(game, dimmed)}
-      </span>
-    </article>
+      </article>
+    </Link>
   );
 }

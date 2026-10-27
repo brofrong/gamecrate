@@ -23,6 +23,7 @@ import {
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { type OwnedGames, SteamApi } from "../src/steam/SteamApi";
+import { SteamStoreApi } from "../src/steam/SteamStoreApi";
 
 const steamUser: CurrentUserShape = {
   id: "u-steam",
@@ -56,6 +57,8 @@ const makeSteam = () => {
           state.calls++;
           return state.next;
         }),
+      getAchievementSchema: () => Effect.die("not used in library tests"),
+      getPlayerAchievements: () => Effect.die("not used in library tests"),
     }),
   );
   return { state, games, layer };
@@ -82,11 +85,18 @@ const fakeAuth = (current: CurrentUserShape | null) =>
     currentUser: () => Effect.succeed(Option.fromNullishOr(current)),
   });
 
+const store = Layer.succeed(
+  SteamStoreApi,
+  SteamStoreApi.of({
+    fetchDetails: () => Effect.die("not used in library tests"),
+  }),
+);
+
 /** RPC-хендлеры библиотеки + мидлвары поверх общей временной БД и заглушек. */
 const env = (steam: Layer.Layer<SteamApi>, proton: Layer.Layer<ProtonDb>) =>
   Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
     Layer.provide(fakeAuth(steamUser)),
-    Layer.provideMerge(Layer.mergeAll(steam, proton)),
+    Layer.provideMerge(Layer.mergeAll(steam, proton, store)),
     Layer.provideMerge(DbTest),
   );
 

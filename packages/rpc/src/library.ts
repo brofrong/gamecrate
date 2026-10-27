@@ -120,11 +120,107 @@ export const TrendingView = Schema.Struct({
 });
 export type TrendingView = typeof TrendingView.Type;
 
+/** Описание и медиа игры из Steam Store (кэш `game_details`, спека 2026-10-27 §4.1). */
+export const GameDetails = Schema.Struct({
+  shortDescription: Schema.String,
+  aboutTheGame: Schema.String,
+  developers: Schema.Array(Schema.String),
+  publishers: Schema.Array(Schema.String),
+  genres: Schema.Array(Schema.String),
+  releaseDate: Schema.NullOr(Schema.String),
+  metacriticScore: Schema.NullOr(Schema.Int),
+  metacriticUrl: Schema.NullOr(Schema.String),
+  controllerSupport: Schema.NullOr(Schema.Literals(["full", "partial"])),
+  linux: Schema.Boolean,
+  achievementsTotal: Schema.Int,
+  screenshots: Schema.Array(
+    Schema.Struct({ thumb: Schema.String, full: Schema.String }),
+  ),
+  movies: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      thumbnail: Schema.String,
+      hls: Schema.String,
+      highlight: Schema.Boolean,
+    }),
+  ),
+});
+export type GameDetails = typeof GameDetails.Type;
+
+/**
+ * Достижения пользователя в игре: `None` — у игры их нет или Steam не ответил,
+ * `Private` — профиль Steam закрыт, `Unlinked` — у пользователя нет Steam,
+ * `Ready` — открытые (по дате получения, новые первыми) и закрытые.
+ */
+export const GameAchievements = Schema.Union([
+  Schema.TaggedStruct("None", {}),
+  Schema.TaggedStruct("Private", {}),
+  Schema.TaggedStruct("Unlinked", {}),
+  Schema.TaggedStruct("Ready", {
+    total: Schema.Int,
+    unlocked: Schema.Array(
+      Schema.Struct({
+        apiName: Schema.String,
+        name: Schema.String,
+        description: Schema.String,
+        icon: Schema.String,
+        unlockedAt: Schema.String,
+      }),
+    ),
+    locked: Schema.Array(
+      Schema.Struct({
+        apiName: Schema.String,
+        name: Schema.String,
+        description: Schema.String,
+        iconGray: Schema.String,
+        hidden: Schema.Boolean,
+      }),
+    ),
+  }),
+]);
+export type GameAchievements = typeof GameAchievements.Type;
+
+/** Сессия пользователя в игре: начало (ISO 8601) и длительность в минутах. */
+export const GameSessionEntry = Schema.Struct({
+  id: Schema.String,
+  startedAt: Schema.String,
+  minutes: Schema.Int,
+});
+export type GameSessionEntry = typeof GameSessionEntry.Type;
+
+/**
+ * Страница игры `/app/game/<appId>` (спека 2026-10-27 §4.3). `details: null` —
+ * Steam Store не ответил и кэша нет (или Steam игру не знает); фронт рисует то,
+ * что есть. `inLibrary: false` — игры нет в библиотеке пользователя («В тренде»).
+ */
+export const GameView = Schema.Struct({
+  appId: Schema.Int,
+  name: Schema.String,
+  coverUrl: Schema.String,
+  cloud: CloudStatus,
+  protonTier: ProtonTier,
+  inLibrary: Schema.Boolean,
+  playtimeMinutes: Schema.Int,
+  sizeBytes: Schema.NullOr(Schema.Int),
+  lastSession: Schema.NullOr(GameSessionEntry),
+  sessions: Schema.Array(GameSessionEntry),
+  details: Schema.NullOr(GameDetails),
+  achievements: GameAchievements,
+});
+export type GameView = typeof GameView.Type;
+
+/** Игры с таким `appId` нет ни в каталоге `games`, ни в библиотеке пользователя. */
+export class GameNotFound extends Schema.TaggedError<GameNotFound>()(
+  "GameNotFound",
+  { appId: Schema.Int },
+) {}
+
 /**
  * `library.list` — библиотека из БД (при первом обращении сначала синхронизируется
  * со Steam); `library.refresh` — синхронизировать со Steam сейчас, при недоступности
  * Steam — `SteamUnavailable` (сохранённая библиотека не меняется); `library.recent` —
- * блок «Недавние» для главной `/app`; `library.trending` — блок «В тренде».
+ * блок «Недавние» для главной `/app`; `library.trending` — блок «В тренде»;
+ * `library.game` — страница игры (`GameNotFound`, если игры нет).
  */
 export const LibraryRpcs = RpcGroup.make(
   Rpc.make("library.list", { success: LibraryView }),
@@ -134,4 +230,9 @@ export const LibraryRpcs = RpcGroup.make(
   }),
   Rpc.make("library.recent", { success: Schema.Array(RecentEntry) }),
   Rpc.make("library.trending", { success: TrendingView }),
+  Rpc.make("library.game", {
+    payload: Schema.Struct({ appId: Schema.Int }),
+    success: GameView,
+    error: GameNotFound,
+  }),
 ).middleware(AuthMiddleware);

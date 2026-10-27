@@ -21,6 +21,7 @@ import * as CloudRepo from "../src/library/CloudRepo";
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
+import { SteamStoreApi } from "../src/steam/SteamStoreApi";
 
 /** Пользователь без Steam: `library.list` не пытается синхронизироваться. */
 const cloudUser: CurrentUserShape = {
@@ -44,6 +45,8 @@ const steamLayer = Layer.succeed(
   SteamApi,
   SteamApi.of({
     getOwnedGames: () => Effect.die("not used in cloud tests"),
+    getAchievementSchema: () => Effect.die("not used in cloud tests"),
+    getPlayerAchievements: () => Effect.die("not used in cloud tests"),
   }),
 );
 const protonLayer = Layer.succeed(
@@ -51,9 +54,16 @@ const protonLayer = Layer.succeed(
   ProtonDb.of({ fetchTier: () => Effect.die("not used in cloud tests") }),
 );
 
+const storeLayer = Layer.succeed(
+  SteamStoreApi,
+  SteamStoreApi.of({
+    fetchDetails: () => Effect.die("not used in cloud tests"),
+  }),
+);
+
 const env = Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
-  Layer.provideMerge(Layer.mergeAll(steamLayer, protonLayer)),
+  Layer.provideMerge(Layer.mergeAll(steamLayer, protonLayer, storeLayer)),
   Layer.provideMerge(DbTest),
 );
 

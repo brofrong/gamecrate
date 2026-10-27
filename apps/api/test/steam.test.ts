@@ -200,3 +200,120 @@ describe("SteamApi.getOwnedGames", () => {
     expect((result.failure as SteamUnavailable).reason).toBe("unavailable");
   });
 });
+
+/** `getAchievementSchema`/`getPlayerAchievements` с тем же фейковым клиентом и конфигом. */
+const runSchema = (
+  respond: () => { status: number; body: unknown } | "network-error",
+) =>
+  Effect.runPromise(
+    SteamApi.use((api) => api.getAchievementSchema(1086940)).pipe(
+      Effect.provide(SteamApi.layer),
+      Effect.provide(fakeHttpClient(respond)),
+      Effect.provide(fakeConfig),
+    ),
+  );
+
+const runPlayer = (
+  respond: () => { status: number; body: unknown } | "network-error",
+) =>
+  Effect.runPromise(
+    SteamApi.use((api) =>
+      api.getPlayerAchievements("76561197960287930", 1086940),
+    ).pipe(
+      Effect.provide(SteamApi.layer),
+      Effect.provide(fakeHttpClient(respond)),
+      Effect.provide(fakeConfig),
+    ),
+  );
+
+describe("SteamApi.getAchievementSchema", () => {
+  it("maps achievements", async () => {
+    const schema = await runSchema(() => ({
+      status: 200,
+      body: {
+        game: {
+          availableGameStats: {
+            achievements: [
+              {
+                name: "ACH_1",
+                displayName: "Первый шаг",
+                description: "Выйти из корабля",
+                icon: "https://cdn/icon.jpg",
+                icongray: "https://cdn/icon_gray.jpg",
+                hidden: 0,
+              },
+            ],
+          },
+        },
+      },
+    }));
+    expect(schema).toEqual([
+      {
+        apiName: "ACH_1",
+        name: "Первый шаг",
+        description: "Выйти из корабля",
+        icon: "https://cdn/icon.jpg",
+        iconGray: "https://cdn/icon_gray.jpg",
+        hidden: false,
+      },
+    ]);
+  });
+
+  it("missing availableGameStats → null", async () => {
+    expect(await runSchema(() => ({ status: 200, body: { game: {} } }))).toBe(
+      null,
+    );
+  });
+
+  it("network error → null", async () => {
+    expect(await runSchema(() => "network-error")).toBe(null);
+  });
+});
+
+describe("SteamApi.getPlayerAchievements", () => {
+  it("private profile → Private", async () => {
+    expect(
+      await runPlayer(() => ({
+        status: 403,
+        body: {
+          playerstats: { success: false, error: "Profile is not public" },
+        },
+      })),
+    ).toEqual({ _tag: "Private" });
+  });
+
+  it("game without stats → None", async () => {
+    expect(
+      await runPlayer(() => ({
+        status: 400,
+        body: {
+          playerstats: { success: false, error: "Requested app has no stats" },
+        },
+      })),
+    ).toEqual({ _tag: "None" });
+  });
+
+  it("unlocked list with ISO time", async () => {
+    expect(
+      await runPlayer(() => ({
+        status: 200,
+        body: {
+          playerstats: {
+            success: true,
+            achievements: [
+              { apiname: "ACH_1", achieved: 1, unlocktime: 1700000000 },
+              { apiname: "ACH_2", achieved: 0, unlocktime: 0 },
+            ],
+          },
+        },
+      })),
+    ).toEqual({
+      _tag: "Ready",
+      unlocked: [{ apiName: "ACH_1", unlockedAt: "2023-11-14T22:13:20.000Z" }],
+    });
+  });
+
+  it("network error → None", async () => {
+    expect(await runPlayer(() => "network-error")).toEqual({ _tag: "None" });
+  });
+});

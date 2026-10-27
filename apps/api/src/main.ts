@@ -9,14 +9,16 @@ import { HttpApp } from "./http";
 import { Mailer } from "./mail/Mailer";
 import { ProtonDb } from "./steam/ProtonDb";
 import { SteamApi } from "./steam/SteamApi";
+import { SteamStoreApi } from "./steam/SteamStoreApi";
 
 const BunServer = Layer.unwrap(
   AppConfig.useSync((config) => BunHttpServer.layer({ port: config.port })),
 );
 
-/** БД, внешние API (Steam Web API, ProtonDB) и почта — для библиотеки, входа и кодов на e-mail. */
+/** БД, внешние API (Steam Web API, Steam Store, ProtonDB) и почта — для библиотеки, страницы игры, входа и кодов на e-mail. */
 const Services = Layer.mergeAll(
   SteamApi.layer,
+  SteamStoreApi.layer,
   ProtonDb.layer,
   Mailer.layer,
 ).pipe(Layer.provide(FetchHttpClient.layer), Layer.provideMerge(Db.layer));

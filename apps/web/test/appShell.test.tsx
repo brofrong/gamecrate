@@ -18,7 +18,7 @@ import { testRouter } from "./router";
 
 describe("Rail", () => {
   it("renders the four sections with their hrefs", async () => {
-    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
+    render(<RouterProvider router={testRouter(<Rail />)} />);
     expect(
       (await screen.findByRole("link", { name: "Мои игры" })).getAttribute(
         "href",
@@ -37,7 +37,7 @@ describe("Rail", () => {
 
   it("marks the active section with aria-current", async () => {
     const root = createRootRoute({
-      component: () => <Rail installing={false} />,
+      component: () => <Rail />,
     });
     const router = createRouter({
       routeTree: root,
@@ -50,19 +50,20 @@ describe("Rail", () => {
     expect(myGames.getAttribute("aria-current")).toBeNull();
   });
 
-  it("shows an installs indicator when something is installing", async () => {
-    render(<RouterProvider router={testRouter(<Rail installing={true} />)} />);
-    expect(await screen.findByTestId("installs-dot")).toBeTruthy();
+  it("has no «Установки» link", async () => {
+    render(<RouterProvider router={testRouter(<Rail />)} />);
+    await screen.findByRole("link", { name: "Поиск" });
+    expect(screen.queryByRole("link", { name: "Установки" })).toBeNull();
   });
 
-  it("does not show the installs indicator otherwise", async () => {
-    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
-    await screen.findByRole("link", { name: "Установки" });
-    expect(screen.queryByTestId("installs-dot")).toBeNull();
+  it("is full-height; AppShell pins its grid cell", async () => {
+    render(<RouterProvider router={testRouter(<Rail />)} />);
+    const nav = await screen.findByRole("navigation", { name: "Разделы" });
+    expect(nav.className).toContain("h-[calc(100dvh-3rem)]");
   });
 
   it("links the profile avatar to /profile", async () => {
-    render(<RouterProvider router={testRouter(<Rail installing={false} />)} />);
+    render(<RouterProvider router={testRouter(<Rail />)} />);
     expect(
       (await screen.findByRole("link", { name: "Профиль" })).getAttribute(
         "href",
@@ -83,6 +84,34 @@ describe("BottomTabs", () => {
 });
 
 describe("AppShell", () => {
+  it("pins the rail cell with sticky so it survives scrolling", async () => {
+    render(
+      <RouterProvider
+        router={testRouter(
+          <AppShell
+            user={{
+              id: "u",
+              name: "n",
+              image: null,
+              role: "player",
+              steamId: null,
+              email: null,
+              emailVerified: false,
+            }}
+          >
+            <div>content</div>
+          </AppShell>,
+        )}
+      />,
+    );
+    // Два `nav` «Разделы»: полоска и нижняя панель — берём полоску по высоте.
+    const nav = (
+      await screen.findAllByRole("navigation", { name: "Разделы" })
+    ).find((el) => el.className.includes("h-[calc(100dvh-3rem)]"))!;
+    expect(nav.parentElement!.className).toContain("md:sticky");
+    expect(nav.parentElement!.className).toContain("md:top-6");
+  });
+
   it("places aside after children in the DOM", async () => {
     const { container } = render(
       <RouterProvider

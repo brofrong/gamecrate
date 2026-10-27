@@ -1,10 +1,12 @@
-// «Мои игры» (`/app`, спека §4.2) — главная страница после входа: заголовок со
-// сводкой, фильтры (строка на десктопе, шторка на телефоне), «Запускал недавно»,
-// секции сетки по статусу облака. Фильтры живут в адресе маршрута (`?status=...`),
-// поэтому «Установки» из полоски (Rail) — обычная ссылка, а адрес с фильтром
+// «Мои игры» (`/app`, спека §4.2 и 2026-10-27 §3.3–3.4) — главная страница после
+// входа: заголовок со сводкой, фильтры (строка на десктопе, шторка на телефоне),
+// «Запускал недавно» (те же плитки, подпись — дата · длительность), секции сетки по
+// статусу облака по 24 плитки с «Показать ещё» (сброс раскрытия — `key` секции от
+// фильтров). Фильтры живут в адресе маршрута (`?status=...`), адрес с фильтром
 // переживает перезагрузку страницы.
 import type { LibraryView } from "@cg/rpc";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Link } from "@tanstack/react-router";
 import { CloudOff, Gamepad2, Search, SlidersHorizontal } from "lucide-react";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -16,10 +18,9 @@ import { ComingSoonPanel } from "@/components/app/ComingSoonPanel";
 import { ConnectSteam } from "@/components/app/ConnectSteam";
 import { FilterBar, filtersEqual } from "@/components/app/FilterBar";
 import { FilterSheet } from "@/components/app/FilterSheet";
-import { GameSection } from "@/components/app/GameSection";
+import { GameSection, SECTION_PAGE } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
 import { InstallsPanel } from "@/components/app/InstallsPanel";
-import { RecentRow } from "@/components/app/RecentRow";
 import { SteamPanel } from "@/components/app/SteamPanel";
 import { SummaryStrip } from "@/components/app/SummaryStrip";
 import { TimePanel } from "@/components/app/TimePanel";
@@ -30,6 +31,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { authErrorMessage } from "@/lib/authErrors";
 import { cardAction } from "@/lib/cardAction";
 import { currentMonth, formatRelativeDate } from "@/lib/formatTime";
+import { recentCaption } from "@/lib/tileValue";
 import {
   applyFilters,
   countMatching,
@@ -166,6 +168,8 @@ export function MyGamesPage() {
   // всегда возвращает их все через `parseSearch`; прогоняем через него же здесь, это no-op.
   const filters: Filters = parseSearch(search);
   const isDefaultFilters = filtersEqual(filters, DEFAULT_FILTERS);
+  // Смена фильтров пересоздаёт секции — раскрытие «Показать ещё» сбрасывается.
+  const filtersKey = JSON.stringify(toSearch(filters));
 
   const onFiltersChange = (next: Filters) => {
     void navigate({ search: () => toSearch(next), replace: true });
@@ -315,19 +319,40 @@ export function MyGamesPage() {
         />
       ) : (
         <>
-          {filters.q.trim().length === 0 && (
-            <RecentRow
-              items={AsyncResult.isSuccess(recent) ? recent.value : []}
-              play={play}
-            />
-          )}
+          {filters.q.trim().length === 0 &&
+            AsyncResult.isSuccess(recent) &&
+            recent.value.length > 0 && (
+              <GameSection
+                title="Запускал недавно"
+                count={recent.value.length}
+                scroll
+                action={
+                  <Link
+                    to="/app/time"
+                    className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
+                  >
+                    все сессии →
+                  </Link>
+                }
+              >
+                {recent.value.map((entry) => (
+                  <GameTile
+                    key={entry.appId}
+                    game={entry}
+                    action={cardAction(entry, play)}
+                    caption={recentCaption(entry, new Date())}
+                  />
+                ))}
+              </GameSection>
+            )}
           {applyFilters(library.value.entries, filters, {
             steamProfile: library.value.steamProfile,
           }).map((group) => (
             <GameSection
-              key={group.section}
+              key={`${group.section}:${filtersKey}`}
               title={SECTION_TITLES[group.section]}
               count={group.entries.length}
+              limit={SECTION_PAGE}
             >
               {group.entries.map((entry) => (
                 <GameTile

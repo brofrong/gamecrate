@@ -1,22 +1,22 @@
-// `/app`: новая главная после входа — сетка AppShell (полоска разделов/нижняя панель)
-// и четыре дочерних маршрута: «Мои игры», «В тренде», «Из ящика», «Время» (Task 10, Task 12).
+// `/app`: главная после входа — сетка AppShell (полоска разделов/нижняя панель)
+// и дочерние маршруты: «Мои игры», «В тренде», «Из ящика», «Время», страница игры.
 import { useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate, Outlet } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { AppShell } from "@/components/app/AppShell";
 import { CratePage } from "@/components/app/CratePage";
+import { GamePage } from "@/components/app/game/GamePage";
 import { MyGamesPage } from "@/components/app/MyGamesPage";
 import { TimePage } from "@/components/app/TimePage";
 import { TrendingPage } from "@/components/app/TrendingPage";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { parseSearch, toSearch } from "@/lib/libraryFilters";
 import { useStalled } from "@/lib/useStalled";
-import { activeSessionAtom, meAtom, resultErrorTag } from "@/rpc";
+import { meAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
 
 function AppLayout() {
   const me = useAtomValue(meAtom);
-  const active = useAtomValue(activeSessionAtom);
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
 
   if (resultErrorTag(me) === "Unauthorized") {
@@ -29,10 +29,8 @@ function AppLayout() {
 
   if (!AsyncResult.isSuccess(me)) return null;
 
-  const session = AsyncResult.isSuccess(active) ? active.value : null;
-
   return (
-    <AppShell user={me.value} installing={session?.state === "installing"}>
+    <AppShell user={me.value}>
       <Outlet />
     </AppShell>
   );
@@ -96,4 +94,24 @@ export const appTimeRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): { month?: string } =>
     typeof search.month === "string" ? { month: search.month } : {},
   component: TimePage,
+});
+
+/**
+ * Страница игры `/app/game/$appId` (спека 2026-10-27 §3.5). `appId` разбирается в
+ * число в `params.parse`; нечисло или не положительное — редирект на `/app`.
+ */
+function GameRoutePage() {
+  const { appId } = appGameRoute.useParams();
+  if (!Number.isInteger(appId) || appId <= 0) return <Navigate to="/app" />;
+  return <GamePage appId={appId} />;
+}
+
+export const appGameRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/game/$appId",
+  params: {
+    parse: ({ appId }) => ({ appId: Number(appId) }),
+    stringify: ({ appId }) => ({ appId: String(appId) }),
+  },
+  component: GameRoutePage,
 });

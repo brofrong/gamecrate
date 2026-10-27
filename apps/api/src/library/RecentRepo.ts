@@ -22,7 +22,7 @@ const minutesBetween = (start: Date, end: Date) =>
  * (округление вниз общей суммы), а если их нет — от начала сессии до её
  * конца или, если она ещё идёт, до `now`.
  */
-const sessionDurationMinutes = (
+export const sessionDurationMinutes = (
   session: { readonly createdAt: Date; readonly endedAt: Date | null },
   closedSegments: ReadonlyArray<{
     readonly startedAt: Date;
