@@ -1,8 +1,9 @@
 // Экран сессии: стрим Selkies во весь экран (iframe /stream/<id>/) с плашками поверх,
+// экран загрузки до появления игры (LoadingScreen, поверх ещё скрытого стрима),
 // либо статус без стрима (SessionStatus).
 import type { SessionState, SessionView } from "@cg/rpc";
 import { LogOut } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +16,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
+import { LoadingScreen } from "./LoadingScreen";
 import { SessionStatus } from "./SessionStatus";
 import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
 
@@ -29,6 +32,26 @@ const streamStates: ReadonlySet<SessionState> = new Set([
 
 export const showsStream = (view: SessionView) =>
   view.streamReady && streamStates.has(view.state);
+
+/** Как часто обновлять полоску и подсказку экрана загрузки. */
+const LOADING_TICK_MS = 1_000;
+
+/**
+ * Сколько мс клиент видит текущий этап: отсчёт с момента, когда сменились
+ * `state`/`stage`/`installStage`. Пока `active` — перерисовка раз в `LOADING_TICK_MS`.
+ */
+function useMsInStage(view: SessionView, active: boolean): number {
+  const key = `${view.id}/${view.state}/${view.stage}/${view.installStage}`;
+  const since = useRef({ key, at: Date.now() });
+  if (since.current.key !== key) since.current = { key, at: Date.now() };
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => tick((n) => n + 1), LOADING_TICK_MS);
+    return () => clearInterval(timer);
+  }, [active]);
+  return Date.now() - since.current.at;
+}
 
 /** Через сколько перезагрузить iframe, если прокси ответил 5xx (Selkies ещё не поднялся). */
 const STREAM_RETRY_MS = 3_000;
@@ -133,35 +156,44 @@ export function Player({
   onPlayAgain: () => void;
   QrLogin?: SteamQrLoginComponent;
 }) {
-  if (!showsStream(view)) {
+  // «Показать экран» — до конца сессии на этой странице (состояние клиента, §4.4).
+  // Хранится id сессии: «Играть снова» уводит на новую сессию в том же `Player`.
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const stream = showsStream(view);
+  // Открыть можно только готовую трансляцию — без неё снова экран загрузки.
+  const loading = showsLoading(view, revealedId === view.id && stream);
+  const msInStage = useMsInStage(view, loading);
+
+  if (!stream && !loading) {
     return (
       <SessionStatus
         view={view}
         onLibrary={onLibrary}
-        onExit={onExit}
         onPlayAgain={onPlayAgain}
         QrLogin={QrLogin}
       />
     );
   }
 
-  // Порядок детей постоянный: iframe первым и без условий — React не пересоздаёт его
-  // при смене состояния, и стрим не переподключается.
+  // Порядок детей постоянный: iframe первым — React не пересоздаёт его при смене
+  // состояния и при снятии экрана загрузки, и стрим не переподключается.
   return (
     <main className="fixed inset-0 bg-black">
-      <StreamFrame sessionId={view.id} onLoad={onFrameLoad} />
-      {view.state === "starting" && (
-        <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center px-4">
-          <p className="max-w-xl rounded-md bg-background/90 px-4 py-2 text-center text-sm shadow-lg">
-            Если появилось окно входа Steam — отсканируйте QR-код в мобильном
-            приложении Steam
-          </p>
-        </div>
+      {stream && <StreamFrame sessionId={view.id} onLoad={onFrameLoad} />}
+      {loading && (
+        <LoadingScreen
+          view={view}
+          msInStage={msInStage}
+          onCancel={onExit}
+          onReveal={stream ? () => setRevealedId(view.id) : undefined}
+        />
       )}
-      {view.state === "idle_warning" && view.idleDeadline !== null && (
-        <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
-      )}
-      <ExitButton onExit={onExit} />
+      {!loading &&
+        view.state === "idle_warning" &&
+        view.idleDeadline !== null && (
+          <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
+        )}
+      {!loading && <ExitButton onExit={onExit} />}
     </main>
   );
 }

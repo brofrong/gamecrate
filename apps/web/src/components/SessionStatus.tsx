@@ -1,10 +1,10 @@
-// Экраны сессии без стрима: очередь, запуск, сохранение, итог, ошибка, «сессия не найдена».
+// Экраны сессии без стрима: сохранение, итог, ошибка, «сессия не найдена». Очередь,
+// установка и запуск — экран загрузки (`LoadingScreen` в `Player`).
 import { type SessionView, steamLoginRequiredReason } from "@cg/rpc";
 import {
   CircleAlert,
   CircleCheck,
   CircleMinus,
-  Hourglass,
   LoaderCircle,
   SearchX,
 } from "lucide-react";
@@ -66,69 +66,21 @@ function Played({ seconds }: { seconds: number }) {
   return <p className="text-sm">{`Вы играли ${formatPlayed(seconds)}`}</p>;
 }
 
-/** Полоса прогресса установки: простой залитый div — отдельного компонента в проекте нет. */
-function InstallProgress({ percent }: { percent: number }) {
-  return (
-    <div className="flex w-64 flex-col items-center gap-2">
-      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-primary transition-all"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <p className="text-sm font-medium">{`${percent} %`}</p>
-    </div>
-  );
-}
-
 /** Состояние сессии, когда стрим не показан. */
 export function SessionStatus({
   view,
   onLibrary,
-  onExit,
   onPlayAgain,
   QrLogin = SteamQrLogin,
 }: {
   view: SessionView;
   onLibrary: () => void;
-  /** «Отменить» в `installing` — тот же `session.stop`, что и выход из игры. */
-  onExit: () => void;
   /** «Готово» на экране QR после пропавшего входа — запустить игру заново. */
   onPlayAgain: () => void;
   QrLogin?: SteamQrLoginComponent;
 }) {
   const { gameName } = view;
   switch (view.state) {
-    case "queued":
-      return (
-        <StatusScreen
-          icon={<Hourglass className="size-6" />}
-          title="Ждём свободный сервер…"
-          gameName={gameName}
-        />
-      );
-    case "installing":
-      return (
-        <StatusScreen
-          icon={spinner}
-          title="Устанавливаем игру"
-          gameName={gameName}
-        >
-          <InstallProgress percent={view.installPercent ?? 0} />
-          <Reason text="Время установки не входит в игровое" />
-          <Button variant="outline" onClick={onExit}>
-            Отменить
-          </Button>
-        </StatusScreen>
-      );
-    case "starting":
-      return (
-        <StatusScreen
-          icon={spinner}
-          title="Запускаем игру…"
-          gameName={gameName}
-        />
-      );
     case "stopping":
       return (
         <StatusScreen
@@ -195,7 +147,8 @@ export function SessionStatus({
       );
     }
     default:
-      // playing / idle_warning / disconnected, а стрим ещё не готов.
+      // playing / idle_warning / disconnected, а стрим ещё не готов (queued/installing/
+      // starting сюда не попадают — их показывает экран загрузки).
       return (
         <StatusScreen
           icon={spinner}
