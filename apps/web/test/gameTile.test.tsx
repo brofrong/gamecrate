@@ -1,12 +1,12 @@
 // Карточка игры (GameTile) и секция сетки (GameSection) на главной `/app`
-// (спека 2026-10-27 §3.3–3.4): плитка — ссылка на страницу игры, всё на обложке
-// (название + одно значение справа, полоса установки, тег Proton), кнопка
-// «Играть»/«Установить» не всплывает в ссылку, цепочка заглушек обложки.
-import { describe, expect, it, mock } from "bun:test";
+// (спека 2026-10-27 §3.3–3.4, правка владельца от 2026-10-27): плитка — ссылка на
+// страницу игры, название и одно значение — строкой под обложкой, на обложке только
+// полоса установки и тег Proton; кнопок на плитке нет («Играть»/«Установить» — только
+// на странице игры), цепочка заглушек обложки.
+import { describe, expect, it } from "bun:test";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import type { CloudStatus } from "@cg/rpc";
-import type { CardAction } from "../src/lib/cardAction";
 import { GameTile, type TileGame } from "../src/components/app/GameTile";
 import { GameSection, SECTION_PAGE } from "../src/components/app/GameSection";
 import { testRouter } from "./router";
@@ -58,15 +58,6 @@ function game(overrides: Partial<TileGame> = {}): TileGame {
   };
 }
 
-const playAction: CardAction = {
-  kind: "play",
-  pending: false,
-  disabled: false,
-  onPlay: () => {},
-};
-const resumeAction: CardAction = { kind: "resume", onResume: () => {} };
-const blockedAction: CardAction = { kind: "blocked" };
-
 /** Плитка — `Link`, поэтому ей нужен роутер; первый запрос через `findBy*`. */
 function renderTile(element: React.ReactElement) {
   const router = testRouter(element);
@@ -76,17 +67,14 @@ function renderTile(element: React.ReactElement) {
 
 describe("GameTile", () => {
   it("is a link to the game page named after the game", async () => {
-    renderTile(<GameTile game={game()} action={playAction} />);
+    renderTile(<GameTile game={game()} />);
     const link = await screen.findByRole("link", { name: "Игра: Portal 2" });
     expect(link.getAttribute("href")).toBe("/app/game/620");
   });
 
   it("shows hours on the cover for an installed played game and no «ГОТОВА» pill", async () => {
     renderTile(
-      <GameTile
-        game={game({ cloud: ready, playtimeMinutes: 2460 })}
-        action={playAction}
-      />,
+      <GameTile game={game({ cloud: ready, playtimeMinutes: 2460 })} />,
     );
     await screen.findByText("41 ч");
     expect(screen.queryByText("ГОТОВА")).toBeNull();
@@ -94,60 +82,48 @@ describe("GameTile", () => {
   });
 
   it("shows «готова» for an installed game never played", async () => {
-    renderTile(
-      <GameTile
-        game={game({ cloud: ready, playtimeMinutes: 0 })}
-        action={playAction}
-      />,
-    );
+    renderTile(<GameTile game={game({ cloud: ready, playtimeMinutes: 0 })} />);
     expect(await screen.findByText("готова")).toBeTruthy();
   });
 
-  it("labels the button «Играть» for a ready game", async () => {
-    renderTile(<GameTile game={game()} action={playAction} />);
-    expect(
-      await screen.findByRole("button", { name: "Играть: Portal 2" }),
-    ).toBeTruthy();
+  it("no button on the tile — launching lives on the game page", async () => {
+    renderTile(<GameTile game={game()} />);
+    await screen.findByRole("link", { name: "Игра: Portal 2" });
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("labels the button «Установить» for a missing game", async () => {
-    renderTile(
-      <GameTile game={game({ cloud: missing })} action={playAction} />,
-    );
-    expect(
-      await screen.findByRole("button", { name: "Установить: Portal 2" }),
-    ).toBeTruthy();
+  it("missing game: no «не установлена» text", async () => {
+    renderTile(<GameTile game={game({ cloud: missing })} />);
+    await screen.findByRole("link", { name: "Игра: Portal 2" });
     expect(screen.queryByText("не установлена")).toBeNull();
   });
 
-  it("shows percent and a progress bar for an installing game", async () => {
+  it("title and value sit under the cover, not on it", async () => {
     renderTile(
-      <GameTile game={game({ cloud: installing(42) })} action={playAction} />,
+      <GameTile game={game({ cloud: ready, playtimeMinutes: 2460 })} />,
     );
+    const link = await screen.findByRole("link", { name: "Игра: Portal 2" });
+    const cover = link.querySelector("article")!;
+    const title = screen.getByRole("heading", { name: "Portal 2" });
+    expect(cover.contains(title)).toBe(false);
+    expect(cover.contains(screen.getByText("41 ч"))).toBe(false);
     expect(
-      await screen.findByRole("button", { name: "Установить: Portal 2" }),
-    ).toBeTruthy();
-    expect(screen.getByText("42 %")).toBeTruthy();
-    expect(screen.getByTestId("install-bar").style.width).toBe("42%");
+      Boolean(
+        cover.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
   });
 
-  it("button click does not navigate the link", async () => {
-    const onPlay = mock(() => {});
-    const router = renderTile(
-      <GameTile game={game()} action={{ ...playAction, onPlay }} />,
-    );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Играть: Portal 2" }),
-    );
-    expect(onPlay).toHaveBeenCalledTimes(1);
-    expect(router.state.location.pathname).toBe("/");
+  it("shows percent and a progress bar for an installing game", async () => {
+    renderTile(<GameTile game={game({ cloud: installing(42) })} />);
+    expect(await screen.findByText("42 %")).toBeTruthy();
+    expect(screen.getByTestId("install-bar").style.width).toBe("42%");
   });
 
   it("caption replaces the status value", async () => {
     renderTile(
       <GameTile
         game={game({ cloud: ready, playtimeMinutes: 2460 })}
-        action={playAction}
         caption="12 играют"
       />,
     );
@@ -156,25 +132,12 @@ describe("GameTile", () => {
   });
 
   it("dimmed shows «нужен вход в Steam»", async () => {
-    renderTile(<GameTile game={game()} action={playAction} dimmed />);
+    renderTile(<GameTile game={game()} dimmed />);
     expect(await screen.findByText("нужен вход в Steam")).toBeTruthy();
   });
 
-  it("resume action shows «Вернуться в игру»", async () => {
-    renderTile(<GameTile game={game()} action={resumeAction} />);
-    expect(
-      await screen.findByRole("button", { name: "Вернуться в игру" }),
-    ).toBeTruthy();
-  });
-
-  it("blocked action renders no button", async () => {
-    renderTile(<GameTile game={game()} action={blockedAction} />);
-    await screen.findByRole("link", { name: "Игра: Portal 2" });
-    expect(screen.queryByRole("button")).toBeNull();
-  });
-
   it("обложка: header.jpg → ошибка → coverUrl → ошибка → заглушка", async () => {
-    renderTile(<GameTile game={game({ name: "Hades" })} action={playAction} />);
+    renderTile(<GameTile game={game({ name: "Hades" })} />);
     const header = (await screen.findByAltText("Hades")) as HTMLImageElement;
     expect(header.src).toBe(
       "https://cdn.cloudflare.steamstatic.com/steam/apps/620/header.jpg",
@@ -190,17 +153,13 @@ describe("GameTile", () => {
   });
 
   it("без Proton-плашки, когда tier не указан или pending", async () => {
-    renderTile(
-      <GameTile game={game({ protonTier: "pending" })} action={playAction} />,
-    );
+    renderTile(<GameTile game={game({ protonTier: "pending" })} />);
     await screen.findByRole("link", { name: "Игра: Portal 2" });
     expect(screen.queryByTestId("proton-tag")).toBeNull();
   });
 
   it("показывает уровень Proton", async () => {
-    renderTile(
-      <GameTile game={game({ protonTier: "gold" })} action={playAction} />,
-    );
+    renderTile(<GameTile game={game({ protonTier: "gold" })} />);
     expect(await screen.findByText("gold")).toBeTruthy();
   });
 });
