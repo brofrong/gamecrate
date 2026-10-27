@@ -11,6 +11,7 @@ import { RpcMiddlewares } from "../src/auth/currentUser";
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
+import { SteamStoreApi } from "../src/steam/SteamStoreApi";
 
 const trendingUser: CurrentUserShape = {
   id: "u-trending",
@@ -42,9 +43,16 @@ const protonLayer = Layer.succeed(
   ProtonDb.of({ fetchTier: () => Effect.die("not used in trending tests") }),
 );
 
+const storeLayer = Layer.succeed(
+  SteamStoreApi,
+  SteamStoreApi.of({
+    fetchDetails: () => Effect.die("not used in trending tests"),
+  }),
+);
+
 const env = Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
-  Layer.provideMerge(Layer.mergeAll(steamLayer, protonLayer)),
+  Layer.provideMerge(Layer.mergeAll(steamLayer, protonLayer, storeLayer)),
   Layer.provideMerge(DbTest),
 );
 
