@@ -15,6 +15,9 @@ import { join } from "node:path";
  * - `xdotool search --onlyvisible --class/--pid …` отдаёт `${FAKE_XDOTOOL_DIR}/class-*`/`pid-*`
  *   (значение без `[^A-Za-z0-9_]`).
  * - `xwininfo -id <win>` отдаёт `${FAKE_XWININFO_DIR}/geom-<win>` (строки `Width:`/`Height:`).
+ * - `timeout` — на этой машине нет ни GNU, ни BSD `timeout`; фейк ведёт себя как настоящий
+ *   (SIGTERM и ненулевой код, если команда не успела), чтобы проверить, что сам скрипт не
+ *   зависает на зависшем xdotool/xwininfo, а не угадывание фейка.
  */
 const script = join(import.meta.dir, "../../../images/session/cg-session-stage");
 
@@ -201,6 +204,26 @@ fi
 exit 1
 `,
   );
+
+  // На этой машине нет ни GNU, ни BSD `timeout` (в образе сессии — coreutils, есть всегда):
+  // как и xdotool/xwininfo, подменяем для теста. Поведение — как у настоящего: не успел за
+  // "$1" секунд — SIGTERM и ненулевой код, а не зависание.
+  writeExecutable(
+    join(bin, "timeout"),
+    `#!/bin/bash
+set -u
+dur="$1"
+shift
+"$@" &
+cmd_pid=$!
+( sleep "\${dur}"; kill -TERM "\${cmd_pid}" 2>/dev/null ) &
+watcher_pid=$!
+wait "\${cmd_pid}" 2>/dev/null
+status=$?
+kill "\${watcher_pid}" 2>/dev/null
+exit "\${status}"
+`,
+  );
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -264,5 +287,22 @@ describe("cg-session-stage", () => {
 
   it("rejects a non-numeric appid with exit 2", () => {
     expect(stage("abc").exitCode).toBe(2);
+  });
+
+  it("does not hang when xdotool hangs: a non-visible stage still comes back quickly", () => {
+    addReaper();
+    addClient();
+    setClientEnviron(CLIENT_PID);
+    // Висит дольше, чем agent готов ждать между опросами (2 с) и дольше таймаута скрипта.
+    // `exec` — иначе kill -TERM в фейковом `timeout` убьёт только интерпретатор-обёртку этого
+    // скрипта, а сам `sleep` осиротеет и будет держать открытым пайп команды $(...) все 30 с.
+    writeExecutable(join(bin, "xdotool"), "#!/bin/bash\nexec sleep 30\n");
+
+    const start = Date.now();
+    const result = stage();
+    const elapsedMs = Date.now() - start;
+
+    expect(result).toEqual({ stdout: "prepare", exitCode: 0 });
+    expect(elapsedMs).toBeLessThan(5000);
   });
 });

@@ -24,9 +24,14 @@
 # с проверкой агента `pgrep -f "AppId=<id>( |$)"` (SessionSupervisor.ts).
 #
 # CG_STAGE_PROC — другой корень вместо /proc (тесты). HOME — из окружения (его задаёт агент/тест).
+#
+# Агент опрашивает скрипт раз в 2 с — зависший или не отвечающий X11 (`xdotool`/`xwininfo`) не
+# должен подвесить опрос: каждый такой вызов обёрнут в `timeout` (coreutils, есть в образе);
+# истёк срок — окно считаем не найденным, а не ждём и не падаем.
 set -u
 
 proc_root="${CG_STAGE_PROC:-/proc}"
+x11_timeout_sec=1
 
 app_id="${1:-}"
 case "${app_id}" in
@@ -69,7 +74,7 @@ load_x11_env() {
 # Width:/Height: из `xwininfo -id <win>` (строки с отступом). Нет такого окна — xwininfo падает.
 window_big_enough() {
   local win="$1" info width height
-  info=$(xwininfo -id "${win}" 2>/dev/null) || return 1
+  info=$(timeout "${x11_timeout_sec}" xwininfo -id "${win}" 2>/dev/null) || return 1
   width=$(printf '%s\n' "${info}" | sed -n 's/^ *Width: *//p')
   height=$(printf '%s\n' "${info}" | sed -n 's/^ *Height: *//p')
   [ -n "${width}" ] && [ -n "${height}" ] && [ "${width}" -ge 64 ] && [ "${height}" -ge 64 ]
@@ -87,13 +92,15 @@ is_visible() {
   load_x11_env "${client}"
 
   local win
-  for win in $(xdotool search --onlyvisible --class "^steam_app_${app_id}\$" 2>/dev/null); do
+  for win in $(timeout "${x11_timeout_sec}" xdotool search --onlyvisible --class \
+    "^steam_app_${app_id}\$" 2>/dev/null); do
     window_big_enough "${win}" && return 0
   done
 
   local descendant
   for descendant in $(descendants "${reaper_pid}"); do
-    for win in $(xdotool search --onlyvisible --pid "${descendant}" 2>/dev/null); do
+    for win in $(timeout "${x11_timeout_sec}" xdotool search --onlyvisible --pid \
+      "${descendant}" 2>/dev/null); do
       window_big_enough "${win}" && return 0
     done
   done
