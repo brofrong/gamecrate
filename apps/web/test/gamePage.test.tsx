@@ -12,7 +12,7 @@ import type {
   RecentEntry,
   SessionView,
 } from "@cg/rpc";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRouter,
@@ -263,6 +263,25 @@ describe("GamePage", () => {
       screen.getByRole("link", { name: "Открыть в Steam ↗" }),
     ).toBeTruthy();
     expect(screen.queryByText("Геймпад")).toBeNull();
+  });
+
+  it("about panel shows «Читать дальше» for long text and expands", async () => {
+    const long = `<p>${"Очень длинное описание игры. ".repeat(40)}</p>`;
+    renderGame(
+      AsyncResult.success(
+        view({ details: { ...details, aboutTheGame: long } }),
+      ),
+    );
+    // Два заголовка «Об игре» (описание и факты) — ждём текст описания.
+    await screen.findByText("Собери отряд и вернись в Забытые Королевства.");
+    fireEvent.click(screen.getByRole("button", { name: "Читать дальше" }));
+    expect(screen.getByRole("button", { name: "Свернуть" })).toBeTruthy();
+  });
+
+  it("short about text has no «Читать дальше»", async () => {
+    renderGame(AsyncResult.success(view()));
+    await screen.findByRole("heading", { name: "Baldur's Gate 3" });
+    expect(screen.queryByRole("button", { name: "Читать дальше" })).toBeNull();
   });
 
   it("GameNotFound → «Этой игры нет в твоей библиотеке»", async () => {
