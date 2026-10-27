@@ -161,6 +161,11 @@ shutdown_steam() {
   }
 }
 
+if ! docker exec "${name}" test -x /usr/local/bin/cg-session-exec; then
+  echo "ОШИБКА: в образе ${image} нет cg-session-exec — сначала ./deploy/build-session-image.sh" >&2
+  exit 1
+fi
+
 echo "==> цикл 1: первый запуск Steam"
 wait_idle
 shutdown_steam
