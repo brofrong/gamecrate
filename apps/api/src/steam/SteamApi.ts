@@ -1,6 +1,7 @@
-// Клиент Steam Web API: библиотека игр пользователя (`IPlayerService/GetOwnedGames`).
+// Клиент Steam Web API: библиотека игр пользователя (`IPlayerService/GetOwnedGames`),
+// схема достижений игры и достижения игрока (`ISteamUserStats`, спека 2026-10-27 §4.2).
 import { SteamUnavailable } from "@cg/rpc";
-import { Context, Duration, Effect, Layer, Schema } from "effect";
+import { Context, Duration, Effect, Layer, Option, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { AppConfig } from "../config";
 
@@ -35,6 +36,74 @@ export type OwnedGames =
 
 const ownedGamesUrl =
   "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/";
+const schemaForGameUrl =
+  "https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/";
+const playerAchievementsUrl =
+  "https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/";
+
+const SchemaForGameResponse = Schema.Struct({
+  game: Schema.optional(
+    Schema.Struct({
+      availableGameStats: Schema.optional(
+        Schema.Struct({
+          achievements: Schema.optional(
+            Schema.Array(
+              Schema.Struct({
+                name: Schema.String,
+                displayName: Schema.optional(Schema.String),
+                description: Schema.optional(Schema.String),
+                icon: Schema.optional(Schema.String),
+                icongray: Schema.optional(Schema.String),
+                hidden: Schema.optional(Schema.Number),
+              }),
+            ),
+          ),
+        }),
+      ),
+    }),
+  ),
+});
+
+const PlayerAchievementsResponse = Schema.Struct({
+  playerstats: Schema.Struct({
+    success: Schema.optional(Schema.Boolean),
+    error: Schema.optional(Schema.String),
+    achievements: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          apiname: Schema.String,
+          achieved: Schema.Number,
+          unlocktime: Schema.optional(Schema.Number),
+        }),
+      ),
+    ),
+  }),
+});
+
+/** Достижение из схемы игры (`GetSchemaForGame`). */
+export type AchievementSchemaEntry = {
+  readonly apiName: string;
+  readonly name: string;
+  readonly description: string;
+  readonly icon: string;
+  readonly iconGray: string;
+  readonly hidden: boolean;
+};
+
+/**
+ * Достижения игрока: `Private` — профиль закрыт («Profile is not public»),
+ * `None` — у игры нет статистики, Steam недоступен или ответ не разобрался.
+ */
+export type PlayerAchievements =
+  | { readonly _tag: "Private" }
+  | { readonly _tag: "None" }
+  | {
+      readonly _tag: "Ready";
+      readonly unlocked: ReadonlyArray<{
+        readonly apiName: string;
+        readonly unlockedAt: string;
+      }>;
+    };
 
 /** Предел ожидания Steam (запрос + тело): `library.list` ждёт первую синхронизацию. */
 const requestTimeout = Duration.seconds(10);
@@ -45,6 +114,15 @@ export class SteamApi extends Context.Service<
     readonly getOwnedGames: (
       steamId: string,
     ) => Effect.Effect<OwnedGames, SteamUnavailable>;
+    /** Схема достижений игры; `null` — нет данных, сеть или таймаут (5 с). */
+    readonly getAchievementSchema: (
+      appId: number,
+    ) => Effect.Effect<ReadonlyArray<AchievementSchemaEntry> | null>;
+    /** Открытые игроком достижения; никогда не падает (см. `PlayerAchievements`). */
+    readonly getPlayerAchievements: (
+      steamId: string,
+      appId: number,
+    ) => Effect.Effect<PlayerAchievements>;
   }
 >()("@cg/api/SteamApi") {
   static readonly layer: Layer.Layer<
@@ -121,7 +199,87 @@ export class SteamApi extends Context.Service<
           }),
         );
 
-      return SteamApi.of({ getOwnedGames });
+      const getAchievementSchema = (appId: number) =>
+        client
+          .get(schemaForGameUrl, {
+            urlParams: {
+              key: config.steamApiKey,
+              appid: String(appId),
+              l: "russian",
+            },
+          })
+          .pipe(
+            Effect.flatMap(HttpClientResponse.filterStatusOk),
+            Effect.flatMap(
+              HttpClientResponse.schemaBodyJson(SchemaForGameResponse),
+            ),
+            Effect.map((body) => {
+              const list = body.game?.availableGameStats?.achievements;
+              if (list === undefined) return null;
+              return list.map((entry): AchievementSchemaEntry => ({
+                apiName: entry.name,
+                name: entry.displayName ?? entry.name,
+                description: entry.description ?? "",
+                icon: entry.icon ?? "",
+                iconGray: entry.icongray ?? "",
+                hidden: entry.hidden === 1,
+              }));
+            }),
+            Effect.catch(() => Effect.succeed(null)),
+            Effect.timeoutOption("5 seconds"),
+            Effect.map(Option.getOrElse(() => null)),
+          );
+
+      // Steam отвечает 400/403 с телом `{playerstats: {success: false, error}}` —
+      // статус не фильтруем, читаем тело.
+      const getPlayerAchievements = (steamId: string, appId: number) =>
+        client
+          .get(playerAchievementsUrl, {
+            urlParams: {
+              key: config.steamApiKey,
+              steamid: steamId,
+              appid: String(appId),
+              l: "russian",
+            },
+          })
+          .pipe(
+            Effect.flatMap(
+              HttpClientResponse.schemaBodyJson(PlayerAchievementsResponse),
+            ),
+            Effect.map(({ playerstats }): PlayerAchievements => {
+              if (playerstats.error === "Profile is not public")
+                return { _tag: "Private" };
+              if (
+                playerstats.success !== true ||
+                playerstats.achievements === undefined
+              )
+                return { _tag: "None" };
+              return {
+                _tag: "Ready",
+                unlocked: playerstats.achievements
+                  .filter((entry) => entry.achieved === 1)
+                  .map((entry) => ({
+                    apiName: entry.apiname,
+                    unlockedAt: new Date(
+                      (entry.unlocktime ?? 0) * 1000,
+                    ).toISOString(),
+                  })),
+              };
+            }),
+            Effect.catch(() =>
+              Effect.succeed({ _tag: "None" } as PlayerAchievements),
+            ),
+            Effect.timeoutOption("5 seconds"),
+            Effect.map(
+              Option.getOrElse((): PlayerAchievements => ({ _tag: "None" })),
+            ),
+          );
+
+      return SteamApi.of({
+        getOwnedGames,
+        getAchievementSchema,
+        getPlayerAchievements,
+      });
     }),
   );
 }

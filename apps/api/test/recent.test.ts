@@ -33,6 +33,8 @@ const steamLayer = Layer.succeed(
   SteamApi,
   SteamApi.of({
     getOwnedGames: () => Effect.die("not used in recent tests"),
+    getAchievementSchema: () => Effect.die("not used in recent tests"),
+    getPlayerAchievements: () => Effect.die("not used in recent tests"),
   }),
 );
 const protonLayer = Layer.succeed(

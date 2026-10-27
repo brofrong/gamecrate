@@ -56,6 +56,8 @@ const makeSteam = () => {
           state.calls++;
           return state.next;
         }),
+      getAchievementSchema: () => Effect.die("not used in library tests"),
+      getPlayerAchievements: () => Effect.die("not used in library tests"),
     }),
   );
   return { state, games, layer };
