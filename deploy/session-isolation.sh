@@ -79,20 +79,30 @@ cmd_print() {
   local subnet="" bridge="" api_ip="" subnet6=""
   while [ $# -gt 0 ]; do
     case "$1" in
+    --subnet | --bridge | --api-ip | --subnet6)
+      # Флаг без значения: `shift 2` при единственном оставшемся аргументе под `set -e` уронит
+      # скрипт с кодом 1 без сообщения — проверяем заранее и даём код 2, как остальным ошибкам.
+      if [ $# -lt 2 ]; then
+        echo "ОШИБКА: у $1 нет значения" >&2
+        exit 2
+      fi
+      ;;
+    esac
+    case "$1" in
     --subnet)
-      subnet="${2:-}"
+      subnet="$2"
       shift 2
       ;;
     --bridge)
-      bridge="${2:-}"
+      bridge="$2"
       shift 2
       ;;
     --api-ip)
-      api_ip="${2:-}"
+      api_ip="$2"
       shift 2
       ;;
     --subnet6)
-      subnet6="${2:-}"
+      subnet6="$2"
       shift 2
       ;;
     *)

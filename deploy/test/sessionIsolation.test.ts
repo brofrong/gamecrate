@@ -72,4 +72,10 @@ describe("session-isolation.sh print", () => {
     expect(r.exitCode).toBe(2);
     expect(r.stdout.toString("utf8")).toBe("");
   });
+
+  it("rejects a flag without a value with exit 2", () => {
+    const r = print(["--subnet"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stdout.toString("utf8")).toBe("");
+  });
 });

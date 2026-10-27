@@ -38,13 +38,27 @@ label_key="cg.isolation-check"
 a="cg-isolation-check-a"
 b="cg-isolation-check-b"
 
-cleanup() { docker rm -f "${a}" "${b}" >/dev/null 2>&1 || true; }
+# Наш контейнер — только если метка совпадает; без неё (в т.ч. нет контейнера вовсе) — не наш.
+is_ours() {
+  local n="$1"
+  docker inspect "${n}" >/dev/null 2>&1 || return 1
+  [ "$(docker inspect -f "{{index .Config.Labels \"${label_key}\"}}" "${n}" 2>/dev/null)" = 1 ]
+}
+
+# cleanup сам перепроверяет метку перед удалением — если remnant-проверка ниже откажет и выйдет
+# (чужой контейнер с тем же именем), trap на EXIT не должен снести его за компанию.
+cleanup() {
+  local n
+  for n in "${a}" "${b}"; do
+    is_ours "${n}" && docker rm -f "${n}" >/dev/null 2>&1
+  done
+}
 trap cleanup EXIT
 
 # Остаток прошлого прерванного запуска — только свой (по метке), чужой одноимённый не трогаем.
 for n in "${a}" "${b}"; do
   if docker inspect "${n}" >/dev/null 2>&1; then
-    if [ "$(docker inspect -f "{{index .Config.Labels \"${label_key}\"}}" "${n}")" != 1 ]; then
+    if ! is_ours "${n}"; then
       echo "ОШИБКА: контейнер ${n} без метки ${label_key} — не наш, не трогаем" >&2
       exit 1
     fi
