@@ -38,6 +38,15 @@ export const installJobStates = [
 ] as const;
 export type InstallJobState = (typeof installJobStates)[number];
 
+/** Этапы задачи установки, см. `InstallStage` в `@cg/rpc`. */
+export const installStages = [
+  "preparing",
+  "login",
+  "downloading",
+  "moving",
+] as const;
+export type InstallStage = (typeof installStages)[number];
+
 /**
  * Задача установки игры в общую библиотеку. `userId` — чьим Steam-клиентом
  * качаем (нужен владеющий игрой аккаунт), `workerId` — агент с ролью
@@ -59,6 +68,8 @@ export const installJobs = pgTable(
       .notNull()
       .default("queued"),
     workerId: text("worker_id").references(() => workers.id),
+    // Этап установки (экран загрузки, Task 2); null — агент о нём не отчитался.
+    stage: text("stage", { enum: installStages }),
     bytesDownloaded: bigint("bytes_downloaded", { mode: "number" }),
     bytesTotal: bigint("bytes_total", { mode: "number" }),
     error: text("error"),

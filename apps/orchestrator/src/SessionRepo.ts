@@ -4,6 +4,8 @@ import {
   Db,
   playSegments,
   profiles,
+  sessionStages,
+  type SessionStage,
   type SessionState,
   sessions,
   settings,
@@ -18,7 +20,15 @@ import {
   sessionStreamUrl,
   withSessionSettingsDefaults,
 } from "@cg/rpc";
-import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import {
+  type AnyColumn,
+  and,
+  asc,
+  eq,
+  inArray,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   type Decision,
@@ -298,6 +308,51 @@ export const setStreamUrl = (
           eq(sessions.id, sessionId),
           eq(sessions.workerId, workerId),
           isActive,
+        ),
+      );
+  });
+
+/**
+ * Условие «вперёд-только»: `column` ещё не записан (`null`) или новый этап
+ * `value` не раньше текущего — по индексу в `stages` (порядок списка = порядок
+ * спеки, `array_position`). Общая для `sessions.stage` (`setStage`) и
+ * `install_jobs.stage` (`InstallRepo.recordStage`) — список этапов свой у
+ * каждого, второй копии списка нет.
+ */
+export const forwardOnly = (
+  stages: ReadonlyArray<string>,
+  column: AnyColumn,
+  value: string,
+) => {
+  const positionOf = (of: unknown) =>
+    sql`array_position(ARRAY[${sql.join(
+      stages.map((stage) => sql`${stage}`),
+      sql`, `,
+    )}]::text[], ${of})`;
+  return sql`${column} is null or ${positionOf(value)} > ${positionOf(column)}`;
+};
+
+/**
+ * Этап запуска (экран загрузки) активной сессии этого воркера, вперёд-только
+ * (`forwardOnly`): более ранний этап от того же агента (например, после
+ * переподключения) не откатывает уже записанный.
+ */
+export const setStage = (
+  workerId: string,
+  sessionId: string,
+  stage: SessionStage,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(sessions)
+      .set({ stage })
+      .where(
+        and(
+          eq(sessions.id, sessionId),
+          eq(sessions.workerId, workerId),
+          isActive,
+          forwardOnly(sessionStages, sessions.stage, stage),
         ),
       );
   });

@@ -5,12 +5,13 @@
 // сохранён — контейнер со слоями остаётся). Отчёты складывает в очередь `reports`
 // (их по порядку отправляет OrchestratorLink).
 import { readdirSync } from "node:fs";
-import type {
-  AgentCommand,
-  AgentReport,
-  ProfileRef,
-  RunningSession,
-  SteamLoginSeed,
+import {
+  type AgentCommand,
+  type AgentReport,
+  type ProfileRef,
+  type RunningSession,
+  SessionStage,
+  type SteamLoginSeed,
 } from "@cg/rpc";
 import {
   Context,
@@ -66,6 +67,9 @@ export const READY_POLL = Duration.seconds(2);
 export const GAME_POLL = Duration.seconds(5);
 export const CLOUD_TIMEOUT = Duration.seconds(60);
 export const CLOUD_POLL = Duration.seconds(2);
+export const STAGE_POLL = Duration.seconds(2);
+/** Сколько ждать `cg-session-stage`: зависший X11 не должен останавливать опрос. */
+export const STAGE_CHECK_TIMEOUT = Duration.seconds(10);
 export const HEARTBEAT_INTERVAL = Duration.seconds(30);
 export const STOP_TIMEOUT_SEC = 15;
 export const SHM_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -211,7 +215,18 @@ export const commands = {
   game: (appId: number) => ["pgrep", "-f", gamePattern(appId)],
   closeGame: (appId: number) => ["pkill", "-TERM", "-f", gamePattern(appId)],
   cloud: ["grep", "-cF", CLOUD_MARKER, CLOUD_LOG],
+  /** Текущий этап запуска игры (`steam`…`visible`, контракт образа). */
+  stage: (appId: number) => ["/usr/local/bin/cg-session-stage", String(appId)],
 } as const;
+
+/** Порядок этапов: отчёт только о более позднем, чем уже отправленный. */
+const stageRank = (stage: SessionStage | undefined) =>
+  stage === undefined ? -1 : SessionStage.literals.indexOf(stage);
+
+/** Этапы, которые печатает `cg-session-stage` (`computer` — до старта контейнера). */
+const isScriptStage = (stage: string): stage is SessionStage =>
+  stage !== "computer" &&
+  (SessionStage.literals as ReadonlyArray<string>).includes(stage);
 
 type Phase = "starting" | "ready" | "stopping";
 
@@ -237,6 +252,8 @@ interface Session {
   /** Вход §4 вписан этим агентом перед стартом (для `ProfileCommit.steamLoginSeeded`). */
   seeded: boolean;
   gameRunning: boolean;
+  /** Последний отправленный этап запуска (`undefined` — ещё ни одного). */
+  stage: SessionStage | undefined;
   /**
    * Число маркеров облака при последнем опросе, где игра ещё шла, или перед
    * SIGTERM при остановке (игра не запускалась — нет). Выгрузки во время игры
@@ -382,14 +399,19 @@ const make = Effect.gen(function* () {
         if (alive !== session.gameRunning) {
           // Состояние и отчёт — без точки прерывания между ними: StopSession в этот
           // момент видит уже запущенную игру (и закроет её, и подождёт облако).
+          // Игра запущена — этап не раньше `prepare`, даже если скрипт этапов
+          // молчит (старый образ): иначе сайт показывал бы «Запускаем Steam» поверх игры.
           yield* Effect.uninterruptible(
             Effect.suspend(() => {
               session.gameRunning = alive;
-              return emit({
-                _tag: "GameState",
-                sessionId: session.sessionId,
-                running: alive,
-              });
+              return Effect.andThen(
+                alive ? reportStage(session, "prepare") : Effect.void,
+                emit({
+                  _tag: "GameState",
+                  sessionId: session.sessionId,
+                  running: alive,
+                }),
+              );
             }),
           );
           yield* Effect.logInfo(alive ? "Game started" : "Game exited", {
@@ -401,6 +423,66 @@ const make = Effect.gen(function* () {
         // finish прямо перед SIGTERM.
         if (alive) session.cloudBaseline = yield* cloudCount(session);
         yield* Effect.sleep(GAME_POLL);
+      }
+    });
+
+  /** Отчёт об этапе, если он дальше отправленного (этапы только вперёд). */
+  const reportStage = (session: Session, stage: SessionStage) =>
+    Effect.suspend(() => {
+      if (stageRank(stage) <= stageRank(session.stage)) return Effect.void;
+      session.stage = stage;
+      return emit({
+        _tag: "SessionStage",
+        sessionId: session.sessionId,
+        stage,
+      });
+    });
+
+  /**
+   * Опрос этапа запуска до `visible`. Сбой проверки (таймаут, код выхода,
+   * непонятный ответ) — предупреждение, опрос продолжается. Скрипта нет или он
+   * не исполняемый (код 126/127, старый образ) — одно предупреждение, и опрос
+   * заканчивается: этап `prepare` тогда сообщит `watchGame`. Контейнера нет —
+   * опрос молча заканчивается: сбой сессии решают проверки Selkies и игры.
+   */
+  const watchStage = (session: Session) =>
+    Effect.gen(function* () {
+      while (true) {
+        const stage = yield* docker
+          .exec(session.name, commands.stage(session.appId), {
+            timeout: STAGE_CHECK_TIMEOUT,
+          })
+          .pipe(
+            Effect.flatMap(({ exitCode, stdout }) => {
+              const stage = stdout.trim();
+              if (exitCode === 126 || exitCode === 127)
+                return Effect.succeed("missing" as const);
+              return exitCode === 0 && isScriptStage(stage)
+                ? Effect.succeed(stage)
+                : Effect.fail(
+                    new CheckFailed({
+                      message: `cg-session-stage exited with ${exitCode}: ${JSON.stringify(stage.slice(0, 40))}`,
+                    }),
+                  );
+            }),
+            Effect.catchTag(["DockerError", "CheckFailed"], (error) =>
+              error._tag === "DockerError" && isGone(error)
+                ? Effect.succeed("gone" as const)
+                : Effect.logWarning("Stage check failed", {
+                    sessionId: session.sessionId,
+                    error: error.message,
+                  }).pipe(Effect.as(undefined)),
+            ),
+          );
+        if (stage === "gone") return;
+        if (stage === "missing")
+          return yield* Effect.logWarning(
+            "Stage script is missing, stage polling stopped",
+            { sessionId: session.sessionId },
+          );
+        if (stage !== undefined) yield* reportStage(session, stage);
+        if (session.stage === "visible") return;
+        yield* Effect.sleep(STAGE_POLL);
       }
     });
 
@@ -607,6 +689,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const dockerStart = (cause: unknown) =>
         new Abort({ reason: failReasons.dockerStart, cause });
+      yield* reportStage(session, "computer");
       yield* prepare(session.overlays).pipe(
         withServices,
         Effect.mapError(dockerStart),
@@ -653,6 +736,7 @@ const make = Effect.gen(function* () {
             session.seeded = true;
           }
           yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
+          yield* reportStage(session, "steam");
           return from;
         }),
       );
@@ -683,18 +767,24 @@ const make = Effect.gen(function* () {
           launchWith.profile,
           launchWith.steamLogin,
         );
-      // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
-      if (yield* Deferred.isDone(session.stopRequested))
-        return yield* finish(session);
-      const ready = yield* untilStop(session, waitReady(session));
-      if (ready.stopped) return yield* finish(session);
-      session.phase = "ready";
-      yield* emit({
-        _tag: "StreamReady",
-        sessionId: session.sessionId,
-        streamUrl: session.streamUrl,
-      });
-      yield* untilStop(session, watchGame(session));
+      // Опрос этапов идёт параллельно готовности и игре; scope закрывается
+      // (fiber прерван) до finish/fail — после Stopped/Failed этапов нет.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
+          if (yield* Deferred.isDone(session.stopRequested)) return;
+          yield* Effect.forkScoped(watchStage(session));
+          const ready = yield* untilStop(session, waitReady(session));
+          if (ready.stopped) return;
+          session.phase = "ready";
+          yield* emit({
+            _tag: "StreamReady",
+            sessionId: session.sessionId,
+            streamUrl: session.streamUrl,
+          });
+          yield* untilStop(session, watchGame(session));
+        }),
+      );
       yield* finish(session);
     }).pipe(Effect.catchTag("Abort", (abort) => fail(session, abort)));
 
@@ -714,6 +804,7 @@ const make = Effect.gen(function* () {
         phase: "starting",
         seeded: false,
         gameRunning: fields.gameRunning ?? false,
+        stage: undefined,
         cloudBaseline: fields.cloudBaseline,
         stopRequested: yield* Deferred.make<void>(),
       };

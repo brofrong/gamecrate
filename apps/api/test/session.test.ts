@@ -511,6 +511,48 @@ describe("session rpc", () => {
     expect(result.starting?.installPercent).toBeNull();
   });
 
+  it("view carries stage, install stage only while installing, and hadInstall", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const db = yield* Db;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const jobId = crypto.randomUUID();
+        yield* db.insert(installJobs).values({
+          id: jobId,
+          appId: 10,
+          userId: alice.id,
+          state: "running",
+          stage: "downloading",
+        });
+        yield* setSession(id, { state: "installing", installJobId: jobId });
+        const installing = yield* rpc["session.active"]();
+
+        // Задача завершена и сессия пошла дальше: installStage уже не её, а
+        // stage запуска идёт своим чередом (installJobId остаётся — история).
+        yield* db
+          .update(installJobs)
+          .set({ state: "done" })
+          .where(eq(installJobs.id, jobId));
+        yield* setSession(id, { state: "starting", stage: "login" });
+        const starting = yield* rpc["session.active"]();
+
+        return { installing, starting };
+      }),
+    );
+    expect(result.installing).toMatchObject({
+      stage: null,
+      installStage: "downloading",
+      hadInstall: true,
+    });
+    expect(result.starting).toMatchObject({
+      stage: "login",
+      installStage: null,
+      hadInstall: true,
+    });
+  });
+
   it("malformed session ids are SessionNotFound without touching the db", async () => {
     const result = await run(
       Effect.gen(function* () {

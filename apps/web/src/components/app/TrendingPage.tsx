@@ -1,6 +1,6 @@
 // «В тренде» (`/app/trending`, Task 12): сейчас играют и за неделю — топ Steam по
 // онлайну, карточки как в «Мои игры» (`GameTile`), но подпись — число игроков, не
-// статус облака. Нет в библиотеке Steam у пользователя — кнопка скрыта («blocked»).
+// статус облака. Нет в библиотеке Steam у пользователя — подпись «нет в библиотеке».
 // Перезапрашивает `trendingAtom` раз в 30 с, пока страница смонтирована.
 import type { TrendingEntry } from "@cg/rpc";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
@@ -8,13 +8,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useEffect } from "react";
 import { GameSection } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
-import {
-  cardAction,
-  type CardAction,
-  type LibraryPlay,
-} from "@/lib/cardAction";
 import { pluralize } from "@/lib/plural";
-import { usePlaySession } from "@/lib/usePlaySession";
 import { trendingAtom } from "@/rpc";
 
 /** Раз в 30 с, пока компонент смонтирован, — см. спеку §4.2 и Task 12. */
@@ -29,15 +23,9 @@ function caption(entry: TrendingEntry, kind: "now" | "week"): string {
     : `${entry.players} ${pluralize(entry.players, "игрок", "игрока", "игроков")}`;
 }
 
-function trendingAction(entry: TrendingEntry, play: LibraryPlay): CardAction {
-  if (!entry.inLibrary) return { kind: "blocked" };
-  return cardAction(entry, play);
-}
-
 export function TrendingPage() {
   const trending = useAtomValue(trendingAtom);
   const refresh = useAtomRefresh(trendingAtom);
-  const { play } = usePlaySession();
 
   useEffect(() => {
     const timer = setInterval(() => refresh(), TRENDING_REFRESH_MS);
@@ -63,7 +51,6 @@ export function TrendingPage() {
               key={entry.appId}
               game={entry}
               caption={caption(entry, "now")}
-              action={trendingAction(entry, play)}
             />
           ))}
         </GameSection>
@@ -75,7 +62,6 @@ export function TrendingPage() {
               key={entry.appId}
               game={entry}
               caption={caption(entry, "week")}
-              action={trendingAction(entry, play)}
             />
           ))}
         </GameSection>

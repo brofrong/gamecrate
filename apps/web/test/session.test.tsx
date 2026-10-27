@@ -1,10 +1,11 @@
-import { describe, expect, it, mock, spyOn } from "bun:test";
+import { describe, expect, it, jest, mock, spyOn } from "bun:test";
 import {
   type SessionState,
   type SessionView,
   steamLoginRequiredReason,
 } from "@cg/rpc";
 import {
+  act,
   fireEvent,
   render,
   renderHook,
@@ -13,9 +14,6 @@ import {
 } from "@testing-library/react";
 import { Exit } from "effect";
 import { toast } from "sonner";
-import { RouterProvider } from "@tanstack/react-router";
-import { GameTile, type TileGame } from "../src/components/app/GameTile";
-import { testRouter } from "./router";
 import { IdlePrompt } from "../src/components/IdlePrompt";
 import { cardAction, type LibraryPlay } from "../src/lib/cardAction";
 import { Player } from "../src/components/Player";
@@ -43,6 +41,9 @@ const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
     failReason: null,
     idleDeadline: null,
     installPercent: null,
+    stage: null,
+    installStage: null,
+    hadInstall: false,
     playedSeconds: 0,
     createdAt: "2026-10-17T10:00:00.000Z",
     ...patch,
@@ -96,23 +97,24 @@ const expectStream = (container: HTMLElement) => {
 
 describe("session", () => {
   it("renders status text for each state", () => {
+    // queued/installing/starting — экран загрузки (подробно — loadingScreen.test.tsx).
     const queued = renderPlayer(view("queued", { streamReady: false }));
-    expect(screen.getByText("Ждём свободный сервер…")).toBeTruthy();
+    expect(screen.getByText("Ждём свободный сервер")).toBeTruthy();
     expect(streamFrame(queued.container)).toBeNull();
     queued.unmount();
 
+    // Стрима ещё нет — показывать нечего, кнопки «Показать экран» нет.
     const starting = renderPlayer(view("starting", { streamReady: false }));
-    expect(screen.getByText("Запускаем игру…")).toBeTruthy();
+    expect(screen.getByText("Готовим компьютер")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Показать экран" })).toBeNull();
     expect(streamFrame(starting.container)).toBeNull();
     starting.unmount();
 
-    const startingStream = renderPlayer(view("starting"));
+    // Стрим готов — он уже подключается под экраном загрузки.
+    const startingStream = renderPlayer(view("starting", { stage: "login" }));
     expectStream(startingStream.container);
-    expect(
-      screen.getByText(
-        "Если появилось окно входа Steam — отсканируйте QR-код в мобильном приложении Steam",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText("Входим в аккаунт")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Показать экран" })).toBeTruthy();
     startingStream.unmount();
 
     for (const state of ["playing", "disconnected"] as const) {
@@ -141,10 +143,13 @@ describe("session", () => {
     stopping.unmount();
 
     const installing = renderPlayer(
-      view("installing", { streamReady: false, installPercent: 34 }),
+      view("installing", {
+        streamReady: false,
+        installStage: "downloading",
+        installPercent: 34,
+      }),
     );
-    expect(screen.getByText("Устанавливаем игру")).toBeTruthy();
-    expect(screen.getByText("34 %")).toBeTruthy();
+    expect(screen.getByText("Скачиваем игру · 34 %")).toBeTruthy();
     expect(
       screen.getByText("Время установки не входит в игровое"),
     ).toBeTruthy();
@@ -175,11 +180,14 @@ describe("session", () => {
   it("installing screen shows the percent, the not-billed note and cancels via the same stop action", () => {
     const onExit = mock(() => {});
     renderPlayer(
-      view("installing", { streamReady: false, installPercent: 34 }),
+      view("installing", {
+        streamReady: false,
+        installStage: "downloading",
+        installPercent: 34,
+      }),
       { onExit },
     );
-    expect(screen.getByText("Устанавливаем игру")).toBeTruthy();
-    expect(screen.getByText("34 %")).toBeTruthy();
+    expect(screen.getByText("Скачиваем игру · 34 %")).toBeTruthy();
     expect(
       screen.getByText("Время установки не входит в игровое"),
     ).toBeTruthy();
@@ -188,8 +196,14 @@ describe("session", () => {
   });
 
   it("installing with an unknown total shows 0 %", () => {
-    renderPlayer(view("installing", { streamReady: false, installPercent: 0 }));
-    expect(screen.getByText("0 %")).toBeTruthy();
+    renderPlayer(
+      view("installing", {
+        streamReady: false,
+        installStage: "downloading",
+        installPercent: 0,
+      }),
+    );
+    expect(screen.getByText("Скачиваем игру · 0 %")).toBeTruthy();
   });
 
   it("ended shows played time in hours and minutes", () => {
@@ -384,13 +398,155 @@ describe("session", () => {
     }
   });
 
-  it("play disabled on other games while a session is active", async () => {
-    const game = (appId: number, name: string): TileGame => ({
-      appId,
-      name,
-      coverUrl: `https://cdn.example/${appId}.jpg`,
-      cloud: { _tag: "Missing" },
-    });
+  const rerenderPlayer = (
+    rerender: (ui: React.ReactNode) => void,
+    v: SessionView,
+  ) =>
+    rerender(
+      <Player
+        view={v}
+        onExit={noop}
+        onHere={noop}
+        onLibrary={noop}
+        onPlayAgain={noop}
+      />,
+    );
+
+  /** Экран загрузки на странице: его признак — строка последнего этапа запуска. */
+  const loadingShown = () => screen.queryByText("Загружаем игру") !== null;
+
+  it("loading overlay keeps the same iframe", () => {
+    const { container, rerender } = renderPlayer(
+      view("starting", { stage: "prepare" }),
+    );
+    const first = streamFrame(container);
+    expect(first).not.toBeNull();
+    expect(loadingShown()).toBe(true);
+    // Пока экран загрузки — своя «Отменить», без «Выйти из игры» поверх него.
+    expect(screen.queryByRole("button", { name: "Выйти из игры" })).toBeNull();
+
+    // Steam запустил игру (`playing`), окна ещё нет — экран загрузки остаётся.
+    rerenderPlayer(rerender, view("playing", { stage: "loading" }));
+    expect(streamFrame(container)).toBe(first);
+    expect(loadingShown()).toBe(true);
+
+    // Окно игры появилось — экран загрузки снят, iframe тот же.
+    rerenderPlayer(rerender, view("playing", { stage: "visible" }));
+    expect(streamFrame(container)).toBe(first);
+    expect(loadingShown()).toBe(false);
+    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+  });
+
+  it("show screen reveals the stream and stays revealed", () => {
+    const { container, rerender } = renderPlayer(
+      view("starting", { stage: "login" }),
+    );
+    const first = streamFrame(container);
+    fireEvent.click(screen.getByRole("button", { name: "Показать экран" }));
+    expect(loadingShown()).toBe(false);
+    expect(streamFrame(container)).toBe(first);
+    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+
+    // Новые этапы не возвращают экран загрузки.
+    for (const stage of ["prepare", "loading", "visible"] as const) {
+      rerenderPlayer(rerender, view("playing", { stage }));
+      expect(loadingShown()).toBe(false);
+      expect(streamFrame(container)).toBe(first);
+    }
+  });
+
+  it("show screen does not carry over to the next session", () => {
+    const { rerender } = renderPlayer(view("starting", { stage: "login" }));
+    fireEvent.click(screen.getByRole("button", { name: "Показать экран" }));
+    expect(loadingShown()).toBe(false);
+    // «Играть снова» — новая сессия в том же `Player`: снова экран загрузки.
+    rerenderPlayer(
+      rerender,
+      view("starting", {
+        id: "5f0e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b",
+        stage: "computer",
+      }),
+    );
+    expect(loadingShown()).toBe(true);
+  });
+
+  it("playing without a stage shows the stream", () => {
+    const { container } = renderPlayer(view("playing"));
+    expectStream(container);
+    expect(loadingShown()).toBe(false);
+    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+  });
+
+  it("playing with a stage before prepare shows the stream", () => {
+    // Игра уже идёт, а этап раньше `prepare` — источник этапов сломан
+    // (например, в образе нет скрипта): трансляция, а не «Запускаем Steam» поверх игры.
+    for (const stage of ["computer", "steam", "login"] as const) {
+      const { container, unmount } = renderPlayer(view("playing", { stage }));
+      expectStream(container);
+      expect(loadingShown()).toBe(false);
+      expect(
+        screen.getByRole("button", { name: "Выйти из игры" }),
+      ).toBeTruthy();
+      unmount();
+    }
+    // `prepare`/`loading` — игра идёт, окна ещё нет: экран загрузки.
+    for (const stage of ["prepare", "loading"] as const) {
+      const { unmount } = renderPlayer(view("playing", { stage }));
+      expect(loadingShown()).toBe(true);
+      unmount();
+    }
+  });
+
+  const hint = "Похоже, игра ждёт вас на экране";
+
+  it("hint after 3 minutes in playing", () => {
+    jest.useFakeTimers();
+    try {
+      const { rerender } = renderPlayer(view("starting", { stage: "login" }));
+      // Время до `playing` (процесса игры ещё нет) не считается.
+      act(() => jest.advanceTimersByTime(200_000));
+      expect(screen.queryByText(hint)).toBeNull();
+
+      rerenderPlayer(rerender, view("playing", { stage: "prepare" }));
+      act(() => jest.advanceTimersByTime(100_000));
+      // Смена этапа внутри `playing` отсчёт не сбрасывает.
+      rerenderPlayer(rerender, view("playing", { stage: "loading" }));
+      act(() => jest.advanceTimersByTime(70_000));
+      expect(screen.queryByText(hint)).toBeNull();
+      act(() => jest.advanceTimersByTime(11_000));
+      expect(screen.getByText(hint)).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Показать экран" }),
+      ).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("hint after 3 minutes in playing even when the stage stays at prepare", () => {
+    jest.useFakeTimers();
+    try {
+      // Нативная игра, сначала лаунчер или окно не распознаётся: `loading` не придёт.
+      renderPlayer(view("playing", { stage: "prepare" }));
+      act(() => jest.advanceTimersByTime(170_000));
+      expect(screen.queryByText(hint)).toBeNull();
+      act(() => jest.advanceTimersByTime(11_000));
+      expect(screen.getByText(hint)).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("steam QR hint sits on the loading screen, not over the stream", () => {
+    const qr =
+      "Если появилось окно входа Steam — отсканируйте QR-код в мобильном приложении Steam";
+    renderPlayer(view("starting", { stage: "login" }));
+    expect(screen.getByText(qr)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Показать экран" }));
+    expect(screen.queryByText(qr)).toBeNull();
+  });
+
+  it("cardAction: play for free games, resume for the active one, blocked for the rest", () => {
     const onPlay = mock((_appId: number) => {});
     const onResume = mock(() => {});
     const play = (active: SessionView | null): LibraryPlay => ({
@@ -399,42 +555,21 @@ describe("session", () => {
       onPlay,
       onResume,
     });
-    const games = [game(620, "Portal 2"), game(400, "Portal")];
-    // Плитка — `Link`, ей нужен роутер; первый запрос через `findBy*`.
-    const tiles = (p: LibraryPlay) => (
-      <RouterProvider
-        router={testRouter(
-          <>
-            {games.map((g) => (
-              <GameTile key={g.appId} game={g} action={cardAction(g, p)} />
-            ))}
-          </>,
-        )}
-      />
-    );
 
-    const free = render(tiles(play(null)));
-    // Неустановленные игры: кнопка называется «Установить», запрос тот же.
-    const buttons = await screen.findAllByRole("button", {
-      name: /^Установить/,
-    });
-    expect(buttons).toHaveLength(2);
-    fireEvent.click(buttons[1] as HTMLElement);
+    // Нет активной сессии: у каждой игры «Играть»/«Установить» (запрос один и тот же).
+    const free = cardAction({ appId: 400 }, play(null));
+    expect(free.kind).toBe("play");
+    if (free.kind === "play") free.onPlay();
     expect(onPlay).toHaveBeenCalledWith(400);
-    free.unmount();
 
-    // Активная сессия у Portal 2 (620): Portal (400) заблокирован — кнопки нет
-    // вовсе (см. `gameTile.test.tsx` «blocked action renders no button»), у Portal 2 —
-    // «Вернуться в игру».
-    render(tiles(play(view("playing"))));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Вернуться в игру" }),
-    );
-    expect(
-      screen.queryByRole("button", { name: "Установить: Portal" }),
-    ).toBeNull();
+    // Активная сессия у Portal 2 (620): у неё «Вернуться в игру», Portal (400) заблокирован.
+    const resume = cardAction({ appId: 620 }, play(view("playing")));
+    expect(resume.kind).toBe("resume");
+    if (resume.kind === "resume") resume.onResume();
     expect(onResume).toHaveBeenCalledTimes(1);
-    expect(onPlay).toHaveBeenCalledTimes(1);
+    expect(cardAction({ appId: 400 }, play(view("playing"))).kind).toBe(
+      "blocked",
+    );
   });
 
   it("gamepad noise inside the dead zone is not input", () => {

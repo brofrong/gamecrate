@@ -1355,3 +1355,102 @@ describe("stream url pin", () => {
       }),
     ));
 });
+
+describe("session stage", () => {
+  it("SessionStage report stores the stage of an active session on its worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 2);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          state: "ended",
+          workerId: "w1",
+          slot: 1,
+          stateSince: t0,
+        });
+
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "login",
+          }),
+          at(t0, 1),
+        );
+        expect((yield* sessionRow("s1")).stage).toBe("login");
+
+        // Отчёт от другого воркера той же сессии игнорируется.
+        yield* runner.handle(
+          report("w-other", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "prepare",
+          }),
+          at(t0, 2),
+        );
+        expect((yield* sessionRow("s1")).stage).toBe("login");
+
+        // Сессия уже ended — отчёт игнорируется.
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s2",
+            stage: "login",
+          }),
+          at(t0, 3),
+        );
+        expect((yield* sessionRow("s2")).stage).toBeNull();
+      }),
+    ));
+
+  it("setStage ignores an earlier stage", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "loading",
+          }),
+          at(t0, 1),
+        );
+        expect((yield* sessionRow("s1")).stage).toBe("loading");
+
+        // Этап раньше уже записанного — индекс в SessionStage меньше, игнорируется.
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "login",
+          }),
+          at(t0, 2),
+        );
+        expect((yield* sessionRow("s1")).stage).toBe("loading");
+      }),
+    ));
+});

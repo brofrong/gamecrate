@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Замер запуска уже установленной игры на воркере (по умолчанию brofrong): от вставки строки
-# `sessions` (`queued`) — как нажатие «Играть» — до `play_segments.started_at` (`Game started`).
+# `sessions` (`queued`) — как нажатие «Играть» — до `sessions.stage = 'visible'` (экран загрузки
+# на сайте сменился игрой; `play_segments.started_at` — «Game started» — отмечается раньше).
 #
 #   ./deploy/measure-session-start.sh <userId> <appId> [запусков=3] [ssh-хост]
 #
@@ -9,14 +10,15 @@
 #    активная сессия: замер — только на свободном слоте и без установок.
 # 2. Вставляет `sessions(id, user_id, app_id, state='queued')` (id — uuid из /proc) и каждые
 #    0,5 с отмечает первое появление: `container` — контейнер сессии запущен, `steam-ui` — есть
-#    logs/steamui_login.txt клиента Steam, `game` — строка `play_segments` этой сессии. Таймаут —
-#    10 мин.
+#    logs/steamui_login.txt клиента Steam, `game` — строка `play_segments` этой сессии, `visible` —
+#    `sessions.stage` этой сессии стал `visible` (экран загрузки сменился игрой). Опрос идёт до
+#    `visible` или таймаута — 10 мин.
 # 3. На `game`: копирует из контейнера logs/{steamui_login,webhelper,client_networkmanager}.txt
 #    во временный каталог и печатает переходы входа (`SetLoginState`, `Timed out`) и время первой
 #    строки webhelper. Имени аккаунта и токена в этих строках нет.
 # 4. Останавливает сессию как сайт (`stop_requested_at = now()`), ждёт `ended`/`failed` и
 #    исчезновения контейнера (до 5 мин), удаляет временный каталог.
-# В конце — таблица в секундах от вставки строки и медиана `game`.
+# В конце — таблица в секундах от вставки строки и медианы `game` и `visible`.
 #
 # Пишет в БД только строки `sessions` пользователя: каждая станет обычной завершённой сессией и
 # попадёт в его историю (игровое время — несколько секунд). `.env` не читает; чужие контейнеры,
@@ -97,8 +99,8 @@ for run in $(seq 1 "${runs}"); do
   t0="$(now_ms)"
   sql "insert into sessions (id, user_id, app_id, state)
        values ('${sid}', '${user_id}', ${app_id}, 'queued')" >/dev/null
-  t_container="" t_ui="" t_game=""
-  while [ -z "${t_game}" ]; do
+  t_container="" t_ui="" t_game="" t_visible=""
+  while :; do
     t="$(( $(now_ms) - t0 ))"
     if [ "$(docker inspect -f '{{.State.Running}}' "${name}" 2>/dev/null)" = true ]; then
       [ -n "${t_container}" ] || t_container="${t}"
@@ -106,8 +108,22 @@ for run in $(seq 1 "${runs}"); do
         t_ui="${t}"
       fi
     fi
-    if [ -n "$(sql "select 1 from play_segments where session_id = '${sid}' limit 1")" ]; then
+    if [ -z "${t_game}" ] && [ -n "$(sql "select 1 from play_segments where session_id = '${sid}' limit 1")" ]; then
       t_game="${t}"
+      echo "== запуск ${run}: сессия ${sid}"
+      for f in steamui_login webhelper client_networkmanager; do
+        docker cp "${name}:${steam_logs}/${f}.txt" "${tmp}/${f}.txt" >/dev/null 2>&1 || true
+      done
+      if [ -f "${tmp}/steamui_login.txt" ]; then
+        grep -E 'SetLoginState|Timed out' "${tmp}/steamui_login.txt" | sed 's/^/  /' || true
+      fi
+      if [ -f "${tmp}/webhelper.txt" ]; then
+        echo "  webhelper: первая строка $(grep -oE '^\[[^]]*\]' "${tmp}/webhelper.txt" | head -n 1 || true)"
+      fi
+      rm -f "${tmp}"/*.txt
+    fi
+    if [ "$(sql "select stage from sessions where id = '${sid}'")" = visible ]; then
+      t_visible="${t}"
       break
     fi
     state="$(sql "select state from sessions where id = '${sid}'")"
@@ -116,29 +132,20 @@ for run in $(seq 1 "${runs}"); do
       exit 1
     fi
     if [ "${t}" -gt "${start_timeout_ms}" ]; then
-      echo "ОШИБКА: запуск ${run}: игра не запустилась за 10 мин (state=${state})" >&2
+      echo "ОШИБКА: запуск ${run}: экран загрузки не исчез за 10 мин (state=${state})" >&2
       exit 1
     fi
     sleep 0.5
   done
-  echo "== запуск ${run}: сессия ${sid}"
-  for f in steamui_login webhelper client_networkmanager; do
-    docker cp "${name}:${steam_logs}/${f}.txt" "${tmp}/${f}.txt" >/dev/null 2>&1 || true
-  done
-  if [ -f "${tmp}/steamui_login.txt" ]; then
-    grep -E 'SetLoginState|Timed out' "${tmp}/steamui_login.txt" | sed 's/^/  /' || true
-  fi
-  if [ -f "${tmp}/webhelper.txt" ]; then
-    echo "  webhelper: первая строка $(grep -oE '^\[[^]]*\]' "${tmp}/webhelper.txt" | head -n 1 || true)"
-  fi
-  rm -f "${tmp}"/*.txt
-  results+=("${run} $(sec "${t_container}") $(sec "${t_ui}") $(sec "${t_game}")")
+  results+=("${run} $(sec "${t_container}") $(sec "${t_ui}") $(sec "${t_game}") $(sec "${t_visible}")")
   stop_session
 done
 
 echo
-printf '%-4s %10s %9s %6s\n' run container steam-ui game
-printf '%s\n' "${results[@]}" | awk '{ printf "%-4s %10s %9s %6s\n", $1, $2, $3, $4 }'
+printf '%-4s %10s %9s %6s %8s\n' run container steam-ui game visible
+printf '%s\n' "${results[@]}" | awk '{ printf "%-4s %10s %9s %6s %8s\n", $1, $2, $3, $4, $5 }'
 printf '%s\n' "${results[@]}" | awk '{ print $4 }' | sort -n |
   awk '{ v[NR] = $1 } END { m = (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2; printf "медиана game: %.1f с\n", m }'
+printf '%s\n' "${results[@]}" | awk '{ print $5 }' | sort -n |
+  awk '{ v[NR] = $1 } END { m = (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2; printf "медиана visible: %.1f с\n", m }'
 REMOTE

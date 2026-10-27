@@ -1,13 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -33,6 +37,8 @@ import {
 } from "../src/DockerClient";
 import {
   CONNECTION_LOG,
+  downloadingBytes,
+  DownloadingBytes,
   Installer,
   type InstallerShape,
   installReasons,
@@ -392,7 +398,13 @@ const layerDirsExist = (fake: Fake, jobId = "j1") => [
 interface Harness {
   readonly fake: Fake;
   readonly installer: InstallerShape;
+  /**
+   * Отчёты, накопившиеся к этому моменту, кроме `InstallStage` (этапы
+   * проверяют свои тесты через `drainAll`).
+   */
   readonly drain: Effect.Effect<Array<AgentReport>>;
+  /** Все отчёты, накопившиеся к этому моменту. */
+  readonly drainAll: Effect.Effect<Array<AgentReport>>;
   readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
 }
 
@@ -428,14 +440,19 @@ const run = (
       ),
     );
     const installer = Context.get(context, Installer);
-    const drain = Queue.clear(installer.reports);
+    const drainAll = Queue.clear(installer.reports);
+    const drain = drainAll.pipe(
+      Effect.map((reports) =>
+        reports.filter((report) => report._tag !== "InstallStage"),
+      ),
+    );
     const tick = (duration: Duration.Input) =>
       Effect.gen(function* () {
         yield* TestClock.adjust(duration);
         for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
       });
     yield* tick("0 seconds");
-    yield* body({ fake, installer, drain, tick });
+    yield* body({ fake, installer, drain, drainAll, tick });
   });
   return Effect.runPromise(
     program.pipe(
@@ -447,6 +464,36 @@ const run = (
           return fake.disk.fail
             ? Effect.fail(new DiskSpaceError({ dir, message: "EIO" }))
             : Effect.succeed(fake.disk.freeBytes);
+        }),
+      ),
+      // Настоящая `downloadingBytes` — промис внутри цикла опроса, driven
+      // TestClock: гонка с реальным event loop (см. её тест ниже отдельно,
+      // без TestClock). Здесь, в опросе `watch`, подменяем синхронным
+      // обходом тех же каталогов — детерминированно и без лишней моли в тесте.
+      Effect.provideService(DownloadingBytes, (dir) =>
+        Effect.sync(() => {
+          let total = 0;
+          const walk = (path: string) => {
+            let entries;
+            try {
+              entries = readdirSync(path, { withFileTypes: true });
+            } catch {
+              return;
+            }
+            for (const entry of entries) {
+              const full = join(path, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile()) {
+                try {
+                  total += statSync(full).size;
+                } catch {
+                  // гонка со Steam/права — пропускаем
+                }
+              }
+            }
+          };
+          walk(dir);
+          return total;
         }),
       ),
       (effect) => {
@@ -1553,6 +1600,209 @@ describe("Installer", () => {
           expect(h.installer.running()).toEqual([]);
         }),
       { config: { roles: ["worker"], installScratchDir: Option.none() } },
+    ));
+});
+
+/** Этапы `InstallStage` из отчётов (остальные отбрасываются). */
+const stagesOf = (reports: ReadonlyArray<AgentReport>) =>
+  reports.flatMap((report) =>
+    report._tag === "InstallStage" ? [[report.jobId, report.stage]] : [],
+  );
+
+describe("Installer stages", () => {
+  it("reports preparing, login, downloading, moving in order", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Контейнер поднят и клиент сразу вошёл (autoLogin) — все три этапа
+        // загрузки видны уже после первого тика.
+        expect(stagesOf(yield* h.drainAll)).toEqual([
+          ["j1", "preparing"],
+          ["j1", "login"],
+          ["j1", "downloading"],
+        ]);
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "moving"]]);
+      }),
+    ));
+
+  it("reports login before a slow Steam logon, downloading only after it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([
+          ["j1", "preparing"],
+          ["j1", "login"],
+        ]);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "downloading"]]);
+      }),
+    ));
+});
+
+/** Разреженный файл: один байт в конце, `size` — `apparent` байт. */
+const writeSparse = (path: string, apparent: number) => {
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, "x", apparent - 1);
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/** ФС под `tmpdir()` хранит разреженные файлы без выделения всего размера. */
+const sparseSupported = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "cg-sparse-probe-"));
+  try {
+    const path = join(dir, "probe");
+    writeSparse(path, 64 * 1024 * 1024);
+    const stat = statSync(path);
+    return stat.blocks * 512 < stat.size;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
+describe("downloadingBytes", () => {
+  it("sums allocated bytes of files under the dir and is 0 without it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
+    try {
+      expect(
+        await Effect.runPromise(downloadingBytes(join(dir, "missing"))),
+      ).toBe(0);
+      write(dir, { "a.bin": "x".repeat(5), "sub/b.bin": "x".repeat(7) });
+      // Выделяется блоками: не меньше записанного.
+      expect(
+        await Effect.runPromise(downloadingBytes(dir)),
+      ).toBeGreaterThanOrEqual(12);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Если ФС выделяет разреженному файлу весь размер, проверять нечего.
+  it.skipIf(!sparseSupported)(
+    "counts a preallocated sparse file by allocated, not apparent size",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
+      try {
+        const apparent = 64 * 1024 * 1024;
+        writeSparse(join(dir, "big.bin"), apparent);
+        expect(statSync(join(dir, "big.bin")).size).toBe(apparent);
+        expect(await Effect.runPromise(downloadingBytes(dir))).toBeLessThan(
+          apparent / 16,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("Installer download progress", () => {
+  it("uses downloading bytes when they are ahead of the manifest", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "10",
+        });
+        write(join(upperOf(h.fake), "downloading", "736260"), {
+          "part.bin": "x".repeat(40),
+        });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 40,
+            bytesTotal: 100,
+          },
+        ]);
+      }),
+    ));
+
+  it("never decreases and never exceeds the total", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        const downloading = join(upperOf(h.fake), "downloading", "736260");
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "10",
+        });
+        // Каталог «downloading» уже больше общего размера (временно, до
+        // перезаписи манифеста Steam) — отчёт не должен превысить total.
+        write(downloading, { "part.bin": "x".repeat(140) });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 100,
+            bytesTotal: 100,
+          },
+        ]);
+        // Файлы ушли из «downloading» (например, Steam их переместил), а
+        // манифест отстаёт — отчёт не должен уменьшиться.
+        rmSync(downloading, { recursive: true, force: true });
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "50",
+        });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([]);
+      }),
+    ));
+
+  it("caps at a shrinking total even though reports never decrease otherwise", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Steam поднял процент (без downloading-каталога — тут он не при чём).
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "90",
+        });
+        yield* h.tick("2 seconds");
+        // Steam пересчитал зависимости: BytesToDownload и BytesDownloaded
+        // оба упали. «Не меньше прежнего» не должно вытолкнуть отчёт за
+        // новый total — предел побеждает плавность.
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "50",
+          BytesDownloaded: "40",
+        });
+        yield* h.tick("2 seconds");
+        const reports = (yield* h.drain).filter(
+          (r): r is Extract<AgentReport, { _tag: "InstallProgress" }> =>
+            r._tag === "InstallProgress",
+        );
+        expect(reports.map((r) => [r.bytesDownloaded, r.bytesTotal])).toEqual([
+          [90, 100],
+          [50, 50],
+        ]);
+        for (const r of reports)
+          expect(r.bytesDownloaded).toBeLessThanOrEqual(r.bytesTotal);
+      }),
     ));
 });
 

@@ -12,6 +12,9 @@ const session: SessionView = {
   failReason: null,
   idleDeadline: null,
   installPercent: null,
+  stage: null,
+  installStage: null,
+  hadInstall: false,
   playedSeconds: 10,
   createdAt: "2026-10-23T00:00:00.000Z",
 };

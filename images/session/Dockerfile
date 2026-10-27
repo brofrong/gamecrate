@@ -44,6 +44,9 @@ COPY --chmod=0644 cg-launch.desktop /etc/xdg/autostart/cg-launch.desktop
 # агент зовёт их `docker exec`.
 COPY --chmod=0755 cg-profile-pack cg-steam-shutdown /usr/local/bin/
 
+# Этап запуска игры (экран загрузки, план §4.1/§4.2) — агент зовёт его `docker exec` раз в 2 с.
+COPY --chmod=0755 cg-session-stage /usr/local/bin/
+
 # Заглушка NetworkManager: без неё Steam перед каждым входом ждёт сеть 20 с (README.md). Служба
 # s6 от ubuntu — как службы базового образа (их каталоги тоже принадлежат ubuntu).
 COPY --chmod=0755 cg-nm-stub /usr/local/bin/cg-nm-stub

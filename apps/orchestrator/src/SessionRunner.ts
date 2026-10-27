@@ -347,8 +347,17 @@ const make = (options: SessionRunnerOptions) =>
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":
+              case "InstallStage":
                 // Задачу и ждущие её сессии ведёт InstallDispatcher (своя подписка).
                 return Effect.void;
+              case "SessionStage":
+                return withDb(
+                  SessionRepo.setStage(
+                    workerId,
+                    report.sessionId,
+                    report.stage,
+                  ),
+                );
             }
           })();
           return effect.pipe(

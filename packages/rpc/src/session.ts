@@ -24,6 +24,39 @@ export type SessionState = typeof SessionState.Type;
 export const isTerminalSessionState = (state: SessionState): boolean =>
   state === "ended" || state === "failed";
 
+/**
+ * Этап запуска уже установленной игры до появления её окна (экран загрузки,
+ * спека §2 «Этапы»): `computer` — готовим компьютер (контейнер создаётся и
+ * стартует, профиль восстанавливается), `steam` — запускаем Steam (контейнер
+ * запущен, клиент стартует), `login` — входим в аккаунт, `prepare` — готовим
+ * игру (от старта процесса игры до старта её exe: среда Linux и Proton),
+ * `loading` — загружаем игру (от старта exe до появления окна). `visible`
+ * («игра видна», §4.2) — конец этапов, дальше обычный `playing`.
+ */
+export const SessionStage = Schema.Literals([
+  "computer",
+  "steam",
+  "login",
+  "prepare",
+  "loading",
+  "visible",
+]);
+export type SessionStage = typeof SessionStage.Type;
+
+/**
+ * Этап задачи установки игры в общую библиотеку (спека §2 «Этапы», установка):
+ * `preparing` — готовим установщик (контейнер создаётся и стартует), `login` —
+ * входим в Steam, `downloading` — скачиваем игру, `moving` — переносим игру в
+ * библиотеку.
+ */
+export const InstallStage = Schema.Literals([
+  "preparing",
+  "login",
+  "downloading",
+  "moving",
+]);
+export type InstallStage = typeof InstallStage.Type;
+
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /**
@@ -32,6 +65,10 @@ const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
  * - `failReason` — причина `failed` (для показа пользователю).
  * - `idleDeadline` — ISO 8601 времени автозакрытия в `idle_warning`, иначе null.
  * - `installPercent` — процент установки игры, только в `installing`, иначе null.
+ * - `stage` — этап запуска до появления игрового окна (экран загрузки), иначе null.
+ * - `installStage` — этап задачи установки, которую ждёт сессия, иначе null.
+ * - `hadInstall` — у сессии была (или есть) задача установки — экран загрузки
+ *   может показать её этапы, а не только этапы запуска контейнера.
  * - `playedSeconds` — игровое время сессии (сумма billable-отрезков, открытый — до текущего момента).
  * - `createdAt` — ISO 8601.
  */
@@ -46,6 +83,9 @@ export const SessionView = Schema.Struct({
   installPercent: Schema.NullOr(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   ),
+  stage: Schema.NullOr(SessionStage),
+  installStage: Schema.NullOr(InstallStage),
+  hadInstall: Schema.Boolean,
   playedSeconds: NonNegativeInt,
   createdAt: Schema.String,
 });

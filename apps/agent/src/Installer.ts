@@ -3,8 +3,10 @@
 // `steam -silent` без запуска игры) с профилем пользователя и overlay-слоями
 // поверх клиента Steam и библиотеки; в `steamapps` до старта кладётся заготовка
 // манифеста со `StateFlags 1026` — Steam сам ставит игру (и её зависимости) в
-// upper. Прогресс — из манифеста (`exec cat`, агент не читает upper смонтированного
-// overlay). Готово → профиль сохраняется, контейнер и тома удаляются, новые
+// upper. Прогресс — из манифеста (`exec cat`, агент не читает upper
+// смонтированного overlay изнутри контейнера), для плавности — ещё и размер
+// каталога `downloading` upper-слоя (его агент читает прямо на хосте, не через
+// exec). Готово → профиль сохраняется, контейнер и тома удаляются, новые
 // приложения переносятся `rename` из upper в библиотеку. Одна установка за раз.
 import {
   lstatSync,
@@ -13,6 +15,7 @@ import {
   readFileSync,
   renameSync,
 } from "node:fs";
+import { lstat as lstatAsync, readdir as readdirAsync } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type AgentCommand,
@@ -131,6 +134,66 @@ const manifestName = (appId: number) => `appmanifest_${appId}.acf`;
 /** Манифест игры в контейнере установщика. */
 export const manifestPath = (appId: number) =>
   `${STEAMAPPS_DIR}/${manifestName(appId)}`;
+
+/**
+ * Каталог частично скачанных файлов целевого приложения в upper apps-слоя
+ * (внутри `steamapps`, рядом с `common`): `<apps upper>/downloading/<appId>`.
+ * Второй, более плавный источник процента вместе с манифестом (спека §4.3);
+ * проверка на настоящей установке — Task 7. Отключить — убрать единственный
+ * вызов `downloadingBytes` в `watch`.
+ */
+const downloadingDir = (job: Job) =>
+  join(job.overlays.apps.upper, "downloading", String(job.appId));
+
+/**
+ * Сколько места занимают обычные файлы под `dir` рекурсивно — выделенные
+ * блоки (`blocks * 512`), а не `size`: Steam может заранее растянуть или
+ * создать разреженными файлы на весь размер, и процент прыгнул бы к 100 %.
+ * Агент читает upper хоста напрямую, overlay тут ни при чём; асинхронно — та
+ * же ФС, что у библиотеки, и тот же процесс может держать живые сессии (роли
+ * worker+gamestore), опрос не должен блокировать его event loop. Ссылки не
+ * разыменовываются (`lstat`). Каталога нет или запись не читается (гонка с
+ * Steam, права) — пропускается, сбоя наружу нет.
+ */
+export const downloadingBytes = (dir: string): Effect.Effect<number> =>
+  Effect.promise(async () => {
+    const walk = async (path: string): Promise<number> => {
+      let entries;
+      try {
+        entries = await readdirAsync(path, { withFileTypes: true });
+      } catch {
+        return 0;
+      }
+      let total = 0;
+      for (const entry of entries) {
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) total += await walk(full);
+        else if (entry.isFile()) {
+          try {
+            total += (await lstatAsync(full)).blocks * 512;
+          } catch {
+            // гонка со Steam/права — пропускаем, не валим установку
+          }
+        }
+      }
+      return total;
+    };
+    return walk(dir);
+  });
+
+export type DownloadingBytesShape = (dir: string) => Effect.Effect<number>;
+
+/**
+ * Как измерять `downloadingDir` — по умолчанию настоящий асинхронный обход
+ * (`downloadingBytes`). Как и `FreeSpace` в `DiskSpace.ts`: тесты подменяют
+ * синхронным фейком — настоящий промис внутри цикла опроса, driven
+ * `TestClock`, рвёт цепочку, которой `TestClock.adjust` сам продвигает подряд
+ * идущие `Effect.sleep`, и гоняется с реальным event loop не детерминированно.
+ */
+export const DownloadingBytes = Context.Reference<DownloadingBytesShape>(
+  "@cg/agent/DownloadingBytes",
+  { defaultValue: () => downloadingBytes },
+);
 
 /**
  * Заготовка манифеста: «нужно обновление, обновление начато» (`StateFlags 1026`)
@@ -353,6 +416,7 @@ const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
   const freeSpace = yield* FreeSpace;
+  const measureDownloading = yield* DownloadingBytes;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<Services>();
   const withServices = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -422,20 +486,39 @@ const make = Effect.gen(function* () {
    * загрузки и распаковки (`BytesStaged`: после загрузки Steam распаковывает и
    * проверяет) или `StateFlags`, а также любое изменение байтов/состояния
    * других манифестов (зависимости); хода нет STALL_TIMEOUT — `Abort`.
+   *
+   * Процент (спека §4.3): манифест обновляется редко и скачками — вместе с
+   * ним берём размер `downloadingDir` (растёт плавнее) и отдаём максимум из
+   * двух, не меньше уже отданного в этой задаче (временная гонка — файлы ещё
+   * не переехали в манифест/общую библиотеку — не должна дёргать полоску
+   * назад). Ограничение `BytesToDownload` — последним шагом, после «не
+   * меньше»: Steam может пересчитать сам `BytesToDownload` меньше прежнего, и
+   * тогда отчёт должен упасть вместе с ним, а не вылезти за 100%.
+   * `BytesToDownload` пока неизвестен или 0 — как раньше, прямое значение
+   * манифеста.
    */
   const watch = (job: Job) =>
     Effect.gen(function* () {
       let lastBytes: string | undefined;
       let lastState: string | undefined;
       let lastActivity: string | undefined;
+      let lastReported: number | undefined;
       let changedAt = yield* Clock.currentTimeMillis;
       while (true) {
         const fields = yield* readManifest(job);
         if (fields?.StateFlags === "4") return fields;
         const now = yield* Clock.currentTimeMillis;
-        const bytesDownloaded = count(fields?.BytesDownloaded);
+        const manifestBytes = count(fields?.BytesDownloaded);
         const bytesTotal = count(fields?.BytesToDownload);
-        if (bytesDownloaded !== undefined && bytesTotal !== undefined) {
+        if (manifestBytes !== undefined && bytesTotal !== undefined) {
+          let bytesDownloaded = manifestBytes;
+          if (bytesTotal > 0) {
+            const downloading = yield* measureDownloading(downloadingDir(job));
+            bytesDownloaded = Math.max(bytesDownloaded, downloading);
+            bytesDownloaded = Math.max(bytesDownloaded, lastReported ?? 0);
+            bytesDownloaded = Math.min(bytesDownloaded, bytesTotal);
+            lastReported = bytesDownloaded;
+          }
           const bytes = `${bytesDownloaded}/${bytesTotal}`;
           if (bytes !== lastBytes) {
             lastBytes = bytes;
@@ -562,10 +645,17 @@ const make = Effect.gen(function* () {
   /**
    * Слои → контейнер → профиль (нет профиля и входа — сразу `steamLogin`) →
    * посев входа (есть что сеять) → заготовка манифеста → смещение журнала →
-   * старт → ждём вход Steam → загрузка.
+   * старт → ждём вход Steam → загрузка. Этапы для экрана загрузки (спека §2,
+   * §4.3): `preparing` сразу, `login` перед ожиданием входа, `downloading` —
+   * как только Steam вошёл.
    */
   const download = (job: Job) =>
     Effect.gen(function* () {
+      yield* emit({
+        _tag: "InstallStage",
+        jobId: job.jobId,
+        stage: "preparing",
+      });
       const startFailed = (cause: unknown) =>
         new Abort({ reason: installReasons.dockerStart, cause });
       yield* prepare(job.overlays).pipe(
@@ -643,7 +733,13 @@ const make = Effect.gen(function* () {
         profile: from,
         steamLoginSeeded: job.seeded,
       });
+      yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "login" });
       yield* waitForSteamLogon(job, logOffset);
+      yield* emit({
+        _tag: "InstallStage",
+        jobId: job.jobId,
+        stage: "downloading",
+      });
       return yield* watch(job);
     });
 
@@ -655,6 +751,7 @@ const make = Effect.gen(function* () {
   const finish = (job: Job, manifest: Record<string, string>) =>
     Effect.gen(function* () {
       job.phase = "finishing";
+      yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "moving" });
       const sizeBytes = count(manifest.SizeOnDisk) ?? 0;
       const buildId = manifest.buildid ?? "";
       const saved = yield* saveProfile({

@@ -3,6 +3,7 @@
 // браузерный API её никогда не обслуживает.
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import { InstallStage, SessionStage } from "./session";
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -157,8 +158,10 @@ export const steamLoginRequiredReason = "Войдите в Steam";
 
 /**
  * Отчёт агента: стрим готов (`streamUrl` — внутренний адрес Selkies), состояние
- * процесса игры, heartbeat со списком живых сессий, прогресс/итог установки,
- * контейнер остановлен (`cloudSynced` — Steam Cloud успел синхронизироваться,
+ * процесса игры, heartbeat со списком живых сессий, этап запуска контейнера
+ * сессии до появления игрового окна (`SessionStage`) или этап задачи установки
+ * (`InstallStage`) — экран загрузки, прогресс/итог установки, контейнер
+ * остановлен (`cloudSynced` — Steam Cloud успел синхронизироваться,
  * `profileSaved` — профиль выгружен и принят), сбой с причиной.
  */
 export const AgentReport = Schema.Union([
@@ -171,6 +174,14 @@ export const AgentReport = Schema.Union([
     running: Schema.Boolean,
   }),
   Schema.TaggedStruct("Heartbeat", { sessionIds: Schema.Array(Schema.String) }),
+  Schema.TaggedStruct("SessionStage", {
+    sessionId: Schema.String,
+    stage: SessionStage,
+  }),
+  Schema.TaggedStruct("InstallStage", {
+    jobId: Schema.String,
+    stage: InstallStage,
+  }),
   Schema.TaggedStruct("InstallProgress", {
     jobId: Schema.String,
     bytesDownloaded: NonNegativeInt,

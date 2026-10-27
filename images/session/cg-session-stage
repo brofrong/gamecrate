@@ -1,0 +1,136 @@
+#!/bin/bash
+# Этап запуска игры в сессии ($1 — appid). Печатает одно слово и выходит с 0:
+#   steam | login | prepare | loading | visible
+# Не число в $1 — exit 2. Агент зовёт `docker exec <container> cg-session-stage <appid>` раз в 2 с
+# (план «экран загрузки», §4.1) и показывает этап на сайте.
+#
+# Без root и без KDE-сессии (ни plasmashell, ни KWin/qdbus — нужно работать и на композиторе без
+# рабочего стола, план 4): окружение X11 для xdotool берём из /proc/<pid клиента Steam>/environ,
+# как cg-steam-shutdown берёт его из /proc/<plasmashell>/environ.
+#
+# Проверки — от последнего этапа к первому, первое совпадение и есть ответ:
+#   visible  — у reaper с AppId=<appid> есть видимое окно ≥ 64×64: класс steam_app_<appid>
+#              (так Proton называет окно игры) или окно потомка reaper (нативная игра, у неё
+#              свой класс);
+#   loading  — есть процесс, чья командная строка начинается с «<буква>:\common\»: так Proton
+#              запускает exe игры (например, S:\common\1966900\Game.exe). Служебные exe самого
+#              Proton (\\?\S:\common\Proton…) и Windows (C:\windows\…) так не начинаются;
+#   prepare  — Steam запустил игру: есть reaper с AppId=<appid>, а exe игры ещё не стартовал;
+#   login    — в логе клиента есть хоть одна строка SetLoginState (вход начался или прошёл);
+#   steam    — иначе: контейнер и клиент Steam только стартуют.
+#
+# `AppId=<appid>` собирается внутри скрипта из $1: свой argv (и значит, свою командную строку,
+# которую тоже видит pgrep -f) скрипт никогда не содержит буквально, иначе рисковал бы совпасть
+# с проверкой агента `pgrep -f "AppId=<id>( |$)"` (SessionSupervisor.ts).
+#
+# CG_STAGE_PROC — другой корень вместо /proc (тесты). HOME — из окружения (его задаёт агент/тест).
+#
+# Агент опрашивает скрипт раз в 2 с — зависший или не отвечающий X11 (`xdotool`/`xwininfo`) не
+# должен подвесить опрос: каждый такой вызов обёрнут в `timeout` (coreutils, есть в образе);
+# истёк срок — окно считаем не найденным, а не ждём и не падаем.
+set -u
+
+proc_root="${CG_STAGE_PROC:-/proc}"
+x11_timeout_sec=1
+
+app_id="${1:-}"
+case "${app_id}" in
+  '' | *[!0-9]*)
+    echo "[cg-session-stage] appid is not a number: ${app_id}" >&2
+    exit 2
+    ;;
+esac
+
+# Шаблон reaper — как gamePattern в SessionSupervisor.ts: якорь `( |$)`, чтобы AppId=10 не
+# совпадал с AppId=105.
+reaper_pattern="AppId=${app_id}( |\$)"
+reaper_pid=$(pgrep -f "${reaper_pattern}" | head -1)
+
+# Клиент Steam — как в cg-steam-shutdown (не steam-runtime, не steamwebhelper).
+client_pid() { pgrep -f 'ubuntu12_32/steam( |$)' | head -1; }
+
+# Все потомки pid, не только прямые дети: окно игры может принадлежать процессу через несколько
+# уровней (reaper → Steam Linux Runtime → … → Proton/Wine).
+descendants() {
+  local parent="$1" children child
+  children=$(pgrep -P "${parent}" 2>/dev/null) || return 0
+  for child in ${children}; do
+    printf '%s\n' "${child}"
+    descendants "${child}"
+  done
+}
+
+# DISPLAY/XAUTHORITY графической сессии: берём из окружения клиента Steam, другого способа без
+# KDE нет.
+load_x11_env() {
+  local pid="$1" var
+  while IFS= read -r -d '' var; do
+    case "${var}" in
+      DISPLAY=* | XAUTHORITY=*) export "${var?}" ;;
+    esac
+  done <"${proc_root}/${pid}/environ"
+}
+
+# Width:/Height: из `xwininfo -id <win>` (строки с отступом). Нет такого окна — xwininfo падает.
+window_big_enough() {
+  local win="$1" info width height
+  info=$(timeout "${x11_timeout_sec}" xwininfo -id "${win}" 2>/dev/null) || return 1
+  width=$(printf '%s\n' "${info}" | sed -n 's/^ *Width: *//p')
+  height=$(printf '%s\n' "${info}" | sed -n 's/^ *Height: *//p')
+  [ -n "${width}" ] && [ -n "${height}" ] && [ "${width}" -ge 64 ] && [ "${height}" -ge 64 ]
+}
+
+is_visible() {
+  [ -n "${reaper_pid}" ] || return 1
+
+  # Клиента нет (или не прочитать его окружение) — проверку окон пропускаем.
+  local client
+  client=$(client_pid)
+  if [ -z "${client}" ] || [ ! -r "${proc_root}/${client}/environ" ]; then
+    return 1
+  fi
+  load_x11_env "${client}"
+
+  local win
+  for win in $(timeout "${x11_timeout_sec}" xdotool search --onlyvisible --class \
+    "^steam_app_${app_id}\$" 2>/dev/null); do
+    window_big_enough "${win}" && return 0
+  done
+
+  local descendant
+  for descendant in $(descendants "${reaper_pid}"); do
+    for win in $(timeout "${x11_timeout_sec}" xdotool search --onlyvisible --pid \
+      "${descendant}" 2>/dev/null); do
+      window_big_enough "${win}" && return 0
+    done
+  done
+  return 1
+}
+
+is_loading() {
+  pgrep -f '^[A-Za-z]:\\common\\' >/dev/null 2>&1
+}
+
+is_login() {
+  local log="${HOME}/.local/share/Steam/logs/steamui_login.txt"
+  [ -r "${log}" ] && grep -q 'SetLoginState' "${log}"
+}
+
+if is_visible; then
+  echo visible
+  exit 0
+fi
+if is_loading; then
+  echo loading
+  exit 0
+fi
+if [ -n "${reaper_pid}" ]; then
+  echo prepare
+  exit 0
+fi
+if is_login; then
+  echo login
+  exit 0
+fi
+echo steam
+exit 0

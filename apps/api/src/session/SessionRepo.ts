@@ -3,8 +3,10 @@
 import {
   Db,
   games,
+  type InstallStage as DbInstallStage,
   installJobs,
   playSegments,
+  type SessionStage as DbSessionStage,
   type SessionState as DbSessionState,
   sessions,
   userGames,
@@ -35,6 +37,9 @@ const sessionWithGame = {
   failReason: sessions.failReason,
   stateSince: sessions.stateSince,
   createdAt: sessions.createdAt,
+  installJobId: sessions.installJobId,
+  stage: sessions.stage,
+  installStage: installJobs.stage,
   installBytesDownloaded: installJobs.bytesDownloaded,
   installBytesTotal: installJobs.bytesTotal,
 };
@@ -48,6 +53,9 @@ type SessionWithGame = {
   readonly failReason: string | null;
   readonly stateSince: Date;
   readonly createdAt: Date;
+  readonly installJobId: string | null;
+  readonly stage: DbSessionStage | null;
+  readonly installStage: DbInstallStage | null;
   readonly installBytesDownloaded: number | null;
   readonly installBytesTotal: number | null;
 };
@@ -81,6 +89,16 @@ const installPercentOf = (
   const percent = Math.floor((100 * (bytesDownloaded ?? 0)) / bytesTotal);
   return Math.min(100, Math.max(0, percent));
 };
+
+/**
+ * Этап задачи установки, которую сессия ждёт (экран загрузки) — как
+ * `installPercentOf`, только в `installing`: `installJobId` не очищается
+ * после установки (история), поэтому в других состояниях этап не её.
+ */
+const installStageOf = (
+  state: DbSessionState,
+  installStage: DbInstallStage | null,
+): DbInstallStage | null => (state === "installing" ? installStage : null);
 
 /**
  * Игровое время сессии в секундах: сумма billable-отрезков, открытый — до `now`
@@ -133,6 +151,9 @@ const toView = (row: SessionWithGame) =>
         row.installBytesDownloaded,
         row.installBytesTotal,
       ),
+      stage: row.stage,
+      installStage: installStageOf(row.state, row.installStage),
+      hadInstall: row.installJobId !== null,
       playedSeconds: yield* playedSeconds(row.id, now),
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;
