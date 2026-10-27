@@ -172,4 +172,35 @@ describe("AppShell", () => {
     expect(classList).toContain("md:grid-cols-[84px_minmax(0,1fr)]");
     expect(classList).toContain("xl:grid-cols-[84px_minmax(0,1fr)_330px]");
   });
+
+  it("wide: нет правой колонки — сетка на xl из двух колонок, aside не рендерится", async () => {
+    const { container } = render(
+      <RouterProvider
+        router={testRouter(
+          <AppShell
+            user={{
+              id: "u1",
+              name: "Gamer",
+              image: null,
+              role: "player",
+              steamId: "7656",
+              email: null,
+              emailVerified: false,
+            }}
+            wide
+            aside={<div data-testid="aside">aside</div>}
+          >
+            <div data-testid="main">main</div>
+          </AppShell>,
+        )}
+      />,
+    );
+    await screen.findByTestId("main");
+    const classList = Array.from(
+      container.querySelector(".min-h-dvh")?.classList ?? [],
+    );
+    expect(classList).toContain("xl:grid-cols-[84px_minmax(0,1fr)]");
+    expect(classList).not.toContain("xl:grid-cols-[84px_minmax(0,1fr)_330px]");
+    expect(container.querySelector('[data-testid="aside"]')).toBeNull();
+  });
 });
