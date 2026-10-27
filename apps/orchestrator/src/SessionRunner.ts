@@ -351,8 +351,13 @@ const make = (options: SessionRunnerOptions) =>
                 // Задачу и ждущие её сессии ведёт InstallDispatcher (своя подписка).
                 return Effect.void;
               case "SessionStage":
-                // Запись этапа в sessions.stage и уведомление — Task 2.
-                return Effect.void;
+                return withDb(
+                  SessionRepo.setStage(
+                    workerId,
+                    report.sessionId,
+                    report.stage,
+                  ),
+                );
             }
           })();
           return effect.pipe(

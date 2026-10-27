@@ -1006,3 +1006,73 @@ describe("install jobs", () => {
       }),
     ));
 });
+
+describe("install stage", () => {
+  it("InstallStage report stores the stage of a running job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs2", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1" });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running", workerId: "gs" });
+
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "downloading",
+          }),
+          at(t0, 1),
+        );
+        expect((yield* onlyJob()).stage).toBe("downloading");
+
+        // Этап раньше уже записанного (индекс в InstallStage меньше) игнорируется.
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "login",
+          }),
+          at(t0, 2),
+        );
+        expect((yield* onlyJob()).stage).toBe("downloading");
+
+        // Чужой агент не пишет этап этой задачи.
+        yield* dispatcher.handle(
+          report("gs2", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "moving",
+          }),
+          at(t0, 3),
+        );
+        expect((yield* onlyJob()).stage).toBe("downloading");
+
+        // Задача больше не running — отчёт игнорируется.
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: job.id,
+            sizeBytes: 1,
+            buildId: "1",
+          }),
+          at(t0, 4),
+        );
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "moving",
+          }),
+          at(t0, 5),
+        );
+        expect((yield* onlyJob()).stage).toBe("downloading");
+      }),
+    ));
+});

@@ -206,6 +206,10 @@ const make = (options: InstallDispatcherOptions) =>
               ),
             );
           }
+          case "InstallStage":
+            return withDb(
+              InstallRepo.recordStage(workerId, report.jobId, report.stage),
+            );
           case "SessionStage":
             // Эту сессию ведёт SessionRunner (своя подписка), не мы.
             return Effect.void;

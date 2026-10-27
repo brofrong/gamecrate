@@ -12,6 +12,8 @@ import {
   gamestoreApps,
   type InstallJobState,
   installJobs,
+  installStages,
+  type InstallStage,
   sessions,
   workers,
 } from "@cg/db";
@@ -167,6 +169,30 @@ export const recordProgress = (
           eq(installJobs.id, jobId),
           eq(installJobs.state, "running"),
           eq(installJobs.workerId, workerId),
+        ),
+      );
+  });
+
+/**
+ * Этап установки (экран загрузки) — только у `running`-задачи этого агента,
+ * вперёд-только (`SessionRepo.forwardOnly`, как `setStage`).
+ */
+export const recordStage = (
+  workerId: string,
+  jobId: string,
+  stage: InstallStage,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(installJobs)
+      .set({ stage })
+      .where(
+        and(
+          eq(installJobs.id, jobId),
+          eq(installJobs.state, "running"),
+          eq(installJobs.workerId, workerId),
+          SessionRepo.forwardOnly(installStages, installJobs.stage, stage),
         ),
       );
   });
