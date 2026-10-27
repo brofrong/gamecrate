@@ -2,7 +2,7 @@
 // (FilterSheet). Оба компонента контролируемые и ничего не знают про URL —
 // адрес хранит родитель (Task 10, MyGamesPage).
 import { describe, expect, it, jest, mock } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { FilterBar } from "../src/components/app/FilterBar";
 import { FilterSheet } from "../src/components/app/FilterSheet";
@@ -13,17 +13,20 @@ function renderBar(
   overrides: Partial<{
     filters: Filters;
     onChange: (next: Filters) => void;
+    onOpenSheet: () => void;
     total: number;
     focusSearch: boolean;
   }> = {},
 ) {
   const onChange = overrides.onChange ?? mock(() => {});
+  const onOpenSheet = overrides.onOpenSheet ?? mock(() => {});
   render(
     <RouterProvider
       router={testRouter(
         <FilterBar
           filters={overrides.filters ?? DEFAULT_FILTERS}
           onChange={onChange}
+          onOpenSheet={onOpenSheet}
           total={overrides.total ?? 148}
           {...(overrides.focusSearch !== undefined
             ? { focusSearch: overrides.focusSearch }
@@ -32,23 +35,53 @@ function renderBar(
       )}
     />,
   );
-  return { onChange };
+  return { onChange, onOpenSheet };
+}
+
+async function openPanel() {
+  fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
+  return screen.getByRole("dialog", { name: "Фильтры" });
 }
 
 describe("FilterBar", () => {
-  it("выбор в select «Статус» вызывает onChange со status: ready", async () => {
+  it("верхняя строка — поиск и кнопка «Фильтры» рядом, без селектов и «Привязать аккаунт»", async () => {
+    renderBar();
+    const input = await screen.findByLabelText("Найти игру");
+    const button = screen.getByRole("button", { name: /Фильтры/ });
+    const row = input.closest("div")?.parentElement;
+    expect(row?.contains(button)).toBe(true);
+    expect(screen.queryByLabelText("Статус")).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: /Привязать аккаунт/ }),
+    ).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("кнопка «Фильтры» открывает панель; «по названию» вызывает onChange с sort: name", async () => {
     const { onChange } = renderBar();
-    const select = await screen.findByLabelText("Статус");
-    fireEvent.change(select, { target: { value: "ready" } });
+    const panel = await openPanel();
+    fireEvent.click(within(panel).getByRole("button", { name: "по названию" }));
+    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_FILTERS, sort: "name" });
+  });
+
+  it("в панели «нужен вход в Steam» ставит status: noprofile", async () => {
+    const { onChange } = renderBar();
+    const panel = await openPanel();
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "нужен вход в Steam" }),
+    );
     expect(onChange).toHaveBeenCalledWith({
       ...DEFAULT_FILTERS,
-      status: "ready",
+      status: "noprofile",
     });
   });
 
-  it("чип «Не запускались» добавляет chip never", async () => {
+  it("«Не запускались» живёт в панели, а не в строке чипов", async () => {
     const { onChange } = renderBar();
-    const chip = await screen.findByRole("button", { name: "Не запускались" });
+    await screen.findByLabelText("Найти игру");
+    expect(screen.queryByRole("button", { name: "Не запускались" })).toBeNull();
+    const panel = await openPanel();
+    const chip = within(panel).getByRole("button", { name: "Не запускались" });
     expect(chip.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(chip);
     expect(onChange).toHaveBeenCalledWith({
@@ -61,25 +94,102 @@ describe("FilterBar", () => {
     const { onChange } = renderBar({
       filters: { ...DEFAULT_FILTERS, chips: ["never"] },
     });
-    const chip = await screen.findByRole("button", { name: "Не запускались" });
+    const panel = await openPanel();
+    const chip = within(panel).getByRole("button", { name: "Не запускались" });
     expect(chip.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(chip);
     expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_FILTERS, chips: [] });
   });
 
-  it("«Сбросить» не отображается, когда фильтры по умолчанию", async () => {
+  it("в панели тир Proton «gold» ставит proton: gold", async () => {
+    const { onChange } = renderBar();
+    const panel = await openPanel();
+    fireEvent.click(within(panel).getByRole("button", { name: "gold" }));
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      proton: "gold",
+    });
+  });
+
+  it("Escape закрывает панель", async () => {
     renderBar();
-    await screen.findByLabelText("Статус");
+    await openPanel();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("клик мимо панели закрывает её", async () => {
+    renderBar();
+    await openPanel();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("на кнопке число активных фильтров; при умолчаниях числа нет", async () => {
+    renderBar({
+      filters: { ...DEFAULT_FILTERS, status: "ready", sort: "name" },
+    });
+    const button = await screen.findByRole("button", { name: /Фильтры/ });
+    expect(button.textContent).toContain("2");
+  });
+
+  it("при умолчаниях на кнопке только слово «Фильтры»", async () => {
+    renderBar();
+    const button = await screen.findByRole("button", { name: /Фильтры/ });
+    expect(button.textContent?.trim()).toBe("Фильтры");
+  });
+
+  it("чип «Готовы к запуску» ставит status: ready, повторно — all", async () => {
+    const { onChange } = renderBar();
+    const chip = await screen.findByRole("button", {
+      name: "Готовы к запуску",
+    });
+    fireEvent.click(chip);
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      status: "ready",
+    });
+  });
+
+  it("чип «Нужна установка» при активном статусе сбрасывает его в all", async () => {
+    const { onChange } = renderBar({
+      filters: { ...DEFAULT_FILTERS, status: "installing" },
+    });
+    const chip = await screen.findByRole("button", { name: "Нужна установка" });
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(chip);
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      status: "all",
+    });
+  });
+
+  it("чип «Играть бесплатно» заблокирован с title «Скоро»; «Из ящика» и «Нужен вход в Steam» в строке нет", async () => {
+    renderBar();
+    const chip = await screen.findByRole("button", {
+      name: "Играть бесплатно",
+    });
+    expect((chip as HTMLButtonElement).disabled).toBe(true);
+    expect(chip.getAttribute("title")).toBe("Скоро");
+    expect(screen.queryByRole("button", { name: "Из ящика" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Нужен вход в Steam" }),
+    ).toBeNull();
+  });
+
+  it("«Сбросить» не отображается, когда фильтры по умолчанию (поиск не считается)", async () => {
+    renderBar({ filters: { ...DEFAULT_FILTERS, q: "zelda" } });
+    await screen.findByLabelText("Найти игру");
     expect(screen.queryByRole("button", { name: "Сбросить" })).toBeNull();
   });
 
-  it("«Сбросить» виден при изменённых фильтрах и возвращает DEFAULT_FILTERS", async () => {
+  it("«Сбросить» виден при изменённых фильтрах и сбрасывает их, оставляя поиск", async () => {
     const { onChange } = renderBar({
-      filters: { ...DEFAULT_FILTERS, q: "zelda" },
+      filters: { ...DEFAULT_FILTERS, status: "ready", q: "zelda" },
     });
     const reset = await screen.findByRole("button", { name: "Сбросить" });
     fireEvent.click(reset);
-    expect(onChange).toHaveBeenCalledWith(DEFAULT_FILTERS);
+    expect(onChange).toHaveBeenCalledWith({ ...DEFAULT_FILTERS, q: "zelda" });
   });
 
   it("поиск вызывает onChange с q через 150 мс", async () => {
@@ -101,30 +211,6 @@ describe("FilterBar", () => {
     }
   });
 
-  it("ссылка «Привязать аккаунт» ведёт на /profile", async () => {
-    renderBar();
-    const link = await screen.findByRole("link", {
-      name: /Привязать аккаунт/,
-    });
-    expect(link.getAttribute("href")).toBe("/profile");
-  });
-
-  it("чип «Из ящика» заблокирован с title «Скоро»", async () => {
-    renderBar();
-    const chip = await screen.findByRole("button", { name: "Из ящика" });
-    expect((chip as HTMLButtonElement).disabled).toBe(true);
-    expect(chip.getAttribute("title")).toBe("Скоро");
-  });
-
-  it("первая строка (селекты/привязать/поиск) переносится, а не вылезает за экран", async () => {
-    renderBar();
-    const select = await screen.findByLabelText("Статус");
-    // Первая строка — общий родитель `<select>`'ов, «Привязать аккаунт» и поиска.
-    const row = select.closest("div");
-    expect(row).not.toBeNull();
-    expect(Array.from(row?.classList ?? [])).toContain("flex-wrap");
-  });
-
   it("⌘K фокусирует поле поиска", async () => {
     renderBar();
     const input = await screen.findByLabelText("Найти игру");
@@ -140,6 +226,24 @@ describe("FilterBar", () => {
     (input as HTMLInputElement).blur();
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     expect(document.activeElement).toBe(input);
+  });
+
+  it("на узком экране «Фильтры» открывает шторку (onOpenSheet), а не панель", async () => {
+    // Другие файлы подменяют `window.matchMedia` глобально (утечка на весь прогон),
+    // поэтому не полагаемся на `innerWidth`, а подменяем сами и возвращаем как было.
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query.includes("max-width"),
+      }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      const { onOpenSheet } = renderBar();
+      fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
+      expect(onOpenSheet).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 });
 
@@ -196,7 +300,7 @@ describe("FilterSheet", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("«Из ящика» заблокирован с title «Скоро»", () => {
+  it("чипа «Из ящика» в шторке больше нет", () => {
     render(
       <FilterSheet
         open={true}
@@ -206,9 +310,7 @@ describe("FilterSheet", () => {
         countFor={countFor}
       />,
     );
-    const chip = screen.getByRole("button", { name: "Из ящика" });
-    expect((chip as HTMLButtonElement).disabled).toBe(true);
-    expect(chip.getAttribute("title")).toBe("Скоро");
+    expect(screen.queryByRole("button", { name: "Из ящика" })).toBeNull();
   });
 
   it("Escape закрывает шторку и отбрасывает черновик", () => {

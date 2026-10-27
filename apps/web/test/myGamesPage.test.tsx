@@ -18,7 +18,7 @@ import type {
   RecentEntry,
   SessionView,
 } from "@cg/rpc";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRouter,
@@ -330,6 +330,39 @@ describe("MyGamesPage", () => {
   it("shows ConnectSteam when the user has no steamId", async () => {
     renderMyGames("/app", { me: { ...user, steamId: null } });
     expect(await screen.findByText("Подключите Steam")).toBeTruthy();
+  });
+
+  it("одна строка поиска и одна кнопка «Фильтры» на всех экранах, без отдельных иконок в шапке", async () => {
+    renderMyGames("/app", { library: ready([entry({ appId: 1, name: "A" })]) });
+    const input = await screen.findByLabelText("Найти игру");
+    expect(screen.getAllByRole("button", { name: /Фильтры/ })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Поиск" })).toBeNull();
+    // Строка поиска не прячется на телефоне (раньше её оборачивал `hidden md:flex`).
+    const wrapper =
+      input.closest("div")?.parentElement?.parentElement?.parentElement;
+    expect(Array.from(wrapper?.classList ?? [])).not.toContain("hidden");
+  });
+
+  it("на узком экране кнопка «Фильтры» открывает шторку", async () => {
+    // Другие файлы подменяют `window.matchMedia` глобально (утечка на весь прогон),
+    // поэтому не полагаемся на `innerWidth`, а подменяем сами и возвращаем как было.
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query.includes("max-width"),
+      }) as MediaQueryList) as typeof window.matchMedia;
+    try {
+      renderMyGames("/app", {
+        library: ready([entry({ appId: 1, name: "A" })]),
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
+      expect(screen.getByRole("dialog", { name: "Фильтры" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: /Показать 1 игр/ }),
+      ).toBeTruthy();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 
   it("shows the header summary line", async () => {

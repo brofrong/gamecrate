@@ -1,12 +1,14 @@
-// Строка фильтров на десктопе/планшете `/app` (см. прототип `app-home.html`):
-// три `<select>` (Статус/Сортировка/Proton), переход к привязке аккаунта, поиск
-// с debounce 150 мс и горячей клавишей ⌘K/Ctrl+K, вторая строка — чипы быстрых
-// фильтров. Контролируемый компонент: не знает про URL — адрес хранит родитель
-// (`MyGamesPage`, Task 10).
-import { Link } from "@tanstack/react-router";
-import { CirclePlus, Search } from "lucide-react";
+// Поиск и фильтры `/app` (правка владельца от 2026-10-27): верхняя строка — поле
+// поиска на всю ширину (debounce 150 мс, ⌘K/Ctrl+K) и рядом кнопка «Фильтры» с числом
+// активных фильтров; на планшете/десктопе она раскрывает панель под собой (сортировка,
+// статус, время в игре, ProtonDB — применяются сразу), на телефоне — зовёт `onOpenSheet`
+// (шторку `FilterSheet`). Вторая строка — три чипа: «Готовы к запуску», «Нужна
+// установка» и «Играть бесплатно» (пока «Скоро»: игр без аккаунта ещё нет).
+// Контролируемый компонент: не знает про URL — адрес хранит родитель (`MyGamesPage`).
+import { Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  activeFilterCount,
   type Chip,
   DEFAULT_FILTERS,
   type Filters,
@@ -16,6 +18,9 @@ import {
 } from "@/lib/libraryFilters";
 import { cn } from "@/lib/utils";
 import { chipActiveClassName, PROTON_OPTIONS } from "./filterOptions";
+
+/** Ниже этой ширины вместо панели под кнопкой открывается шторка (Tailwind `md`). */
+const SHEET_MEDIA_QUERY = "(max-width: 767px)";
 
 const STATUS_OPTIONS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "все" },
@@ -30,6 +35,11 @@ const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: "playtime", label: "по времени в игре" },
 ];
 
+const PLAYTIME_CHIPS: ReadonlyArray<{ value: Chip; label: string }> = [
+  { value: "never", label: "Не запускались" },
+  { value: "10h", label: "Больше 10 ч в игре" },
+];
+
 const STATUS_CHIPS: ReadonlyArray<{
   value: StatusFilter;
   label: string;
@@ -37,17 +47,11 @@ const STATUS_CHIPS: ReadonlyArray<{
 }> = [
   { value: "ready", label: "Готовы к запуску", dot: "bg-[#3ddc97]" },
   { value: "installing", label: "Нужна установка", dot: "bg-[#ffd166]" },
-  { value: "noprofile", label: "Нужен вход в Steam", dot: "bg-[#8a90a8]" },
-];
-
-const EXTRA_CHIPS: ReadonlyArray<{ value: Chip; label: string }> = [
-  { value: "never", label: "Не запускались" },
-  { value: "10h", label: "Больше 10 ч в игре" },
 ];
 
 /**
- * Сравнение фильтров целиком (включая порядок `chips`) — для видимости «Сбросить»
- * здесь и точки на кнопке «Фильтры» на телефоне (`MyGamesPage`).
+ * Сравнение фильтров целиком (включая порядок `chips`) — для точки на кнопке
+ * «Фильтры» на телефоне (`MyGamesPage`).
  */
 export function filtersEqual(a: Filters, b: Filters): boolean {
   return (
@@ -60,29 +64,171 @@ export function filtersEqual(a: Filters, b: Filters): boolean {
   );
 }
 
-const selectClassName =
-  "h-9 rounded-full border-none bg-[#13161d] px-3 text-sm font-medium text-[#cfd3e6] outline-none";
-
 const chipClassName =
   "flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-full bg-[#13161d] px-3 text-xs font-medium text-[#cfd3e6] transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+
+const optionClassName =
+  "h-8 rounded-full bg-[#0d0f14] px-3 text-xs font-medium text-[#cfd3e6] transition-colors";
+
+function GroupTitle({ children }: { children: string }) {
+  return (
+    <h3 className="mb-1.5 text-[11px] font-semibold tracking-wider text-[#8a90a8] uppercase">
+      {children}
+    </h3>
+  );
+}
+
+function OptionRow<T extends string>({
+  options,
+  selected,
+  onSelect,
+}: {
+  options: ReadonlyArray<{ value: T; label: string }>;
+  selected: T;
+  onSelect: (value: T) => void;
+}) {
+  return (
+    <div className="mb-3 flex flex-wrap gap-1.5">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={selected === option.value}
+          onClick={() => onSelect(option.value)}
+          className={cn(
+            optionClassName,
+            selected === option.value && chipActiveClassName,
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Панель под кнопкой «Фильтры»: всё применяется сразу через `onChange`. */
+function FilterPanel({
+  filters,
+  onChange,
+  onClose,
+}: {
+  filters: Filters;
+  onChange: (next: Filters) => void;
+  onClose: () => void;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    function onMouseDown(event: MouseEvent) {
+      const root = panelRef.current?.parentElement;
+      if (root && event.target instanceof Node && !root.contains(event.target))
+        onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onMouseDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [onClose]);
+
+  function toggleChip(chip: Chip) {
+    const has = filters.chips.includes(chip);
+    onChange({
+      ...filters,
+      chips: has
+        ? filters.chips.filter((c) => c !== chip)
+        : [...filters.chips, chip],
+    });
+  }
+
+  return (
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Фильтры"
+      className="absolute top-full right-0 z-40 mt-2 w-[340px] rounded-2xl bg-[#13161d] p-4 shadow-[0_16px_40px_rgba(0,0,0,.5)] ring-1 ring-white/10"
+    >
+      <GroupTitle>Сортировка</GroupTitle>
+      <OptionRow
+        options={SORT_OPTIONS}
+        selected={filters.sort}
+        onSelect={(sort) => onChange({ ...filters, sort })}
+      />
+      <GroupTitle>Статус</GroupTitle>
+      <OptionRow
+        options={STATUS_OPTIONS}
+        selected={filters.status}
+        onSelect={(status) => onChange({ ...filters, status })}
+      />
+      <GroupTitle>Время в игре</GroupTitle>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {PLAYTIME_CHIPS.map((chip) => {
+          const active = filters.chips.includes(chip.value);
+          return (
+            <button
+              key={chip.value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => toggleChip(chip.value)}
+              className={cn(optionClassName, active && chipActiveClassName)}
+            >
+              {chip.label}
+            </button>
+          );
+        })}
+      </div>
+      <GroupTitle>ProtonDB</GroupTitle>
+      <OptionRow<ProtonFilter>
+        options={PROTON_OPTIONS}
+        selected={filters.proton}
+        onSelect={(proton) => onChange({ ...filters, proton })}
+      />
+      <div className="flex items-center justify-between border-t border-white/10 pt-3">
+        <button
+          type="button"
+          onClick={() => onChange({ ...DEFAULT_FILTERS, q: filters.q })}
+          className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
+        >
+          Сбросить
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-sm font-semibold text-[#3cc2ff]"
+        >
+          Готово
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function FilterBar({
   filters,
   onChange,
+  onOpenSheet,
   total,
   focusSearch,
 }: {
   filters: Filters;
   onChange: (next: Filters) => void;
+  /** На телефоне кнопка «Фильтры» открывает шторку вместо панели. */
+  onOpenSheet: () => void;
   total: number;
   focusSearch?: boolean;
 }) {
   const [query, setQuery] = useState(filters.q);
+  const [panelOpen, setPanelOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Внешний сброс/изменение `filters.q` (например, кнопкой «Сбросить») должен
-  // отразиться в поле — компонент контролируемый.
+  // Внешний сброс/изменение `filters.q` должен отразиться в поле — компонент
+  // контролируемый.
   useEffect(() => {
     setQuery(filters.q);
   }, [filters.q]);
@@ -116,82 +262,21 @@ export function FilterBar({
     onChange({ ...filters, status: filters.status === value ? "all" : value });
   }
 
-  function toggleChip(chip: Chip) {
-    const has = filters.chips.includes(chip);
-    onChange({
-      ...filters,
-      chips: has
-        ? filters.chips.filter((c) => c !== chip)
-        : [...filters.chips, chip],
-    });
+  function onFiltersClick() {
+    if (window.matchMedia(SHEET_MEDIA_QUERY).matches) {
+      onOpenSheet();
+      return;
+    }
+    setPanelOpen((open) => !open);
   }
 
-  const isDefault = filtersEqual(filters, DEFAULT_FILTERS);
+  const activeCount = activeFilterCount(filters);
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="Статус"
-          className={selectClassName}
-          value={filters.status}
-          onChange={(e) =>
-            onChange({ ...filters, status: e.target.value as StatusFilter })
-          }
-        >
-          {STATUS_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Сортировка"
-          className={selectClassName}
-          value={filters.sort}
-          onChange={(e) =>
-            onChange({ ...filters, sort: e.target.value as SortKey })
-          }
-        >
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Proton"
-          className={selectClassName}
-          value={filters.proton}
-          onChange={(e) =>
-            onChange({ ...filters, proton: e.target.value as ProtonFilter })
-          }
-        >
-          {PROTON_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <span aria-hidden className="h-6 w-px bg-white/10" />
-        <Link
-          to="/profile"
-          className="flex h-9 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-[#cfd3e6] hover:bg-white/5"
-        >
-          <CirclePlus aria-hidden className="size-4" />
-          Привязать аккаунт
-        </Link>
-        {!isDefault && (
-          <button
-            type="button"
-            onClick={() => onChange(DEFAULT_FILTERS)}
-            className="h-9 rounded-full px-3 text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
-          >
-            Сбросить
-          </button>
-        )}
-        <div className="relative ml-auto flex h-9 w-[220px] items-center gap-2 rounded-full bg-[#13161d] px-3">
-          <Search aria-hidden className="size-4 text-[#8a90a8]" />
+      <div className="flex items-center gap-2">
+        <div className="relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-[#13161d] px-4">
+          <Search aria-hidden className="size-4 shrink-0 text-[#8a90a8]" />
           <input
             ref={searchRef}
             aria-label="Найти игру"
@@ -199,11 +284,41 @@ export function FilterBar({
             placeholder={`Найти среди ${total} игр`}
             value={query}
             onChange={(e) => handleSearchChange(e.target.value)}
-            className="w-full bg-transparent text-sm text-[#eef1ff] outline-none placeholder:text-[#8a90a8]"
+            className="w-full min-w-0 bg-transparent text-sm text-[#eef1ff] outline-none placeholder:text-[#8a90a8]"
           />
-          <span aria-hidden className="font-mono text-[10px] text-[#8a90a8]">
+          <span
+            aria-hidden
+            className="hidden font-mono text-[10px] text-[#8a90a8] md:inline"
+          >
             ⌘K
           </span>
+        </div>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={panelOpen}
+            onClick={onFiltersClick}
+            className={cn(
+              "flex h-10 items-center gap-2 rounded-full bg-[#13161d] px-4 text-sm font-medium text-[#cfd3e6] transition-colors hover:text-[#eef1ff]",
+              (panelOpen || activeCount > 0) && chipActiveClassName,
+            )}
+          >
+            <SlidersHorizontal aria-hidden className="size-4" />
+            Фильтры
+            {activeCount > 0 && (
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#3cc2ff] px-1.5 text-[11px] font-bold text-[#0d0f14]">
+                {activeCount}
+              </span>
+            )}
+          </button>
+          {panelOpen && (
+            <FilterPanel
+              filters={filters}
+              onChange={onChange}
+              onClose={() => setPanelOpen(false)}
+            />
+          )}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -225,20 +340,6 @@ export function FilterBar({
             </button>
           );
         })}
-        {EXTRA_CHIPS.map((chip) => {
-          const active = filters.chips.includes(chip.value);
-          return (
-            <button
-              key={chip.value}
-              type="button"
-              aria-pressed={active}
-              onClick={() => toggleChip(chip.value)}
-              className={cn(chipClassName, active && chipActiveClassName)}
-            >
-              {chip.label}
-            </button>
-          );
-        })}
         <button
           type="button"
           aria-pressed={false}
@@ -246,8 +347,18 @@ export function FilterBar({
           title="Скоро"
           className={chipClassName}
         >
-          Из ящика
+          <span aria-hidden className="size-1.5 rounded-sm bg-[#3cc2ff]" />
+          Играть бесплатно
         </button>
+        {activeCount > 0 && (
+          <button
+            type="button"
+            onClick={() => onChange({ ...DEFAULT_FILTERS, q: filters.q })}
+            className="h-[30px] rounded-full px-3 text-xs font-medium text-[#8a90a8] hover:text-[#eef1ff]"
+          >
+            Сбросить
+          </button>
+        )}
       </div>
     </div>
   );
