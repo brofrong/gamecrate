@@ -192,6 +192,8 @@ describe("loading screen", () => {
         hadInstall: true,
       }),
       view("installing", { installStage: "moving", hadInstall: true }),
+      // После установки сессия ненадолго снова в очереди, пока её не назначат.
+      view("queued", { hadInstall: true }),
       view("starting", { stage: "computer", hadInstall: true }),
       view("starting", { stage: "login", hadInstall: true }),
       view("playing", { stage: "loading", hadInstall: true }),
@@ -203,6 +205,12 @@ describe("loading screen", () => {
         loadingProgress(next, 0),
       );
     }
+    // В очереди после установки «Игра установлена» остаётся.
+    expect(loadingSteps(view("queued", { hadInstall: true }))).toEqual([
+      { label: "Игра установлена", status: "done" },
+      { label: "Ждём свободный сервер", status: "now" },
+      ...launch.map((label) => ({ label, status: "next" as const })),
+    ]);
   });
 
   it("cancel calls onExit", () => {

@@ -73,7 +73,8 @@ const evenBounds = (n: number, from: number, to: number) =>
 /**
  * Строки списка, индекс текущей, доля внутри текущей — `fraction(ms)` — и
  * `bounds`: где на общей полоске начинается и кончается каждая строка.
- * - `queued` — «Ждём свободный сервер», дальше этапы запуска;
+ * - `queued` — «Ждём свободный сервер», дальше этапы запуска (после установки
+ *   перед ними «Игра установлена»);
  * - `installing` — только этапы установки (с этапами запуска список вышел бы
  *   в девять строк), на полоске — `[0, INSTALL_SHARE]`;
  * - дальше — этапы запуска, а после установки перед ними одна строка
@@ -88,14 +89,22 @@ function plan(view: SessionView): {
   const timed = (stageMs: number) => (ms: number) =>
     1 - Math.exp(-Math.max(0, ms) / stageMs);
   const launchLabels = launchSteps.map(([, label]) => label);
+  // После установки — строка «Игра установлена» на её отрезке полоски.
+  const prefix = view.hadInstall ? ["Игра установлена"] : [];
+  const from = view.hadInstall ? INSTALL_SHARE : 0;
+  const prefixBounds = view.hadInstall ? [0] : [];
 
   if (view.state === "queued") {
-    // Сколько ждать сервер, не знаем — внутри очереди полоска стоит в начале.
+    // Сколько ждать сервер, не знаем — внутри очереди полоска стоит в начале
+    // строки (после установки сессия ждёт сервер ещё раз — на `INSTALL_SHARE`).
     return {
-      labels: ["Ждём свободный сервер", ...launchLabels],
-      current: 0,
+      labels: [...prefix, "Ждём свободный сервер", ...launchLabels],
+      current: prefix.length,
       fraction: () => 0,
-      bounds: evenBounds(launchLabels.length + 1, 0, 1),
+      bounds: [
+        ...prefixBounds,
+        ...evenBounds(launchLabels.length + 1, from, 1),
+      ],
     };
   }
 
@@ -118,10 +127,7 @@ function plan(view: SessionView): {
     };
   }
 
-  const prefix = view.hadInstall ? ["Игра установлена"] : [];
-  const bounds = view.hadInstall
-    ? [0, ...evenBounds(launchLabels.length, INSTALL_SHARE, 1)]
-    : evenBounds(launchLabels.length, 0, 1);
+  const bounds = [...prefixBounds, ...evenBounds(launchLabels.length, from, 1)];
   const stage = view.stage ?? "computer";
   if (stage === "visible") {
     return {
