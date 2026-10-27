@@ -4,7 +4,8 @@
 // `<root слоя>/<id>/{client,apps}/{upper,work}`. Тома собирает dockerd (`local`,
 // `type=overlay`), sudo не нужен. Сессии — `sessionLayers` (оба слоя в
 // `SCRATCH_DIR`), установщик — `installLayers` (клиент в
-// `SCRATCH_DIR/.install`, apps в `INSTALL_SCRATCH_DIR`).
+// `SCRATCH_DIR/.install`, apps в `INSTALL_SCRATCH_DIR`). Одноразовые слои
+// монтируются с `volatile` (без fsync), кроме apps установщика.
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Effect, Option, Schema } from "effect";
@@ -28,6 +29,8 @@ export interface Layer {
   readonly lower: string;
   readonly upper: string;
   readonly work: string;
+  /** Монтируется с `volatile` (см. `OverlayVolumeSpec`). */
+  readonly volatile: boolean;
 }
 
 /** Каталог слоёв `id` под одним корнем scratch. */
@@ -74,6 +77,7 @@ export const layers = (
     readonly prefix: string;
     readonly id: string;
     readonly labels: Readonly<Record<string, string>>;
+    readonly volatile: { readonly client: boolean; readonly apps: boolean };
   },
 ): Overlays => {
   if (!isValidId(options.id))
@@ -89,6 +93,7 @@ export const layers = (
       lower,
       upper: join(dir, name, "upper"),
       work: join(dir, name, "work"),
+      volatile: options.volatile[name],
     };
   };
   const scratch: Array<ScratchDir> = [];
@@ -112,6 +117,7 @@ export const sessionLayers = (config: AgentConfigValues, sessionId: string) =>
     prefix: "cg-s",
     id: sessionId,
     labels: { "cg.session": sessionId },
+    volatile: { client: true, apps: true },
   });
 
 /**
@@ -120,7 +126,8 @@ export const sessionLayers = (config: AgentConfigValues, sessionId: string) =>
  * upper клиента ~300 МБ рантайма мелкими файлами с fsync, на RAID это часы);
  * `steamapps` — в `<INSTALL_SCRATCH_DIR>/<jobId>` (ФС библиотеки: готовая игра
  * переносится `rename`). Без `INSTALL_SCRATCH_DIR` — исключение (конфиг роли
- * gamestore его требует).
+ * gamestore его требует). `apps` — без `volatile`: его upper уходит в общую
+ * библиотеку, и после сбоя хоста без fsync там оказалась бы битая игра.
  */
 export const installLayers = (config: AgentConfigValues, jobId: string) =>
   layers(config, {
@@ -134,6 +141,7 @@ export const installLayers = (config: AgentConfigValues, jobId: string) =>
     prefix: "cg-i",
     id: jobId,
     labels: { "cg.install": jobId },
+    volatile: { client: true, apps: false },
   });
 
 /** Тома слоёв для `ContainerSpec.mounts`. */
@@ -165,7 +173,12 @@ export const prepare = (overlays: Overlays) =>
         .createVolume({
           name: layer.volume,
           labels: overlays.labels,
-          overlay: { lower: layer.lower, upper: layer.upper, work: layer.work },
+          overlay: {
+            lower: layer.lower,
+            upper: layer.upper,
+            work: layer.work,
+            volatile: layer.volatile,
+          },
         })
         .pipe(Effect.mapError(fromDocker("createVolume")));
     }

@@ -88,12 +88,14 @@ describe("Overlay", () => {
         lower: "/raid/cloud-gaming/steam-client",
         upper: `${scratch}/s1/client/upper`,
         work: `${scratch}/s1/client/work`,
+        volatile: true,
       },
       apps: {
         volume: "cg-s-s1-apps",
         lower: "/raid/cloud-gaming/library/steamapps",
         upper: `${scratch}/s1/apps/upper`,
         work: `${scratch}/s1/apps/work`,
+        volatile: true,
       },
     });
     // Обобщённо: другие корни слоёв и префикс.
@@ -102,10 +104,15 @@ describe("Overlay", () => {
       prefix: "cg-x",
       id: "j1",
       labels: { "cg.x": "j1" },
+      volatile: { client: true, apps: false },
     });
     expect(custom.client.volume).toBe("cg-x-j1-client");
     expect(custom.client.upper).toBe("/x/client/j1/client/upper");
     expect(custom.apps.upper).toBe("/x/install/j1/apps/upper");
+    expect([custom.client.volatile, custom.apps.volatile]).toEqual([
+      true,
+      false,
+    ]);
     expect(custom.scratch).toEqual([
       { root: "/x/client", dir: "/x/client/j1" },
       { root: "/x/install", dir: "/x/install/j1" },
@@ -132,12 +139,14 @@ describe("Overlay", () => {
         lower: "/raid/cloud-gaming/steam-client",
         upper: `${scratch}/.install/j1/client/upper`,
         work: `${scratch}/.install/j1/client/work`,
+        volatile: true,
       },
       apps: {
         volume: "cg-i-j1-apps",
         lower: "/raid/cloud-gaming/library/steamapps",
         upper: `${install}/j1/apps/upper`,
         work: `${install}/j1/apps/work`,
+        volatile: false,
       },
     });
     // Каталог установщика под SCRATCH_DIR — не id сессии: уборка сессий его пропускает.
@@ -145,6 +154,20 @@ describe("Overlay", () => {
     expect(() =>
       installLayers(testConfig({ scratchDir: scratch }), "j1"),
     ).toThrow("INSTALL_SCRATCH_DIR is not set");
+  });
+
+  it("installLayers: volatile client, durable apps", () => {
+    // apps установщика переносится rename-ом в общую библиотеку: без fsync
+    // после сбоя хоста там оказалась бы битая игра.
+    const overlays = installLayers(
+      testConfig({
+        scratchDir: scratch,
+        installScratchDir: Option.some("/raid/install-scratch"),
+      }),
+      "j1",
+    );
+    expect(overlays.client.volatile).toBe(true);
+    expect(overlays.apps.volatile).toBe(false);
   });
 
   it("cleanup of install layers removes both scratch dirs with one root helper", async () => {
@@ -204,6 +227,7 @@ describe("Overlay", () => {
         prefix: "cg/s",
         id: "j1",
         labels: {},
+        volatile: { client: true, apps: true },
       }),
     ).toThrow("invalid overlay prefix");
   });
@@ -261,6 +285,7 @@ describe("Overlay", () => {
           lower: "/lib/steamapps",
           upper: "/scratch/s1/apps/upper",
           work: "/scratch/s1/apps/work",
+          volatile: false,
         },
       }),
     ).toEqual({
@@ -273,6 +298,23 @@ describe("Overlay", () => {
       },
       Labels: { "cg.session": "s1" },
     });
+  });
+
+  it("createVolume body adds volatile", () => {
+    expect(
+      volumeBody({
+        name: "cg-s-s1-apps",
+        labels: { "cg.session": "s1" },
+        overlay: {
+          lower: "/lib/steamapps",
+          upper: "/scratch/s1/apps/upper",
+          work: "/scratch/s1/apps/work",
+          volatile: true,
+        },
+      }).DriverOpts.o,
+    ).toBe(
+      "lowerdir=/lib/steamapps,upperdir=/scratch/s1/apps/upper,workdir=/scratch/s1/apps/work,volatile",
+    );
   });
 
   it("prepare makes upper/work dirs and labelled overlay volumes", async () => {
@@ -290,6 +332,7 @@ describe("Overlay", () => {
           lower: "/raid/cloud-gaming/steam-client",
           upper: `${scratch}/s1/client/upper`,
           work: `${scratch}/s1/client/work`,
+          volatile: true,
         },
       },
       {
@@ -299,6 +342,7 @@ describe("Overlay", () => {
           lower: "/raid/cloud-gaming/library/steamapps",
           upper: `${scratch}/s1/apps/upper`,
           work: `${scratch}/s1/apps/work`,
+          volatile: true,
         },
       },
     ]);

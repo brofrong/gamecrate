@@ -76,6 +76,13 @@ export interface OverlayVolumeSpec {
     readonly lower: string;
     readonly upper: string;
     readonly work: string;
+    /**
+     * Опция `volatile`: без fsync (copy-up рантайма pressure-vessel — секунды,
+     * а не минута). Только для одноразовых слоёв: после сбоя хоста upper может
+     * быть битым, а после размонтирования ядро оставляет `<work>/work/incompat`
+     * — пока она есть, том повторно не смонтировать.
+     */
+    readonly volatile: boolean;
   };
 }
 
@@ -224,7 +231,7 @@ export const volumeBody = (spec: OverlayVolumeSpec) => ({
   DriverOpts: {
     type: "overlay",
     device: "overlay",
-    o: `lowerdir=${spec.overlay.lower},upperdir=${spec.overlay.upper},workdir=${spec.overlay.work}`,
+    o: `lowerdir=${spec.overlay.lower},upperdir=${spec.overlay.upper},workdir=${spec.overlay.work}${spec.overlay.volatile ? ",volatile" : ""}`,
   },
   Labels: spec.labels,
 });
