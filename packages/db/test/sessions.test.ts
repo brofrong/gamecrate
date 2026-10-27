@@ -176,4 +176,42 @@ describe("sessions", () => {
         }).pipe(Effect.scoped);
       }),
     ));
+
+  it("stage change emits session_changed", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        yield* insertGame(db);
+        const id = crypto.randomUUID();
+
+        yield* Effect.gen(function* () {
+          const queue = yield* db.$client.listen("session_changed");
+          yield* db.insert(sessions).values({ id, userId: "u1", appId: 570 });
+          expect(
+            (yield* Queue.take(queue).pipe(Effect.timeout("2 seconds")))
+              .payload,
+          ).toBe(id);
+
+          yield* db
+            .update(sessions)
+            .set({ stage: "login" })
+            .where(eq(sessions.id, id));
+          const stageNotification = yield* Queue.take(queue).pipe(
+            Effect.timeout("2 seconds"),
+          );
+          expect(stageNotification.payload).toBe(id);
+
+          // Тот же stage ещё раз — значение не изменилось, уведомлять не о чем.
+          yield* db
+            .update(sessions)
+            .set({ stage: "login" })
+            .where(eq(sessions.id, id));
+          const silent = yield* Queue.take(queue).pipe(
+            Effect.timeoutOption("500 millis"),
+          );
+          expect(Option.isNone(silent)).toBe(true);
+        }).pipe(Effect.scoped);
+      }),
+    ));
 });

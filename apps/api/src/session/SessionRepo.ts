@@ -133,6 +133,10 @@ const toView = (row: SessionWithGame) =>
         row.installBytesDownloaded,
         row.installBytesTotal,
       ),
+      // Task 2: заполнить из sessions.stage/install_jobs.stage и наличия installJobId.
+      stage: null,
+      installStage: null,
+      hadInstall: false,
       playedSeconds: yield* playedSeconds(row.id, now),
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;

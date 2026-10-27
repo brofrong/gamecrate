@@ -30,6 +30,20 @@ export const sessionStates = [
 ] as const;
 export type SessionState = (typeof sessionStates)[number];
 
+/**
+ * Этапы запуска контейнера сессии до появления игрового окна (экран загрузки),
+ * см. `SessionStage` в `@cg/rpc`.
+ */
+export const sessionStages = [
+  "computer",
+  "steam",
+  "login",
+  "prepare",
+  "loading",
+  "visible",
+] as const;
+export type SessionStage = (typeof sessionStages)[number];
+
 /** Воркер (GPU-хост). `id` — имя воркера из конфига агента, не генерируется БД. */
 export const workers = pgTable("workers", {
   id: text("id").primaryKey(),
@@ -45,7 +59,7 @@ export const workers = pgTable("workers", {
  * слот на воркере. Триггеры на `session_changed_notify` (ручные миграции)
  * шлют `pg_notify('session_changed', NEW.id)` при INSERT и при UPDATE, который
  * меняет state/state_since/stream_url/fail_reason/stop_requested_at/worker_id/
- * slot/ended_at; heartbeat'ы (client_seen_at, last_input_at, agent_seen_at) — нет.
+ * slot/ended_at/stage; heartbeat'ы (client_seen_at, last_input_at, agent_seen_at) — нет.
  */
 export const sessions = pgTable(
   "sessions",
@@ -63,6 +77,9 @@ export const sessions = pgTable(
     // Активная задача установки игры в `installing` (Task 5); id не очищается
     // после установки — последняя задача сессии остаётся для истории.
     installJobId: text("install_job_id").references(() => installJobs.id),
+    // Этап запуска до появления игрового окна (экран загрузки, Task 2); null —
+    // агент о нём ещё не отчитался или сессия уже дальше stage'ей.
+    stage: text("stage", { enum: sessionStages }),
     // Внутренний адрес Selkies в сети cg-sessions, напр. http://cg-session-<id>:8080.
     streamUrl: text("stream_url"),
     failReason: text("fail_reason"),

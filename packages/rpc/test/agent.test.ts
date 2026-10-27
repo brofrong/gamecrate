@@ -6,6 +6,7 @@ import {
   AgentReport,
   ProfileCommit,
 } from "../src/agent";
+import { InstallStage, SessionStage } from "../src/session";
 
 describe("agent protocol", () => {
   it("decodes InstallGame and InstallProgress round-trip", () => {
@@ -27,6 +28,42 @@ describe("agent protocol", () => {
       bytesTotal: 100,
     } as const;
     expect(Schema.decodeUnknownSync(AgentReport)(progress)).toEqual(progress);
+  });
+
+  it("decodes SessionStage and InstallStage reports round-trip", () => {
+    const sessionStage = {
+      _tag: "SessionStage",
+      sessionId: "s1",
+      stage: "login",
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(sessionStage)).toEqual(
+      sessionStage,
+    );
+
+    const installStage = {
+      _tag: "InstallStage",
+      jobId: "job-1",
+      stage: "downloading",
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(installStage)).toEqual(
+      installStage,
+    );
+  });
+
+  it("rejects unknown SessionStage/InstallStage literals", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(SessionStage)("unknown"),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(InstallStage)("unknown"),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(AgentReport)({
+        _tag: "SessionStage",
+        sessionId: "s1",
+        stage: "unknown",
+      }),
+    ).toThrow();
   });
 
   it("rejects AgentConnect with unknown role", () => {

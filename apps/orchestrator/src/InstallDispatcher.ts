@@ -206,6 +206,9 @@ const make = (options: InstallDispatcherOptions) =>
               ),
             );
           }
+          case "SessionStage":
+            // Эту сессию ведёт SessionRunner (своя подписка), не мы.
+            return Effect.void;
           default:
             return Effect.void;
         }

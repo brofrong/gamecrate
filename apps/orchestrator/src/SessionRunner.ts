@@ -347,7 +347,11 @@ const make = (options: SessionRunnerOptions) =>
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":
+              case "InstallStage":
                 // Задачу и ждущие её сессии ведёт InstallDispatcher (своя подписка).
+                return Effect.void;
+              case "SessionStage":
+                // Запись этапа в sessions.stage и уведомление — Task 2.
                 return Effect.void;
             }
           })();
