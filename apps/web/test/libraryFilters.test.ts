@@ -3,6 +3,7 @@
 import type { LibraryEntry } from "@cg/rpc";
 import { describe, expect, it } from "bun:test";
 import {
+  activeFilterCount,
   applyFilters,
   countMatching,
   DEFAULT_FILTERS,
@@ -308,5 +309,24 @@ describe("applyFilters performance", () => {
     );
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(50);
+  });
+});
+
+describe("activeFilterCount", () => {
+  it("умолчания — 0, поиск не считается", () => {
+    expect(activeFilterCount(DEFAULT_FILTERS)).toBe(0);
+    expect(activeFilterCount({ ...DEFAULT_FILTERS, q: "zelda" })).toBe(0);
+  });
+
+  it("статус, сортировка, Proton и каждый чип считаются по одному", () => {
+    expect(
+      activeFilterCount({
+        status: "ready",
+        sort: "name",
+        proton: "gold",
+        chips: ["never", "10h"],
+        q: "",
+      }),
+    ).toBe(5);
   });
 });

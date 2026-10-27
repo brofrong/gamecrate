@@ -152,15 +152,13 @@ describe("GameTile", () => {
     expect(screen.getByRole("img", { name: "Hades" })).toBeTruthy();
   });
 
-  it("без Proton-плашки, когда tier не указан или pending", async () => {
-    renderTile(<GameTile game={game({ protonTier: "pending" })} />);
+  it("тира ProtonDB на плитке нет даже при известном тире", async () => {
+    // Запись библиотеки несёт тир, но плитка его больше не показывает.
+    const entry = { ...game(), protonTier: "gold" as const };
+    renderTile(<GameTile game={entry} />);
     await screen.findByRole("link", { name: "Игра: Portal 2" });
     expect(screen.queryByTestId("proton-tag")).toBeNull();
-  });
-
-  it("показывает уровень Proton", async () => {
-    renderTile(<GameTile game={game({ protonTier: "gold" })} />);
-    expect(await screen.findByText("gold")).toBeTruthy();
+    expect(screen.queryByText("gold")).toBeNull();
   });
 });
 
