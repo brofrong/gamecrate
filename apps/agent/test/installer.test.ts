@@ -33,6 +33,7 @@ import {
 } from "../src/DockerClient";
 import {
   CONNECTION_LOG,
+  downloadingBytes,
   Installer,
   type InstallerShape,
   installReasons,
@@ -392,7 +393,13 @@ const layerDirsExist = (fake: Fake, jobId = "j1") => [
 interface Harness {
   readonly fake: Fake;
   readonly installer: InstallerShape;
+  /**
+   * Отчёты, накопившиеся к этому моменту, кроме `InstallStage` (этапы
+   * проверяют свои тесты через `drainAll`).
+   */
   readonly drain: Effect.Effect<Array<AgentReport>>;
+  /** Все отчёты, накопившиеся к этому моменту. */
+  readonly drainAll: Effect.Effect<Array<AgentReport>>;
   readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
 }
 
@@ -428,14 +435,19 @@ const run = (
       ),
     );
     const installer = Context.get(context, Installer);
-    const drain = Queue.clear(installer.reports);
+    const drainAll = Queue.clear(installer.reports);
+    const drain = drainAll.pipe(
+      Effect.map((reports) =>
+        reports.filter((report) => report._tag !== "InstallStage"),
+      ),
+    );
     const tick = (duration: Duration.Input) =>
       Effect.gen(function* () {
         yield* TestClock.adjust(duration);
         for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
       });
     yield* tick("0 seconds");
-    yield* body({ fake, installer, drain, tick });
+    yield* body({ fake, installer, drain, drainAll, tick });
   });
   return Effect.runPromise(
     program.pipe(
@@ -1553,6 +1565,127 @@ describe("Installer", () => {
           expect(h.installer.running()).toEqual([]);
         }),
       { config: { roles: ["worker"], installScratchDir: Option.none() } },
+    ));
+});
+
+/** Этапы `InstallStage` из отчётов (остальные отбрасываются). */
+const stagesOf = (reports: ReadonlyArray<AgentReport>) =>
+  reports.flatMap((report) =>
+    report._tag === "InstallStage" ? [[report.jobId, report.stage]] : [],
+  );
+
+describe("Installer stages", () => {
+  it("reports preparing, login, downloading, moving in order", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Контейнер поднят и клиент сразу вошёл (autoLogin) — все три этапа
+        // загрузки видны уже после первого тика.
+        expect(stagesOf(yield* h.drainAll)).toEqual([
+          ["j1", "preparing"],
+          ["j1", "login"],
+          ["j1", "downloading"],
+        ]);
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "moving"]]);
+      }),
+    ));
+
+  it("reports login before a slow Steam logon, downloading only after it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([
+          ["j1", "preparing"],
+          ["j1", "login"],
+        ]);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "downloading"]]);
+      }),
+    ));
+});
+
+describe("downloadingBytes", () => {
+  it("sums files under the dir and is 0 without it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
+    try {
+      expect(downloadingBytes(join(dir, "missing"))).toBe(0);
+      write(dir, { "a.bin": "x".repeat(5), "sub/b.bin": "x".repeat(7) });
+      expect(downloadingBytes(dir)).toBe(12);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Installer download progress", () => {
+  it("uses downloading bytes when they are ahead of the manifest", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "10",
+        });
+        write(join(upperOf(h.fake), "downloading", "736260"), {
+          "part.bin": "x".repeat(40),
+        });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 40,
+            bytesTotal: 100,
+          },
+        ]);
+      }),
+    ));
+
+  it("never decreases and never exceeds the total", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        const downloading = join(upperOf(h.fake), "downloading", "736260");
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "10",
+        });
+        // Каталог «downloading» уже больше общего размера (временно, до
+        // перезаписи манифеста Steam) — отчёт не должен превысить total.
+        write(downloading, { "part.bin": "x".repeat(140) });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallProgress",
+            jobId: "j1",
+            bytesDownloaded: 100,
+            bytesTotal: 100,
+          },
+        ]);
+        // Файлы ушли из «downloading» (например, Steam их переместил), а
+        // манифест отстаёт — отчёт не должен уменьшиться.
+        rmSync(downloading, { recursive: true, force: true });
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "50",
+        });
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([]);
+      }),
     ));
 });
 

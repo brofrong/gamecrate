@@ -133,6 +133,41 @@ export const manifestPath = (appId: number) =>
   `${STEAMAPPS_DIR}/${manifestName(appId)}`;
 
 /**
+ * Каталог частично скачанных файлов целевого приложения в upper apps-слоя
+ * (внутри `steamapps`, рядом с `common`): `<apps upper>/downloading/<appId>`.
+ * Второй, более плавный источник процента вместе с манифестом (спека §4.3);
+ * проверка на настоящей установке — Task 7. Отключить — убрать единственный
+ * вызов `downloadingBytes` в `watch`.
+ */
+const downloadingDir = (job: Job) =>
+  join(job.overlays.apps.upper, "downloading", String(job.appId));
+
+/**
+ * Сумма размеров обычных файлов под `dir` рекурсивно (агент читает upper
+ * хоста напрямую, overlay тут ни при чём). Каталога нет — 0; запись не
+ * читается (гонка с Steam, который её одновременно меняет) — просто
+ * пропускается, не валит установку.
+ */
+export const downloadingBytes = (dir: string): number => {
+  let total = 0;
+  const walk = (path: string) => {
+    let entries;
+    try {
+      entries = readdirSync(path, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) total += lstat(full)?.size ?? 0;
+    }
+  };
+  walk(dir);
+  return total;
+};
+
+/**
  * Заготовка манифеста: «нужно обновление, обновление начато» (`StateFlags 1026`)
  * — Steam при старте ставит игру в очередь загрузки. `installdir` Steam
  * перезапишет настоящим; `<appId>` — чтобы не зависеть от названия.
@@ -422,20 +457,37 @@ const make = Effect.gen(function* () {
    * загрузки и распаковки (`BytesStaged`: после загрузки Steam распаковывает и
    * проверяет) или `StateFlags`, а также любое изменение байтов/состояния
    * других манифестов (зависимости); хода нет STALL_TIMEOUT — `Abort`.
+   *
+   * Процент (спека §4.3): манифест обновляется редко и скачками — вместе с
+   * ним берём размер `downloadingDir` (растёт плавнее) и отдаём максимум из
+   * двух, не больше `BytesToDownload` и не меньше уже отданного в этой
+   * задаче (временная гонка — файлы ещё не переехали в манифест/общую
+   * библиотеку — не должна дёргать полоску назад). `BytesToDownload` пока
+   * неизвестен или 0 — как раньше, прямое значение манифеста.
    */
   const watch = (job: Job) =>
     Effect.gen(function* () {
       let lastBytes: string | undefined;
       let lastState: string | undefined;
       let lastActivity: string | undefined;
+      let lastReported: number | undefined;
       let changedAt = yield* Clock.currentTimeMillis;
       while (true) {
         const fields = yield* readManifest(job);
         if (fields?.StateFlags === "4") return fields;
         const now = yield* Clock.currentTimeMillis;
-        const bytesDownloaded = count(fields?.BytesDownloaded);
+        const manifestBytes = count(fields?.BytesDownloaded);
         const bytesTotal = count(fields?.BytesToDownload);
-        if (bytesDownloaded !== undefined && bytesTotal !== undefined) {
+        if (manifestBytes !== undefined && bytesTotal !== undefined) {
+          let bytesDownloaded = manifestBytes;
+          if (bytesTotal > 0) {
+            bytesDownloaded = Math.min(
+              bytesTotal,
+              Math.max(bytesDownloaded, downloadingBytes(downloadingDir(job))),
+            );
+            bytesDownloaded = Math.max(bytesDownloaded, lastReported ?? 0);
+            lastReported = bytesDownloaded;
+          }
           const bytes = `${bytesDownloaded}/${bytesTotal}`;
           if (bytes !== lastBytes) {
             lastBytes = bytes;
@@ -562,10 +614,17 @@ const make = Effect.gen(function* () {
   /**
    * Слои → контейнер → профиль (нет профиля и входа — сразу `steamLogin`) →
    * посев входа (есть что сеять) → заготовка манифеста → смещение журнала →
-   * старт → ждём вход Steam → загрузка.
+   * старт → ждём вход Steam → загрузка. Этапы для экрана загрузки (спека §2,
+   * §4.3): `preparing` сразу, `login` перед ожиданием входа, `downloading` —
+   * как только Steam вошёл.
    */
   const download = (job: Job) =>
     Effect.gen(function* () {
+      yield* emit({
+        _tag: "InstallStage",
+        jobId: job.jobId,
+        stage: "preparing",
+      });
       const startFailed = (cause: unknown) =>
         new Abort({ reason: installReasons.dockerStart, cause });
       yield* prepare(job.overlays).pipe(
@@ -643,7 +702,13 @@ const make = Effect.gen(function* () {
         profile: from,
         steamLoginSeeded: job.seeded,
       });
+      yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "login" });
       yield* waitForSteamLogon(job, logOffset);
+      yield* emit({
+        _tag: "InstallStage",
+        jobId: job.jobId,
+        stage: "downloading",
+      });
       return yield* watch(job);
     });
 
@@ -655,6 +720,7 @@ const make = Effect.gen(function* () {
   const finish = (job: Job, manifest: Record<string, string>) =>
     Effect.gen(function* () {
       job.phase = "finishing";
+      yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "moving" });
       const sizeBytes = count(manifest.SizeOnDisk) ?? 0;
       const buildId = manifest.buildid ?? "";
       const saved = yield* saveProfile({
