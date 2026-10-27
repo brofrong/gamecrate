@@ -5,6 +5,7 @@
 import { Link } from "@tanstack/react-router";
 import { BarChart3, Clock, LayoutGrid, Package, Search } from "lucide-react";
 import type { ComponentType } from "react";
+import { Logo } from "@/components/brand/Logo";
 import {
   Tooltip,
   TooltipContent,
@@ -50,10 +51,9 @@ export function Rail() {
       aria-label="Разделы"
       className="flex h-[calc(100dvh-3rem)] w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
     >
-      <div
-        aria-hidden
-        className="mb-6 size-[30px] rounded-[9px] bg-gradient-to-br from-[#3cc2ff] via-[#3a6cff] to-[#5b2fff]"
-      />
+      <Link to="/app" aria-label="GameCrate" className="mb-6">
+        <Logo iconOnly progress={1} height={36} />
+      </Link>
       {SECTIONS.map(({ to, label, icon }) => (
         <Tooltip key={to}>
           <TooltipTrigger asChild>
