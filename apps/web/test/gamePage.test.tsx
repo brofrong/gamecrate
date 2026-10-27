@@ -326,7 +326,7 @@ describe("appGameRoute", () => {
       routeTree,
       history: createMemoryHistory({ initialEntries: [path] }),
     });
-    render(
+    const rendered = render(
       <RegistryProvider
         initialValues={[
           [meAtom, AsyncResult.success(user)],
@@ -347,7 +347,7 @@ describe("appGameRoute", () => {
         <RouterProvider router={router} />
       </RegistryProvider>,
     );
-    return router;
+    return Object.assign(router, { container: rendered.container });
   }
 
   it("/app/game/abc redirects to /app", async () => {
@@ -363,6 +363,19 @@ describe("appGameRoute", () => {
     expect(
       await screen.findByRole("heading", { name: "Portal 2" }),
     ).toBeTruthy();
+  });
+
+  it("страница игры занимает всю ширину: у оболочки нет правой колонки", async () => {
+    const { container } = renderAt(
+      "/app/game/620",
+      AsyncResult.success(view({ appId: 620, name: "Portal 2" })),
+    );
+    await screen.findByRole("heading", { name: "Portal 2" });
+    const classList = Array.from(
+      container.querySelector(".min-h-dvh")?.classList ?? [],
+    );
+    expect(classList).toContain("xl:grid-cols-[84px_minmax(0,1fr)]");
+    expect(classList).not.toContain("xl:grid-cols-[84px_minmax(0,1fr)_330px]");
   });
 
   it("shows the action button in the sticky slot on mobile", async () => {

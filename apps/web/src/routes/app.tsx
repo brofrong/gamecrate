@@ -1,7 +1,12 @@
 // `/app`: главная после входа — сетка AppShell (полоска разделов/нижняя панель)
 // и дочерние маршруты: «Мои игры», «В тренде», «Из ящика», «Время», страница игры.
 import { useAtomValue } from "@effect/atom-react";
-import { createRoute, Navigate, Outlet } from "@tanstack/react-router";
+import {
+  createRoute,
+  Navigate,
+  Outlet,
+  useMatchRoute,
+} from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { AppShell } from "@/components/app/AppShell";
 import { CratePage } from "@/components/app/CratePage";
@@ -18,6 +23,8 @@ import { rootRoute } from "./__root";
 function AppLayout() {
   const me = useAtomValue(meAtom);
   const [stalled, restartWait] = useStalled(AsyncResult.isInitial(me));
+  // Страница игры — без правой колонки: ей нечего туда класть, а пустое место мешало.
+  const wide = useMatchRoute()({ to: "/app/game/$appId" }) !== false;
 
   if (resultErrorTag(me) === "Unauthorized") {
     return <Navigate to="/login" search={{ next: window.location.pathname }} />;
@@ -30,7 +37,7 @@ function AppLayout() {
   if (!AsyncResult.isSuccess(me)) return null;
 
   return (
-    <AppShell user={me.value}>
+    <AppShell user={me.value} wide={wide}>
       <Outlet />
     </AppShell>
   );
