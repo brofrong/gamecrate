@@ -13,9 +13,10 @@
 #    распаковывает клиент (~2,5 ГБ).
 # 3. Цикл: ждать logs/connection_log.txt и 60 с без роста ~/.local/share/Steam (рост < 1 МБ, без
 #    logs/, htmlcache/, dumps/ — их клиент пишет и в простое) → cg-steam-shutdown. Два цикла
-#    (второй — `steam -silent` через `docker exec` в окружении Plasma, как в cg-steam-shutdown):
-#    за первый steamrt64/appcache распаковываются не до конца, и каждая сессия потом сама
-#    докачивала ~480 МБ и долго входила.
+#    (второй — `steam -silent` через `docker exec` и cg-session-exec, в окружении процесса сессии:
+#    labwc, или plasmashell на старом образе KDE, как в cg-steam-shutdown): за первый
+#    steamrt64/appcache распаковываются не до конца, и каждая сессия потом сама докачивала
+#    ~480 МБ и долго входила.
 # 4. `docker cp` клиента в <STEAM_CLIENT_DIR>.new без logs/ и с пустым steamapps/ (1000:1000).
 # 5. Замена каталога переименованием (`mv --exchange`), старый удаляется контейнером-помощником
 #    от root (в старом шаблоне могут быть файлы root).
@@ -166,28 +167,16 @@ shutdown_steam
 
 echo "==> цикл 2: повторный запуск (довести steamrt64/appcache)"
 # Без logs/ connection_log.txt появится заново только после нового входа в цикл. Steam — через
-# `docker exec` в окружении сессии Plasma (переменные из /proc/<plasmashell>/environ, как в
-# cg-steam-shutdown): автостарт cg-launch второй раз не сработает (замок), а restart контейнера
-# не нужен.
+# `docker exec` и cg-session-exec (окружение процесса сессии: labwc, или plasmashell на старом
+# образе KDE — переменные из /proc/<pid>/environ, как в cg-steam-shutdown): автостарт cg-launch
+# второй раз не сработает (замок), а restart контейнера не нужен.
 docker exec "${name}" rm -rf "${steam}/logs"
-# pgrep -xo по имени процесса: -f нашёл бы и сам этот bash (в его аргументах есть «plasmashell»).
-docker exec -d "${name}" bash -c '
-plasma=$(pgrep -xo plasmashell)
-[ -n "${plasma}" ] && [ -r "/proc/${plasma}/environ" ] || exit 1
-while IFS= read -r -d "" var; do
-  case "${var}" in
-    DISPLAY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
-      USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
-      export "${var?}"
-      ;;
-  esac
-done <"/proc/${plasma}/environ"
-exec steam -silent </dev/null >/tmp/cg-steam-template.log 2>&1
-'
+docker exec -d "${name}" cg-session-exec \
+  bash -c 'exec steam -silent </dev/null >/tmp/cg-steam-template.log 2>&1'
 for ((i = 0; ; i++)); do
   docker exec "${name}" pgrep -f 'ubuntu12_32/steam( |$)' >/dev/null && break
   if [ "${i}" -ge 120 ]; then
-    echo "ОШИБКА: Steam не запустился через docker exec за 120 с (нет Plasma?)" >&2
+    echo "ОШИБКА: Steam не запустился через docker exec за 120 с (нет процесса сессии?)" >&2
     docker exec "${name}" tail -n 20 /tmp/cg-steam-template.log >&2 || true
     exit 1
   fi

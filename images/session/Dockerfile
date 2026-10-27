@@ -40,9 +40,9 @@ RUN ldconfig && ls -l /usr/lib/i386-linux-gnu/libGLX_nvidia.so.0
 COPY --chmod=0755 cg-launch /usr/local/bin/cg-launch
 COPY --chmod=0644 cg-launch.desktop /etc/xdg/autostart/cg-launch.desktop
 
-# Профиль: снятие (cg-profile-pack) и штатное закрытие Steam перед ним (cg-steam-shutdown) —
-# агент зовёт их `docker exec`.
-COPY --chmod=0755 cg-profile-pack cg-steam-shutdown /usr/local/bin/
+# Профиль: снятие (cg-profile-pack) и штатное закрытие Steam перед ним (cg-steam-shutdown,
+# через cg-session-exec — окружение процесса сессии без plasmashell) — агент зовёт их `docker exec`.
+COPY --chmod=0755 cg-profile-pack cg-steam-shutdown cg-session-exec /usr/local/bin/
 
 # Этап запуска игры (экран загрузки, план §4.1/§4.2) — агент зовёт его `docker exec` раз в 2 с.
 COPY --chmod=0755 cg-session-stage /usr/local/bin/

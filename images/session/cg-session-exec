@@ -1,0 +1,71 @@
+#!/bin/bash
+# cg-session-exec <команда> [аргументы…] — выполнить команду в окружении процесса сессии:
+# `docker exec` сам его не знает, и без DISPLAY/XAUTHORITY/… графические программы (Steam,
+# xdotool) не находят дисплей. Зовут его cg-steam-shutdown (окружение для `steam -shutdown`) и
+# build-steam-client.sh (повторный `steam -silent` во втором цикле сборки шаблона).
+#
+# Источник окружения — первый найденный процесс:
+#   1. клиент Steam (…/ubuntu12_32/steam, не steam-runtime/steamwebhelper) — его окружение и
+#      нужно в большинстве случаев (steam -shutdown, повторный steam -silent);
+#   2. композитор сессии labwc (образ kiosk, план 4) — когда клиента ещё нет;
+#   3. plasmashell — старый образ KDE: откат на него и сборка шаблона со старым образом
+#      продолжают работать без доработок.
+# Нет ни одного — стдерр `[cg-session-exec] no session process` и код 1.
+#
+# В окружение команды переносятся не все переменные процесса (там могут быть секреты агента,
+# например PASSWD), а только нужные графическим программам: DISPLAY WAYLAND_DISPLAY
+# XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS HOME USER LD_PRELOAD XAUTHORITY XDG_SESSION_TYPE —
+# из /proc/<pid>/environ (NUL-разделитель, без eval: значения могут содержать пробелы и «=»).
+# PATH — текущий PATH контейнера (`docker exec`), а не процесса-источника. Само окружение никуда
+# не печатается.
+#
+# CG_PROC_DIR — другой корень вместо /proc (тесты).
+set -u
+
+proc_dir="${CG_PROC_DIR:-/proc}"
+
+if [ "$#" -eq 0 ]; then
+  echo "[cg-session-exec] no command given" >&2
+  exit 1
+fi
+
+# Первый найденный — порядок важен (см. выше). pgrep -f нашёл бы и сам этот скрипт, если бы его
+# командная строка совпала с шаблоном, но «ubuntu12_32/steam» в её аргументах не встречается.
+session_pid() {
+  local pid
+  pid="$(pgrep -f 'ubuntu12_32/steam( |$)' | head -1)"
+  if [ -n "${pid}" ]; then
+    printf '%s\n' "${pid}"
+    return 0
+  fi
+  pid="$(pgrep -xo labwc)"
+  if [ -n "${pid}" ]; then
+    printf '%s\n' "${pid}"
+    return 0
+  fi
+  pid="$(pgrep -xo plasmashell)"
+  if [ -n "${pid}" ]; then
+    printf '%s\n' "${pid}"
+    return 0
+  fi
+  return 1
+}
+
+pid="$(session_pid)"
+environ="${proc_dir}/${pid}/environ"
+if [ -z "${pid}" ] || [ ! -r "${environ}" ]; then
+  echo "[cg-session-exec] no session process" >&2
+  exit 1
+fi
+
+args=(env -i "PATH=${PATH}")
+while IFS= read -r -d '' var; do
+  case "${var}" in
+    DISPLAY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
+      USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
+      args+=("${var}")
+      ;;
+  esac
+done <"${environ}"
+
+exec "${args[@]}" "$@"

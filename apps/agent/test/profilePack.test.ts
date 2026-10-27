@@ -148,7 +148,7 @@ describe("cg-profile-pack", () => {
   });
 
   it("scripts are valid bash", () => {
-    for (const name of ["cg-profile-pack", "cg-steam-shutdown"]) {
+    for (const name of ["cg-profile-pack", "cg-steam-shutdown", "cg-session-exec"]) {
       const result = Bun.spawnSync([
         "bash",
         "-n",
