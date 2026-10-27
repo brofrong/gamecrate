@@ -10,6 +10,7 @@ import { Gamepad2 } from "lucide-react";
 import { StickySlot } from "@/components/app/AppShell";
 import { Panel } from "@/components/app/Panel";
 import { AboutPanel } from "@/components/app/game/AboutPanel";
+import { AchievementsPanel } from "@/components/app/game/AchievementsPanel";
 import { CompatPanel } from "@/components/app/game/CompatPanel";
 import { FactsPanel } from "@/components/app/game/FactsPanel";
 import { GameHero, HeroButton } from "@/components/app/game/GameHero";
@@ -96,6 +97,7 @@ export function GamePage({ appId }: { appId: number }) {
               </p>
             </Panel>
           )}
+          <AchievementsPanel achievements={game.achievements} />
         </div>
         <div className="flex flex-col gap-6">
           <CompatPanel game={game} />
