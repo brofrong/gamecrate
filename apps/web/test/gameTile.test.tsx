@@ -8,7 +8,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import type { CloudStatus } from "@cg/rpc";
 import type { CardAction } from "../src/lib/cardAction";
 import { GameTile, type TileGame } from "../src/components/app/GameTile";
-import { GameSection } from "../src/components/app/GameSection";
+import { GameSection, SECTION_PAGE } from "../src/components/app/GameSection";
 import { testRouter } from "./router";
 
 const ready: CloudStatus = { _tag: "Ready" };
@@ -185,5 +185,61 @@ describe("GameSection", () => {
     expect(screen.getByText("Готовы к запуску")).toBeTruthy();
     expect(screen.getByText("(12)")).toBeTruthy();
     expect(screen.getByText("карточка")).toBeTruthy();
+  });
+
+  it("shows the first `limit` children and a «Показать ещё» button", () => {
+    render(
+      <GameSection title="Нужна установка" count={60} limit={24}>
+        {Array.from({ length: 60 }, (_, i) => (
+          <div key={i} data-testid="tile" />
+        ))}
+      </GameSection>,
+    );
+    expect(screen.getAllByTestId("tile")).toHaveLength(24);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Показать ещё 24 · осталось 36" }),
+    );
+    expect(screen.getAllByTestId("tile")).toHaveLength(48);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Показать ещё 12 · осталось 12" }),
+    );
+    expect(screen.getAllByTestId("tile")).toHaveLength(60);
+    expect(screen.queryByRole("button", { name: /Показать ещё/ })).toBeNull();
+  });
+
+  it("renders no button when children fit", () => {
+    render(
+      <GameSection title="Готовы" count={10} limit={SECTION_PAGE}>
+        {Array.from({ length: 10 }, (_, i) => (
+          <div key={i} data-testid="tile" />
+        ))}
+      </GameSection>,
+    );
+    expect(SECTION_PAGE).toBe(24);
+    expect(screen.getAllByTestId("tile")).toHaveLength(10);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("grid has five columns from 1440px", () => {
+    render(
+      <GameSection title="Готовы" count={1}>
+        <div data-testid="tile" />
+      </GameSection>,
+    );
+    const grid = screen.getByTestId("tile").parentElement!;
+    expect(grid.className).toContain("min-[1440px]:grid-cols-5");
+  });
+
+  it("renders the optional action after the title", () => {
+    render(
+      <GameSection
+        title="Запускал недавно"
+        count={2}
+        action={<a href="/app/time">все сессии →</a>}
+      >
+        <div />
+      </GameSection>,
+    );
+    expect(screen.getByRole("link", { name: "все сессии →" })).toBeTruthy();
   });
 });
