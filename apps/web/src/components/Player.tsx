@@ -36,20 +36,20 @@ export const showsStream = (view: SessionView) =>
 /** Как часто обновлять полоску и подсказку экрана загрузки. */
 const LOADING_TICK_MS = 1_000;
 
-/**
- * Сколько мс клиент видит текущий этап: отсчёт с момента, когда сменились
- * `state`/`stage`/`installStage`. Пока `active` — перерисовка раз в `LOADING_TICK_MS`.
- */
-function useMsInStage(view: SessionView, active: boolean): number {
-  const key = `${view.id}/${view.state}/${view.stage}/${view.installStage}`;
-  const since = useRef({ key, at: Date.now() });
-  if (since.current.key !== key) since.current = { key, at: Date.now() };
+/** Пока `active` — перерисовка раз в `LOADING_TICK_MS` (полоска и подсказка). */
+function useLoadingTick(active: boolean) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (!active) return;
     const timer = setInterval(() => tick((n) => n + 1), LOADING_TICK_MS);
     return () => clearInterval(timer);
   }, [active]);
+}
+
+/** Сколько мс клиент видит `key` неизменным: отсчёт с его последней смены. */
+function useMsSince(key: string): number {
+  const since = useRef({ key, at: Date.now() });
+  if (since.current.key !== key) since.current = { key, at: Date.now() };
   return Date.now() - since.current.at;
 }
 
@@ -162,7 +162,13 @@ export function Player({
   const stream = showsStream(view);
   // Открыть можно только готовую трансляцию — без неё снова экран загрузки.
   const loading = showsLoading(view, revealedId === view.id && stream);
-  const msInStage = useMsInStage(view, loading);
+  useLoadingTick(loading);
+  // В текущем этапе — с последней смены `state`/`stage`/`installStage`; в
+  // состоянии — смена этапа внутри `playing` отсчёт не сбрасывает.
+  const msInStage = useMsSince(
+    `${view.id}/${view.state}/${view.stage}/${view.installStage}`,
+  );
+  const msInState = useMsSince(`${view.id}/${view.state}`);
 
   if (!stream && !loading) {
     return (
@@ -184,6 +190,7 @@ export function Player({
         <LoadingScreen
           view={view}
           msInStage={msInStage}
+          msPlaying={view.state === "playing" ? msInState : 0}
           onCancel={onExit}
           onReveal={stream ? () => setRevealedId(view.id) : undefined}
         />

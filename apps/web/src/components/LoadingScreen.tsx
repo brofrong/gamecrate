@@ -13,7 +13,11 @@ import {
 } from "@/lib/loadingSteps";
 import { cn } from "@/lib/utils";
 
-/** Сколько ждать окна игры на этапе «Загружаем игру», прежде чем подсказать «Показать экран». */
+/**
+ * Сколько ждать окна игры после запуска её процесса (`playing`, этап «Готовим игру»
+ * или «Загружаем игру»), прежде чем подсказать «Показать экран»: нативная игра,
+ * лаунчер или нераспознанное окно до `visible` не дойдут.
+ */
 export const LOADING_HINT_MS = 3 * 60_000;
 
 function StepDot({ status }: { status: LoadingStep["status"] }) {
@@ -39,12 +43,15 @@ function StepDot({ status }: { status: LoadingStep["status"] }) {
 export function LoadingScreen({
   view,
   msInStage,
+  msPlaying,
   onCancel,
   onReveal,
 }: {
   view: SessionView;
-  /** Сколько мс клиент видит текущий этап — для полоски и подсказки. */
+  /** Сколько мс клиент видит текущий этап — для полоски. */
   msInStage: number;
+  /** Сколько мс клиент видит сессию в `playing` (не в нём — 0) — для подсказки. */
+  msPlaying: number;
   /** «Отменить» — тот же `session.stop`, что и выход из игры. */
   onCancel: () => void;
   /** «Показать экран»; нет — трансляции ещё нет, и кнопки тоже. */
@@ -56,7 +63,7 @@ export function LoadingScreen({
   const steps = loadingSteps(view);
   const progress = loadingProgress(view, msInStage);
   const waitHint =
-    view.stage === "loading" && msInStage >= LOADING_HINT_MS
+    view.state === "playing" && msPlaying >= LOADING_HINT_MS
       ? "Похоже, игра ждёт вас на экране"
       : null;
 
