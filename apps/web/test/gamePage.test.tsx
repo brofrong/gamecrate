@@ -12,8 +12,12 @@ import type {
   RecentEntry,
   SessionView,
 } from "@cg/rpc";
-import { render, screen } from "@testing-library/react";
-import { RouterProvider } from "@tanstack/react-router";
+import { render, screen, waitFor } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
@@ -113,6 +117,19 @@ mock.module("../src/rpc", () => ({
 }));
 
 const { GamePage } = await import("../src/components/app/game/GamePage");
+const { appRoute, appIndexRoute, appGameRoute } =
+  await import("../src/routes/app");
+const { rootRoute } = await import("../src/routes/__root");
+
+const user: CurrentUserShape = {
+  id: "u1",
+  name: "Gamer",
+  image: null,
+  role: "player",
+  steamId: "7656",
+  email: null,
+  emailVerified: false,
+};
 
 const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
@@ -274,5 +291,70 @@ describe("GamePage", () => {
       await screen.findByText("Ты ещё не запускал эту игру в облаке"),
     ).toBeTruthy();
     expect(screen.queryByText(/последний запуск/)).toBeNull();
+  });
+});
+
+describe("appGameRoute", () => {
+  const routeTree = rootRoute.addChildren([
+    appRoute.addChildren([appIndexRoute, appGameRoute]),
+  ]);
+
+  function renderAt(
+    path: string,
+    gameResult: AsyncResult.AsyncResult<GameView, { readonly _tag: string }>,
+  ) {
+    const router = createRouter({
+      routeTree,
+      history: createMemoryHistory({ initialEntries: [path] }),
+    });
+    render(
+      <RegistryProvider
+        initialValues={[
+          [meAtom, AsyncResult.success(user)],
+          [
+            libraryAtom,
+            AsyncResult.success({
+              _tag: "Ready",
+              entries: [],
+              syncedAt: null,
+              steamProfile: true,
+            } as LibraryView),
+          ],
+          [recentAtom, AsyncResult.success([])],
+          [activeSessionAtom, AsyncResult.success(null)],
+          [gameAtom(620), gameResult],
+        ]}
+      >
+        <RouterProvider router={router} />
+      </RegistryProvider>,
+    );
+    return router;
+  }
+
+  it("/app/game/abc redirects to /app", async () => {
+    const router = renderAt("/app/game/abc", AsyncResult.initial());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/app"));
+  });
+
+  it("/app/game/620 renders GamePage for appId 620", async () => {
+    renderAt(
+      "/app/game/620",
+      AsyncResult.success(view({ appId: 620, name: "Portal 2" })),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Portal 2" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the action button in the sticky slot on mobile", async () => {
+    renderAt(
+      "/app/game/620",
+      AsyncResult.success(view({ appId: 620, name: "Portal 2" })),
+    );
+    await screen.findByRole("heading", { name: "Portal 2" });
+    // Одна кнопка в шапке (десктоп), вторая — в закреплённом слоте над нижней панелью.
+    expect(
+      screen.getAllByRole("button", { name: "Играть: Portal 2" }),
+    ).toHaveLength(2);
   });
 });

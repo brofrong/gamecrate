@@ -7,10 +7,11 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { Gamepad2 } from "lucide-react";
+import { StickySlot } from "@/components/app/AppShell";
 import { Panel } from "@/components/app/Panel";
 import { CompatPanel } from "@/components/app/game/CompatPanel";
 import { FactsPanel } from "@/components/app/game/FactsPanel";
-import { GameHero } from "@/components/app/game/GameHero";
+import { GameHero, HeroButton } from "@/components/app/game/GameHero";
 import { SessionsPanel } from "@/components/app/game/SessionsPanel";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
@@ -94,6 +95,13 @@ export function GamePage({ appId }: { appId: number }) {
           {game.inLibrary && <SessionsPanel game={game} now={now} />}
         </div>
       </div>
+      {action !== null && (
+        <StickySlot>
+          <div className="px-3 pb-2">
+            <HeroButton game={game} action={action} className="w-full" />
+          </div>
+        </StickySlot>
+      )}
     </div>
   );
 }

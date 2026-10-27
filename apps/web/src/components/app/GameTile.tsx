@@ -106,7 +106,7 @@ export function GameTile({
   return (
     <Link
       to="/app/game/$appId"
-      params={{ appId: String(game.appId) }}
+      params={{ appId: game.appId }}
       aria-label={`Игра: ${game.name}`}
       className="group block rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-[#3cc2ff]"
     >

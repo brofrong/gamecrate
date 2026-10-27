@@ -1,10 +1,11 @@
-// `/app`: новая главная после входа — сетка AppShell (полоска разделов/нижняя панель)
-// и четыре дочерних маршрута: «Мои игры», «В тренде», «Из ящика», «Время» (Task 10, Task 12).
+// `/app`: главная после входа — сетка AppShell (полоска разделов/нижняя панель)
+// и дочерние маршруты: «Мои игры», «В тренде», «Из ящика», «Время», страница игры.
 import { useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate, Outlet } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { AppShell } from "@/components/app/AppShell";
 import { CratePage } from "@/components/app/CratePage";
+import { GamePage } from "@/components/app/game/GamePage";
 import { MyGamesPage } from "@/components/app/MyGamesPage";
 import { TimePage } from "@/components/app/TimePage";
 import { TrendingPage } from "@/components/app/TrendingPage";
@@ -96,12 +97,21 @@ export const appTimeRoute = createRoute({
 });
 
 /**
- * Страница игры `/app/game/$appId` (спека 2026-10-27 §3.5). Пока заглушка: сам маршрут
- * нужен уже сейчас, чтобы типизированные `Link` в `GameTile` компилировались; компонент
- * и разбор параметра — следующие задачи плана.
+ * Страница игры `/app/game/$appId` (спека 2026-10-27 §3.5). `appId` разбирается в
+ * число в `params.parse`; нечисло или не положительное — редирект на `/app`.
  */
+function GameRoutePage() {
+  const { appId } = appGameRoute.useParams();
+  if (!Number.isInteger(appId) || appId <= 0) return <Navigate to="/app" />;
+  return <GamePage appId={appId} />;
+}
+
 export const appGameRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/game/$appId",
-  component: () => null,
+  params: {
+    parse: ({ appId }) => ({ appId: Number(appId) }),
+    stringify: ({ appId }) => ({ appId: String(appId) }),
+  },
+  component: GameRoutePage,
 });
