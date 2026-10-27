@@ -50,6 +50,13 @@ describe("Rail", () => {
     expect(myGames.getAttribute("aria-current")).toBeNull();
   });
 
+  it("наверху — логотип GameCrate (GC-куб) ссылкой на /app", async () => {
+    render(<RouterProvider router={testRouter(<Rail />)} />);
+    const home = await screen.findByRole("link", { name: "GameCrate" });
+    expect(home.getAttribute("href")).toBe("/app");
+    expect(home.querySelector('svg[role="img"]')).not.toBeNull();
+  });
+
   it("has no «Установки» link", async () => {
     render(<RouterProvider router={testRouter(<Rail />)} />);
     await screen.findByRole("link", { name: "Поиск" });
