@@ -10,16 +10,10 @@
   /etc/xdg/labwc/rc.xml базы несёт собственный комментарий «which labwc reads when the user has
   no rc.xml of their own».
 
-  labwc moделирует поведение Openbox (так в комментарии штатного rc.xml) — секция конфига,
-  присутствующая в файле хотя бы пустой, заменяет встроенные умолчания целиком, а не дополняет
-  их. Поэтому пустые <keyboard> и <mouse> ниже — это и есть «без горячих клавиш выхода/смены
-  рабочего стола и без меню по правому клику», а не отсутствие проверки: сочетания клавиш и клик
-  по фону ничего не делают, потому что не привязаны ни к одному действию.
-
-  ЭТО НЕ ПОДТВЕРЖДЕНО ЖИВЫМ ЗАПУСКОМ (шаг 3 плана — GPU-контейнер — вне объёма этой задачи).
-  Атрибуты windowRule (serverDecoration, skipTaskbar, fullscreenForced, ignoreConfigureRequest)
-  найдены как имена полей в бинарнике labwc (`strings /usr/bin/labwc`), точный синтаксис и
-  работоспособность — проверить в шаге 3.
+  Шаг 3 (живой запуск на brofrong, labwc 0.9.7): пустые <keyboard>/<mouse> labwc отвергает и
+  грузит встроенные привязки, поэтому ниже — минимальные непустые секции (см. комментарий там).
+  windowRule ниже распознан (ошибок разбора нет), но окно входа Steam (min=max 700x440) во весь
+  экран не растянуто — fullscreenForced на окно фиксированного размера не действует.
 -->
 <labwc_config>
   <core>
@@ -27,14 +21,33 @@
     <gap>0</gap>
   </core>
 
-  <!-- Пусто: ни одного сочетания клавиш (никакого Alt+F4/Alt+Tab/Super+... выхода или смены
-       рабочего стола). -->
+  <!-- Шаг 3 (живой запуск): ПУСТЫЕ <keyboard>/<mouse> НЕ работают — labwc 0.9.7 пишет
+       «Empty string is not allowed for keyboard/mouse. Ignoring» и, раз привязок нет, грузит
+       встроенные умолчания («load default key/mouse bindings»: Alt+F4, Alt+Tab, меню по клику
+       на фоне с «Exit»…). Поэтому — одна безвредная привязка клавиши (кнопка, которой нет на
+       клавиатурах) и только фокус по клику в окне: этого достаточно, чтобы умолчания не
+       загрузились. -->
   <keyboard>
+    <keybind key="XF86Launch9">
+      <action name="Execute" command="true" />
+    </keybind>
   </keyboard>
 
-  <!-- Пусто: клик по фону (в т.ч. правой кнопкой) ничего не открывает — нет меню.xml и нет
-       привязки ShowMenu. -->
   <mouse>
+    <context name="Client">
+      <mousebind button="Left" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
+      </mousebind>
+      <mousebind button="Middle" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
+      </mousebind>
+      <mousebind button="Right" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
+      </mousebind>
+    </context>
   </mouse>
 
   <!-- Каждое окно — без декораций (ни своей, ни от композитора), во весь экран, не в «панели

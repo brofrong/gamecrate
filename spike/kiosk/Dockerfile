@@ -10,6 +10,13 @@
 # `docker pull` показал только «Already exists»), но без KDE Plasma и без Steam внутри.
 # НЕ latest-ubuntu26.04 (решение контролёра): latest плавает, а 2.0.0 — зафиксированная версия,
 # совпадающая с прод-образом.
+# Шаг 3 (GPU-запуск): в базе нет того, что делает Steam рабочим без user namespaces, — берём это
+# из прод-базы selkies-egl-desktop:26.04 (тот же Selkies 2.0, закреплён по digest): ключ и
+# apt-источник Valve (steam-launcher, а не Debian steam-installer: тот перед первым запуском
+# показывает zenity «Install/Cancel» и ставит клиент в ~/.steam/debian-installation вместо
+# ~/.local/share/Steam), proot + proot-bwrap (замена bwrap для pressure-vessel и steamwebhelper).
+FROM ghcr.io/selkies-project/selkies-egl-desktop@sha256:92c80f75c0a6bdfabd1cbac650690e0260a1726ef0b3164d7be8ff60f55a30fa AS egl
+
 FROM ghcr.io/selkies-project/selkies/base@sha256:191428b47ee11e6670547a5012a2a939c1b4df257a0a5293c226ab337c8a4723
 ARG NV_VER=550.163.01
 USER root
@@ -17,14 +24,31 @@ USER root
 # Steam и нужные пакеты. Проверено шагом 1 (temp-контейнеры без GPU, --entrypoint): в этой базе
 # УЖЕ есть всё остальное из списка брифа — i386 (мультиарх включён, libc6:i386 стоит),
 # python3-dbus, системная шина (служба s6 /etc/service/dbus), xdotool, x11-utils (xwininfo),
-# curl, procps (ps/pgrep), dbus-x11 (dbus-launch). Не хватает только Steam: multiverse уже в
-# /etc/apt/sources.list.d/ubuntu.sources, ставим steam-installer (как в Ubuntu/Debian, а не
-# steam-launcher — того кандидата в этом релизе нет, в отличие от набора пакетов
-# selkies-egl-desktop:26.04).
+# curl, procps (ps/pgrep), dbus-x11 (dbus-launch). Шаги 1–2 ставили steam-installer из multiverse.
+#
+# Шаг 3 (GPU-запуск) поправил: steam-installer (Debian) не годится — zenity-вопрос до первого
+# запуска (Steam молча висит) и другой каталог клиента. Ставим steam-launcher Valve, как в
+# selkies-egl-desktop:26.04; /usr/bin/steam — обёртка с BWRAP=proot-bwrap, как там же (через
+# dpkg-divert, как там же). python3-gi + gir1.2-glib-2.0 — для cg-nm-stub (без них он падает с
+# `No module named 'gi'`); libfakechroot (обе архитектуры) и libtalloc2 — для proot-bwrap/proot.
+COPY --from=egl /usr/share/keyrings/steam.gpg /usr/share/keyrings/steam.gpg
+COPY --from=egl /etc/apt/sources.list.d/steam-stable.list /etc/apt/sources.list.d/steam-stable.list
+COPY --from=egl /usr/local/bin/proot /usr/local/bin/proot-bwrap /usr/local/bin/
 RUN apt-get update -qq \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends steam-installer \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+         steam-launcher steam-libs-amd64 steam-libs-i386:i386 \
+         python3-gi gir1.2-glib-2.0 \
+         libfakechroot:amd64 libfakechroot:i386 libtalloc2 \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-divert --local --rename --add /usr/bin/steam \
+    && printf '%s\n' '#!/bin/sh' \
+         '# Start Steam with a bubblewrap that works without user namespaces.' \
+         'BWRAP="${BWRAP:-/usr/local/bin/proot-bwrap}"' 'export BWRAP' \
+         'exec /usr/lib/steam/steam "$@"' >/usr/bin/steam \
+    && chmod 0755 /usr/bin/steam \
+    && ln -sfn bin_steam.sh /usr/lib/steam/steam \
+    && /usr/local/bin/proot --version >/dev/null
 
 # Клиент Steam 32-битный, а NVIDIA Container Toolkit прокидывает только 64-битные библиотеки
 # (как в images/session/Dockerfile). Версия должна совпадать с драйвером хоста.
@@ -78,11 +102,8 @@ RUN install -d -o 1000 -g 1000 \
       /home/ubuntu/.local/share/Steam/steamapps \
       /home/ubuntu/.steam
 
-# Найдено шагом 1/2 (сравнение docker inspect этой базы с selkies-egl-desktop:26.04): настоящий
-# бинарник steam-installer — /usr/games/steam (ставит клиент при первом запуске), а не /usr/bin,
-# и PATH этой базы (в отличие от selkies-egl-desktop:26.04) каталог /usr/games не включает —
-# `exec steam ...` в cg-launch не нашёл бы его. Дописываем PATH тем же хвостом, что у
-# selkies-egl-desktop:26.04.
+# PATH тем же хвостом, что у selkies-egl-desktop:26.04 (шаги 1–2: steam-installer ставил
+# /usr/games/steam; steam-launcher — /usr/bin/steam, хвост оставлен для паритета с прод-базой).
 ENV PATH="${PATH}:/usr/local/games:/usr/games"
 
 # Постоянные настройки Selkies — те же имена и значения, что в images/session/Dockerfile (шаг 1:
