@@ -3,13 +3,43 @@
 // (название + одно значение справа, полоса установки, тег Proton), кнопка
 // «Играть»/«Установить» не всплывает в ссылку, цепочка заглушек обложки.
 import { describe, expect, it, mock } from "bun:test";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import type { CloudStatus } from "@cg/rpc";
 import type { CardAction } from "../src/lib/cardAction";
 import { GameTile, type TileGame } from "../src/components/app/GameTile";
 import { GameSection, SECTION_PAGE } from "../src/components/app/GameSection";
 import { testRouter } from "./router";
+
+// happy-dom объявляет IntersectionObserver, но никогда не вызывает колбэк — подменяем
+// управляемым: `reveal()` сообщает последнему наблюдателю «маячок виден»,
+// `alwaysVisible` — каждый `observe` сразу виден (маячок остался на экране после догрузки).
+function stubObserver({ alwaysVisible = false } = {}) {
+  const state = {
+    observed: 0,
+    last: null as null | (() => void),
+    reveal() {
+      state.last?.();
+    },
+  };
+  class Observer {
+    constructor(private readonly cb: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      state.observed += 1;
+      const fire = () =>
+        this.cb(
+          [{ isIntersecting: true, target } as IntersectionObserverEntry],
+          this as never,
+        );
+      state.last = fire;
+      if (alwaysVisible) fire();
+    }
+    unobserve() {}
+    disconnect() {}
+  }
+  window.IntersectionObserver = Observer as never;
+  return state;
+}
 
 const ready: CloudStatus = { _tag: "Ready" };
 const missing: CloudStatus = { _tag: "Missing" };
@@ -187,7 +217,8 @@ describe("GameSection", () => {
     expect(screen.getByText("карточка")).toBeTruthy();
   });
 
-  it("shows the first `limit` children and a «Показать ещё» button", () => {
+  it("shows the first `limit` children and loads more as the sentinel scrolls into view", () => {
+    const io = stubObserver();
     render(
       <GameSection title="Нужна установка" count={60} limit={24}>
         {Array.from({ length: 60 }, (_, i) => (
@@ -196,18 +227,44 @@ describe("GameSection", () => {
       </GameSection>,
     );
     expect(screen.getAllByTestId("tile")).toHaveLength(24);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Показать ещё 24 · осталось 36" }),
-    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("ещё 36");
+
+    act(() => io.reveal());
     expect(screen.getAllByTestId("tile")).toHaveLength(48);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Показать ещё 12 · осталось 12" }),
-    );
+    expect(screen.getByRole("status").textContent).toBe("ещё 12");
+
+    act(() => io.reveal());
     expect(screen.getAllByTestId("tile")).toHaveLength(60);
-    expect(screen.queryByRole("button", { name: /Показать ещё/ })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("renders no button when children fit", () => {
+  it("keeps loading while the sentinel stays visible after a page is appended", () => {
+    const io = stubObserver({ alwaysVisible: true });
+    render(
+      <GameSection title="Нужна установка" count={60} limit={24}>
+        {Array.from({ length: 60 }, (_, i) => (
+          <div key={i} data-testid="tile" />
+        ))}
+      </GameSection>,
+    );
+    expect(screen.getAllByTestId("tile")).toHaveLength(60);
+    expect(io.observed).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not load while the sentinel is out of view", () => {
+    stubObserver();
+    render(
+      <GameSection title="Нужна установка" count={60} limit={24}>
+        {Array.from({ length: 60 }, (_, i) => (
+          <div key={i} data-testid="tile" />
+        ))}
+      </GameSection>,
+    );
+    expect(screen.getAllByTestId("tile")).toHaveLength(24);
+  });
+
+  it("renders no sentinel when children fit", () => {
     render(
       <GameSection title="Готовы" count={10} limit={SECTION_PAGE}>
         {Array.from({ length: 10 }, (_, i) => (
@@ -217,7 +274,7 @@ describe("GameSection", () => {
     );
     expect(SECTION_PAGE).toBe(24);
     expect(screen.getAllByTestId("tile")).toHaveLength(10);
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("grid has five columns from 1440px", () => {

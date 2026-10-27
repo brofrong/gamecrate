@@ -1,15 +1,18 @@
 // Секция сетки карточек на `/app` (спека 2026-10-27 §3.3–3.4): заголовок с количеством
 // и линией до конца строки, опциональное действие справа («все сессии →»), под ним
-// сетка 2/3/4/5 плиток в ряд. С `limit` показывает первые `limit` детей и кнопку
-// «Показать ещё N · осталось M»; сброс раскрытия — через `key` у родителя (смена
+// сетка 2/3/4/5 плиток в ряд. С `limit` показывает первые `limit` детей и маячок
+// «ещё M» под ними: как только он подъезжает к экрану (IntersectionObserver), секция
+// догружает следующую порцию; сброс раскрытия — через `key` у родителя (смена
 // фильтров). `scroll` — горизонтальная прокрутка на телефоне («Запускал недавно»).
-import { Children, useState } from "react";
+import { Children, useEffect, useRef, useState } from "react";
 import type * as React from "react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-/** Сколько плиток секция показывает до первого «Показать ещё» (6 рядов по 4). */
+/** Сколько плиток секция показывает за одну порцию (6 рядов по 4). */
 export const SECTION_PAGE = 24;
+
+/** За сколько пикселей до маячка начинать догрузку — чтобы плитки были на месте до прокрутки. */
+const PREFETCH_MARGIN = "600px";
 
 export function GameSection({
   title,
@@ -31,6 +34,22 @@ export function GameSection({
   const visible = all.slice(0, shown);
   const rest = all.length - visible.length;
   const step = Math.min(limit ?? 0, rest);
+  const sentinel = useRef<HTMLParagraphElement>(null);
+
+  // Новый наблюдатель на каждую порцию: его первый вызов сообщает текущее состояние,
+  // так что маячок, оставшийся на экране после догрузки, подтянет и следующую.
+  useEffect(() => {
+    const el = sentinel.current;
+    if (el === null || step === 0) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setShown((n) => n + step);
+      },
+      { rootMargin: PREFETCH_MARGIN },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [step, shown]);
 
   return (
     <section className="flex flex-col gap-3.5">
@@ -51,14 +70,13 @@ export function GameSection({
         {visible}
       </div>
       {rest > 0 && (
-        <Button
-          type="button"
-          variant="outline"
-          className="self-center"
-          onClick={() => setShown((n) => n + step)}
+        <p
+          ref={sentinel}
+          role="status"
+          className="self-center text-sm text-[#8a90a8]"
         >
-          Показать ещё {step} · осталось {rest}
-        </Button>
+          ещё {rest}
+        </p>
       )}
     </section>
   );

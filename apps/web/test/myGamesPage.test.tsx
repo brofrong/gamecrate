@@ -300,7 +300,14 @@ describe("MyGamesPage", () => {
     expect(screen.getByRole("link", { name: "все сессии →" })).toBeTruthy();
   });
 
-  it("caps a section at 24 tiles and offers «Показать ещё»", async () => {
+  it("caps a section at 24 tiles and leaves a sentinel for the rest", async () => {
+    // Другие файлы набора подменяют IntersectionObserver «всегда виден» (глобально
+    // на прогон) — здесь маячок не должен срабатывать, иначе секция догрузит всё.
+    window.IntersectionObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as never;
     const entries = Array.from({ length: 30 }, (_, i) =>
       entry({ appId: 1000 + i, name: `Game ${i}` }),
     );
@@ -309,9 +316,8 @@ describe("MyGamesPage", () => {
     expect(
       await screen.findAllByRole("link", { name: /^Игра: / }),
     ).toHaveLength(24);
-    expect(
-      screen.getByRole("button", { name: "Показать ещё 6 · осталось 6" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("ещё 6");
+    expect(screen.queryByRole("button", { name: /Показать ещё/ })).toBeNull();
   });
 
   it("shows the private-profile notice for a private Steam library", async () => {
