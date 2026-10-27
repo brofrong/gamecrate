@@ -87,7 +87,7 @@ describe("GameTile", () => {
     expect(
       await screen.findByRole("button", { name: "Установить: Portal 2" }),
     ).toBeTruthy();
-    expect(screen.getByText("не установлена")).toBeTruthy();
+    expect(screen.queryByText("не установлена")).toBeNull();
   });
 
   it("shows percent and a progress bar for an installing game", async () => {
@@ -227,7 +227,7 @@ describe("GameSection", () => {
       </GameSection>,
     );
     const grid = screen.getByTestId("tile").parentElement!;
-    expect(grid.className).toContain("min-[1440px]:grid-cols-5");
+    expect(grid.className).toContain("wide:grid-cols-5");
   });
 
   it("renders the optional action after the title", () => {

@@ -48,7 +48,7 @@ export function Rail() {
   return (
     <nav
       aria-label="Разделы"
-      className="sticky top-6 flex h-[calc(100dvh-3rem)] w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
+      className="flex h-[calc(100dvh-3rem)] w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
     >
       <div
         aria-hidden

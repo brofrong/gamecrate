@@ -31,9 +31,11 @@ describe("tileValue", () => {
       tileValue({ cloud: { _tag: "Installing", percent: null } }, false),
     ).toEqual({ text: "качается", tone: "warn", percent: null }));
 
-  it("не установлена", () =>
+  // Секция «Нужна установка» и кнопка «Установить» уже говорят это — на плитке пусто,
+  // иначе на телефоне слово съедает название (прогон на библиотеке владельца).
+  it("не установлена → пусто", () =>
     expect(tileValue({ cloud: missing, playtimeMinutes: 900 }, false)).toEqual({
-      text: "не установлена",
+      text: "",
       tone: "muted",
       percent: null,
     }));

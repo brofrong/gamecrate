@@ -59,7 +59,7 @@ export function AppShell(props: {
   return (
     <SlotContext.Provider value={{ aside: asideEl, sticky: stickyEl }}>
       <div className="min-h-dvh bg-[#0d0f14] text-[#eef1ff] md:grid md:grid-cols-[84px_minmax(0,1fr)] md:items-start md:gap-6 md:p-6 xl:grid-cols-[84px_minmax(0,1fr)_330px]">
-        <div className="hidden md:block">
+        <div className="hidden md:sticky md:top-6 md:block">
           <Rail />
         </div>
         <div className="flex min-w-0 flex-col gap-6 px-4 py-6 pb-28 md:px-0 md:py-0 md:pb-0">

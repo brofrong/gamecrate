@@ -42,7 +42,7 @@ export function GameSection({
       </h2>
       <div
         className={cn(
-          "gap-3 sm:grid sm:grid-cols-3 lg:grid-cols-4 min-[1440px]:grid-cols-5",
+          "gap-3 sm:grid sm:grid-cols-3 lg:grid-cols-4 wide:grid-cols-5",
           scroll
             ? "flex overflow-x-auto pb-1 [&>*]:min-w-[220px] sm:overflow-visible sm:[&>*]:min-w-0"
             : "grid grid-cols-2",

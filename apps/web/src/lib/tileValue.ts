@@ -43,8 +43,10 @@ export function tileValue(
             tone: "warn",
             percent: game.cloud.percent,
           };
+    // Секция «Нужна установка» и кнопка «Установить» уже говорят это — на плитке пусто,
+    // иначе на телефоне слово съедает название.
     case "Missing":
-      return muted("не установлена");
+      return muted("");
   }
 }
 

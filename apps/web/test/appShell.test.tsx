@@ -56,10 +56,9 @@ describe("Rail", () => {
     expect(screen.queryByRole("link", { name: "Установки" })).toBeNull();
   });
 
-  it("is fixed-height and sticky on desktop", async () => {
+  it("is full-height; AppShell pins its grid cell", async () => {
     render(<RouterProvider router={testRouter(<Rail />)} />);
     const nav = await screen.findByRole("navigation", { name: "Разделы" });
-    expect(nav.className).toContain("sticky");
     expect(nav.className).toContain("h-[calc(100dvh-3rem)]");
   });
 
@@ -85,6 +84,34 @@ describe("BottomTabs", () => {
 });
 
 describe("AppShell", () => {
+  it("pins the rail cell with sticky so it survives scrolling", async () => {
+    render(
+      <RouterProvider
+        router={testRouter(
+          <AppShell
+            user={{
+              id: "u",
+              name: "n",
+              image: null,
+              role: "player",
+              steamId: null,
+              email: null,
+              emailVerified: false,
+            }}
+          >
+            <div>content</div>
+          </AppShell>,
+        )}
+      />,
+    );
+    // Два `nav` «Разделы»: полоска и нижняя панель — берём полоску по высоте.
+    const nav = (
+      await screen.findAllByRole("navigation", { name: "Разделы" })
+    ).find((el) => el.className.includes("h-[calc(100dvh-3rem)]"))!;
+    expect(nav.parentElement!.className).toContain("md:sticky");
+    expect(nav.parentElement!.className).toContain("md:top-6");
+  });
+
   it("places aside after children in the DOM", async () => {
     const { container } = render(
       <RouterProvider

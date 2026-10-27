@@ -51,6 +51,13 @@
   --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
 }
 
+/* Пятая колонка плиток `/app` от 1440 px: именованный брейкпоинт, а не `min-[1440px]:`,
+   потому что произвольные варианты Tailwind кладёт в CSS раньше `lg:`/`xl:` и тот
+   перекрывает их на широких экранах. */
+@theme {
+  --breakpoint-wide: 90rem;
+}
+
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
