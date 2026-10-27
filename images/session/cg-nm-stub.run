@@ -1,0 +1,9 @@
+#!/bin/bash
+# Служба s6 /etc/service/cg-nm-stub: заглушка NetworkManager (/usr/local/bin/cg-nm-stub) на
+# системной шине контейнера — той, что поднимает служба dbus. Ждёт её сокет: иначе заглушка
+# падала бы и перезапускалась, пока шина стартует.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
+export DBUS_SYSTEM_BUS_ADDRESS="${DBUS_SYSTEM_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/dbus-system-bus}"
+socket="${DBUS_SYSTEM_BUS_ADDRESS#unix:path=}"
+until [ -S "${socket}" ]; do sleep 0.2; done
+exec python3 /usr/local/bin/cg-nm-stub

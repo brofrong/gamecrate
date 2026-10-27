@@ -44,6 +44,13 @@ COPY --chmod=0644 cg-launch.desktop /etc/xdg/autostart/cg-launch.desktop
 # агент зовёт их `docker exec`.
 COPY --chmod=0755 cg-profile-pack cg-steam-shutdown /usr/local/bin/
 
+# Заглушка NetworkManager: без неё Steam перед каждым входом ждёт сеть 20 с (README.md). Служба
+# s6 от ubuntu — как службы базового образа (их каталоги тоже принадлежат ubuntu).
+COPY --chmod=0755 cg-nm-stub /usr/local/bin/cg-nm-stub
+COPY --chmod=0644 cg-nm-stub.conf /etc/dbus-1/system.d/cg-nm-stub.conf
+COPY --chown=1000:1000 --chmod=0755 cg-nm-stub.run /etc/service/cg-nm-stub/run
+COPY --chown=1000:1000 --chmod=0755 cg-nm-stub.finish /etc/service/cg-nm-stub/finish
+
 # Каталоги дома заранее, владелец ubuntu: недостающие точки монтирования и родителей записей архива
 # профиля Docker создаёт от root, и Steam молча выходит (`bin_steam.sh: ln: Permission denied`).
 # install -d даёт владельца только последнему каталогу пути — родители перечислены по одному.

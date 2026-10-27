@@ -9,4 +9,8 @@
 !cg-launch.desktop
 !cg-profile-pack
 !cg-steam-shutdown
+!cg-nm-stub
+!cg-nm-stub.conf
+!cg-nm-stub.run
+!cg-nm-stub.finish
 !nv/x/32/

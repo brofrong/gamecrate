@@ -30,6 +30,18 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
   `DBUS_SESSION_BUS_ADDRESS`, `HOME`, `USER`, `LD_PRELOAD`, `XAUTHORITY`, `XDG_SESSION_TYPE`; без
   `XAUTHORITY` — «Unable to open X11 display»), ждёт выхода `ubuntu12_32/steam` до 30 с. Клиент не
   запущен — 0; не вышел или нет Plasma — 1.
+- `cg-nm-stub` → `/usr/local/bin/`: заглушка `org.freedesktop.NetworkManager` на системной шине
+  контейнера (python3 + dbus-python из базового образа). Отвечает «сеть есть»: одно активное
+  ethernet-устройство `eth0` (`State=100`), активное соединение, `State=70`, `Connectivity=4`;
+  раз в 2 с шлёт `StateChanged`/`PropertiesChanged`. Без неё Steam перед каждым входом ждёт
+  NetworkManager 20 с (`[ WaitingForNetwork ] Timed out waiting for network` в
+  `logs/steamui_login.txt`): службы NetworkManager в контейнере нет. Одних `State`/`Connectivity`
+  мало — Steam ждёт активное устройство. Сеть контейнера заглушка не трогает.
+  `cg-nm-stub.run`/`cg-nm-stub.finish` → служба s6 `/etc/service/cg-nm-stub` (от `ubuntu`, ждёт
+  сокет системной шины); `cg-nm-stub.conf` → `/etc/dbus-1/system.d/`: владеть именем может
+  только `ubuntu`. Проверка в живой сессии:
+  `docker exec cg-session-<id> dbus-send --system --print-reply --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.DBus.Properties.Get string:org.freedesktop.NetworkManager string:State`
+  → `uint32 70`.
 - `.dockerignore` — в контекст сборки идут только эти файлы и `nv/x/32/`.
 
 ## Сборка
