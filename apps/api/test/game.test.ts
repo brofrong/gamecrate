@@ -331,6 +331,73 @@ describe("library.game", () => {
     ]);
   });
 
+  it("achievements None when the schema fetch fails even if the player list is Ready", async () => {
+    reset();
+    state.store = found("x");
+    state.schema = null;
+    state.player = {
+      _tag: "Ready",
+      unlocked: [{ apiName: "A", unlockedAt: "2026-01-01T00:00:00.000Z" }],
+    };
+    const view = await run(
+      Effect.gen(function* () {
+        yield* seedGame(yield* Db);
+        return yield* game();
+      }),
+    );
+    // Иначе страница рисует «Достижения · 0 из 54» над пустой сеткой.
+    expect(view.achievements).toEqual({ _tag: "None" });
+  });
+
+  it("two concurrent opens with a stale schema both succeed and leave one schema", async () => {
+    reset();
+    state.store = found("x");
+    state.schema = [
+      {
+        apiName: "A",
+        name: "A",
+        description: "",
+        icon: "i",
+        iconGray: "g",
+        hidden: false,
+      },
+      {
+        apiName: "B",
+        name: "B",
+        description: "",
+        icon: "i",
+        iconGray: "g",
+        hidden: false,
+      },
+    ];
+    state.player = { _tag: "Ready", unlocked: [] };
+    const rows = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGame(db);
+        // Кэш описания свежий, схема устарела и в ней лишняя старая запись.
+        yield* seedDetails(db, new Date(), {
+          achievementsTotal: 2,
+          achievementsFetchedAt: new Date(Date.now() - ms(8)),
+        });
+        yield* db.insert(gameAchievements).values({
+          appId: 1086940,
+          apiName: "OLD",
+          name: "old",
+          description: "",
+          icon: "i",
+          iconGray: "g",
+        });
+        yield* Effect.all(
+          Array.from({ length: 4 }, () => game()),
+          { concurrency: "unbounded" },
+        );
+        return yield* db.select().from(gameAchievements);
+      }),
+    );
+    expect(rows.map((r) => r.apiName).sort()).toEqual(["A", "B"]);
+  });
+
   it("achievements Private for closed profile", async () => {
     reset();
     state.store = found("x");

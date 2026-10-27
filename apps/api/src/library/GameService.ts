@@ -88,6 +88,9 @@ const resolveAchievements = (
     );
 
     if (player._tag !== "Ready") return player;
+    // Схема не пришла (сеть, таймаут, пустой ответ) — без неё нечего рисовать:
+    // «0 из 54» над пустой сеткой хуже, чем отсутствие панели.
+    if (schema.length === 0) return { _tag: "None" } as const;
     const byApiName = new Map(schema.map((row) => [row.apiName, row]));
     const unlockedAt = new Map(
       player.unlocked.map((entry) => [entry.apiName, entry.unlockedAt]),

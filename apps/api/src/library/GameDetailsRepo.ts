@@ -3,7 +3,7 @@
 // результата похода в Steam, замена схемы достижений. Срок жизни — 7 суток.
 import { Db, gameAchievements, gameDetails } from "@cg/db";
 import type { GameDetails } from "@cg/rpc";
-import { eq } from "drizzle-orm";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { AchievementSchemaEntry } from "../steam/SteamApi";
 import type { StoreLookup } from "../steam/SteamStoreApi";
@@ -123,7 +123,10 @@ export const listAchievements = (
 
 /**
  * Заменить схему достижений и отметить время в `game_details` (строка кэша
- * должна существовать — вызывается после `upsert`).
+ * должна существовать — вызывается после `upsert`). Без «удалить всё → вставить»:
+ * два одновременных открытия страницы после истечения срока иначе ловят конфликт
+ * первичного ключа и роняют запрос. Вставка — upsert по (app_id, api_name),
+ * затем удаляются записи, которых в новой схеме нет.
  */
 export const replaceAchievements = (
   appId: number,
@@ -132,11 +135,31 @@ export const replaceAchievements = (
 ): Effect.Effect<void, never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* db.delete(gameAchievements).where(eq(gameAchievements.appId, appId));
     if (rows.length > 0)
       yield* db
         .insert(gameAchievements)
-        .values(rows.map((row) => ({ appId, ...row })));
+        .values(rows.map((row) => ({ appId, ...row })))
+        .onConflictDoUpdate({
+          target: [gameAchievements.appId, gameAchievements.apiName],
+          set: {
+            name: sql`excluded.name`,
+            description: sql`excluded.description`,
+            icon: sql`excluded.icon`,
+            iconGray: sql`excluded.icon_gray`,
+            hidden: sql`excluded.hidden`,
+          },
+        });
+    const keep = rows.map((row) => row.apiName);
+    yield* db
+      .delete(gameAchievements)
+      .where(
+        keep.length === 0
+          ? eq(gameAchievements.appId, appId)
+          : and(
+              eq(gameAchievements.appId, appId),
+              notInArray(gameAchievements.apiName, keep),
+            ),
+      );
     yield* db
       .update(gameDetails)
       .set({ achievementsFetchedAt: now })
