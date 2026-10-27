@@ -1,5 +1,6 @@
 // «Мои игры» (`/app`, спека §4.2 и 2026-10-27 §3.3–3.4) — главная страница после
-// входа: заголовок со сводкой, фильтры (строка на десктопе, шторка на телефоне),
+// входа: заголовок со сводкой, строка поиска с кнопкой «Фильтры» (панель на десктопе,
+// шторка на телефоне) и чипы,
 // «Запускал недавно» (те же плитки, подпись — дата · длительность), секции сетки по
 // статусу облака по 24 плитки с «Показать ещё» (сброс раскрытия — `key` секции от
 // фильтров). Фильтры живут в адресе маршрута (`?status=...`), адрес с фильтром
@@ -7,7 +8,7 @@
 import type { LibraryView } from "@cg/rpc";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
-import { CloudOff, Gamepad2, Search, SlidersHorizontal } from "lucide-react";
+import { CloudOff, Gamepad2 } from "lucide-react";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
@@ -16,7 +17,7 @@ import { ActiveSessionPanel } from "@/components/app/ActiveSessionPanel";
 import { AsideSlot, StickySlot } from "@/components/app/AppShell";
 import { ComingSoonPanel } from "@/components/app/ComingSoonPanel";
 import { ConnectSteam } from "@/components/app/ConnectSteam";
-import { FilterBar, filtersEqual } from "@/components/app/FilterBar";
+import { FilterBar } from "@/components/app/FilterBar";
 import { FilterSheet } from "@/components/app/FilterSheet";
 import { GameSection, SECTION_PAGE } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
@@ -34,7 +35,6 @@ import { recentCaption } from "@/lib/tileValue";
 import {
   applyFilters,
   countMatching,
-  DEFAULT_FILTERS,
   type Filters,
   parseSearch,
   type Section,
@@ -129,9 +129,6 @@ export function MyGamesPage() {
   const { active, activeSession, play } = usePlaySession();
 
   const [refreshing, setRefreshing] = useState(false);
-  const [mobileSearchOpen, setMobileSearchOpen] = useState(
-    search.focus === "q",
-  );
   const [sheetOpen, setSheetOpen] = useState(false);
   const [stalled, restartWait] = useStalled(
     AsyncResult.isInitial(library) ||
@@ -166,7 +163,6 @@ export function MyGamesPage() {
   // в `Rail`/`BottomTabs` требовал бы все поля сразу) — `validateSearch` на самом деле
   // всегда возвращает их все через `parseSearch`; прогоняем через него же здесь, это no-op.
   const filters: Filters = parseSearch(search);
-  const isDefaultFilters = filtersEqual(filters, DEFAULT_FILTERS);
   // Смена фильтров пересоздаёт секции — раскрытие «Показать ещё» сбрасывается.
   const filtersKey = JSON.stringify(toSearch(filters));
 
@@ -203,66 +199,25 @@ export function MyGamesPage() {
 
   return (
     <>
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
-        <div className="flex flex-wrap items-baseline gap-3">
-          <h1 className="text-2xl font-bold text-[#eef1ff]">Мои игры</h1>
-          {AsyncResult.isSuccess(library) && library.value._tag === "Ready" && (
-            <span className="text-sm text-[#8a90a8]">
-              {total} игр · {readyCount} готовы ·{" "}
-              {syncedAt === null
-                ? "ещё не обновлялась"
-                : `обновлено ${formatRelativeDate(syncedAt, new Date())}`}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 md:hidden">
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            aria-label="Поиск"
-            onClick={() => setMobileSearchOpen((open) => !open)}
-          >
-            <Search />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            aria-label="Фильтры"
-            className="relative"
-            onClick={() => setSheetOpen(true)}
-          >
-            <SlidersHorizontal />
-            {!isDefaultFilters && (
-              <span
-                aria-hidden
-                className="absolute top-1 right-1 size-1.5 rounded-full bg-[#3cc2ff]"
-              />
-            )}
-          </Button>
-        </div>
+      <div className="flex flex-wrap items-baseline gap-3">
+        <h1 className="text-2xl font-bold text-[#eef1ff]">Мои игры</h1>
+        {AsyncResult.isSuccess(library) && library.value._tag === "Ready" && (
+          <span className="text-sm text-[#8a90a8]">
+            {total} игр · {readyCount} готовы ·{" "}
+            {syncedAt === null
+              ? "ещё не обновлялась"
+              : `обновлено ${formatRelativeDate(syncedAt, new Date())}`}
+          </span>
+        )}
       </div>
 
-      <div className="hidden md:flex">
-        <FilterBar
-          filters={filters}
-          onChange={onFiltersChange}
-          total={total}
-          focusSearch={search.focus === "q"}
-        />
-      </div>
-
-      {mobileSearchOpen && (
-        <input
-          autoFocus
-          aria-label="Найти игру"
-          value={filters.q}
-          placeholder={`Найти среди ${total} игр`}
-          onChange={(e) => onFiltersChange({ ...filters, q: e.target.value })}
-          className="h-10 w-full rounded-full bg-[#13161d] px-4 text-sm text-[#eef1ff] outline-none placeholder:text-[#8a90a8] md:hidden"
-        />
-      )}
+      <FilterBar
+        filters={filters}
+        onChange={onFiltersChange}
+        onOpenSheet={() => setSheetOpen(true)}
+        total={total}
+        focusSearch={search.focus === "q"}
+      />
 
       <FilterSheet
         open={sheetOpen}

@@ -4,6 +4,17 @@
 import type { SessionView } from "@cg/rpc";
 import { ArrowLeft, Check, Monitor } from "lucide-react";
 import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { coverUrl, heroUrl } from "@/lib/gameHero";
 import {
@@ -19,6 +30,46 @@ import { cn } from "@/lib/utils";
  * лаунчер или нераспознанное окно до `visible` не дойдут.
  */
 export const LOADING_HINT_MS = 3 * 60_000;
+
+/** «Отменить» с подтверждением: случайный клик не должен обрывать долгую установку. */
+function CancelButton({
+  installing,
+  onCancel,
+}: {
+  installing: boolean;
+  onCancel: () => void;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-brand-text/60 hover:bg-white/10 hover:text-brand-text dark:hover:bg-white/10"
+        >
+          <ArrowLeft />
+          Отменить
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {installing ? "Отменить установку?" : "Отменить запуск игры?"}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {installing
+              ? "Установку можно будет начать заново из библиотеки."
+              : "Игру можно будет запустить заново из библиотеки."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Ждать дальше</AlertDialogCancel>
+          <AlertDialogAction onClick={onCancel}>Да, отменить</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
 
 function StepDot({ status }: { status: LoadingStep["status"] }) {
   if (status === "done") {
@@ -52,7 +103,7 @@ export function LoadingScreen({
   msInStage: number;
   /** Сколько мс клиент видит сессию в `playing` (не в нём — 0) — для подсказки. */
   msPlaying: number;
-  /** «Отменить» — тот же `session.stop`, что и выход из игры. */
+  /** «Отменить» (после подтверждения) — тот же `session.stop`, что и выход из игры. */
   onCancel: () => void;
   /** «Показать экран»; нет — трансляции ещё нет, и кнопки тоже. */
   onReveal: (() => void) | undefined;
@@ -86,15 +137,10 @@ export function LoadingScreen({
 
       <div className="relative flex min-h-full flex-col">
         <header className="flex items-start justify-between gap-4 p-3 sm:p-4">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onCancel}
-            className="text-brand-text/60 hover:bg-white/10 hover:text-brand-text dark:hover:bg-white/10"
-          >
-            <ArrowLeft />
-            Отменить
-          </Button>
+          <CancelButton
+            installing={view.state === "installing"}
+            onCancel={onCancel}
+          />
           {onReveal && (
             <div className="flex max-w-64 flex-col items-end gap-2 text-right">
               <Button

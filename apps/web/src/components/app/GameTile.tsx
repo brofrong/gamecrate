@@ -1,10 +1,10 @@
 // Карточка игры на `/app` (спека 2026-10-27 §3.3, правка владельца от 2026-10-27):
-// вся плитка — ссылка на страницу игры. Обложка 460×215 с тегом Proton в углу и полосой
-// установки по нижнему краю; под обложкой строка: слева название (одна строка,
-// многоточие), справа одно короткое значение (`tileValue` или `caption` секции).
-// Кнопок на плитке нет — «Играть»/«Установить» живут только на странице игры.
+// вся плитка — ссылка на страницу игры. Обложка 460×215 с полосой установки по нижнему
+// краю; под обложкой строка: слева название (одна строка, многоточие), справа одно
+// короткое значение (`tileValue` или `caption` секции). Кнопок и тега ProtonDB на плитке
+// нет — «Играть»/«Установить» и совместимость живут только на странице игры.
 // Общий тип `TileGame` покрывает `LibraryEntry`, `RecentEntry` и `TrendingEntry`.
-import { type CloudStatus, type ProtonTier, tierLabel } from "@cg/rpc";
+import type { CloudStatus } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import { GameCover } from "@/components/app/GameCover";
 import { type TileTone, tileValue } from "@/lib/tileValue";
@@ -16,7 +16,6 @@ export type TileGame = {
   readonly coverUrl: string;
   readonly cloud: CloudStatus;
   readonly playtimeMinutes?: number;
-  readonly protonTier?: ProtonTier;
 };
 
 const toneClassName: Record<TileTone, string> = {
@@ -24,19 +23,6 @@ const toneClassName: Record<TileTone, string> = {
   ok: "text-[#3ddc97]",
   warn: "text-[#ffd166]",
 };
-
-function ProtonTag({ tier }: { tier: ProtonTier | undefined }) {
-  if (tier === undefined || tier === "pending") return null;
-  return (
-    <span
-      data-testid="proton-tag"
-      title={tierLabel[tier]}
-      className="absolute top-2 right-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#cfd3e6]"
-    >
-      {tier}
-    </span>
-  );
-}
 
 export function GameTile({
   game,
@@ -62,7 +48,6 @@ export function GameTile({
     >
       <article className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26] ring-1 ring-white/5 transition group-hover:ring-white/20">
         <GameCover game={game} dimmed={dimmed} />
-        <ProtonTag tier={game.protonTier} />
         {value.percent !== null && (
           <span
             data-testid="install-bar"

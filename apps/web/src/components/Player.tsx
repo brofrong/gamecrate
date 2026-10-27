@@ -71,9 +71,12 @@ const frameStatus = (frame: HTMLIFrameElement): number | undefined => {
 
 function StreamFrame({
   sessionId,
+  hidden,
   onLoad,
 }: {
   sessionId: string;
+  /** Под экраном загрузки: без фокуса и ввода — Tab не уводит клавиши в скрытый стол. */
+  hidden: boolean;
   onLoad: ((frame: HTMLIFrameElement) => void) | undefined;
 }) {
   const retry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -84,6 +87,8 @@ function StreamFrame({
       title="Игра"
       src={`/stream/${sessionId}/`}
       allow="autoplay; fullscreen; gamepad; clipboard-read; clipboard-write"
+      inert={hidden}
+      aria-hidden={hidden || undefined}
       className="absolute inset-0 size-full border-0"
       onLoad={(event) => {
         const frame = event.currentTarget;
@@ -185,7 +190,13 @@ export function Player({
   // состояния и при снятии экрана загрузки, и стрим не переподключается.
   return (
     <main className="fixed inset-0 bg-black">
-      {stream && <StreamFrame sessionId={view.id} onLoad={onFrameLoad} />}
+      {stream && (
+        <StreamFrame
+          sessionId={view.id}
+          hidden={loading}
+          onLoad={onFrameLoad}
+        />
+      )}
       {loading && (
         <LoadingScreen
           view={view}

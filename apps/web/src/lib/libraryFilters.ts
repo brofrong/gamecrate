@@ -98,6 +98,19 @@ export function toSearch(filters: Filters): Record<string, string> {
   return out;
 }
 
+/**
+ * Сколько фильтров отличаются от умолчаний — число на кнопке «Фильтры». Поиск не
+ * считается: он живёт в своей строке, а не в панели. Каждый чип — отдельный фильтр.
+ */
+export function activeFilterCount(filters: Filters): number {
+  return (
+    (filters.status === DEFAULT_FILTERS.status ? 0 : 1) +
+    (filters.sort === DEFAULT_FILTERS.sort ? 0 : 1) +
+    (filters.proton === DEFAULT_FILTERS.proton ? 0 : 1) +
+    filters.chips.length
+  );
+}
+
 export type Section = "ready" | "installing" | "noprofile";
 
 type SectionGroup = {

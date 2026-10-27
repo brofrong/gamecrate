@@ -14,6 +14,7 @@ import {
   type SteamLoginSeed,
 } from "@cg/rpc";
 import {
+  Clock,
   Context,
   Data,
   Deferred,
@@ -68,6 +69,13 @@ export const GAME_POLL = Duration.seconds(5);
 export const CLOUD_TIMEOUT = Duration.seconds(60);
 export const CLOUD_POLL = Duration.seconds(2);
 export const STAGE_POLL = Duration.seconds(2);
+/**
+ * Этап не меняется дольше этого — опрос реже (`STAGE_SLOW_POLL`): окно игры не
+ * находится (лаунчер, нераспознанная игра), а скрипт на каждый вызов обходит процессы
+ * и окна. Сайт к этому времени уже подсказывает «Показать экран».
+ */
+export const STAGE_SLOW_AFTER = Duration.minutes(3);
+export const STAGE_SLOW_POLL = Duration.seconds(10);
 /** Сколько ждать `cg-session-stage`: зависший X11 не должен останавливать опрос. */
 export const STAGE_CHECK_TIMEOUT = Duration.seconds(10);
 export const HEARTBEAT_INTERVAL = Duration.seconds(30);
@@ -439,14 +447,17 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Опрос этапа запуска до `visible`. Сбой проверки (таймаут, код выхода,
-   * непонятный ответ) — предупреждение, опрос продолжается. Скрипта нет или он
-   * не исполняемый (код 126/127, старый образ) — одно предупреждение, и опрос
+   * Опрос этапа запуска до `visible`; этап долго не меняется — реже. Сбой
+   * проверки (таймаут, код выхода, непонятный ответ) — предупреждение, опрос
+   * продолжается. Скрипта нет или он не исполняемый (код 126/127, старый
+   * образ) — одно предупреждение, и опрос
    * заканчивается: этап `prepare` тогда сообщит `watchGame`. Контейнера нет —
    * опрос молча заканчивается: сбой сессии решают проверки Selkies и игры.
    */
   const watchStage = (session: Session) =>
     Effect.gen(function* () {
+      let seen = session.stage;
+      let seenAt = yield* Clock.currentTimeMillis;
       while (true) {
         const stage = yield* docker
           .exec(session.name, commands.stage(session.appId), {
@@ -482,7 +493,16 @@ const make = Effect.gen(function* () {
           );
         if (stage !== undefined) yield* reportStage(session, stage);
         if (session.stage === "visible") return;
-        yield* Effect.sleep(STAGE_POLL);
+        const now = yield* Clock.currentTimeMillis;
+        if (session.stage !== seen) {
+          seen = session.stage;
+          seenAt = now;
+        }
+        yield* Effect.sleep(
+          now - seenAt >= Duration.toMillis(STAGE_SLOW_AFTER)
+            ? STAGE_SLOW_POLL
+            : STAGE_POLL,
+        );
       }
     });
 

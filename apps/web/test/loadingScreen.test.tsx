@@ -213,16 +213,31 @@ describe("loading screen", () => {
     ]);
   });
 
-  it("cancel calls onExit", () => {
-    for (const v of [
-      view("queued"),
-      view("installing", { installStage: "login" }),
-      view("starting", { stage: "login", streamReady: true }),
-      view("playing", { stage: "loading", streamReady: true }),
-    ]) {
+  it("cancel asks for confirmation before calling onExit", async () => {
+    for (const [v, title] of [
+      [view("queued"), "Отменить запуск игры?"],
+      [view("installing", { installStage: "login" }), "Отменить установку?"],
+      [
+        view("starting", { stage: "login", streamReady: true }),
+        "Отменить запуск игры?",
+      ],
+      [
+        view("playing", { stage: "loading", streamReady: true }),
+        "Отменить запуск игры?",
+      ],
+    ] as const) {
       const onExit = mock(() => {});
       const r = renderPlayer(v, onExit);
       fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+      expect(await screen.findByText(title)).toBeTruthy();
+      expect(onExit).not.toHaveBeenCalled();
+      // «Ждать дальше» — экран загрузки остаётся, сессия идёт.
+      fireEvent.click(screen.getByRole("button", { name: "Ждать дальше" }));
+      expect(onExit).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Да, отменить" }),
+      );
       expect(onExit).toHaveBeenCalledTimes(1);
       r.unmount();
     }
