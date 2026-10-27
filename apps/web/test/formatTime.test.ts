@@ -5,6 +5,7 @@ import {
   currentMonth,
   formatHM,
   formatHoursInGame,
+  formatHoursShort,
   formatMinutes,
   formatMonth,
   formatRelativeDate,
@@ -109,4 +110,11 @@ describe("currentMonth", () => {
   it("formats the local month as YYYY-MM", () => {
     expect(currentMonth(new Date(2026, 9, 23, 12, 0, 0))).toBe("2026-10");
   });
+});
+
+describe("formatHoursShort", () => {
+  it("часы", () => expect(formatHoursShort(2460)).toBe("41 ч"));
+  it("минуты, если меньше часа", () =>
+    expect(formatHoursShort(38)).toBe("38 мин"));
+  it("пусто при нуле", () => expect(formatHoursShort(0)).toBe(""));
 });
