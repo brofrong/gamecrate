@@ -97,6 +97,79 @@ describe("sessions", () => {
       }),
     ));
 
+  it("held slot blocks the same worker slot even when the session failed", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        yield* insertUser(db, "u2");
+        yield* insertGame(db);
+        yield* db
+          .insert(workers)
+          .values({ id: "brofrong", publicIp: "37.153.14.138", slots: 1 });
+
+        // Сессия провалилась, но контейнер мог ещё работать: slotReleasedAt
+        // не выставлен, слот всё ещё занят.
+        yield* db.insert(sessions).values({
+          id: crypto.randomUUID(),
+          userId: "u1",
+          appId: 570,
+          workerId: "brofrong",
+          slot: 0,
+          state: "failed",
+        });
+
+        const result = yield* db
+          .insert(sessions)
+          .values({
+            id: crypto.randomUUID(),
+            userId: "u2",
+            appId: 570,
+            workerId: "brofrong",
+            slot: 0,
+            state: "playing",
+          })
+          .pipe(Effect.exit);
+
+        expect(Exit.isFailure(result)).toBe(true);
+      }),
+    ));
+
+  it("released slot can be reused", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        yield* insertUser(db, "u2");
+        yield* insertGame(db);
+        yield* db
+          .insert(workers)
+          .values({ id: "brofrong", publicIp: "37.153.14.138", slots: 1 });
+
+        yield* db.insert(sessions).values({
+          id: crypto.randomUUID(),
+          userId: "u1",
+          appId: 570,
+          workerId: "brofrong",
+          slot: 0,
+          state: "failed",
+          slotReleasedAt: new Date(),
+        });
+
+        yield* db.insert(sessions).values({
+          id: crypto.randomUUID(),
+          userId: "u2",
+          appId: 570,
+          workerId: "brofrong",
+          slot: 0,
+          state: "playing",
+        });
+
+        const rows = yield* db.select().from(sessions);
+        expect(rows).toHaveLength(2);
+      }),
+    ));
+
   it("update of a session emits pg_notify session_changed", () =>
     run(
       Effect.gen(function* () {

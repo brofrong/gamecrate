@@ -26,6 +26,8 @@ import {
   asc,
   eq,
   inArray,
+  isNotNull,
+  isNull,
   notInArray,
   sql,
 } from "drizzle-orm";
@@ -45,6 +47,69 @@ const terminalStates: SessionState[] = ["ended", "failed"];
 export const isActive = notInArray(sessions.state, terminalStates);
 
 const isTerminal = (state: SessionState) => terminalStates.includes(state);
+
+/**
+ * Условие «слот воркера удерживается» — не то же самое, что `isActive`:
+ * строка может быть уже `ended`/`failed`, но контейнер на GPU воркера ещё не
+ * погашен (агент не прислал `Stopped`/`Failed`, см. `releaseSlot`).
+ */
+export const holdsSlot = and(
+  isNotNull(sessions.slot),
+  isNull(sessions.slotReleasedAt),
+);
+
+/**
+ * Слот выпущен: отчёт `Stopped` (контейнер остановлен, профиль сохранён или
+ * не сохранён — не важно) или `Failed` (агент шлёт его уже после удаления
+ * контейнера) от воркера, который и держит эту сессию — независимо от
+ * текущего `state` строки (она может быть уже терминальной, если `step`
+ * автомата её не тронул). Воркер не тот — обновление не затронет ни одной
+ * строки.
+ */
+export const releaseSlot = (workerId: string, sessionId: string, now: Date) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(sessions)
+      .set({ slotReleasedAt: now })
+      .where(
+        and(
+          eq(sessions.id, sessionId),
+          eq(sessions.workerId, workerId),
+          isNull(sessions.slotReleasedAt),
+        ),
+      );
+  });
+
+/**
+ * Сверка при переподключении агента (`reconcile`): выпускает слоты строк
+ * этого воркера в `ended`/`failed`, которых нет среди `runningIds` (агент не
+ * видит их контейнер — он и правда погашен). Строка из `runningIds` не
+ * трогается: агент мог ещё не погасить контейнер, слот освободит
+ * последующий отчёт `Stopped`/`Failed`.
+ */
+export const releaseStaleSlots = (
+  workerId: string,
+  runningIds: ReadonlyArray<string>,
+  now: Date,
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(sessions)
+      .set({ slotReleasedAt: now })
+      .where(
+        and(
+          eq(sessions.workerId, workerId),
+          inArray(sessions.state, terminalStates),
+          isNotNull(sessions.slot),
+          isNull(sessions.slotReleasedAt),
+          ...(runningIds.length > 0
+            ? [notInArray(sessions.id, [...runningIds])]
+            : []),
+        ),
+      );
+  });
 
 const decodeSettings = Schema.decodeUnknownEffect(SessionSettings);
 

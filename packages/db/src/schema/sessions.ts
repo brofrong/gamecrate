@@ -55,11 +55,15 @@ export const workers = pgTable("workers", {
 
 /**
  * Игровая сессия. `id` — uuid, генерируется приложением. Частичные уникальные
- * индексы гарантируют: одна активная сессия на пользователя, один активный
- * слот на воркере. Триггеры на `session_changed_notify` (ручные миграции)
- * шлют `pg_notify('session_changed', NEW.id)` при INSERT и при UPDATE, который
- * меняет state/state_since/stream_url/fail_reason/stop_requested_at/worker_id/
- * slot/ended_at/stage; heartbeat'ы (client_seen_at, last_input_at, agent_seen_at) — нет.
+ * индексы гарантируют: одна активная сессия на пользователя, один удерживаемый
+ * слот на воркере (`slot_released_at is null` — слот ещё не выпущен, см.
+ * `slotReleasedAt`; не то же самое, что активное состояние строки, — контейнер
+ * может работать и после того, как сессия стала `ended`/`failed`). Триггеры на
+ * `session_changed_notify` (ручные миграции) шлют `pg_notify('session_changed',
+ * NEW.id)` при INSERT и при UPDATE, который меняет
+ * state/state_since/stream_url/fail_reason/stop_requested_at/worker_id/
+ * slot/ended_at/stage; heartbeat'ы (client_seen_at, last_input_at, agent_seen_at)
+ * и slot_released_at — нет (выпуск слота сайту не виден).
  */
 export const sessions = pgTable(
   "sessions",
@@ -90,14 +94,20 @@ export const sessions = pgTable(
     stateSince: timestamptz("state_since").notNull().defaultNow(),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     endedAt: timestamptz("ended_at"),
+    // Контейнер на воркере остановлен и слот свободен (Task 5): `null` — слот
+    // может быть занят, даже если `state` уже `ended`/`failed` (агент мог ещё
+    // не отчитаться о выгрузке контейнера). Выставляется `SessionRepo.releaseSlot`
+    // (отчёт `Stopped`/`Failed` владеющего воркера) и `releaseStaleSlots`
+    // (сверка при переподключении агента).
+    slotReleasedAt: timestamptz("slot_released_at"),
   },
   (t) => [
     uniqueIndex("sessions_active_user_idx")
       .on(t.userId)
       .where(sql`${t.state} not in ('ended', 'failed')`),
-    uniqueIndex("sessions_active_worker_slot_idx")
+    uniqueIndex("sessions_held_worker_slot_idx")
       .on(t.workerId, t.slot)
-      .where(sql`${t.state} not in ('ended', 'failed')`),
+      .where(sql`${t.slotReleasedAt} is null`),
   ],
 );
 

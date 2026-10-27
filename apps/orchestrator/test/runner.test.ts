@@ -39,6 +39,7 @@ import { failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import * as SessionRepo from "../src/SessionRepo";
 import {
+  RECONCILE_GRACE_MS,
   SessionRunner,
   type SessionRunnerOptions,
   lostOnRestartReason,
@@ -372,9 +373,10 @@ describe("scheduler", () => {
         expect((yield* sessionRow("s1")).state).toBe("queued");
         expect(fake.sent).toEqual([]);
 
+        // Контейнер и правда остановился: слот выпущен, а не просто `ended`.
         yield* db
           .update(sessions)
-          .set({ state: "ended" })
+          .set({ state: "ended", slotReleasedAt: at(t0, 2) })
           .where(eq(sessions.id, "s-busy"));
         yield* Scheduler.tick(at(t0, 2));
         like(yield* sessionRow("s1"), {
@@ -879,6 +881,257 @@ describe("session runner", () => {
           at(t0, 25),
         );
         expect((yield* sessionRow("s1")).state).toBe("ended");
+      }),
+    ));
+});
+
+describe("slot release", () => {
+  it("lost agent: failed session keeps its slot until the agent reconnects without it", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-new");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          state: "playing",
+          workerId: "w-a",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s-new", userId: "u-new", createdAt: t0 });
+
+        // Таймаут оркестратора (agentLost, >90с без heartbeat'а) — сессия
+        // падает, но слот не выпускаем.
+        yield* runner.tick(at(t0, 91));
+        like(yield* sessionRow("s-old"), {
+          state: "failed",
+          failReason: failReasons.agentLost,
+          slotReleasedAt: null,
+        });
+
+        yield* Scheduler.tick(at(t0, 91));
+        expect((yield* sessionRow("s-new")).state).toBe("queued");
+
+        // Агент переподключился и не знает про s-old — контейнера нет, слот свободен.
+        yield* runner.handle(connected("w-a", []), at(t0, 92));
+        like(yield* sessionRow("s-old"), { slotReleasedAt: at(t0, 92) });
+
+        yield* Scheduler.tick(at(t0, 93));
+        like(yield* sessionRow("s-new"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+      }),
+    ));
+
+  it("container still running after failure: slot is released by Stopped", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-new");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          state: "playing",
+          workerId: "w-a",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s-new", userId: "u-new", createdAt: t0 });
+
+        yield* runner.tick(at(t0, 91));
+        expect((yield* sessionRow("s-old")).state).toBe("failed");
+
+        // Переподключение: агент говорит, что контейнер s-old всё ещё жив.
+        yield* runner.handle(
+          connected("w-a", [
+            {
+              sessionId: "s-old",
+              slot: 0,
+              streamUrl: "http://cg-session-s-old:8080",
+              gameRunning: true,
+            },
+          ]),
+          at(t0, 92),
+        );
+        expect(fake.sent).toEqual([
+          {
+            workerId: "w-a",
+            command: { _tag: "StopSession", sessionId: "s-old" },
+          },
+        ]);
+        expect((yield* sessionRow("s-old")).slotReleasedAt).toBeNull();
+
+        yield* Scheduler.tick(at(t0, 93));
+        expect((yield* sessionRow("s-new")).state).toBe("queued");
+
+        // Контейнер и правда остановился: агент отчитывается Stopped.
+        yield* runner.handle(
+          report("w-a", {
+            _tag: "Stopped",
+            sessionId: "s-old",
+            cloudSynced: true,
+            profileSaved: true,
+          }),
+          at(t0, 94),
+        );
+        like(yield* sessionRow("s-old"), { slotReleasedAt: at(t0, 94) });
+
+        yield* Scheduler.tick(at(t0, 95));
+        like(yield* sessionRow("s-new"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+      }),
+    ));
+
+  it("Failed report releases the slot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "playing",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: t0 });
+
+        yield* runner.handle(
+          report("w1", { _tag: "Failed", sessionId: "s1", reason: "boom" }),
+          at(t0, 5),
+        );
+        like(yield* sessionRow("s1"), {
+          state: "failed",
+          failReason: "boom",
+          slotReleasedAt: at(t0, 5),
+        });
+
+        yield* Scheduler.tick(at(t0, 6));
+        like(yield* sessionRow("s2"), {
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+        });
+      }),
+    ));
+
+  // В отчётах агента нет `StopFinished` — это внутреннее имя события автомата
+  // для отчёта `Stopped` (см. LifecycleEvent в lifecycle.ts); брифовый тест
+  // "StopFinished releases the slot" соответствует этому отчёту.
+  it("Stopped report releases the slot (profile not saved too)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "stopping",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: t0 });
+
+        yield* runner.handle(
+          report("w1", {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: false,
+          }),
+          at(t0, 5),
+        );
+        like(yield* sessionRow("s1"), {
+          state: "ended",
+          slotReleasedAt: at(t0, 5),
+        });
+
+        yield* Scheduler.tick(at(t0, 6));
+        like(yield* sessionRow("s2"), {
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+        });
+      }),
+    ));
+
+  it("Stopped from another worker does not release the slot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* connectWorker(fake, "w2", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "stopping",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+
+        yield* runner.handle(
+          report("w2", {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: true,
+            profileSaved: true,
+          }),
+          at(t0, 5),
+        );
+        like(yield* sessionRow("s1"), {
+          state: "stopping",
+          slotReleasedAt: null,
+        });
+      }),
+    ));
+
+  it("just scheduled session keeps its slot on reconnect", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        // Назначена моложе RECONCILE_GRACE_MS: StartSession мог уйти уже в
+        // новое соединение, агент о ней законно не знает.
+        yield* insertSession({
+          id: "s-new",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: at(t0, -(RECONCILE_GRACE_MS / 1000) + 2),
+          agentSeenAt: at(t0, -(RECONCILE_GRACE_MS / 1000) + 2),
+        });
+
+        yield* runner.handle(connected("w1", []), t0);
+
+        like(yield* sessionRow("s-new"), {
+          state: "starting",
+          slotReleasedAt: null,
+        });
       }),
     ));
 });

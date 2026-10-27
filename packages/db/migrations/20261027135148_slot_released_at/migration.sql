@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "slot_released_at" timestamp with time zone;

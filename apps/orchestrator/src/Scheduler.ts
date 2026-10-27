@@ -8,7 +8,7 @@ import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { AgentHub } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
 import * as SessionRepo from "./SessionRepo";
-import { isActive } from "./SessionRepo";
+import { holdsSlot } from "./SessionRepo";
 import { SteamLoginSeeds } from "./SteamLoginSeeds";
 
 /** Период планировщика. */
@@ -159,7 +159,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
         const taken = yield* db
           .select({ workerId: sessions.workerId, slot: sessions.slot })
           .from(sessions)
-          .where(and(inArray(sessions.workerId, [...candidates]), isActive));
+          .where(and(inArray(sessions.workerId, [...candidates]), holdsSlot));
 
         for (const { id: workerId } of known) {
           const info = hub.info(workerId);

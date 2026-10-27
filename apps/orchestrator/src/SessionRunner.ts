@@ -188,9 +188,12 @@ const make = (options: SessionRunnerOptions) =>
     /**
      * Агент (пере)подключился со списком идущих сессий. Активные сессии воркера,
      * которых в списке нет: `stopping` — контейнер уже погашен (`StopFinished`),
-     * остальные — `failed` (кроме только что назначенных). Известные — heartbeat
-     * (отрезок продлевается только при `gameRunning`) + адрес стрима + состояние
-     * игры. Контейнеры неизвестных сессий гасим, чтобы освободить слот.
+     * остальные — `failed` (кроме только что назначенных). Строки воркера в
+     * `ended`/`failed` (включая только что ставшие такими выше), которых нет
+     * среди идущих, — `releaseStaleSlots` (слот свободен: контейнера нет).
+     * Известные — heartbeat (отрезок продлевается только при `gameRunning`) +
+     * адрес стрима + состояние игры. Контейнеры неизвестных сессий гасим,
+     * чтобы агент освободил слот (отчётом `Stopped`/`Failed`).
      */
     const reconcile = (
       workerId: string,
@@ -237,6 +240,14 @@ const make = (options: SessionRunnerOptions) =>
             logFailure("Lost session update failed", { sessionId: session.id }),
           );
         }
+
+        // Строки этого воркера, уже ended/failed и не в `running`: контейнера
+        // действительно нет (в т. ч. те, что стали такими в цикле выше) — слот
+        // свободен. Строка из `running` не трогается: агент может ещё гасить
+        // её контейнер, слот освободит отчёт Stopped/Failed.
+        yield* withDb(
+          SessionRepo.releaseStaleSlots(workerId, [...runningIds], now),
+        );
 
         const known = running.filter((s) => activeIds.has(s.sessionId));
         yield* withDb(
@@ -320,30 +331,42 @@ const make = (options: SessionRunnerOptions) =>
               case "Stopped": {
                 // Профиль не сохранён: агент оставил контейнер со слоями
                 // (`profile-unsaved`) — нужен разбор вручную (deploy/README.md).
+                // Контейнер остановлен в любом случае (сохранён профиль или
+                // нет) — слот выпускаем независимо от состояния строки: она
+                // может быть уже терминальной (например, если сессию погасили
+                // как неизвестную при сверке), `step` для неё ничего не делает.
                 let userId: string | undefined;
-                return step(report.sessionId, now, (row) => {
-                  userId = row.userId;
-                  return fromWorker(workerId, { _tag: "StopFinished" })(row);
-                }).pipe(
-                  Effect.tap(() =>
-                    report.profileSaved
-                      ? Effect.void
-                      : Effect.logWarning(
-                          "Session profile not saved (profile-unsaved on the agent)",
-                          { sessionId: report.sessionId, userId, workerId },
-                        ),
-                  ),
-                );
+                return Effect.gen(function* () {
+                  yield* step(report.sessionId, now, (row) => {
+                    userId = row.userId;
+                    return fromWorker(workerId, { _tag: "StopFinished" })(row);
+                  });
+                  yield* withDb(
+                    SessionRepo.releaseSlot(workerId, report.sessionId, now),
+                  );
+                  if (!report.profileSaved)
+                    yield* Effect.logWarning(
+                      "Session profile not saved (profile-unsaved on the agent)",
+                      { sessionId: report.sessionId, userId, workerId },
+                    );
+                });
               }
               case "Failed":
-                return step(
-                  report.sessionId,
-                  now,
-                  fromWorker(workerId, {
-                    _tag: "Failed",
-                    reason: report.reason,
-                  }),
-                );
+                // Агент шлёт `Failed` уже после удаления контейнера — слот
+                // выпускаем вместе с переводом сессии в `failed`.
+                return Effect.gen(function* () {
+                  yield* step(
+                    report.sessionId,
+                    now,
+                    fromWorker(workerId, {
+                      _tag: "Failed",
+                      reason: report.reason,
+                    }),
+                  );
+                  yield* withDb(
+                    SessionRepo.releaseSlot(workerId, report.sessionId, now),
+                  );
+                });
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":
