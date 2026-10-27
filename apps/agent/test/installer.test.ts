@@ -1,14 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -1642,19 +1645,63 @@ describe("Installer stages", () => {
     ));
 });
 
+/** Разреженный файл: один байт в конце, `size` — `apparent` байт. */
+const writeSparse = (path: string, apparent: number) => {
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, "x", apparent - 1);
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/** ФС под `tmpdir()` хранит разреженные файлы без выделения всего размера. */
+const sparseSupported = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "cg-sparse-probe-"));
+  try {
+    const path = join(dir, "probe");
+    writeSparse(path, 64 * 1024 * 1024);
+    const stat = statSync(path);
+    return stat.blocks * 512 < stat.size;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
 describe("downloadingBytes", () => {
-  it("sums files under the dir and is 0 without it", async () => {
+  it("sums allocated bytes of files under the dir and is 0 without it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
     try {
       expect(
         await Effect.runPromise(downloadingBytes(join(dir, "missing"))),
       ).toBe(0);
       write(dir, { "a.bin": "x".repeat(5), "sub/b.bin": "x".repeat(7) });
-      expect(await Effect.runPromise(downloadingBytes(dir))).toBe(12);
+      // Выделяется блоками: не меньше записанного.
+      expect(
+        await Effect.runPromise(downloadingBytes(dir)),
+      ).toBeGreaterThanOrEqual(12);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Если ФС выделяет разреженному файлу весь размер, проверять нечего.
+  it.skipIf(!sparseSupported)(
+    "counts a preallocated sparse file by allocated, not apparent size",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
+      try {
+        const apparent = 64 * 1024 * 1024;
+        writeSparse(join(dir, "big.bin"), apparent);
+        expect(statSync(join(dir, "big.bin")).size).toBe(apparent);
+        expect(await Effect.runPromise(downloadingBytes(dir))).toBeLessThan(
+          apparent / 16,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("Installer download progress", () => {

@@ -146,9 +146,11 @@ const downloadingDir = (job: Job) =>
   join(job.overlays.apps.upper, "downloading", String(job.appId));
 
 /**
- * Сумма размеров обычных файлов под `dir` рекурсивно (агент читает upper
- * хоста напрямую, overlay тут ни при чём); асинхронно — та же ФС, что у
- * библиотеки, и тот же процесс может держать живые сессии (роли
+ * Сколько места занимают обычные файлы под `dir` рекурсивно — выделенные
+ * блоки (`blocks * 512`), а не `size`: Steam может заранее растянуть или
+ * создать разреженными файлы на весь размер, и процент прыгнул бы к 100 %.
+ * Агент читает upper хоста напрямую, overlay тут ни при чём; асинхронно — та
+ * же ФС, что у библиотеки, и тот же процесс может держать живые сессии (роли
  * worker+gamestore), опрос не должен блокировать его event loop. Ссылки не
  * разыменовываются (`lstat`). Каталога нет или запись не читается (гонка с
  * Steam, права) — пропускается, сбоя наружу нет.
@@ -168,7 +170,7 @@ export const downloadingBytes = (dir: string): Effect.Effect<number> =>
         if (entry.isDirectory()) total += await walk(full);
         else if (entry.isFile()) {
           try {
-            total += (await lstatAsync(full)).size;
+            total += (await lstatAsync(full)).blocks * 512;
           } catch {
             // гонка со Steam/права — пропускаем, не валим установку
           }
