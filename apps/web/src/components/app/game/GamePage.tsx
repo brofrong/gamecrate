@@ -12,6 +12,7 @@ import { Panel } from "@/components/app/Panel";
 import { CompatPanel } from "@/components/app/game/CompatPanel";
 import { FactsPanel } from "@/components/app/game/FactsPanel";
 import { GameHero, HeroButton } from "@/components/app/game/GameHero";
+import { MediaStrip } from "@/components/app/game/MediaStrip";
 import { SessionsPanel } from "@/components/app/game/SessionsPanel";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,9 @@ export function GamePage({ appId }: { appId: number }) {
       <GameHero game={game} action={action} now={now} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="flex min-w-0 flex-col gap-6">
+          {game.details !== null && (
+            <MediaStrip details={game.details} name={game.name} />
+          )}
           {game.details === null && (
             <Panel>
               <p className="text-sm text-[#8a90a8]">
