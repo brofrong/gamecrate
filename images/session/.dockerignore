@@ -9,6 +9,7 @@
 !cg-launch.desktop
 !cg-profile-pack
 !cg-steam-shutdown
+!cg-session-stage
 !cg-nm-stub
 !cg-nm-stub.conf
 !cg-nm-stub.run

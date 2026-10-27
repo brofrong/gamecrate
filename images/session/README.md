@@ -42,6 +42,16 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
   только `ubuntu`. Проверка в живой сессии:
   `docker exec cg-session-<id> dbus-send --system --print-reply --dest=org.freedesktop.NetworkManager /org/freedesktop/NetworkManager org.freedesktop.DBus.Properties.Get string:org.freedesktop.NetworkManager string:State`
   → `uint32 70`.
+- `cg-session-stage` → `/usr/local/bin/`: этап запуска игры для экрана загрузки (план §4.1/§4.2):
+  `cg-session-stage <appid>` печатает одно слово `steam|login|prepare|loading|visible` и exit 0;
+  appid не число — exit 2. Проверки от последнего этапа к первому: `visible` — у `reaper` с
+  `AppId=<appid>` есть видимое окно ≥ 64×64 (`xdotool search --onlyvisible --class
+  "^steam_app_<appid>$"` для Proton или окно потомка `reaper` для нативной игры, размер —
+  `xwininfo -id`; окружение X11 — из `/proc/<pid клиента Steam>/environ`, без KDE-сессии не
+  нужен); `loading` — есть процесс, чья командная строка начинается с `<буква>:\common\` (так
+  Proton запускает exe игры; служебные exe самого Proton и Windows не в счёт); `prepare` — есть
+  `reaper` с `AppId=<appid>`; `login` — в `logs/steamui_login.txt` есть строка `SetLoginState`;
+  иначе `steam`. Агент зовёт `docker exec` раз в 2 с.
 - `.dockerignore` — в контекст сборки идут только эти файлы и `nv/x/32/`.
 
 ## Сборка
