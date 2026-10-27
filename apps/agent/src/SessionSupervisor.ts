@@ -1010,8 +1010,10 @@ const make = Effect.gen(function* () {
     }
   });
 
-  yield* adopt;
+  // Помощники — до подхвата: оставшийся hold держит тома смонтированными, а
+  // метку volatile снимают только с размонтированных.
   yield* removeHelpers;
+  yield* adopt;
   yield* removeOrphanLayers;
 
   // Heartbeat: все живые сессии, включая создаваемые и останавливаемые.

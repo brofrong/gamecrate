@@ -337,6 +337,11 @@ ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-f
 старте агент снимает метку у всех остановленных сессий; предупреждение об установках из п. 1
 действует и здесь) и повторить.
 
+**После сбоя хоста** (пропало питание, перезагрузка, упал dockerd), пока сессия шла, такой
+контейнер **не восстанавливать** (п. 2), только выбросить (п. 3). Без fsync файлы в его слоях могли
+не дойти до диска. Агент при старте всё равно снимет с них метку, и `docker start` пройдёт, но
+профиль из такого контейнера может оказаться битым и заменить хороший.
+
 ```sh
 ssh brofrong 'docker logs cg-agent 2>&1 | grep profile-unsaved'
 ssh brofrong 'docker ps -a --filter label=cg.session --filter status=exited --format "{{.Names}} user={{.Label \"cg.user\"}} base={{.Label \"cg.base-version\"}} {{.Status}}"'

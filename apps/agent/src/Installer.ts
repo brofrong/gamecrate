@@ -44,6 +44,7 @@ import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { isValidId } from "./ids";
 import {
   cleanup,
+  holdName,
   holdVolumes,
   INSTALL_CLIENT_DIR,
   installLayers,
@@ -907,7 +908,17 @@ const make = Effect.gen(function* () {
     }
     for (const id of ids) {
       yield* Effect.logInfo("Removing leftover install layers", { jobId: id });
-      yield* cleanupLogged(installLayers(config, id));
+      const overlays = installLayers(config, id);
+      // Агент мог упасть посреди старта: тома держит помощник hold (иначе 409).
+      yield* docker.remove(holdName(overlays)).pipe(
+        Effect.catchTag("DockerError", (error) =>
+          Effect.logWarning("Removing helper container failed", {
+            name: holdName(overlays),
+            error: error.message,
+          }),
+        ),
+      );
+      yield* cleanupLogged(overlays);
     }
   });
 

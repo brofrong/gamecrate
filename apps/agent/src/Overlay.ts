@@ -238,6 +238,10 @@ export const removeScratch = (overlays: Overlays) =>
     ).pipe(Effect.mapError(fromDocker("removeScratch")));
   });
 
+/** Имя помощника `holdVolumes` этих слоёв. */
+export const holdName = (overlays: Overlays) =>
+  `${overlays.prefix}-${overlays.id}-hold`;
+
 /**
  * Держит тома слоёв смонтированными до закрытия scope: помощник `sleep`
  * монтирует их первым, а `local` монтирует том один раз, пока его держит хоть
@@ -251,7 +255,7 @@ export const holdVolumes = (overlays: Overlays) =>
   Effect.gen(function* () {
     const config = yield* AgentConfig;
     const docker = yield* DockerClient;
-    const name = `${overlays.prefix}-${overlays.id}-hold`;
+    const name = holdName(overlays);
     yield* Effect.acquireRelease(
       docker.remove(name).pipe(
         Effect.andThen(

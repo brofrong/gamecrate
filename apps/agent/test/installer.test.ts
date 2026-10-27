@@ -983,6 +983,12 @@ describe("Installer", () => {
           expect(calls.indexOf("remove cg-install-old")).toBeLessThan(
             calls.indexOf("removeVolume cg-i-old-client"),
           );
+          // Помощник hold, оставшийся от падения агента посреди старта, держит
+          // тома смонтированными: убрать его до томов, иначе 409.
+          expect(calls).toContain("remove cg-i-old-hold");
+          expect(calls.indexOf("remove cg-i-old-hold")).toBeLessThan(
+            calls.indexOf("removeVolume cg-i-old-client"),
+          );
           for (const id of ["old", "stale"])
             for (const call of [
               `removeVolume cg-i-${id}-client`,

@@ -1678,6 +1678,39 @@ describe("SessionSupervisor", () => {
       },
     ));
 
+  it("startup removes leftover helpers before unmarking stopped sessions", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Агент упал посреди старта: тома ещё держит помощник hold. Метку
+          // снимать можно только с размонтированных томов.
+          const calls = h.fake.state.calls;
+          expect(calls).toContain("remove cg-s-old-hold");
+          expect(calls.indexOf("remove cg-s-old-hold")).toBeLessThan(
+            calls.indexOf("create cg-s-old-unmark"),
+          );
+        }),
+      (fake) => {
+        mkdirSync(join(fake.state.scratch, "old", "client", "work"), {
+          recursive: true,
+        });
+        fake.state.existing = [
+          {
+            name: "cg-session-old",
+            labels: { "cg.session": "old" },
+            running: false,
+          },
+        ];
+        fake.state.helpers = [
+          {
+            name: "cg-s-old-hold",
+            labels: { "cg.helper": "hold" },
+            running: true,
+          },
+        ];
+      },
+    ));
+
   it("StopSession for an unknown container without profile labels unmarks after stop", () =>
     run(
       (h) =>
