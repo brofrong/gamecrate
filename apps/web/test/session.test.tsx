@@ -177,7 +177,7 @@ describe("session", () => {
     expect(streamFrame(failed.container)).toBeNull();
   });
 
-  it("installing screen shows the percent, the not-billed note and cancels via the same stop action", () => {
+  it("installing screen shows the percent, the not-billed note and cancels via the same stop action", async () => {
     const onExit = mock(() => {});
     renderPlayer(
       view("installing", {
@@ -192,6 +192,9 @@ describe("session", () => {
       screen.getByText("Время установки не входит в игровое"),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Да, отменить" }),
+    );
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
@@ -430,10 +433,14 @@ describe("session", () => {
     expect(streamFrame(container)).toBe(first);
     expect(loadingShown()).toBe(true);
 
+    // Скрытая трансляция не получает фокус и клавиши (Tab ушёл бы в рабочий стол).
+    expect(first?.hasAttribute("inert")).toBe(true);
+
     // Окно игры появилось — экран загрузки снят, iframe тот же.
     rerenderPlayer(rerender, view("playing", { stage: "visible" }));
     expect(streamFrame(container)).toBe(first);
     expect(loadingShown()).toBe(false);
+    expect(first?.hasAttribute("inert")).toBe(false);
     expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
   });
 
@@ -445,6 +452,7 @@ describe("session", () => {
     fireEvent.click(screen.getByRole("button", { name: "Показать экран" }));
     expect(loadingShown()).toBe(false);
     expect(streamFrame(container)).toBe(first);
+    expect(first?.hasAttribute("inert")).toBe(false);
     expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
 
     // Новые этапы не возвращают экран загрузки.

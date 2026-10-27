@@ -2018,6 +2018,34 @@ describe("SessionSupervisor stages", () => {
       },
     ));
 
+  it("stage polling slows down while the stage stays the same", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          const checksOver = (seconds: number) =>
+            Effect.gen(function* () {
+              const before = h.fake.state.stageChecks;
+              for (let i = 0; i < seconds; i++) yield* h.tick("1 second");
+              return h.fake.state.stageChecks - before;
+            });
+          // Первые 3 минуты на одном этапе — каждые 2 с.
+          expect(yield* checksOver(60)).toBe(30);
+          yield* checksOver(120);
+          // Дольше — каждые 10 с: окно игры так и не нашлось, скрипт дорогой.
+          expect(yield* checksOver(60)).toBe(6);
+          // Новый этап — снова часто.
+          h.fake.state.lastStage = "loading";
+          yield* checksOver(10);
+          expect(stagesOf(yield* h.drainAll).at(-1)).toEqual(["s1", "loading"]);
+          expect(yield* checksOver(20)).toBe(10);
+        }),
+      (fake) => {
+        fake.state.lastStage = "prepare";
+      },
+    ));
+
   it("stage never goes back", () =>
     run(
       (h) =>
