@@ -165,17 +165,23 @@ export function loadingProgress(view: SessionView, msInStage: number): number {
 /** Состояния, где трансляции ещё нет вовсе: экран загрузки — единственное, что показать. */
 const noStream: ReadonlySet<SessionState> = new Set(["queued", "installing"]);
 
+/** Этапы, когда процесс игры уже есть, а окна ещё нет: экран загрузки и в `playing`. */
+const gameStarting: ReadonlySet<SessionStage> = new Set(["prepare", "loading"]);
+
 /**
  * Показывать ли экран загрузки. `revealed` — игрок нажал «Показать экран»: тогда
  * трансляция, кроме `queued`/`installing`, где её нет. `playing` — пока игра не
- * видна (`stage` не `visible`); `stage === null` — старая сессия или агент
- * без этапов: сразу трансляция, как раньше.
+ * видна (`prepare`/`loading`); `stage === null` — старая сессия или агент
+ * без этапов: сразу трансляция, как раньше. Этап раньше `prepare` при уже
+ * запущенной игре — источник этапов сломан (в образе нет скрипта): тоже трансляция.
  */
 export function showsLoading(view: SessionView, revealed: boolean): boolean {
   if (noStream.has(view.state)) return true;
   if (revealed) return false;
   if (view.state === "starting") return true;
   return (
-    view.state === "playing" && view.stage !== null && view.stage !== "visible"
+    view.state === "playing" &&
+    view.stage !== null &&
+    gameStarting.has(view.stage)
   );
 }

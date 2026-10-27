@@ -477,6 +477,26 @@ describe("session", () => {
     expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
   });
 
+  it("playing with a stage before prepare shows the stream", () => {
+    // Игра уже идёт, а этап раньше `prepare` — источник этапов сломан
+    // (например, в образе нет скрипта): трансляция, а не «Запускаем Steam» поверх игры.
+    for (const stage of ["computer", "steam", "login"] as const) {
+      const { container, unmount } = renderPlayer(view("playing", { stage }));
+      expectStream(container);
+      expect(loadingShown()).toBe(false);
+      expect(
+        screen.getByRole("button", { name: "Выйти из игры" }),
+      ).toBeTruthy();
+      unmount();
+    }
+    // `prepare`/`loading` — игра идёт, окна ещё нет: экран загрузки.
+    for (const stage of ["prepare", "loading"] as const) {
+      const { unmount } = renderPlayer(view("playing", { stage }));
+      expect(loadingShown()).toBe(true);
+      unmount();
+    }
+  });
+
   it("hint after 3 minutes in loading", () => {
     const hint = "Похоже, игра ждёт вас на экране";
     jest.useFakeTimers();

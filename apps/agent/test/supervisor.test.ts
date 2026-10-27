@@ -2107,6 +2107,76 @@ describe("SessionSupervisor stages", () => {
       },
     ));
 
+  it("missing stage script stops polling after one warning", async () => {
+    // 127 — скрипта нет (старый образ), 126 — он не исполняемый.
+    for (const exitCode of [127, 126])
+      await run(
+        (h) =>
+          Effect.gen(function* () {
+            yield* h.supervisor.handle(start);
+            yield* h.tick("0 seconds");
+            for (let i = 0; i < 5; i++) yield* h.tick("2 seconds");
+            expect(h.fake.state.stageChecks).toBe(1);
+            const warnings = h.fake.state.logged.filter((line) =>
+              line.includes("Stage"),
+            );
+            expect(warnings).toHaveLength(1);
+            expect(stagesOf(yield* h.drainAll)).toEqual([
+              ["s1", "computer"],
+              ["s1", "steam"],
+            ]);
+            expect(
+              (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+            ).toEqual(["s1"]);
+          }),
+        (fake) => {
+          fake.state.stages = [{ exitCode }];
+        },
+      );
+  });
+
+  it("game start reports prepare before GameState", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        // Скрипт этапов застрял на `steam` (например, старый образ).
+        yield* h.supervisor.handle(start);
+        yield* h.tick("0 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([
+          ["s1", "computer"],
+          ["s1", "steam"],
+        ]);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        expect(yield* h.drainAll).toEqual([
+          { _tag: "SessionStage", sessionId: "s1", stage: "prepare" },
+          { _tag: "GameState", sessionId: "s1", running: true },
+        ]);
+      }),
+    ));
+
+  it("game start does not repeat prepare or step back from a later stage", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          yield* h.tick("2 seconds");
+          expect(stagesOf(yield* h.drainAll)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "loading"],
+          ]);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          expect(yield* h.drainAll).toEqual([
+            { _tag: "GameState", sessionId: "s1", running: true },
+          ]);
+        }),
+      (fake) => {
+        fake.state.stages = ["steam", "loading"];
+      },
+    ));
+
   it("adopted session resumes stage polling", () =>
     run(
       (h) =>

@@ -399,14 +399,19 @@ const make = Effect.gen(function* () {
         if (alive !== session.gameRunning) {
           // Состояние и отчёт — без точки прерывания между ними: StopSession в этот
           // момент видит уже запущенную игру (и закроет её, и подождёт облако).
+          // Игра запущена — этап не раньше `prepare`, даже если скрипт этапов
+          // молчит (старый образ): иначе сайт показывал бы «Запускаем Steam» поверх игры.
           yield* Effect.uninterruptible(
             Effect.suspend(() => {
               session.gameRunning = alive;
-              return emit({
-                _tag: "GameState",
-                sessionId: session.sessionId,
-                running: alive,
-              });
+              return Effect.andThen(
+                alive ? reportStage(session, "prepare") : Effect.void,
+                emit({
+                  _tag: "GameState",
+                  sessionId: session.sessionId,
+                  running: alive,
+                }),
+              );
             }),
           );
           yield* Effect.logInfo(alive ? "Game started" : "Game exited", {
@@ -435,7 +440,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Опрос этапа запуска до `visible`. Сбой проверки (таймаут, код выхода,
-   * непонятный ответ) — предупреждение, опрос продолжается. Контейнера нет —
+   * непонятный ответ) — предупреждение, опрос продолжается. Скрипта нет или он
+   * не исполняемый (код 126/127, старый образ) — одно предупреждение, и опрос
+   * заканчивается: этап `prepare` тогда сообщит `watchGame`. Контейнера нет —
    * опрос молча заканчивается: сбой сессии решают проверки Selkies и игры.
    */
   const watchStage = (session: Session) =>
@@ -448,6 +455,8 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.flatMap(({ exitCode, stdout }) => {
               const stage = stdout.trim();
+              if (exitCode === 126 || exitCode === 127)
+                return Effect.succeed("missing" as const);
               return exitCode === 0 && isScriptStage(stage)
                 ? Effect.succeed(stage)
                 : Effect.fail(
@@ -466,6 +475,11 @@ const make = Effect.gen(function* () {
             ),
           );
         if (stage === "gone") return;
+        if (stage === "missing")
+          return yield* Effect.logWarning(
+            "Stage script is missing, stage polling stopped",
+            { sessionId: session.sessionId },
+          );
         if (stage !== undefined) yield* reportStage(session, stage);
         if (session.stage === "visible") return;
         yield* Effect.sleep(STAGE_POLL);
