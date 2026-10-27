@@ -9,6 +9,7 @@ import {
   type Duration,
   Effect,
   Layer,
+  Logger,
   Queue,
   References,
 } from "effect";
@@ -73,6 +74,10 @@ const makeFake = () => {
     cloudFail: undefined as "exit" | "docker" | undefined,
     /** Закрыт — `grep` журнала облака ждёт его открытия. */
     cloudGate: undefined as Deferred.Deferred<void> | undefined,
+    /** Код выхода помощника по имени (нет — 0). */
+    helperExit: {} as Record<string, number>,
+    /** Записи лога уровня Warn и выше: `[уровень, сообщение…]`. */
+    logged: [] as Array<string>,
     /** Число любых обращений к DockerClient. */
     dockerCalls: 0,
     /** Тома, которые есть в dockerd (`volumeExists`). */
@@ -132,7 +137,7 @@ const makeFake = () => {
     wait: (name) =>
       Effect.sync(() => {
         record(`wait ${name}`);
-        return 0;
+        return state.helperExit[name] ?? 0;
       }),
     stop: (name, timeoutSec) =>
       Effect.sync(() => record(`stop ${name} ${timeoutSec}`)),
@@ -375,7 +380,14 @@ const run = (
             : Effect.succeed(fake.disk.freeBytes);
         }),
       ),
-      Effect.provideService(References.MinimumLogLevel, "None"),
+      Effect.provide(
+        Logger.layer([
+          Logger.make(({ logLevel, message }) => {
+            fake.state.logged.push(JSON.stringify([logLevel, message]));
+          }),
+        ]),
+      ),
+      Effect.provideService(References.MinimumLogLevel, "Warn"),
       Effect.ensuring(
         Effect.sync(() =>
           rmSync(fake.state.scratch, { recursive: true, force: true }),
@@ -400,6 +412,15 @@ const removedWithLayers = (id: string) => [
   `start cg-s-${id}-cleanup`,
   `wait cg-s-${id}-cleanup`,
   `remove cg-s-${id}-cleanup`,
+];
+
+/** Помощник, снимающий метку volatile со слоёв оставленного контейнера `id`. */
+const unmarked = (id: string) => [
+  `remove cg-s-${id}-unmark`,
+  `create cg-s-${id}-unmark`,
+  `start cg-s-${id}-unmark`,
+  `wait cg-s-${id}-unmark`,
+  `remove cg-s-${id}-unmark`,
 ];
 
 const start: Extract<AgentCommand, { _tag: "StartSession" }> = {
@@ -1444,6 +1465,7 @@ describe("SessionSupervisor", () => {
             "commit profiles/u1/new.cgp",
             "store.remove profiles/u1/new.cgp",
             "stop cg-session-s1 15",
+            ...unmarked("s1"),
           ]);
           const calls = h.fake.state.calls;
           expect(calls).not.toContain("remove cg-session-s1");
@@ -1475,7 +1497,12 @@ describe("SessionSupervisor", () => {
             });
             yield* h.tick("0 seconds");
             const calls = h.fake.state.calls;
-            expect(calls.at(-1)).toBe("stop cg-session-s1 15");
+            // Слои остаются, но с них снята метка volatile: `docker start` по
+            // README смонтирует их снова.
+            expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+              "stop cg-session-s1 15",
+              ...unmarked("s1"),
+            ]);
             expect(calls).not.toContain("remove cg-session-s1");
             expect(calls).not.toContain("removeVolume cg-s-s1-client");
             expect(calls).not.toContain("removeVolume cg-s-s1-apps");
@@ -1515,6 +1542,7 @@ describe("SessionSupervisor", () => {
             "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
             "archiveSize cg-session-s1 /tmp/cg-profile.tar",
             "stop cg-session-s1 15",
+            ...unmarked("s1"),
           ]);
           expect(calls).not.toContain(
             "getArchive cg-session-s1 /tmp/cg-profile.tar",
@@ -1533,6 +1561,124 @@ describe("SessionSupervisor", () => {
         }),
       (fake) => {
         fake.state.packedSize = PROFILE_MAX_BYTES + 1;
+      },
+    ));
+
+  it("failure after stream ready unmarks kept layers", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.gone = true;
+        yield* h.tick("5 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "Failed",
+            sessionId: "s1",
+            reason: failReasons.containerGone,
+          },
+        ]);
+        expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+          "stop cg-session-s1 15",
+          ...unmarked("s1"),
+        ]);
+        expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+        const helper = h.fake.state.created.find(
+          (spec) => spec.name === "cg-s-s1-unmark",
+        );
+        expect(helper?.user).toBe("0");
+        expect(helper?.entrypoint?.slice(-2)).toEqual([
+          join(h.fake.state.scratch, "s1/client/work/work/incompat"),
+          join(h.fake.state.scratch, "s1/apps/work/work/incompat"),
+        ]);
+      }),
+    ));
+
+  it("failed unmark keeps the container and still reports Stopped", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: false,
+            },
+          ]);
+          expect(h.fake.state.calls).toContain("wait cg-s-s1-unmark");
+          expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+          expect(h.fake.state.logged.join("\n")).toContain(
+            "Unmarking kept session layers failed",
+          );
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.putFail = true;
+        fake.state.helperExit["cg-s-s1-unmark"] = 1;
+      },
+    ));
+
+  it("startup unmarks stopped session containers", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Агент мог упасть между остановкой и снятием метки.
+          expect(
+            callsFrom(h.fake, "remove cg-s-old-unmark").slice(0, 5),
+          ).toEqual(unmarked("old"));
+          const calls = h.fake.state.calls;
+          expect(calls).not.toContain("remove cg-session-old");
+          expect(calls).not.toContain("start cg-session-old");
+          expect(calls).not.toContain("removeVolume cg-s-old-client");
+          expect(existsSync(join(h.fake.state.scratch, "old"))).toBe(true);
+        }),
+      (fake) => {
+        mkdirSync(join(fake.state.scratch, "old", "client", "work"), {
+          recursive: true,
+        });
+        fake.state.existing = [
+          {
+            name: "cg-session-old",
+            labels: { "cg.session": "old" },
+            running: false,
+          },
+        ];
+      },
+    ));
+
+  it("StopSession for an unknown container without profile labels unmarks after stop", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "x" });
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-x 15")).toEqual([
+            "stop cg-session-x 15",
+            ...unmarked("x"),
+          ]);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "x",
+              cloudSynced: false,
+              profileSaved: false,
+            },
+          ]);
+        }),
+      (fake) => {
+        mkdirSync(join(fake.state.scratch, "x", "apps", "work"), {
+          recursive: true,
+        });
+        fake.state.inspected = {
+          "cg-session-x": {
+            name: "cg-session-x",
+            labels: { "cg.session": "x" },
+            running: true,
+          },
+        };
       },
     ));
 

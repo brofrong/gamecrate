@@ -323,7 +323,16 @@ ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-f
 `error`). Сессия завершается (`profileSaved: false`), слот свободен; следующая сессия пользователя
 получит предыдущую версию профиля. Оркестратор пишет в свой лог предупреждение
 `Session profile not saved` (`sessionId`, `userId`). Ни остановка, ни перезапуск агента такой
-контейнер не удаляют — решает человек:
+контейнер не удаляют — решает человек.
+
+Слои сессии монтируются с `volatile` (без fsync, иначе Steam стартует на минуту дольше): после
+размонтирования ядро оставляет в `<SCRATCH_DIR>/<id>/*/work/work/incompat` метку, и пока она
+есть, тома повторно не смонтировать. Агент сразу после остановки сам сбрасывает данные слоёв на
+диск и снимает метку (помощник `cg-s-<id>-unmark`; не вышло — в логе
+`Unmarking kept session layers failed`). Если `docker start cg-session-<id>` всё же падает с
+ошибкой монтирования overlay (`…,volatile: invalid argument`) — `docker restart cg-agent` (при
+старте агент снимает метку у всех остановленных сессий; предупреждение об установках из п. 1
+действует и здесь) и повторить.
 
 ```sh
 ssh brofrong 'docker logs cg-agent 2>&1 | grep profile-unsaved'

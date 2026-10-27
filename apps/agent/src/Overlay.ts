@@ -238,6 +238,44 @@ export const removeScratch = (overlays: Overlays) =>
     ).pipe(Effect.mapError(fromDocker("removeScratch")));
   });
 
+/**
+ * Слои оставленного остановленного контейнера (`profile-unsaved`) снова можно
+ * смонтировать: одним помощником от root — `sync` ФС scratch (без fsync
+ * `volatile` upper мог быть ещё не на диске) и удаление меток ядра
+ * `<work>/work/incompat` у слоёв с `volatile` (пока метка есть, `docker start`
+ * падает с `invalid argument`). Тома должны быть размонтированы — контейнер
+ * остановлен. Каталогов или таких слоёв нет — помощник не запускается.
+ */
+export const unmarkVolatile = (overlays: Overlays) =>
+  Effect.gen(function* () {
+    yield* ownDir(overlays);
+    const config = yield* AgentConfig;
+    const present = overlays.scratch.filter(({ dir }) => existsSync(dir));
+    const markers = [overlays.client, overlays.apps]
+      .filter((layer) => layer.volatile)
+      .map((layer) => join(layer.work, "work", "incompat"));
+    const first = present[0];
+    if (first === undefined || markers.length === 0) return;
+    yield* runHelper(
+      helperSpec(config, {
+        name: `${overlays.prefix}-${overlays.id}-unmark`,
+        kind: "unmark",
+        user: "0",
+        // `sync -f` — по одному каталогу: слои с `volatile` лежат на одной ФС.
+        entrypoint: [
+          "sh",
+          "-c",
+          'sync -f "$1" && shift && rm -rf -- "$@"',
+          "unmark",
+          first.dir,
+          ...markers,
+        ],
+        binds: present.map(({ root }) => `${root}:${root}`),
+      }),
+      Effect.void,
+    ).pipe(Effect.mapError(fromDocker("unmarkVolatile")));
+  });
+
 /** Тома, затем scratch (`removeVolumes` → `removeScratch`); каталоги проверяются до любых вызовов. */
 export const cleanup = (overlays: Overlays) =>
   Effect.gen(function* () {

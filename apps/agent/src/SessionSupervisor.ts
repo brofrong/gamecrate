@@ -40,6 +40,7 @@ import {
   type Overlays,
   prepare,
   sessionLayers,
+  unmarkVolatile,
 } from "./Overlay";
 import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
@@ -444,6 +445,23 @@ const make = Effect.gen(function* () {
     );
 
   /**
+   * Контейнер остановлен и остаётся вместе со слоями: снять с них метку
+   * `volatile`, чтобы `docker start` смонтировал их снова. Не вышло — только лог
+   * (при старте агент повторит для всех остановленных сессий).
+   */
+  const keepStopped = (sessionId: string, overlays: Overlays) =>
+    unmarkVolatile(overlays).pipe(
+      withServices,
+      Effect.catchTag("OverlayError", (error) =>
+        Effect.logWarning("Unmarking kept session layers failed", {
+          sessionId,
+          operation: error.operation,
+          error: error.message,
+        }),
+      ),
+    );
+
+  /**
    * Остановка: облако (если игра шла) → профиль → stop → remove → слои →
    * `Stopped`. Профиль не сохранён (в том числе коммит отклонён: база устарела)
    * — контейнер только останавливается и вместе со слоями остаётся
@@ -492,6 +510,7 @@ const make = Effect.gen(function* () {
                 new Abort({ reason: failReasons.stop, cause, keep: true }),
             ),
           );
+        yield* keepStopped(session.sessionId, session.overlays);
       } else {
         yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
           Effect.andThen(docker.remove(session.name)),
@@ -537,6 +556,7 @@ const make = Effect.gen(function* () {
           container: session.name,
         });
         yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
+          Effect.andThen(keepStopped(session.sessionId, session.overlays)),
           Effect.catchTag("DockerError", (error) =>
             Effect.logError("Stopping failed session container failed", {
               sessionId: session.sessionId,
@@ -826,6 +846,7 @@ const make = Effect.gen(function* () {
             reason: "no profile labels",
           });
           yield* docker.stop(name, STOP_TIMEOUT_SEC);
+          yield* keepStopped(sessionId, sessionLayers(config, sessionId));
           yield* stopped;
         }).pipe(
           Effect.catchTag("DockerError", (error) =>
@@ -905,10 +926,14 @@ const make = Effect.gen(function* () {
     const containers = yield* docker.listByLabel("cg.session");
     for (const container of containers) {
       if (!container.running) {
+        const sessionId = container.labels["cg.session"] ?? "";
         yield* Effect.logWarning(
           "Keeping stopped session container (profile-unsaved)",
-          { name: container.name, sessionId: container.labels["cg.session"] },
+          { name: container.name, sessionId },
         );
+        // Агент мог упасть между остановкой и снятием метки volatile.
+        if (isValidId(sessionId))
+          yield* keepStopped(sessionId, sessionLayers(config, sessionId));
         continue;
       }
       if ((yield* adoptRunning(container, { stop: false })) !== undefined)

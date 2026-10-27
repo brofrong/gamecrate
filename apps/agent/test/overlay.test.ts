@@ -18,6 +18,7 @@ import {
   layers,
   prepare,
   sessionLayers,
+  unmarkVolatile,
 } from "../src/Overlay";
 import { testConfig, unusedDocker } from "./fakes";
 
@@ -346,6 +347,74 @@ describe("Overlay", () => {
         },
       },
     ]);
+  });
+
+  it("unmarkVolatile syncs scratch and removes incompat markers with one root helper", async () => {
+    const docker = makeDocker();
+    mkdirSync(join(scratch, "s1", "client", "work"), { recursive: true });
+    await run(unmarkVolatile(sessionLayers(config(), "s1")), docker.shape);
+    expect(docker.calls).toEqual([
+      "remove cg-s-s1-unmark",
+      "create cg-s-s1-unmark",
+      "start cg-s-s1-unmark",
+      "wait cg-s-s1-unmark",
+      "remove cg-s-s1-unmark",
+    ]);
+    expect(docker.created).toHaveLength(1);
+    expect(docker.created[0]).toMatchObject({
+      name: "cg-s-s1-unmark",
+      labels: { "cg.helper": "unmark" },
+      network: "none",
+      // Метку `work/incompat` ядро создаёт от root с правами 000.
+      user: "0",
+      binds: [`${scratch}:${scratch}`],
+      entrypoint: [
+        "sh",
+        "-c",
+        'sync -f "$1" && shift && rm -rf -- "$@"',
+        "unmark",
+        `${scratch}/s1`,
+        `${scratch}/s1/client/work/work/incompat`,
+        `${scratch}/s1/apps/work/work/incompat`,
+      ],
+    });
+  });
+
+  it("unmarkVolatile skips non-volatile layers", async () => {
+    const docker = makeDocker();
+    const install = mkdtempSync(join(tmpdir(), "cg-overlay-install-"));
+    try {
+      mkdirSync(join(scratch, INSTALL_CLIENT_DIR, "j1"), { recursive: true });
+      mkdirSync(join(install, "j1"), { recursive: true });
+      await run(
+        unmarkVolatile(
+          installLayers(
+            testConfig({
+              scratchDir: scratch,
+              installScratchDir: Option.some(install),
+            }),
+            "j1",
+          ),
+        ),
+        docker.shape,
+      );
+      expect(docker.created[0]?.entrypoint).toEqual([
+        "sh",
+        "-c",
+        'sync -f "$1" && shift && rm -rf -- "$@"',
+        "unmark",
+        `${scratch}/${INSTALL_CLIENT_DIR}/j1`,
+        `${scratch}/${INSTALL_CLIENT_DIR}/j1/client/work/work/incompat`,
+      ]);
+    } finally {
+      rmSync(install, { recursive: true, force: true });
+    }
+  });
+
+  it("unmarkVolatile without a scratch dir runs nothing", async () => {
+    const docker = makeDocker();
+    await run(unmarkVolatile(sessionLayers(config(), "s1")), docker.shape);
+    expect(docker.calls).toEqual([]);
   });
 
   it("cleanup removes volumes, then scratch via a root helper container", async () => {
