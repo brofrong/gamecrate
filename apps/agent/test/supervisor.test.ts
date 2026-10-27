@@ -74,6 +74,17 @@ const makeFake = () => {
     cloudFail: undefined as "exit" | "docker" | undefined,
     /** Закрыт — `grep` журнала облака ждёт его открытия. */
     cloudGate: undefined as Deferred.Deferred<void> | undefined,
+    /**
+     * Ответы `cg-session-stage` по очереди: строка — stdout (с переводом строки),
+     * `DockerError` — exec упал, `{ exitCode }` — скрипт вышел с этим кодом.
+     * Очередь пуста — повторяется последний ответ (сначала `steam`).
+     */
+    stages: [] as Array<string | DockerError | { exitCode: number }>,
+    lastStage: "steam" as string | DockerError | { exitCode: number },
+    /** Число вызовов `cg-session-stage` (в `calls` не пишутся: опрос частый). */
+    stageChecks: 0,
+    /** Закрыт — `docker start` контейнера сессии ждёт его открытия. */
+    startGate: undefined as Deferred.Deferred<void> | undefined,
     /** Код выхода помощника по имени (нет — 0). */
     helperExit: {} as Record<string, number>,
     /** Записи лога уровня Warn и выше: `[уровень, сообщение…]`. */
@@ -133,7 +144,13 @@ const makeFake = () => {
         state.created.push(spec);
         return Effect.succeed(`id-${spec.name}`);
       }),
-    start: (name) => Effect.sync(() => record(`start ${name}`)),
+    start: (name) =>
+      Effect.suspend(() => {
+        record(`start ${name}`);
+        return state.startGate !== undefined && name.startsWith("cg-session-")
+          ? Deferred.await(state.startGate)
+          : Effect.void;
+      }),
     wait: (name) =>
       Effect.sync(() => {
         record(`wait ${name}`);
@@ -217,7 +234,8 @@ const makeFake = () => {
     exec: (name, cmd) =>
       Effect.suspend(() => {
         state.dockerCalls++;
-        if (cmd[0] === "pkill" || cmd[0]?.startsWith("/usr/local/bin/cg-"))
+        if (cmd[0] === "/usr/local/bin/cg-session-stage") state.stageChecks++;
+        else if (cmd[0] === "pkill" || cmd[0]?.startsWith("/usr/local/bin/cg-"))
           state.calls.push(`exec ${name} ${cmd.join(" ")}`);
         if (state.gone)
           return Effect.fail(
@@ -272,6 +290,18 @@ const makeFake = () => {
               return Effect.succeed({ exitCode: 2, stdout: "" });
             state.game = false;
             return Effect.succeed({ exitCode: 0, stdout: "" });
+          case "/usr/local/bin/cg-session-stage": {
+            if (cmd.join(" ") !== "/usr/local/bin/cg-session-stage 1794680")
+              return Effect.succeed({ exitCode: 2, stdout: "" });
+            const answer = state.stages.shift() ?? state.lastStage;
+            state.lastStage = answer;
+            if (answer instanceof DockerError) return Effect.fail(answer);
+            return Effect.succeed(
+              typeof answer === "string"
+                ? { exitCode: 0, stdout: `${answer}\n` }
+                : { exitCode: answer.exitCode, stdout: "" },
+            );
+          }
           case "/usr/local/bin/cg-steam-shutdown":
             return Effect.succeed({ exitCode: 0, stdout: "" });
           case "/usr/local/bin/cg-profile-pack":
@@ -332,8 +362,13 @@ type Fake = ReturnType<typeof makeFake>;
 interface Harness {
   readonly fake: Fake;
   readonly supervisor: SessionSupervisorShape;
-  /** Все отчёты, накопившиеся к этому моменту. */
+  /**
+   * Отчёты, накопившиеся к этому моменту, кроме `SessionStage` (этапы проверяют
+   * свои тесты через `drainAll`).
+   */
   readonly drain: Effect.Effect<Array<AgentReport>>;
+  /** Все отчёты, накопившиеся к этому моменту. */
+  readonly drainAll: Effect.Effect<Array<AgentReport>>;
   readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
 }
 
@@ -359,14 +394,19 @@ const run = (
       ),
     );
     const supervisor = Context.get(context, SessionSupervisor);
-    const drain = Queue.clear(supervisor.reports);
+    const drainAll = Queue.clear(supervisor.reports);
+    const drain = drainAll.pipe(
+      Effect.map((reports) =>
+        reports.filter((report) => report._tag !== "SessionStage"),
+      ),
+    );
     const tick = (duration: Duration.Input) =>
       Effect.gen(function* () {
         yield* TestClock.adjust(duration);
         for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
       });
     yield* tick("0 seconds");
-    yield* body({ fake, supervisor, drain, tick });
+    yield* body({ fake, supervisor, drain, drainAll, tick });
   });
   return Effect.runPromise(
     program.pipe(
@@ -1894,4 +1934,240 @@ describe("SessionSupervisor", () => {
         ];
       },
     ));
+});
+
+/** Этапы `SessionStage` из отчётов (остальные отбрасываются). */
+const stagesOf = (reports: ReadonlyArray<AgentReport>) =>
+  reports.flatMap((report) =>
+    report._tag === "SessionStage" ? [[report.sessionId, report.stage]] : [],
+  );
+
+describe("SessionSupervisor stages", () => {
+  it("start reports computer, then steam after the container starts", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>();
+        h.fake.state.startGate = gate;
+        yield* h.supervisor.handle(start);
+        yield* h.tick("0 seconds");
+        // docker start ещё не вернулся: только `computer`, опроса нет.
+        expect(h.fake.state.calls).toContain("start cg-session-s1");
+        expect(yield* h.drainAll).toEqual([
+          { _tag: "SessionStage", sessionId: "s1", stage: "computer" },
+        ]);
+        expect(h.fake.state.stageChecks).toBe(0);
+        yield* Deferred.succeed(gate, undefined);
+        yield* h.tick("0 seconds");
+        expect(yield* h.drainAll).toEqual([
+          { _tag: "SessionStage", sessionId: "s1", stage: "steam" },
+          { _tag: "StreamReady", sessionId: "s1", streamUrl },
+        ]);
+      }),
+    ));
+
+  it("computer is reported before the container is created", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          expect(yield* h.drainAll).toEqual([
+            { _tag: "SessionStage", sessionId: "s1", stage: "computer" },
+            {
+              _tag: "Failed",
+              sessionId: "s1",
+              reason: failReasons.dockerStart,
+            },
+          ]);
+        }),
+      (fake) => {
+        fake.state.failCreate = true;
+      },
+    ));
+
+  it("stage polling reports each new stage once and stops at visible", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          for (let i = 0; i < 5; i++) yield* h.tick("2 seconds");
+          expect(stagesOf(yield* h.drainAll)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "login"],
+            ["s1", "prepare"],
+            ["s1", "loading"],
+            ["s1", "visible"],
+          ]);
+          expect(h.fake.state.stageChecks).toBe(6);
+          // После `visible` скрипт больше не вызывается.
+          yield* h.tick("10 seconds");
+          expect(h.fake.state.stageChecks).toBe(6);
+          expect(stagesOf(yield* h.drainAll)).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.stages = [
+          "steam",
+          "login",
+          "login",
+          "prepare",
+          "loading",
+          "visible",
+        ];
+      },
+    ));
+
+  it("stage never goes back", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          yield* h.tick("2 seconds");
+          yield* h.tick("2 seconds");
+          yield* h.tick("2 seconds");
+          expect(stagesOf(yield* h.drainAll)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "prepare"],
+            ["s1", "loading"],
+          ]);
+        }),
+      (fake) => {
+        fake.state.stages = ["prepare", "login", "loading"];
+      },
+    ));
+
+  it("stage check failure keeps polling", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          for (let i = 0; i < 4; i++) yield* h.tick("2 seconds");
+          const reports = yield* h.drainAll;
+          expect(stagesOf(reports)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "login"],
+            ["s1", "prepare"],
+          ]);
+          expect(reports.map((report) => report._tag)).not.toContain("Failed");
+          expect(h.fake.state.stageChecks).toBe(5);
+          const warnings = h.fake.state.logged.filter((line) =>
+            line.includes("Stage check failed"),
+          );
+          // Упавший exec, ненулевой код выхода, неизвестный этап.
+          expect(warnings).toHaveLength(3);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+        }),
+      (fake) => {
+        fake.state.stages = [
+          "login",
+          new DockerError({ operation: "exec", message: "timeout" }),
+          { exitCode: 1 },
+          "computer",
+          "prepare",
+        ];
+      },
+    ));
+
+  it("gone container stops stage polling without failing the session", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          yield* h.tick("10 seconds");
+          // Решать, что контейнера нет, — проверкам Selkies и игры, не опросу этапов.
+          expect(h.fake.state.stageChecks).toBe(1);
+          expect(
+            (yield* h.drainAll).map((report) => report._tag),
+          ).not.toContain("Failed");
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("Stage check failed"),
+            ),
+          ).toEqual([]);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+        }),
+      (fake) => {
+        fake.state.stages = [
+          new DockerError({
+            operation: "exec",
+            status: 409,
+            message: "container is not running",
+          }),
+        ];
+      },
+    ));
+
+  it("adopted session resumes stage polling", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          expect(stagesOf(yield* h.drainAll)).toEqual([["a", "loading"]]);
+          yield* h.tick("2 seconds");
+          expect(stagesOf(yield* h.drainAll)).toEqual([["a", "visible"]]);
+          yield* h.tick("10 seconds");
+          expect(h.fake.state.stageChecks).toBe(2);
+        }),
+      (fake) => {
+        fake.state.game = true;
+        fake.state.stages = ["loading", "visible"];
+        fake.state.existing = [
+          {
+            name: "cg-session-a",
+            labels: {
+              "cg.session": "a",
+              "cg.slot": "1",
+              "cg.app": "1794680",
+              "cg.user": "ua",
+              "cg.base-version": "3",
+            },
+            running: true,
+          },
+        ];
+      },
+    ));
+
+  it("no stage reports after Stopped", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("2 seconds");
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const reports = yield* h.drainAll;
+          expect(reports.at(-1)?._tag).toBe("Stopped");
+          expect(stagesOf(reports)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "login"],
+          ]);
+          const checks = h.fake.state.stageChecks;
+          h.fake.state.stages = ["prepare", "visible"];
+          yield* h.tick("10 seconds");
+          expect(h.fake.state.stageChecks).toBe(checks);
+          expect(stagesOf(yield* h.drainAll)).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.stages = ["steam", "login"];
+      },
+    ));
+
+  it("stage command does not match the game process pattern", () => {
+    expect(commands.stage(1794680)).toEqual([
+      "/usr/local/bin/cg-session-stage",
+      "1794680",
+    ]);
+    const pattern = new RegExp(commands.game(1794680)[2] ?? "");
+    expect(pattern.test(commands.stage(1794680).join(" "))).toBe(false);
+  });
 });
