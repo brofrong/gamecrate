@@ -1107,13 +1107,89 @@ describe("slot release", () => {
       }),
     ));
 
+  it("lost agent that stays connected: heartbeat without the session releases the slot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-new");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          state: "playing",
+          workerId: "w-a",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s-new", userId: "u-new", createdAt: t0 });
+
+        // Таймаут оркестратора (agentLost) — сессия падает, слот не
+        // выпускаем; агент при этом остаётся подключён (не переподключается,
+        // reconcile не вызывается).
+        yield* runner.tick(at(t0, 91));
+        expect((yield* sessionRow("s-old")).state).toBe("failed");
+
+        yield* Scheduler.tick(at(t0, 91));
+        expect((yield* sessionRow("s-new")).state).toBe("queued");
+
+        // Агент жив и шлёт heartbeat без s-old — контейнера действительно нет.
+        yield* runner.handle(
+          report("w-a", { _tag: "Heartbeat", sessionIds: [] }),
+          at(t0, 92),
+        );
+        like(yield* sessionRow("s-old"), { slotReleasedAt: at(t0, 92) });
+
+        yield* Scheduler.tick(at(t0, 93));
+        like(yield* sessionRow("s-new"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+      }),
+    ));
+
+  it("heartbeat that still lists the session keeps the slot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-new");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          state: "playing",
+          workerId: "w-a",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s-new", userId: "u-new", createdAt: t0 });
+
+        yield* runner.tick(at(t0, 91));
+        expect((yield* sessionRow("s-old")).state).toBe("failed");
+
+        // Контейнер ещё не погашен: heartbeat по-прежнему называет s-old.
+        yield* runner.handle(
+          report("w-a", { _tag: "Heartbeat", sessionIds: ["s-old"] }),
+          at(t0, 92),
+        );
+        expect((yield* sessionRow("s-old")).slotReleasedAt).toBeNull();
+
+        yield* Scheduler.tick(at(t0, 93));
+        expect((yield* sessionRow("s-new")).state).toBe("queued");
+      }),
+    ));
+
   it("just scheduled session keeps its slot on reconnect", () =>
     run((fake) =>
       Effect.gen(function* () {
         const runner = yield* SessionRunner;
         const t0 = new Date();
-        yield* seedUsers("u1");
-        yield* connectWorker(fake, "w1", 1);
+        yield* seedUsers("u1", "u2");
+        yield* connectWorker(fake, "w1", 2);
         // Назначена моложе RECONCILE_GRACE_MS: StartSession мог уйти уже в
         // новое соединение, агент о ней законно не знает.
         yield* insertSession({
@@ -1125,12 +1201,26 @@ describe("slot release", () => {
           stateSince: at(t0, -(RECONCILE_GRACE_MS / 1000) + 2),
           agentSeenAt: at(t0, -(RECONCILE_GRACE_MS / 1000) + 2),
         });
+        // Давно остановленная и забытая сессия на том же воркере: сверка
+        // должна её выпустить той же проверкой, что и свежую starting — не
+        // трогать.
+        yield* insertSession({
+          id: "s-ended",
+          userId: "u2",
+          state: "ended",
+          workerId: "w1",
+          slot: 1,
+        });
 
         yield* runner.handle(connected("w1", []), t0);
 
         like(yield* sessionRow("s-new"), {
           state: "starting",
           slotReleasedAt: null,
+        });
+        like(yield* sessionRow("s-ended"), {
+          state: "ended",
+          slotReleasedAt: t0,
         });
       }),
     ));

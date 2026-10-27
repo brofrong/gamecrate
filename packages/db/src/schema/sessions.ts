@@ -94,7 +94,7 @@ export const sessions = pgTable(
     stateSince: timestamptz("state_since").notNull().defaultNow(),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     endedAt: timestamptz("ended_at"),
-    // Контейнер на воркере остановлен и слот свободен (Task 5): `null` — слот
+    // Контейнер на воркере остановлен и слот свободен: `null` — слот
     // может быть занят, даже если `state` уже `ended`/`failed` (агент мог ещё
     // не отчитаться о выгрузке контейнера). Выставляется `SessionRepo.releaseSlot`
     // (отчёт `Stopped`/`Failed` владеющего воркера) и `releaseStaleSlots`

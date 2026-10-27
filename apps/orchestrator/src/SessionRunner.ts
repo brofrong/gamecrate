@@ -325,9 +325,27 @@ const make = (options: SessionRunnerOptions) =>
                   now,
                 );
               case "Heartbeat":
-                return withDb(
-                  SessionRepo.recordHeartbeat(workerId, report.sessionIds, now),
-                );
+                // Heartbeat перечисляет все живые сессии агента (включая
+                // создаваемые и останавливаемые, см. SessionSupervisor) —
+                // это тоже отчёт воркера о том, чего на нём больше нет:
+                // ended/failed строка этого воркера не в списке — её
+                // контейнера действительно нет, слот свободен. Иначе
+                // потерянная по таймауту (agentLost) сессия, чей StartSession
+                // потерялся (reconcile её не застал — молодая starting), а
+                // агент с тех пор не переподключался и не прислал
+                // Stopped/Failed, держала бы слот навсегда.
+                return Effect.gen(function* () {
+                  yield* withDb(
+                    SessionRepo.recordHeartbeat(workerId, report.sessionIds, now),
+                  );
+                  yield* withDb(
+                    SessionRepo.releaseStaleSlots(
+                      workerId,
+                      report.sessionIds,
+                      now,
+                    ),
+                  );
+                });
               case "Stopped": {
                 // Профиль не сохранён: агент оставил контейнер со слоями
                 // (`profile-unsaved`) — нужен разбор вручную (deploy/README.md).
