@@ -11,14 +11,25 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import type { CurrentUserShape } from "@cg/rpc";
 import { AppShell } from "../src/components/app/AppShell";
 import { BottomTabs } from "../src/components/app/BottomTabs";
 import { Rail } from "../src/components/app/Rail";
 import { testRouter } from "./router";
 
+const gamer: CurrentUserShape = {
+  id: "u1",
+  name: "Gamer",
+  image: "https://cdn.example/avatar.jpg",
+  role: "player",
+  steamId: "7656",
+  email: null,
+  emailVerified: false,
+};
+
 describe("Rail", () => {
   it("renders the four sections with their hrefs", async () => {
-    render(<RouterProvider router={testRouter(<Rail />)} />);
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
     expect(
       (await screen.findByRole("link", { name: "Мои игры" })).getAttribute(
         "href",
@@ -37,7 +48,7 @@ describe("Rail", () => {
 
   it("marks the active section with aria-current", async () => {
     const root = createRootRoute({
-      component: () => <Rail />,
+      component: () => <Rail user={gamer} />,
     });
     const router = createRouter({
       routeTree: root,
@@ -51,26 +62,46 @@ describe("Rail", () => {
   });
 
   it("наверху — логотип GameCrate (GC-куб) ссылкой на /app", async () => {
-    render(<RouterProvider router={testRouter(<Rail />)} />);
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
     const home = await screen.findByRole("link", { name: "GameCrate" });
     expect(home.getAttribute("href")).toBe("/app");
     expect(home.querySelector('svg[role="img"]')).not.toBeNull();
   });
 
+  it("внизу — фото пользователя ссылкой на /profile", async () => {
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
+    const profile = await screen.findByRole("link", { name: "Профиль" });
+    expect(profile.getAttribute("href")).toBe("/profile");
+    expect(profile.querySelector("img")?.getAttribute("src")).toBe(
+      "https://cdn.example/avatar.jpg",
+    );
+  });
+
+  it("без фото — первая буква имени в кружке", async () => {
+    render(
+      <RouterProvider
+        router={testRouter(<Rail user={{ ...gamer, image: null }} />)}
+      />,
+    );
+    const profile = await screen.findByRole("link", { name: "Профиль" });
+    expect(profile.querySelector("img")).toBeNull();
+    expect(profile.textContent).toBe("G");
+  });
+
   it("has no «Установки» link", async () => {
-    render(<RouterProvider router={testRouter(<Rail />)} />);
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
     await screen.findByRole("link", { name: "Поиск" });
     expect(screen.queryByRole("link", { name: "Установки" })).toBeNull();
   });
 
   it("is full-height; AppShell pins its grid cell", async () => {
-    render(<RouterProvider router={testRouter(<Rail />)} />);
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
     const nav = await screen.findByRole("navigation", { name: "Разделы" });
     expect(nav.className).toContain("h-[calc(100dvh-3rem)]");
   });
 
   it("links the profile avatar to /profile", async () => {
-    render(<RouterProvider router={testRouter(<Rail />)} />);
+    render(<RouterProvider router={testRouter(<Rail user={gamer} />)} />);
     expect(
       (await screen.findByRole("link", { name: "Профиль" })).getAttribute(
         "href",
@@ -80,8 +111,16 @@ describe("Rail", () => {
 });
 
 describe("BottomTabs", () => {
+  it("вкладка «Профиль» — фото пользователя", async () => {
+    render(<RouterProvider router={testRouter(<BottomTabs user={gamer} />)} />);
+    const profile = await screen.findByRole("link", { name: "Профиль" });
+    expect(profile.querySelector("img")?.getAttribute("src")).toBe(
+      "https://cdn.example/avatar.jpg",
+    );
+  });
+
   it("renders five tabs by label", async () => {
-    render(<RouterProvider router={testRouter(<BottomTabs />)} />);
+    render(<RouterProvider router={testRouter(<BottomTabs user={gamer} />)} />);
     expect(await screen.findByRole("link", { name: "Мои игры" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "В тренде" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Из ящика" })).toBeTruthy();
