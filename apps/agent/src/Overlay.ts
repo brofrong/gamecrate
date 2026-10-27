@@ -239,6 +239,47 @@ export const removeScratch = (overlays: Overlays) =>
   });
 
 /**
+ * Держит тома слоёв смонтированными до закрытия scope: помощник `sleep`
+ * монтирует их первым, а `local` монтирует том один раз, пока его держит хоть
+ * один контейнер. Нужен до старта контейнера с `volatile`-слоями: каждое
+ * монтирование такого тома (в том числе `putArchive`/`getArchive` в ещё не
+ * запущенный контейнер) оставляет метку ядра `incompat`, и следующее падает с
+ * `invalid argument`. Закрывать scope — после `docker start`: тогда тома
+ * держит уже сам контейнер.
+ */
+export const holdVolumes = (overlays: Overlays) =>
+  Effect.gen(function* () {
+    const config = yield* AgentConfig;
+    const docker = yield* DockerClient;
+    const name = `${overlays.prefix}-${overlays.id}-hold`;
+    yield* Effect.acquireRelease(
+      docker.remove(name).pipe(
+        Effect.andThen(
+          docker.create(
+            helperSpec(config, {
+              name,
+              kind: "hold",
+              user: "1000",
+              entrypoint: ["sleep", "infinity"],
+              mounts: mountsFor(overlays),
+            }),
+          ),
+        ),
+      ),
+      () =>
+        docker.remove(name).pipe(
+          Effect.catchTag("DockerError", (error) =>
+            Effect.logWarning("Removing helper container failed", {
+              name,
+              error: error.message,
+            }),
+          ),
+        ),
+    );
+    yield* docker.start(name);
+  }).pipe(Effect.mapError(fromDocker("holdVolumes")));
+
+/**
  * Слои оставленного остановленного контейнера (`profile-unsaved`) снова можно
  * смонтировать: одним помощником от root — `sync` ФС scratch (без fsync
  * `volatile` upper мог быть ещё не на диске) и удаление меток ядра

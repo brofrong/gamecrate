@@ -397,6 +397,10 @@ const run = (
   );
 };
 
+/** Созданные контейнеры сессий (без помощников). */
+const sessionSpecs = (fake: Fake) =>
+  fake.state.created.filter((spec) => spec.labels["cg.helper"] === undefined);
+
 /** Вызовы после первого `from` (включительно). */
 const callsFrom = (fake: Fake, from: string) =>
   fake.state.calls.slice(fake.state.calls.indexOf(from));
@@ -412,6 +416,13 @@ const removedWithLayers = (id: string) => [
   `start cg-s-${id}-cleanup`,
   `wait cg-s-${id}-cleanup`,
   `remove cg-s-${id}-cleanup`,
+];
+
+/** Помощник, который держит тома слоёв `id` смонтированными до старта контейнера. */
+const held = (id: string) => [
+  `remove cg-s-${id}-hold`,
+  `create cg-s-${id}-hold`,
+  `start cg-s-${id}-hold`,
 ];
 
 /** Помощник, снимающий метку volatile со слоёв оставленного контейнера `id`. */
@@ -452,8 +463,8 @@ describe("SessionSupervisor", () => {
       Effect.gen(function* () {
         yield* h.supervisor.handle(start);
         yield* h.tick("0 seconds");
-        expect(h.fake.state.created).toHaveLength(1);
-        const spec = h.fake.state.created[0];
+        expect(sessionSpecs(h.fake)).toHaveLength(1);
+        const spec = sessionSpecs(h.fake)[0];
         expect(spec).toEqual({
           name: "cg-session-s1",
           image: "cg-session:550.163.01",
@@ -553,7 +564,7 @@ describe("SessionSupervisor", () => {
           udpPort: 59000,
         });
         yield* h.tick("0 seconds");
-        const passwords = h.fake.state.created.map((spec) => spec.env.PASSWD);
+        const passwords = sessionSpecs(h.fake).map((spec) => spec.env.PASSWD);
         expect(passwords).toHaveLength(2);
         for (const password of passwords) {
           expect(password).toMatch(/^[A-Za-z0-9_-]{32,}$/);
@@ -851,7 +862,7 @@ describe("SessionSupervisor", () => {
         yield* h.drain;
         yield* h.supervisor.handle(start);
         yield* h.tick("0 seconds");
-        expect(h.fake.state.created).toHaveLength(1);
+        expect(sessionSpecs(h.fake)).toHaveLength(1);
         expect(yield* h.drain).toEqual([
           { _tag: "StreamReady", sessionId: "s1", streamUrl },
           { _tag: "GameState", sessionId: "s1", running: true },
@@ -1256,9 +1267,11 @@ describe("SessionSupervisor", () => {
           "createVolume cg-s-s1-client",
           "createVolume cg-s-s1-apps",
           "create cg-session-s1",
+          ...held("s1"),
           "store.get profiles/u1/v7.cgp",
           "putArchive cg-session-s1 /home/ubuntu",
           "start cg-session-s1",
+          "remove cg-s-s1-hold",
         ]);
         expect(h.fake.state.put[0]?.tar).toEqual(bytes("profile-v7-tar"));
         // Каталоги слоёв созданы агентом заранее.
@@ -1280,8 +1293,11 @@ describe("SessionSupervisor", () => {
         const steamLogin = testSteamLogin();
         yield* h.supervisor.handle({ ...start, steamLogin });
         yield* h.tick("0 seconds");
+        // Архивы до старта и сам старт — по одному монтированию volatile-томов,
+        // которое держит помощник cg-s-s1-hold.
         expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
           "create cg-session-s1",
+          ...held("s1"),
           "volumeExists cg-home-u1",
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/local.vdf",
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
@@ -1289,6 +1305,7 @@ describe("SessionSupervisor", () => {
           "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
           "putArchive cg-session-s1 /home/ubuntu",
           "start cg-session-s1",
+          "remove cg-s-s1-hold",
         ]);
         const seeded = h.fake.state.put.find((p) => p.path === "/home/ubuntu");
         if (seeded === undefined) throw new Error("no login seed archive");
@@ -1321,6 +1338,7 @@ describe("SessionSupervisor", () => {
           yield* h.tick("0 seconds");
           expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
             "create cg-session-s1",
+            ...held("s1"),
             "volumeExists cg-home-u1",
             "remove cg-session-s1-import",
             "create cg-session-s1-import",
@@ -1331,8 +1349,13 @@ describe("SessionSupervisor", () => {
             "remove cg-session-s1-import",
             "putArchive cg-session-s1 /home/ubuntu",
             "start cg-session-s1",
+            "remove cg-s-s1-hold",
           ]);
-          expect(h.fake.state.created[1]).toEqual({
+          expect(
+            h.fake.state.created.find(
+              (spec) => spec.name === "cg-session-s1-import",
+            ),
+          ).toEqual({
             name: "cg-session-s1-import",
             image: "cg-session:550.163.01",
             env: { HOME: "/home/ubuntu" },
@@ -1373,8 +1396,10 @@ describe("SessionSupervisor", () => {
         yield* startReady(h);
         expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
           "create cg-session-s1",
+          ...held("s1"),
           "volumeExists cg-home-u1",
           "start cg-session-s1",
+          "remove cg-s-s1-hold",
         ]);
         expect(h.fake.state.put).toEqual([]);
       }),
@@ -1396,9 +1421,13 @@ describe("SessionSupervisor", () => {
           },
         ]);
         expect(h.fake.state.calls).not.toContain("start cg-session-s1");
-        expect(callsFrom(h.fake, "remove cg-session-s1")).toEqual(
-          removedWithLayers("s1").slice(1),
-        );
+        // Помощник отпустил тома до удаления контейнера и слоёв.
+        expect(callsFrom(h.fake, "create cg-s-s1-hold")).toEqual([
+          ...held("s1").slice(1),
+          "store.get profiles/u1/missing.cgp",
+          "remove cg-s-s1-hold",
+          ...removedWithLayers("s1").slice(1),
+        ]);
       }),
     ));
 

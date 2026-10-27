@@ -9,15 +9,19 @@ import {
   type ContainerSpec,
   DockerClient,
   type DockerClientShape,
+  DockerError,
   volumeBody,
 } from "../src/DockerClient";
 import {
   cleanup,
+  holdVolumes,
   INSTALL_CLIENT_DIR,
   installLayers,
   layers,
   prepare,
   sessionLayers,
+  STEAM_DIR,
+  STEAMAPPS_DIR,
   unmarkVolatile,
 } from "../src/Overlay";
 import { testConfig, unusedDocker } from "./fakes";
@@ -347,6 +351,65 @@ describe("Overlay", () => {
         },
       },
     ]);
+  });
+
+  it("holdVolumes keeps the layer volumes mounted by a sleeping helper until the scope closes", async () => {
+    const docker = makeDocker();
+    const overlays = sessionLayers(config(), "s1");
+    await run(
+      Effect.scoped(
+        holdVolumes(overlays).pipe(
+          Effect.andThen(Effect.sync(() => void docker.calls.push("work"))),
+        ),
+      ),
+      docker.shape,
+    );
+    // Каждое монтирование volatile-тома оставляет метку ядра, и следующее
+    // падает: архивы до старта и сам старт должны идти по одному монтированию.
+    expect(docker.calls).toEqual([
+      "remove cg-s-s1-hold",
+      "create cg-s-s1-hold",
+      "start cg-s-s1-hold",
+      "work",
+      "remove cg-s-s1-hold",
+    ]);
+    expect(docker.created[0]).toMatchObject({
+      name: "cg-s-s1-hold",
+      labels: { "cg.helper": "hold" },
+      network: "none",
+      user: "1000",
+      entrypoint: ["sleep", "infinity"],
+      mounts: [
+        { volume: "cg-s-s1-client", target: STEAM_DIR },
+        { volume: "cg-s-s1-apps", target: STEAMAPPS_DIR },
+      ],
+    });
+  });
+
+  it("holdVolumes removes the helper when its start fails", async () => {
+    const docker = makeDocker();
+    const shape: DockerClientShape = {
+      ...docker.shape,
+      start: (name) =>
+        Effect.sync(() => void docker.calls.push(`start ${name}`)).pipe(
+          Effect.andThen(
+            Effect.fail(new DockerError({ operation: "start", message: "x" })),
+          ),
+        ),
+    };
+    const error = await Effect.runPromise(
+      Effect.scoped(holdVolumes(sessionLayers(config(), "s1"))).pipe(
+        Effect.flip,
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(DockerClient, shape),
+            Layer.succeed(AgentConfig, config()),
+          ),
+        ),
+      ),
+    );
+    expect(error._tag).toBe("OverlayError");
+    expect(docker.calls.at(-1)).toBe("remove cg-s-s1-hold");
   });
 
   it("unmarkVolatile syncs scratch and removes incompat markers with one root helper", async () => {

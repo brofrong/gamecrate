@@ -44,6 +44,7 @@ import { FreeSpace, hasFreeSpace } from "./DiskSpace";
 import { isValidId } from "./ids";
 import {
   cleanup,
+  holdVolumes,
   INSTALL_CLIENT_DIR,
   installLayers,
   mountsFor,
@@ -573,55 +574,68 @@ const make = Effect.gen(function* () {
       yield* docker
         .create(installSpec(config, job, sessionPassword()))
         .pipe(Effect.mapError(startFailed));
-      const from = yield* restoreProfile({
-        container: job.name,
-        userId: job.userId,
-        profile: job.profile,
-      }).pipe(
-        withServices,
-        Effect.mapError(
-          (cause) =>
-            new Abort({ reason: installReasons.profileRestore, cause }),
-        ),
+      // Профиль, посев входа, манифест, журнал и старт — по одному монтированию
+      // volatile-слоя клиента.
+      const { from, logOffset } = yield* Effect.scoped(
+        Effect.gen(function* () {
+          // withServices заменил бы весь контекст вместе со Scope.
+          yield* holdVolumes(job.overlays).pipe(
+            Effect.provideService(AgentConfig, config),
+            Effect.provideService(DockerClient, docker),
+            Effect.mapError(startFailed),
+          );
+          const from = yield* restoreProfile({
+            container: job.name,
+            userId: job.userId,
+            profile: job.profile,
+          }).pipe(
+            withServices,
+            Effect.mapError(
+              (cause) =>
+                new Abort({ reason: installReasons.profileRestore, cause }),
+            ),
+          );
+          // Пустой дом и нечем войти — установщик без входа ждал бы QR, которого
+          // никто не видит, и упал бы через STALL_TIMEOUT.
+          if (from === "empty" && job.steamLogin === null)
+            return yield* new Abort({ reason: installReasons.steamLogin });
+          if (job.steamLogin !== null) {
+            yield* seedSteamLogin({
+              container: job.name,
+              seed: job.steamLogin,
+            }).pipe(
+              withServices,
+              Effect.mapError(
+                (cause) =>
+                  new Abort({ reason: installReasons.profileRestore, cause }),
+              ),
+            );
+            job.seeded = true;
+          }
+          const mtime = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+          yield* docker
+            .putArchive(
+              job.name,
+              STEAMAPPS_DIR,
+              singleFileTar(
+                manifestName(job.appId),
+                new TextEncoder().encode(stubManifest(job.appId)),
+                { uid: 1000, gid: 1000, mode: 0o644, mtime },
+              ),
+            )
+            .pipe(Effect.mapError(startFailed));
+          // Overlay дома уже смонтирован (его lower — общий шаблон клиента):
+          // журнал может содержать старые строки до старта этого контейнера.
+          const logOffset = yield* docker
+            .archiveSize(job.name, CONNECTION_LOG)
+            .pipe(
+              Effect.catchIf(isGone, () => Effect.succeed(0)),
+              Effect.mapError(startFailed),
+            );
+          yield* docker.start(job.name).pipe(Effect.mapError(startFailed));
+          return { from, logOffset };
+        }),
       );
-      // Пустой дом и нечем войти — установщик без входа ждал бы QR, которого
-      // никто не видит, и упал бы через STALL_TIMEOUT.
-      if (from === "empty" && job.steamLogin === null)
-        return yield* new Abort({ reason: installReasons.steamLogin });
-      if (job.steamLogin !== null) {
-        yield* seedSteamLogin({
-          container: job.name,
-          seed: job.steamLogin,
-        }).pipe(
-          withServices,
-          Effect.mapError(
-            (cause) =>
-              new Abort({ reason: installReasons.profileRestore, cause }),
-          ),
-        );
-        job.seeded = true;
-      }
-      const mtime = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-      yield* docker
-        .putArchive(
-          job.name,
-          STEAMAPPS_DIR,
-          singleFileTar(
-            manifestName(job.appId),
-            new TextEncoder().encode(stubManifest(job.appId)),
-            { uid: 1000, gid: 1000, mode: 0o644, mtime },
-          ),
-        )
-        .pipe(Effect.mapError(startFailed));
-      // Overlay дома уже смонтирован (его lower — общий шаблон клиента):
-      // журнал может содержать старые строки до старта этого контейнера.
-      const logOffset = yield* docker
-        .archiveSize(job.name, CONNECTION_LOG)
-        .pipe(
-          Effect.catchIf(isGone, () => Effect.succeed(0)),
-          Effect.mapError(startFailed),
-        );
-      yield* docker.start(job.name).pipe(Effect.mapError(startFailed));
       yield* Effect.logInfo("Installer container started", {
         jobId: job.jobId,
         appId: job.appId,

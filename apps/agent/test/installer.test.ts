@@ -537,11 +537,17 @@ describe("Installer", () => {
           "createVolume cg-i-j1-client",
           "createVolume cg-i-j1-apps",
           "create cg-install-j1",
+          // Архивы до старта и старт — по одному монтированию тома клиента
+          // (volatile), которое держит помощник.
+          "remove cg-i-j1-hold",
+          "create cg-i-j1-hold",
+          "start cg-i-j1-hold",
           "store.get profiles/u1/v7.cgp",
           "putArchive cg-install-j1 /home/ubuntu",
           `putArchive cg-install-j1 ${STEAMAPPS}`,
           `archiveSize cg-install-j1 ${CONNECTION_LOG}`,
           "start cg-install-j1",
+          "remove cg-i-j1-hold",
         ]);
         // Слой клиента Steam — на SCRATCH_DIR (NVMe: pressure-vessel копирует
         // рантайм с fsync), в подкаталоге `.install`, который не id сессии;
@@ -565,7 +571,11 @@ describe("Installer", () => {
           ).toBe(false);
         }
         expect(readdirSync(h.fake.state.scratch)).toEqual([".install"]);
-        expect(h.fake.state.created).toEqual([
+        expect(
+          h.fake.state.created.filter(
+            (spec) => spec.labels["cg.helper"] === undefined,
+          ),
+        ).toEqual([
           {
             name: "cg-install-j1",
             image: "cg-session:550.163.01",

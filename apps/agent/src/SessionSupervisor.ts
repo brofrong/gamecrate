@@ -36,6 +36,7 @@ import { HELPER_LABEL } from "./Helper";
 import { isValidId } from "./ids";
 import {
   cleanup,
+  holdVolumes,
   mountsFor,
   type Overlays,
   prepare,
@@ -612,36 +613,49 @@ const make = Effect.gen(function* () {
       );
       yield* docker.create(spec).pipe(Effect.mapError(dockerStart));
       session.created = true;
-      const from = yield* restoreProfile({
-        container: session.name,
-        userId: session.userId,
-        profile,
-      }).pipe(
-        withServices,
-        Effect.mapError(
-          (cause) =>
-            new Abort({
-              reason:
-                cause.stage === "size"
-                  ? failReasons.profileTooLarge
-                  : failReasons.profileRestore,
-              cause,
-            }),
-        ),
+      // Профиль, посев входа и старт — по одному монтированию volatile-слоёв.
+      const from = yield* Effect.scoped(
+        Effect.gen(function* () {
+          // withServices заменил бы весь контекст вместе со Scope.
+          yield* holdVolumes(session.overlays).pipe(
+            Effect.provideService(AgentConfig, config),
+            Effect.provideService(DockerClient, docker),
+            Effect.mapError(dockerStart),
+          );
+          const from = yield* restoreProfile({
+            container: session.name,
+            userId: session.userId,
+            profile,
+          }).pipe(
+            withServices,
+            Effect.mapError(
+              (cause) =>
+                new Abort({
+                  reason:
+                    cause.stage === "size"
+                      ? failReasons.profileTooLarge
+                      : failReasons.profileRestore,
+                  cause,
+                }),
+            ),
+          );
+          if (steamLogin !== null) {
+            yield* seedSteamLogin({
+              container: session.name,
+              seed: steamLogin,
+            }).pipe(
+              withServices,
+              Effect.mapError(
+                (cause) =>
+                  new Abort({ reason: failReasons.profileRestore, cause }),
+              ),
+            );
+            session.seeded = true;
+          }
+          yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
+          return from;
+        }),
       );
-      if (steamLogin !== null) {
-        yield* seedSteamLogin({
-          container: session.name,
-          seed: steamLogin,
-        }).pipe(
-          withServices,
-          Effect.mapError(
-            (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
-          ),
-        );
-        session.seeded = true;
-      }
-      yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
       yield* Effect.logInfo("Session container started", {
         sessionId: session.sessionId,
         slot: session.slot,
