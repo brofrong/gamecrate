@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -34,6 +35,7 @@ import {
 import {
   CONNECTION_LOG,
   downloadingBytes,
+  DownloadingBytes,
   Installer,
   type InstallerShape,
   installReasons,
@@ -459,6 +461,36 @@ const run = (
           return fake.disk.fail
             ? Effect.fail(new DiskSpaceError({ dir, message: "EIO" }))
             : Effect.succeed(fake.disk.freeBytes);
+        }),
+      ),
+      // Настоящая `downloadingBytes` — промис внутри цикла опроса, driven
+      // TestClock: гонка с реальным event loop (см. её тест ниже отдельно,
+      // без TestClock). Здесь, в опросе `watch`, подменяем синхронным
+      // обходом тех же каталогов — детерминированно и без лишней моли в тесте.
+      Effect.provideService(DownloadingBytes, (dir) =>
+        Effect.sync(() => {
+          let total = 0;
+          const walk = (path: string) => {
+            let entries;
+            try {
+              entries = readdirSync(path, { withFileTypes: true });
+            } catch {
+              return;
+            }
+            for (const entry of entries) {
+              const full = join(path, entry.name);
+              if (entry.isDirectory()) walk(full);
+              else if (entry.isFile()) {
+                try {
+                  total += statSync(full).size;
+                } catch {
+                  // гонка со Steam/права — пропускаем
+                }
+              }
+            }
+          };
+          walk(dir);
+          return total;
         }),
       ),
       (effect) => {
@@ -1611,12 +1643,14 @@ describe("Installer stages", () => {
 });
 
 describe("downloadingBytes", () => {
-  it("sums files under the dir and is 0 without it", () => {
+  it("sums files under the dir and is 0 without it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cg-downloading-"));
     try {
-      expect(downloadingBytes(join(dir, "missing"))).toBe(0);
+      expect(
+        await Effect.runPromise(downloadingBytes(join(dir, "missing"))),
+      ).toBe(0);
       write(dir, { "a.bin": "x".repeat(5), "sub/b.bin": "x".repeat(7) });
-      expect(downloadingBytes(dir)).toBe(12);
+      expect(await Effect.runPromise(downloadingBytes(dir))).toBe(12);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1685,6 +1719,42 @@ describe("Installer download progress", () => {
         });
         yield* h.tick("2 seconds");
         expect(yield* h.drain).toEqual([]);
+      }),
+    ));
+
+  it("caps at a shrinking total even though reports never decrease otherwise", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        // Steam поднял процент (без downloading-каталога — тут он не при чём).
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "100",
+          BytesDownloaded: "90",
+        });
+        yield* h.tick("2 seconds");
+        // Steam пересчитал зависимости: BytesToDownload и BytesDownloaded
+        // оба упали. «Не меньше прежнего» не должно вытолкнуть отчёт за
+        // новый total — предел побеждает плавность.
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "50",
+          BytesDownloaded: "40",
+        });
+        yield* h.tick("2 seconds");
+        const reports = (yield* h.drain).filter(
+          (r): r is Extract<AgentReport, { _tag: "InstallProgress" }> =>
+            r._tag === "InstallProgress",
+        );
+        expect(reports.map((r) => [r.bytesDownloaded, r.bytesTotal])).toEqual([
+          [90, 100],
+          [50, 50],
+        ]);
+        for (const r of reports)
+          expect(r.bytesDownloaded).toBeLessThanOrEqual(r.bytesTotal);
       }),
     ));
 });

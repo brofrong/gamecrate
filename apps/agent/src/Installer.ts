@@ -3,8 +3,10 @@
 // `steam -silent` без запуска игры) с профилем пользователя и overlay-слоями
 // поверх клиента Steam и библиотеки; в `steamapps` до старта кладётся заготовка
 // манифеста со `StateFlags 1026` — Steam сам ставит игру (и её зависимости) в
-// upper. Прогресс — из манифеста (`exec cat`, агент не читает upper смонтированного
-// overlay). Готово → профиль сохраняется, контейнер и тома удаляются, новые
+// upper. Прогресс — из манифеста (`exec cat`, агент не читает upper
+// смонтированного overlay изнутри контейнера), для плавности — ещё и размер
+// каталога `downloading` upper-слоя (его агент читает прямо на хосте, не через
+// exec). Готово → профиль сохраняется, контейнер и тома удаляются, новые
 // приложения переносятся `rename` из upper в библиотеку. Одна установка за раз.
 import {
   lstatSync,
@@ -13,6 +15,7 @@ import {
   readFileSync,
   renameSync,
 } from "node:fs";
+import { lstat as lstatAsync, readdir as readdirAsync } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type AgentCommand,
@@ -144,28 +147,51 @@ const downloadingDir = (job: Job) =>
 
 /**
  * Сумма размеров обычных файлов под `dir` рекурсивно (агент читает upper
- * хоста напрямую, overlay тут ни при чём). Каталога нет — 0; запись не
- * читается (гонка с Steam, который её одновременно меняет) — просто
- * пропускается, не валит установку.
+ * хоста напрямую, overlay тут ни при чём); асинхронно — та же ФС, что у
+ * библиотеки, и тот же процесс может держать живые сессии (роли
+ * worker+gamestore), опрос не должен блокировать его event loop. Ссылки не
+ * разыменовываются (`lstat`). Каталога нет или запись не читается (гонка с
+ * Steam, права) — пропускается, сбоя наружу нет.
  */
-export const downloadingBytes = (dir: string): number => {
-  let total = 0;
-  const walk = (path: string) => {
-    let entries;
-    try {
-      entries = readdirSync(path, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = join(path, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) total += lstat(full)?.size ?? 0;
-    }
-  };
-  walk(dir);
-  return total;
-};
+export const downloadingBytes = (dir: string): Effect.Effect<number> =>
+  Effect.promise(async () => {
+    const walk = async (path: string): Promise<number> => {
+      let entries;
+      try {
+        entries = await readdirAsync(path, { withFileTypes: true });
+      } catch {
+        return 0;
+      }
+      let total = 0;
+      for (const entry of entries) {
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) total += await walk(full);
+        else if (entry.isFile()) {
+          try {
+            total += (await lstatAsync(full)).size;
+          } catch {
+            // гонка со Steam/права — пропускаем, не валим установку
+          }
+        }
+      }
+      return total;
+    };
+    return walk(dir);
+  });
+
+export type DownloadingBytesShape = (dir: string) => Effect.Effect<number>;
+
+/**
+ * Как измерять `downloadingDir` — по умолчанию настоящий асинхронный обход
+ * (`downloadingBytes`). Как и `FreeSpace` в `DiskSpace.ts`: тесты подменяют
+ * синхронным фейком — настоящий промис внутри цикла опроса, driven
+ * `TestClock`, рвёт цепочку, которой `TestClock.adjust` сам продвигает подряд
+ * идущие `Effect.sleep`, и гоняется с реальным event loop не детерминированно.
+ */
+export const DownloadingBytes = Context.Reference<DownloadingBytesShape>(
+  "@cg/agent/DownloadingBytes",
+  { defaultValue: () => downloadingBytes },
+);
 
 /**
  * Заготовка манифеста: «нужно обновление, обновление начато» (`StateFlags 1026`)
@@ -388,6 +414,7 @@ const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
   const freeSpace = yield* FreeSpace;
+  const measureDownloading = yield* DownloadingBytes;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<Services>();
   const withServices = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -460,10 +487,13 @@ const make = Effect.gen(function* () {
    *
    * Процент (спека §4.3): манифест обновляется редко и скачками — вместе с
    * ним берём размер `downloadingDir` (растёт плавнее) и отдаём максимум из
-   * двух, не больше `BytesToDownload` и не меньше уже отданного в этой
-   * задаче (временная гонка — файлы ещё не переехали в манифест/общую
-   * библиотеку — не должна дёргать полоску назад). `BytesToDownload` пока
-   * неизвестен или 0 — как раньше, прямое значение манифеста.
+   * двух, не меньше уже отданного в этой задаче (временная гонка — файлы ещё
+   * не переехали в манифест/общую библиотеку — не должна дёргать полоску
+   * назад). Ограничение `BytesToDownload` — последним шагом, после «не
+   * меньше»: Steam может пересчитать сам `BytesToDownload` меньше прежнего, и
+   * тогда отчёт должен упасть вместе с ним, а не вылезти за 100%.
+   * `BytesToDownload` пока неизвестен или 0 — как раньше, прямое значение
+   * манифеста.
    */
   const watch = (job: Job) =>
     Effect.gen(function* () {
@@ -481,11 +511,10 @@ const make = Effect.gen(function* () {
         if (manifestBytes !== undefined && bytesTotal !== undefined) {
           let bytesDownloaded = manifestBytes;
           if (bytesTotal > 0) {
-            bytesDownloaded = Math.min(
-              bytesTotal,
-              Math.max(bytesDownloaded, downloadingBytes(downloadingDir(job))),
-            );
+            const downloading = yield* measureDownloading(downloadingDir(job));
+            bytesDownloaded = Math.max(bytesDownloaded, downloading);
             bytesDownloaded = Math.max(bytesDownloaded, lastReported ?? 0);
+            bytesDownloaded = Math.min(bytesDownloaded, bytesTotal);
             lastReported = bytesDownloaded;
           }
           const bytes = `${bytesDownloaded}/${bytesTotal}`;
