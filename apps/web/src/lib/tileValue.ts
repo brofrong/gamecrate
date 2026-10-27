@@ -1,7 +1,11 @@
 // Значение справа на обложке плитки игры (спека 2026-10-27 §3.3) — чистая логика без
 // React: одно короткое слово/число, его тон и процент установки для полосы прогресса.
-import type { CloudStatus } from "@cg/rpc";
-import { formatHoursShort } from "@/lib/formatTime";
+import type { CloudStatus, RecentEntry } from "@cg/rpc";
+import {
+  formatHoursShort,
+  formatMinutes,
+  formatRelativeDate,
+} from "@/lib/formatTime";
 
 export type TileTone = "muted" | "ok" | "warn";
 
@@ -42,4 +46,9 @@ export function tileValue(
     case "Missing":
       return muted("не установлена");
   }
+}
+
+/** Подпись плитки в «Запускал недавно»: «вчера · 1 ч 20 м» — дата и длительность последней сессии. */
+export function recentCaption(entry: RecentEntry, now: Date): string {
+  return `${formatRelativeDate(entry.lastPlayedAt, now)} · ${formatMinutes(entry.lastDurationMinutes)}`;
 }

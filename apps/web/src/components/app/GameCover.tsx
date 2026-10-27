@@ -1,6 +1,5 @@
-// Обложка игры, общая для `GameTile` (сетка `/app`) и `RecentRow` («Запускал
-// недавно»): горизонтальная шапка Steam → запасная вертикальная обложка → заглушка
-// с именем.
+// Обложка игры, общая для `GameTile` (сетка `/app`) и `ActiveSessionPanel`:
+// горизонтальная шапка Steam → запасная вертикальная обложка → заглушка с именем.
 // Заполняет родителя (`size-full`) — размер, форму и обрезку (aspect-ratio,
 // `overflow-hidden`, скругление) задаёт обёртка вызывающего компонента.
 import { Gamepad2 } from "lucide-react";
@@ -28,7 +27,7 @@ export function GameCover({
   game: CoverGame;
   /** Нет облачного профиля у пользователя — приглушить картинку (`GameTile`). */
   dimmed?: boolean;
-  /** Заглушка показывает название игры — выключено в компактной `RecentRow`. */
+  /** Заглушка показывает название игры — выключено в компактной `ActiveSessionPanel`. */
   showNameInPlaceholder?: boolean;
 }) {
   const [art, setArt] = useState<Art>("header");

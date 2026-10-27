@@ -275,6 +275,45 @@ describe("MyGamesPage", () => {
     expect(screen.queryByText("Elden Ring")).toBeNull();
   });
 
+  it("renders «Запускал недавно» as regular tiles with date · duration caption", async () => {
+    const entries = [
+      entry({ appId: 620, name: "Portal 2", cloud: { _tag: "Ready" } }),
+    ];
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const recent: ReadonlyArray<RecentEntry> = [
+      {
+        appId: 620,
+        name: "Portal 2",
+        coverUrl: entries[0]!.coverUrl,
+        cloud: { _tag: "Ready" },
+        lastPlayedAt: yesterday,
+        lastDurationMinutes: 80,
+      },
+    ];
+    renderMyGames("/app", { library: ready(entries), recent });
+
+    expect(await screen.findByText("Запускал недавно")).toBeTruthy();
+    expect(screen.getByText("вчера · 1 ч 20 м")).toBeTruthy();
+    expect(
+      screen.getAllByRole("link", { name: "Игра: Portal 2" }),
+    ).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "все сессии →" })).toBeTruthy();
+  });
+
+  it("caps a section at 24 tiles and offers «Показать ещё»", async () => {
+    const entries = Array.from({ length: 30 }, (_, i) =>
+      entry({ appId: 1000 + i, name: `Game ${i}` }),
+    );
+    renderMyGames("/app", { library: ready(entries) });
+
+    expect(
+      await screen.findAllByRole("link", { name: /^Игра: / }),
+    ).toHaveLength(24);
+    expect(
+      screen.getByRole("button", { name: "Показать ещё 6 · осталось 6" }),
+    ).toBeTruthy();
+  });
+
   it("shows the private-profile notice for a private Steam library", async () => {
     renderMyGames("/app", { library: { _tag: "Private" } });
     expect(
