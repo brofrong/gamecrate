@@ -9,11 +9,13 @@ import {
 } from "@cg/rpc";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { createSelkiesBridge, type SelkiesBridge } from "@/lib/selkiesBridge";
+import { useStreamStats } from "@/lib/useStreamStats";
 import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
 import { LoadingScreen } from "./LoadingScreen";
 import { SessionControls } from "./session/SessionControls";
+import { StatsOverlay } from "./session/StatsOverlay";
 import { SessionStatus } from "./SessionStatus";
 import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
 
@@ -178,7 +180,11 @@ export function Player({
     createSelkiesBridge(() => settingsRef.current),
   );
   const bridge = bridgeProp ?? ownBridge;
-  const { onLoad } = useSelkiesBridge(bridge, settings, onFrameLoad);
+  const { frameGeneration, onLoad } = useSelkiesBridge(
+    bridge,
+    settings,
+    onFrameLoad,
+  );
   const rootRef = useRef<HTMLElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
 
@@ -195,6 +201,9 @@ export function Player({
     `${view.id}/${view.state}/${view.stage}/${view.installStage}`,
   );
   const msInState = useMsSince(`${view.id}/${view.state}`);
+  // Статистика — только над показанным стримом: под экраном загрузки и без стрима сбор выключен.
+  const debug = stream && !loading ? settings.debug : "off";
+  const stats = useStreamStats(bridge, frameGeneration, debug);
 
   if (!stream && !loading) {
     return (
@@ -233,6 +242,9 @@ export function Player({
         view.idleDeadline !== null && (
           <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
         )}
+      {!loading && debug !== "off" && (
+        <StatsOverlay mode={debug} snapshot={stats} />
+      )}
       {!loading && (
         <SessionControls
           control={streamSettings}
