@@ -725,6 +725,12 @@ const make = Effect.gen(function* () {
         cloudSynced,
         profileSaved,
       };
+      // До `settle`: с повторами уборки он может идти до `CLEANUP_GIVE_UP`.
+      yield* Effect.logInfo("Session stopped", {
+        sessionId: session.sessionId,
+        cloudSynced,
+        profileSaved,
+      });
       if (Result.isFailure(saved)) {
         yield* Effect.logError("profile-unsaved", {
           sessionId: session.sessionId,
@@ -746,11 +752,6 @@ const make = Effect.gen(function* () {
         );
         yield* settle(session, "remove", stopped);
       }
-      yield* Effect.logInfo("Session stopped", {
-        sessionId: session.sessionId,
-        cloudSynced,
-        profileSaved,
-      });
     });
 
   /**
@@ -1036,7 +1037,8 @@ const make = Effect.gen(function* () {
       // остановкой — дом пользователя в его слоях. Запущенный наш (например,
       // `docker stop` не удался при прошлой остановке) подхватывается и
       // останавливается как обычно, с сохранением профиля (`Stopped` отправит
-      // finish). Без меток профиля — только остановить. Остановленный не трогаем.
+      // finish). Без меток профиля — только остановить. Остановленный не трогаем,
+      // кроме контейнера с меткой `profile-saved` (его профиль уже сохранён).
       const name = containerName(sessionId);
       const stopped = emit({
         _tag: "Stopped",
@@ -1055,6 +1057,10 @@ const make = Effect.gen(function* () {
             );
             return yield* stopped;
           }
+          // Профиль уже сохранён (прошлая уборка сдалась): только убрать, второй
+          // раз профиль не снимается.
+          if (existsSync(profileSavedMarker(config, sessionId)))
+            return yield* adoptSaved(container, sessionId);
           if (!container.running) {
             yield* Effect.logWarning(
               "Keeping a stopped session container (profile-unsaved)",

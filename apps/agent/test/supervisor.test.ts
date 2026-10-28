@@ -2724,4 +2724,38 @@ describe("stuck container", () => {
         }),
       (fake) => savedProfileContainer(fake, true),
     ));
+
+  it("stop of an unknown session whose profile was saved removes it without packing again", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s9" });
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "remove cg-session-s9")).toEqual(
+            removedWithLayers("s9").slice(1),
+          );
+          expect(h.fake.state.calls).not.toContain(
+            "exec cg-session-s9 /usr/local/bin/cg-profile-pack",
+          );
+          expect(h.fake.state.calls).not.toContain("stop cg-session-s9 15");
+          expect(h.fake.state.commits).toEqual([]);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s9",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        // Не в списке при старте (adopt его не видит) — только `inspect` по имени.
+        savedProfileContainer(fake, true);
+        const [container] = fake.state.existing;
+        fake.state.existing = [];
+        if (container !== undefined)
+          fake.state.inspected["cg-session-s9"] = container;
+      },
+    ));
 });
