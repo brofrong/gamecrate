@@ -44,12 +44,17 @@ const make = Effect.gen(function* () {
         delivered.delete(report.appId);
         return withDb(GameRepo.markDeleted(report.appId)).pipe(
           Effect.flatMap((removed) =>
-            Effect.logInfo(
-              removed
-                ? "Game deleted from the library"
-                : "Ignored GameDeleted for a game not being deleted",
-              { appId: report.appId, workerId },
-            ),
+            removed
+              ? Effect.logInfo("Game deleted from the library", {
+                  appId: report.appId,
+                  workerId,
+                })
+              : // Строка не помечена к удалению — БД считает игру
+                // установленной, а Steam её уже не видит; требует внимания.
+                Effect.logWarning(
+                  "Ignored GameDeleted for a game not being deleted",
+                  { appId: report.appId, workerId },
+                ),
           ),
           logFailure("Game delete result handling failed", {
             appId: report.appId,
