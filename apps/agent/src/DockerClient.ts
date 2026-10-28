@@ -83,6 +83,15 @@ export interface OverlayVolumeSpec {
      * — пока она есть, том повторно не смонтировать.
      */
     readonly volatile: boolean;
+    /**
+     * Опция `metacopy=on`: copy-up только метаданных при `chmod`, жёсткой ссылке
+     * и т. п. (pressure-vessel на каждом старте «копирует» рантайм ~680 МБ
+     * жёсткими ссылками, Proton снимает права записи с ~1700 файлов — без неё
+     * это полные копии в upper). В upper тогда лежат файлы без данных (данные —
+     * в lower): только для слоёв, чей upper читается лишь через overlay, не для
+     * apps установщика (его upper переносится в библиотеку).
+     */
+    readonly metacopy: boolean;
   };
 }
 
@@ -231,7 +240,7 @@ export const volumeBody = (spec: OverlayVolumeSpec) => ({
   DriverOpts: {
     type: "overlay",
     device: "overlay",
-    o: `lowerdir=${spec.overlay.lower},upperdir=${spec.overlay.upper},workdir=${spec.overlay.work}${spec.overlay.volatile ? ",volatile" : ""}`,
+    o: `lowerdir=${spec.overlay.lower},upperdir=${spec.overlay.upper},workdir=${spec.overlay.work}${spec.overlay.volatile ? ",volatile" : ""}${spec.overlay.metacopy ? ",metacopy=on" : ""}`,
   },
   Labels: spec.labels,
 });

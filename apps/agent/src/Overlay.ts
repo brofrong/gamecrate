@@ -5,7 +5,7 @@
 // `type=overlay`), sudo не нужен. Сессии — `sessionLayers` (оба слоя в
 // `SCRATCH_DIR`), установщик — `installLayers` (клиент в
 // `SCRATCH_DIR/.install`, apps в `INSTALL_SCRATCH_DIR`). Одноразовые слои
-// монтируются с `volatile` (без fsync), кроме apps установщика.
+// монтируются с `volatile` (без fsync) и `metacopy=on`, кроме apps установщика.
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Effect, Option, Schema } from "effect";
@@ -31,6 +31,12 @@ export interface Layer {
   readonly work: string;
   /** Монтируется с `volatile` (см. `OverlayVolumeSpec`). */
   readonly volatile: boolean;
+  /**
+   * Монтируется с `metacopy=on` (см. `OverlayVolumeSpec`) — у одноразовых
+   * (`volatile`) слоёв: их upper после слоя не нужен и читается только через
+   * overlay.
+   */
+  readonly metacopy: boolean;
 }
 
 /** Каталог слоёв `id` под одним корнем scratch. */
@@ -94,6 +100,7 @@ export const layers = (
       upper: join(dir, name, "upper"),
       work: join(dir, name, "work"),
       volatile: options.volatile[name],
+      metacopy: options.volatile[name],
     };
   };
   const scratch: Array<ScratchDir> = [];
@@ -178,6 +185,7 @@ export const prepare = (overlays: Overlays) =>
             upper: layer.upper,
             work: layer.work,
             volatile: layer.volatile,
+            metacopy: layer.metacopy,
           },
         })
         .pipe(Effect.mapError(fromDocker("createVolume")));

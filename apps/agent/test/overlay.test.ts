@@ -94,6 +94,7 @@ describe("Overlay", () => {
         upper: `${scratch}/s1/client/upper`,
         work: `${scratch}/s1/client/work`,
         volatile: true,
+        metacopy: true,
       },
       apps: {
         volume: "cg-s-s1-apps",
@@ -101,6 +102,7 @@ describe("Overlay", () => {
         upper: `${scratch}/s1/apps/upper`,
         work: `${scratch}/s1/apps/work`,
         volatile: true,
+        metacopy: true,
       },
     });
     // Обобщённо: другие корни слоёв и префикс.
@@ -145,6 +147,7 @@ describe("Overlay", () => {
         upper: `${scratch}/.install/j1/client/upper`,
         work: `${scratch}/.install/j1/client/work`,
         volatile: true,
+        metacopy: true,
       },
       apps: {
         volume: "cg-i-j1-apps",
@@ -152,6 +155,7 @@ describe("Overlay", () => {
         upper: `${install}/j1/apps/upper`,
         work: `${install}/j1/apps/work`,
         volatile: false,
+        metacopy: false,
       },
     });
     // Каталог установщика под SCRATCH_DIR — не id сессии: уборка сессий его пропускает.
@@ -173,6 +177,9 @@ describe("Overlay", () => {
     );
     expect(overlays.client.volatile).toBe(true);
     expect(overlays.apps.volatile).toBe(false);
+    // metacopy: upper с одними метаданными без lower пуст — в библиотеку его не переносить.
+    expect(overlays.client.metacopy).toBe(true);
+    expect(overlays.apps.metacopy).toBe(false);
   });
 
   it("cleanup of install layers removes both scratch dirs with one root helper", async () => {
@@ -291,6 +298,7 @@ describe("Overlay", () => {
           upper: "/scratch/s1/apps/upper",
           work: "/scratch/s1/apps/work",
           volatile: false,
+          metacopy: false,
         },
       }),
     ).toEqual({
@@ -315,10 +323,29 @@ describe("Overlay", () => {
           upper: "/scratch/s1/apps/upper",
           work: "/scratch/s1/apps/work",
           volatile: true,
+          metacopy: false,
         },
       }).DriverOpts.o,
     ).toBe(
       "lowerdir=/lib/steamapps,upperdir=/scratch/s1/apps/upper,workdir=/scratch/s1/apps/work,volatile",
+    );
+  });
+
+  it("createVolume body adds metacopy=on", () => {
+    expect(
+      volumeBody({
+        name: "cg-s-s1-apps",
+        labels: { "cg.session": "s1" },
+        overlay: {
+          lower: "/lib/steamapps",
+          upper: "/scratch/s1/apps/upper",
+          work: "/scratch/s1/apps/work",
+          volatile: true,
+          metacopy: true,
+        },
+      }).DriverOpts.o,
+    ).toBe(
+      "lowerdir=/lib/steamapps,upperdir=/scratch/s1/apps/upper,workdir=/scratch/s1/apps/work,volatile,metacopy=on",
     );
   });
 
@@ -338,6 +365,7 @@ describe("Overlay", () => {
           upper: `${scratch}/s1/client/upper`,
           work: `${scratch}/s1/client/work`,
           volatile: true,
+          metacopy: true,
         },
       },
       {
@@ -348,6 +376,7 @@ describe("Overlay", () => {
           upper: `${scratch}/s1/apps/upper`,
           work: `${scratch}/s1/apps/work`,
           volatile: true,
+          metacopy: true,
         },
       },
     ]);

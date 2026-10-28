@@ -380,7 +380,13 @@ describe("DockerClient", () => {
       docker.createVolume({
         name: "cg-s-s1-apps",
         labels: { "cg.session": "s1" },
-        overlay: { lower: "/l", upper: "/u", work: "/w", volatile: true },
+        overlay: {
+          lower: "/l",
+          upper: "/u",
+          work: "/w",
+          volatile: true,
+          metacopy: true,
+        },
       }),
     );
     expect(recorded).toEqual([
@@ -393,7 +399,7 @@ describe("DockerClient", () => {
           DriverOpts: {
             type: "overlay",
             device: "overlay",
-            o: "lowerdir=/l,upperdir=/u,workdir=/w,volatile",
+            o: "lowerdir=/l,upperdir=/u,workdir=/w,volatile,metacopy=on",
           },
           Labels: { "cg.session": "s1" },
         },
