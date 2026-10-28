@@ -3,8 +3,9 @@
 // запускает, ждёт Selkies, следит за процессом игры; при остановке ждёт выгрузку
 // облака Steam, сохраняет профиль и убирает контейнер со слоями (профиль не
 // сохранён — контейнер со слоями остаётся). Зависшую остановку (процесс в
-// D-состоянии) повторяет в фоне до `CLEANUP_GIVE_UP`, итог сессии сообщает сразу
-// (`cleanupPending`). Отчёты складывает в очередь `reports` (их по порядку
+// D-состоянии) повторяет в фоне, пока контейнер не уберётся (после
+// `CLEANUP_GIVE_UP` — реже и с `session-container-stuck`), итог сессии сообщает
+// сразу (`cleanupPending`). Отчёты складывает в очередь `reports` (их по порядку
 // отправляет OrchestratorLink).
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -87,10 +88,13 @@ export const STOP_TIMEOUT_SEC = 15;
 /** Пауза между попытками убрать контейнер, чья остановка не удалась. */
 export const CLEANUP_RETRY = Duration.seconds(30);
 /**
- * Сколько повторять уборку (процессы в D-состоянии внутри `sync()` висели
- * 15–35 мин); дальше — `session-container-stuck` в лог, решает человек.
+ * Сколько повторять уборку каждые `CLEANUP_RETRY` (процессы в D-состоянии внутри
+ * `sync()` висели 15–35 мин); дальше — `session-container-stuck` в лог (решает
+ * человек), попытки реже — каждые `CLEANUP_STUCK_RETRY`, слот всё так же занят.
  */
 export const CLEANUP_GIVE_UP = Duration.minutes(60);
+/** Пауза между попытками уборки после `CLEANUP_GIVE_UP`. */
+export const CLEANUP_STUCK_RETRY = Duration.minutes(5);
 /**
  * Метка в `<SCRATCH_DIR>/<id>`: профиль сессии уже сохранён — контейнер можно
  * удалить со слоями (в том числе после перезапуска агента). Уходит вместе со scratch.
@@ -625,13 +629,14 @@ const make = Effect.gen(function* () {
    * Конец сессии: убрать контейнер (`mode`) и сообщить итог `report`. Первая
    * попытка удалась — сессия уходит из `sessions`, затем `report`. Нет —
    * `report` сразу с `cleanupPending: true` (игрок видит конец сессии), а
-   * попытки повторяются каждые `CLEANUP_RETRY` до `CLEANUP_GIVE_UP`: всё это
-   * время сессия в `sessions` — её называет heartbeat, и оркестратор держит
-   * слот. Убрали (или сдались — `session-container-stuck`) — сессия уходит из
-   * `sessions`, ближайший heartbeat без неё выпускает слот. Proton создавал
-   * префикс игры (`compatdata/<appId>` в upper слоя apps) и контейнер удалён
-   * после `Stopped` — в фоне проверяется шаблон префикса этой игры
-   * (`PrefixTemplates.ensure`: нет или устарел — собрать).
+   * попытки повторяются каждые `CLEANUP_RETRY`, после `CLEANUP_GIVE_UP` — лог
+   * `session-container-stuck` (один раз) и попытки каждые `CLEANUP_STUCK_RETRY`,
+   * пока контейнер не уберётся: всё это время сессия в `sessions` — её называет
+   * heartbeat, и оркестратор держит слот (порт и GPU ещё у контейнера).
+   * Убрали — сессия уходит из `sessions`, ближайший heartbeat без неё выпускает
+   * слот. Proton создавал префикс игры (`compatdata/<appId>` в upper слоя apps)
+   * и контейнер удалён после `Stopped` — в фоне проверяется шаблон префикса этой
+   * игры (`PrefixTemplates.ensure`: нет или устарел — собрать).
    */
   const settle = (session: Session, mode: CleanupMode, report: Outcome) =>
     Effect.gen(function* () {
@@ -652,17 +657,22 @@ const make = Effect.gen(function* () {
         yield* emit(report);
       } else {
         yield* emit({ ...report, cleanupPending: true });
+        let stuck = false;
         while (!done) {
-          yield* Effect.sleep(CLEANUP_RETRY);
+          yield* Effect.sleep(stuck ? CLEANUP_STUCK_RETRY : CLEANUP_RETRY);
           done = yield* cleanupOnce(session, mode);
           const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
-          if (!done && elapsed >= Duration.toMillis(CLEANUP_GIVE_UP)) {
+          if (
+            !done &&
+            !stuck &&
+            elapsed >= Duration.toMillis(CLEANUP_GIVE_UP)
+          ) {
             yield* Effect.logError("session-container-stuck", {
               sessionId: session.sessionId,
               container: session.name,
               mode,
             });
-            break;
+            stuck = true;
           }
         }
         sessions.delete(session.sessionId);
@@ -725,7 +735,7 @@ const make = Effect.gen(function* () {
         cloudSynced,
         profileSaved,
       };
-      // До `settle`: с повторами уборки он может идти до `CLEANUP_GIVE_UP`.
+      // До `settle`: с повторами уборки он может идти долго (зависший контейнер).
       yield* Effect.logInfo("Session stopped", {
         sessionId: session.sessionId,
         cloudSynced,
@@ -1057,8 +1067,8 @@ const make = Effect.gen(function* () {
             );
             return yield* stopped;
           }
-          // Профиль уже сохранён (прошлая уборка сдалась): только убрать, второй
-          // раз профиль не снимается.
+          // Профиль уже сохранён (прошлый запуск агента не успел убрать): только
+          // убрать, второй раз профиль не снимается.
           if (existsSync(profileSavedMarker(config, sessionId)))
             return yield* adoptSaved(container, sessionId);
           if (!container.running) {
@@ -1156,6 +1166,8 @@ const make = Effect.gen(function* () {
    */
   const adoptSaved = (container: ContainerInfo, sessionId: string) =>
     Effect.gen(function* () {
+      // Сессию мог уже подхватить параллельный StopSession (после своего inspect).
+      if (sessions.has(sessionId)) return;
       const label = (name: string) => {
         const value = Number(container.labels[name]);
         return Number.isInteger(value) ? value : 0;

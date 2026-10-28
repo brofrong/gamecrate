@@ -2524,7 +2524,7 @@ describe("stuck container", () => {
       },
     ));
 
-  it("stuck container is given up after 60 minutes", () =>
+  it("stuck container is given up after 60 minutes but keeps the slot and is retried every 5 minutes", () =>
     run(
       (h) =>
         Effect.gen(function* () {
@@ -2548,7 +2548,10 @@ describe("stuck container", () => {
             "session-container-stuck",
           );
           yield* h.tick("1 minute");
-          expect(yield* h.supervisor.snapshot).toEqual([]);
+          // Сдались: лог, но слот держится — сессия в snapshot и heartbeat.
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
           expect(h.fake.state.logged.join("\n")).toContain(
             "session-container-stuck",
           );
@@ -2560,14 +2563,40 @@ describe("stuck container", () => {
             "removeVolume cg-s-s1-client",
           );
           expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
-          const removes = h.fake.state.calls.filter(
-            (call) => call === "remove cg-session-s1",
-          ).length;
-          yield* h.tick("5 minutes");
-          expect(
+          const removes = () =>
             h.fake.state.calls.filter((call) => call === "remove cg-session-s1")
-              .length,
-          ).toBe(removes);
+              .length;
+          const before = removes();
+          // Дальше попытки раз в 5 минут.
+          yield* h.tick("4 minutes");
+          expect(removes()).toBe(before);
+          yield* h.tick("1 minute");
+          expect(removes()).toBe(before + 1);
+          yield* h.tick("5 minutes");
+          expect(removes()).toBe(before + 2);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("session-container-stuck"),
+            ),
+          ).toHaveLength(1);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+          expect(yield* h.drain).toContainEqual({
+            _tag: "Heartbeat",
+            sessionIds: ["s1"],
+          });
+          // Контейнер наконец убрался — сессия уходит, слот выпускается.
+          h.fake.state.removeFails = 0;
+          yield* h.tick("5 minutes");
+          expect(removes()).toBe(before + 3);
+          expect(h.fake.state.calls).toContain("removeVolume cg-s-s1-client");
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+          yield* h.tick("30 seconds");
+          expect(yield* h.drain).toEqual([
+            { _tag: "Heartbeat", sessionIds: [] },
+          ]);
         }),
       (fake) => {
         fake.state.removeFails = Number.POSITIVE_INFINITY;
@@ -2756,6 +2785,41 @@ describe("stuck container", () => {
         fake.state.existing = [];
         if (container !== undefined)
           fake.state.inspected["cg-session-s9"] = container;
+      },
+    ));
+
+  it("two close stops of an unknown session whose profile was saved settle it once", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s9" });
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s9" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s9",
+              cloudSynced: false,
+              profileSaved: true,
+              cleanupPending: true,
+            },
+          ]);
+          yield* h.tick("30 seconds");
+          expect(
+            h.fake.state.calls.filter(
+              (call) => call === "remove cg-session-s9",
+            ),
+          ).toHaveLength(2);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => {
+        savedProfileContainer(fake, true);
+        const [container] = fake.state.existing;
+        fake.state.existing = [];
+        if (container !== undefined)
+          fake.state.inspected["cg-session-s9"] = container;
+        fake.state.removeFails = 1;
       },
     ));
 });
