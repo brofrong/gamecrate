@@ -401,9 +401,62 @@ describe("clearLogin", () => {
     ).toBeUndefined();
   });
 
-  it("skips missing and unreadable", () => {
+  it("missing files are absent from the result", () => {
     expect(clearLogin({})).toEqual({});
-    expect(clearLogin({ localVdf: "garbage {" })).toEqual({});
+  });
+
+  it("unreadable localVdf, loginUsers and registry are rebuilt from an empty tree", () => {
+    // Наш парсер строже клиента Steam (не понимает условия вида `[$WIN32]` и
+    // неэкранированные токены) — файл, который мы не смогли разобрать, может
+    // всё равно хранить токен. Пересобираем его с нуля, а не оставляем как был.
+    const cleared = clearLogin({
+      localVdf: "garbage {",
+      loginUsers: "garbage {",
+      registry: "garbage {",
+    });
+    expect(Object.keys(cleared).sort()).toEqual(
+      ["localVdf", "loginUsers", "registry"].sort(),
+    );
+
+    const local = parseVdf(cleared.localVdf ?? "");
+    expect(
+      getPath(local, [
+        "MachineUserConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "ConnectCache",
+      ]),
+    ).toEqual([]);
+
+    const loginUsers = parseVdf(cleared.loginUsers ?? "");
+    expect(getPath(loginUsers, ["users"])).toEqual([]);
+
+    const registry = parseVdf(cleared.registry ?? "");
+    expect(
+      getPath(registry, [
+        "Registry",
+        "HKCU",
+        "Software",
+        "Valve",
+        "Steam",
+        "AutoLoginUser",
+      ]),
+    ).toBe("");
+    expect(
+      getPath(registry, [
+        "Registry",
+        "HKCU",
+        "Software",
+        "Valve",
+        "Steam",
+        "RememberPassword",
+      ]),
+    ).toBe("0");
+  });
+
+  it("unreadable config is absent from the result (holds no token, left untouched by the caller)", () => {
+    expect(clearLogin({ config: "garbage {" })).toEqual({});
   });
 });
 

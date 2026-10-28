@@ -1,7 +1,9 @@
 // Посев входа в контейнер (`seedSteamLogin`): нечитаемые файлы входа — предупреждение
 // в лог (только ключ файла, без содержимого); `config.vdf` при этом не трогается,
-// остальные три собираются с нуля. Стирание входа (`clearSteamLogin`, Task 2
-// admin-part3) читает те же файлы и переписывает только те, что есть.
+// остальные три собираются с нуля. Стирание входа (`clearSteamLogin`) читает те
+// же файлы: нечитаемые `local.vdf`/`loginusers.vdf`/`registry.vdf` всё равно
+// пересобираются с нуля (в них может остаться токен, который наш парсер не
+// распознал, а клиент Steam — распознает), `config.vdf` при этом не трогается.
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,6 +18,7 @@ import { tarOfFile, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
 const GARBAGE = '"InstallConfigStore" { "broken';
+const GARBAGE_LOCAL = '"MachineUserConfigStore" { "broken';
 
 /**
  * Сеет вход в фейковый контейнер, где лежат `files` (ключ `LOGIN_FILES` → текст;
@@ -75,9 +78,13 @@ const entry = (tar: Uint8Array, name: string) => {
   return data === undefined ? undefined : new TextDecoder().decode(data);
 };
 
-/** Выполняет `clearSteamLogin` на фейковом контейнере, где лежат `files`; возвращает положенные архивы. */
+/**
+ * Выполняет `clearSteamLogin` на фейковом контейнере, где лежат `files`;
+ * возвращает положенные архивы и строки лога.
+ */
 const clearWith = (files: Partial<Record<keyof typeof LOGIN_FILES, string>>) => {
   const put: Array<Uint8Array> = [];
+  const logged: Array<{ level: string; text: string }> = [];
   const byPath = new Map(
     Object.entries(files).map(([key, text]) => [
       `${HOME_DIR}/${LOGIN_FILES[key as keyof typeof LOGIN_FILES]}`,
@@ -106,10 +113,15 @@ const clearWith = (files: Partial<Record<keyof typeof LOGIN_FILES, string>>) => 
     putArchive: (_container: string, _path: string, tar: Uint8Array) =>
       Effect.sync(() => void put.push(tar)),
   };
+  const capture = Logger.make(({ logLevel, message }) => {
+    logged.push({ level: logLevel, text: Bun.inspect(message) });
+  });
   return clearSteamLogin({ container: "c1" }).pipe(
     Effect.provideService(DockerClient, docker),
+    Effect.provide(Logger.layer([capture])),
+    Effect.provideService(References.MinimumLogLevel, "All"),
     Effect.runPromise,
-    (promise) => promise.then(() => put),
+    (promise) => promise.then(() => ({ put, logged })),
   );
 };
 
@@ -140,7 +152,7 @@ const SEED = {
 describe("clearSteamLogin", () => {
   it("rewrites only present files", async () => {
     const seeded = applyLoginSeed({}, SEED, 1_760_000_000);
-    const put = await clearWith({
+    const { put } = await clearWith({
       localVdf: seeded.localVdf,
       registry: seeded.registry,
     });
@@ -166,8 +178,45 @@ describe("clearSteamLogin", () => {
   });
 
   it("writes nothing when the home has no login files", async () => {
-    const put = await clearWith({});
+    const { put } = await clearWith({});
     expect(put).toEqual([]);
+  });
+
+  it("rewrites unreadable local.vdf from an empty tree, skips unreadable config.vdf, and warns for both", async () => {
+    // Наш парсер строже клиента Steam: файл, который мы не смогли разобрать,
+    // может всё равно хранить токен в ConnectCache — доверять, что он "как
+    // был", нельзя. config.vdf не содержит токена — его трогать не надёжно,
+    // не разобрав, поэтому он остаётся как был.
+    const { put, logged } = await clearWith({
+      localVdf: GARBAGE_LOCAL,
+      config: GARBAGE,
+    });
+
+    expect(put).toHaveLength(1);
+    const tar = put[0];
+    if (tar === undefined) throw new Error("expected one archive");
+
+    const local = entry(tar, "local.vdf");
+    expect(local).toBeDefined();
+    expect(local).not.toContain("broken");
+    expect(
+      getPath(parseVdf(local ?? ""), [
+        "MachineUserConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "ConnectCache",
+      ]),
+    ).toEqual([]);
+    expect(entry(tar, "config.vdf")).toBeUndefined();
+
+    const warnings = logged.filter((line) => line.level === "Warn");
+    expect(warnings).toHaveLength(2);
+    const text = warnings.map((line) => line.text).join("\n");
+    expect(text).toContain("localVdf");
+    expect(text).toContain("config");
+    // Только ключи файлов — ни содержимого, ни секретов входа.
+    expect(text).not.toContain("broken");
   });
 });
 
