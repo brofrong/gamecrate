@@ -136,12 +136,23 @@ ssh "${REMOTE_HOST}" "docker network inspect cg-sessions >/dev/null 2>&1 || dock
 
 COMPOSE="cd ~/${REMOTE_DIR} && DOCKER_GID=\$(stat -c %g /var/run/docker.sock) docker compose -f deploy/compose.yaml --env-file .env"
 
+# Коммит для блока «Версии» админки (CG_COMMIT агента) — берётся локально: rsync выше не
+# копирует .git на сервер, там rev-parse не сработает. -dirty, если есть незакоммиченные
+# изменения (в т.ч. неотслеживаемые — porcelain их тоже показывает).
+commit="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
+if [ -n "$(git -C "${REPO_ROOT}" status --porcelain)" ]; then
+  commit="${commit}-dirty"
+fi
+
 echo "==> бакет профилей (cg-rustfs, идемпотентно)"
 # Поднимает cg-rustfs (ждёт healthy) и одноразовым AWS CLI в сети cg создаёт бакет, если его нет.
 ssh "${REMOTE_HOST}" "${COMPOSE} run --rm cg-rustfs-bucket"
 
 echo "==> docker compose up -d --build"
 # DOCKER_GID — группа сокета Docker на хосте: с ней cg-agent (не root) работает с Docker API.
-ssh "${REMOTE_HOST}" "${COMPOSE} up -d --build"
+# CG_COMMIT — коммит этого деплоя (локальный git, не серверный .env) — рядом с DOCKER_GID,
+# в окружении именно docker compose (а не cd): так переменная уходит процессу compose и
+# подставляется в cg-agent compose.yaml, ${CG_COMMIT:-unknown}.
+ssh "${REMOTE_HOST}" "cd ~/${REMOTE_DIR} && DOCKER_GID=\$(stat -c %g /var/run/docker.sock) CG_COMMIT=${commit} docker compose -f deploy/compose.yaml --env-file .env up -d --build"
 
 echo "==> готово"

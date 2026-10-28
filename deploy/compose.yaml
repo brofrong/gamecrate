@@ -121,10 +121,15 @@ services:
   # без заранее созданного каталога контейнер не стартует (иначе Docker создал бы его
   # от root, и агент с uid 1000 не смог бы в нём писать).
   # STEAM_CLIENT_DIR (шаблон клиента Steam) — на NVMe, а не в CG_DATA_DIR на HDD: с
-  # холодного кэша Steam читал его с RAID и стартовал 50–90 с вместо ~16. Агент только
-  # передаёт его dockerd как lower overlay, поэтому в агент он не монтируется.
+  # холодного кэша Steam читал его с RAID и стартовал 50–90 с вместо ~16. Агент передаёт
+  # его dockerd как lower overlay, а в сам агент он смонтирован отдельно, read_only —
+  # только чтобы прочитать mtime каталога (дата сборки шаблона для блока «Версии»
+  # админки, см. hostProbe.ts/WorkerMonitor.ts); писать агент туда не должен.
   # Значения по умолчанию CG_DATA_DIR, SCRATCH_DIR и STEAM_CLIENT_DIR повторены в
   # deploy.sh, README и build-steam-client.sh — менять вместе.
+  # GPU (capabilities: [utility], без него у cg-agent GPU нет) — только чтобы
+  # NVIDIA Container Toolkit подложил nvidia-smi и NVML для метрик админки;
+  # видеопамять и вычисления агент не занимает (это не сессия).
   cg-agent:
     image: *app-image
     pull_policy: never
@@ -141,6 +146,9 @@ services:
       WORKER_PUBLIC_IP: ${WORKER_PUBLIC_IP:-37.153.14.138}
       SLOTS: ${SLOTS:-1}
       UDP_PORT_BASE: ${UDP_PORT_BASE:-59000}
+      # Коммит агента для блока «Версии» админки — ставит deploy.sh (CG_COMMIT=<значение>
+      # в окружении docker compose up); без него — "unknown".
+      CG_COMMIT: ${CG_COMMIT:-unknown}
       SESSION_IMAGE: ${SESSION_IMAGE:-cg-session:550.163.01}
       SESSION_NETWORK: cg-sessions
       GBM_ALLOCATOR_PATH: ${GBM_ALLOCATOR_PATH:-/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01}
@@ -171,6 +179,19 @@ services:
         target: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
         bind:
           create_host_path: false
+      - type: bind
+        source: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
+        target: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]
     mem_limit: 1g # профиль (до 200 МиБ) сжимается и шифруется в памяти целиком (profile/codec.ts)
     logging: *logging
     networks:
