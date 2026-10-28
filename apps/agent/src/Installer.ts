@@ -53,6 +53,7 @@ import {
   moveToTrash,
   planRemoval,
   removalError,
+  TrashMoveError,
 } from "./GameRemoval";
 import { isValidId } from "./ids";
 import {
@@ -354,8 +355,9 @@ export interface InstallerShape {
   /**
    * `DeleteGame`; возвращается сразу, удаление идёт в фоне (по одному за раз):
    * манифест и каталоги игры — в корзину, корзина — очистить; итог —
-   * `GameDeleted` (игры нет, в том числе если её и не было) или
-   * `GameDeleteFailed` (идёт установка этой игры, сбой файловой системы).
+   * `GameDeleted` (Steam игру больше не видит, в том числе если её и не было)
+   * или `GameDeleteFailed` (игра на месте: идёт её установка или перенос в
+   * корзину сорвался и откатился).
    */
   readonly deleteGame: (appId: number) => Effect.Effect<void>;
   /** Идущие установки для `agent.connect.installs` (не больше одной). */
@@ -1031,6 +1033,13 @@ const make = Effect.gen(function* () {
    * Манифест и каталоги игры — `rename` в корзину (игра сразу пропадает из
    * библиотеки), затем корзина очищается. Установка той же игры — отказ: её
    * перенос в библиотеку столкнулся бы с удалением.
+   *
+   * Оркестратор по `GameDeleted` убирает игру, по `GameDeleteFailed` считает
+   * её установленной — поэтому итог отражает, видит ли Steam игру: перенос
+   * удался — `GameDeleted`, даже если корзину очистить не вышло (только
+   * предупреждение: её дочистит следующее удаление или старт агента); перенос
+   * сорвался и откатился — `GameDeleteFailed`; откат тоже не удался (манифеста
+   * в `steamapps` уже нет) — `GameDeleted` с ошибкой в логе.
    */
   const removeGame = (appId: number) =>
     Effect.gen(function* () {
@@ -1054,13 +1063,32 @@ const make = Effect.gen(function* () {
       const stamp = String(yield* Clock.currentTimeMillis);
       const moved = yield* Effect.try({
         try: () => moveToTrash(plan, config.libraryDir, stamp),
-        catch: removalError,
+        catch: (error) =>
+          error instanceof TrashMoveError ? error : removalError(error),
       });
       yield* Effect.logInfo("Game moved to trash", { appId, moved });
-      yield* clearTrash;
+      yield* clearTrash.pipe(
+        Effect.catchTag("GameRemovalError", (error) =>
+          Effect.logWarning("Emptying the library trash failed", {
+            appId,
+            error: error.message,
+          }),
+        ),
+      );
       yield* Effect.logInfo("Game deleted", { appId });
       yield* emit({ _tag: "GameDeleted", appId });
     }).pipe(
+      Effect.catchTag("TrashMoveError", (error) =>
+        error.restored
+          ? Effect.logError("DeleteGame failed, game restored", {
+              appId,
+              error: error.message,
+            }).pipe(Effect.andThen(deleteFailed(appId, error.message)))
+          : Effect.logError(
+              "DeleteGame failed and could not be rolled back; the manifest stays in the trash",
+              { appId, error: error.message },
+            ).pipe(Effect.andThen(emit({ _tag: "GameDeleted", appId }))),
+      ),
       Effect.catchTag("GameRemovalError", (error) =>
         Effect.logError("DeleteGame failed", {
           appId,

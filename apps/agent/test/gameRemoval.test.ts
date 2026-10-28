@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import {
   planRemoval,
   scanLibrary,
   TRASH_DIR,
+  TrashMoveError,
 } from "../src/GameRemoval";
 
 let library: string;
@@ -151,6 +153,61 @@ describe("moveToTrash", () => {
     for (const dir of plan.dirs) expect(existsSync(dir)).toBe(false);
     // Прочее в steamapps не тронуто.
     expect(readdirSync(join(steamapps, "common"))).toEqual([]);
+  });
+
+  it("сбой переноса каталога — уже перенесённое возвращается, restored", () => {
+    write({
+      "appmanifest_2379780.acf": balatro,
+      "common/Balatro/Balatro.exe": "game",
+      "shadercache/2379780/cache": "x",
+    });
+    const plan = planRemoval(steamapps, 2379780);
+    if (plan === undefined) throw new Error("no plan");
+    const failing = (from: string, to: string) => {
+      if (from.includes("shadercache")) throw new Error("EIO: shadercache");
+      renameSync(from, to);
+    };
+    let error: unknown;
+    try {
+      moveToTrash(plan, library, "1", failing);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(TrashMoveError);
+    expect((error as TrashMoveError).restored).toBe(true);
+    expect((error as TrashMoveError).message).toContain("EIO: shadercache");
+    expect(existsSync(plan.manifest)).toBe(true);
+    for (const dir of plan.dirs) expect(existsSync(dir)).toBe(true);
+    expect(readdirSync(join(library, TRASH_DIR))).toEqual([]);
+  });
+
+  it("возврат не удался — манифест остаётся в корзине, не restored", () => {
+    write({
+      "appmanifest_2379780.acf": balatro,
+      "common/Balatro/Balatro.exe": "game",
+      "shadercache/2379780/cache": "x",
+    });
+    const plan = planRemoval(steamapps, 2379780);
+    if (plan === undefined) throw new Error("no plan");
+    const trash = join(library, TRASH_DIR);
+    // Перенос shadercache падает; возврат каталога игры из корзины — тоже.
+    const failing = (from: string, to: string) => {
+      if (from.includes("shadercache")) throw new Error("EIO: shadercache");
+      if (from.startsWith(trash) && to.includes("common"))
+        throw new Error("EIO: restore");
+      renameSync(from, to);
+    };
+    let error: unknown;
+    try {
+      moveToTrash(plan, library, "1", failing);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(TrashMoveError);
+    expect((error as TrashMoveError).restored).toBe(false);
+    // Манифест не возвращён: Steam не увидит игру без её файлов.
+    expect(existsSync(plan.manifest)).toBe(false);
+    expect(readdirSync(trash).sort()).toEqual(["2379780-1", "2379780-1-1"]);
   });
 
   it("занятое имя в корзине не перезаписывается", () => {

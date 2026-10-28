@@ -129,6 +129,8 @@ const makeFake = () => {
     scratch,
     /** `remove` этого контейнера падает (контейнер остаётся, тома смонтированы). */
     failRemove: undefined as string | undefined,
+    /** Помощник `delete-game` выходит с этим кодом, ничего не удалив (0 — удаляет). */
+    deleteHelperExit: 0,
     calls: [] as string[],
     dockerCalls: 0,
     created: [] as ContainerSpec[],
@@ -200,6 +202,11 @@ const makeFake = () => {
         record(`wait ${name}`);
         // Помощник очистки: `rm -rf <путь>…` от root.
         const entrypoint = specs.get(name)?.entrypoint ?? [];
+        if (
+          specs.get(name)?.labels["cg.helper"] === "delete-game" &&
+          state.deleteHelperExit !== 0
+        )
+          return state.deleteHelperExit;
         if (entrypoint[0] === "rm")
           for (const path of entrypoint.slice(2)) rootRm(path);
         return 0;
@@ -1836,6 +1843,96 @@ describe("Installer DeleteGame", () => {
             const locked = join(fake.state.lower, "common/Balatro/locked");
             write(locked, { "file.bin": "x" });
             chmodSync(locked, 0o555);
+          },
+        },
+      ),
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
+    "trash that cannot be emptied after the move still reports GameDeleted",
+    () =>
+      run(
+        (h) =>
+          Effect.gen(function* () {
+            yield* h.installer.deleteGame(2379780);
+            expect(yield* awaitReports(h, 1)).toEqual([
+              { _tag: "GameDeleted", appId: 2379780 },
+            ]);
+            // Игры в библиотеке нет; корзина осталась до следующей очистки.
+            expect(
+              existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
+            ).toBe(false);
+            expect(existsSync(join(h.fake.state.lower, "common/Balatro"))).toBe(
+              false,
+            );
+            expect(readdirSync(trashOf(h.fake)).length).toBeGreaterThan(0);
+            expect(
+              h.fake.state.created.filter(
+                (spec) => spec.labels["cg.helper"] === "delete-game",
+              ),
+            ).toHaveLength(1);
+            // Следующее удаление не валится из-за застрявшей корзины.
+            yield* h.installer.deleteGame(1493710);
+            expect(yield* awaitReports(h, 1)).toEqual([
+              { _tag: "GameDeleted", appId: 1493710 },
+            ]);
+            // Корзину дочистит следующий запуск (помощник уже исправен).
+            h.fake.state.deleteHelperExit = 0;
+            rootRm(trashOf(h.fake));
+          }),
+        {
+          setup: (fake) => {
+            balatroInLibrary(fake);
+            const locked = join(fake.state.lower, "common/Balatro/locked");
+            write(locked, { "file.bin": "x" });
+            chmodSync(locked, 0o555);
+            fake.state.deleteHelperExit = 1;
+          },
+        },
+      ),
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
+    "dir rename failure after the manifest moved restores it and reports GameDeleteFailed",
+    () =>
+      run(
+        (h) =>
+          Effect.gen(function* () {
+            const common = join(h.fake.state.lower, "common");
+            yield* h.installer.deleteGame(2379780).pipe(
+              Effect.andThen(awaitReports(h, 1)),
+              Effect.tap((reports) =>
+                Effect.sync(() => {
+                  expect(reports).toHaveLength(1);
+                  const [report] = reports;
+                  expect(report?._tag).toBe("GameDeleteFailed");
+                  if (report?._tag === "GameDeleteFailed") {
+                    expect(report.appId).toBe(2379780);
+                    expect(report.reason).toContain("EACCES");
+                  }
+                }),
+              ),
+              Effect.ensuring(Effect.sync(() => chmodSync(common, 0o755))),
+            );
+            // Игра на месте: манифест возвращён, каталоги не тронуты.
+            expect(
+              existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
+            ).toBe(true);
+            expect(
+              existsSync(
+                join(h.fake.state.lower, "common/Balatro/Balatro.exe"),
+              ),
+            ).toBe(true);
+            expect(
+              existsSync(join(h.fake.state.lower, "shadercache/2379780")),
+            ).toBe(true);
+            expect(readdirSync(trashOf(h.fake))).toEqual([]);
+          }),
+        {
+          setup: (fake) => {
+            balatroInLibrary(fake);
+            // Из `common` нельзя переносить: `rename` каталога игры — EACCES.
+            chmodSync(join(fake.state.lower, "common"), 0o555);
           },
         },
       ),

@@ -101,29 +101,58 @@ export const planRemoval = (
 };
 
 /**
+ * Перенос в корзину не удался. `restored` — всё уже перенесённое возвращено в
+ * `steamapps` (игра на месте, как до команды); `false` — возврат тоже не
+ * удался, и манифест остался в корзине (Steam игру больше не видит).
+ */
+export class TrashMoveError extends Data.TaggedError("TrashMoveError")<{
+  readonly message: string;
+  readonly restored: boolean;
+}> {}
+
+/**
  * Переносит план `rename` в корзину: манифест первым (Steam сразу перестаёт
  * считать игру установленной), затем каталоги — каждый в свой
  * `<LIBRARY_DIR>/.trash/<appId>-<stamp>[-<n>]` (первое свободное имя).
  * Возвращает пути в корзине по порядку переноса.
+ *
+ * Сбой `rename` — откат и `TrashMoveError`: перенесённые каталоги
+ * возвращаются в обратном порядке, манифест — последним и только если все
+ * каталоги вернулись (иначе Steam счёл бы установленной игру без файлов).
+ * `rename` подменяют тесты.
  */
 export const moveToTrash = (
   plan: RemovalPlan,
   libraryDir: string,
   stamp: string,
+  rename: (from: string, to: string) => void = renameSync,
 ): Array<string> => {
   const trash = join(libraryDir, TRASH_DIR);
   mkdirSync(trash, { recursive: true });
   const appId = MANIFEST_FILE.exec(basename(plan.manifest))?.[1] ?? "app";
   const base = `${appId}-${stamp}`;
-  const moved: Array<string> = [];
+  const moved: Array<{ readonly from: string; readonly to: string }> = [];
   let n = 0;
   for (const from of [plan.manifest, ...plan.dirs]) {
     let to = join(trash, base);
     while (lstat(to) !== undefined) to = join(trash, `${base}-${++n}`);
-    renameSync(from, to);
-    moved.push(to);
+    try {
+      rename(from, to);
+    } catch (error) {
+      const message = removalError(error).message;
+      try {
+        for (const move of moved.toReversed()) rename(move.to, move.from);
+      } catch (rollback) {
+        throw new TrashMoveError({
+          message: `${message}; restore failed: ${removalError(rollback).message}`,
+          restored: false,
+        });
+      }
+      throw new TrashMoveError({ message, restored: true });
+    }
+    moved.push({ from, to });
   }
-  return moved;
+  return moved.map((move) => move.to);
 };
 
 /** Игру не удалось перенести в корзину или корзину — очистить. */
