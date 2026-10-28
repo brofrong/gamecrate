@@ -7,12 +7,13 @@ import {
   Link,
   type SearchSchemaInput,
 } from "@tanstack/react-router";
-import { Exit, Option } from "effect";
+import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
 import { FailuresCard } from "@/components/admin/FailuresCard";
+import { Polled } from "@/components/admin/Polled";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { SessionsTab } from "@/components/admin/SessionsTab";
 import { WorkerCard } from "@/components/admin/WorkerCard";
@@ -237,36 +238,6 @@ function ListSkeleton() {
       <Skeleton className="h-64 w-full" />
       <Skeleton className="h-24 w-full" />
     </div>
-  );
-}
-
-function LoadError({ text }: { text: string }) {
-  return <p className="text-sm text-destructive">{text}</p>;
-}
-
-/**
- * Результат опрашиваемого запроса: первый ответ ещё не пришёл — `skeleton`; очередной
- * запрос упал — ошибка над прошлыми данными (если они были), а не вместо них.
- */
-function Polled<A, E>({
-  result,
-  error,
-  skeleton,
-  children,
-}: {
-  result: AsyncResult.AsyncResult<A, E>;
-  error: string;
-  skeleton: React.ReactNode;
-  children: (value: A) => React.ReactNode;
-}) {
-  const value = AsyncResult.value(result);
-  return (
-    <>
-      {AsyncResult.isFailure(result) && <LoadError text={error} />}
-      {Option.isSome(value)
-        ? children(value.value)
-        : AsyncResult.isInitial(result) && skeleton}
-    </>
   );
 }
 

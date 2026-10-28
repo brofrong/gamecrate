@@ -3,10 +3,9 @@
 // упавшие сессии с переключателем «Только сбои»; у `failed` — причина красным бейджем.
 import type { AdminSession } from "@cg/rpc";
 import { useAtomValue } from "@effect/atom-react";
-import { Option } from "effect";
-import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { AdminSessionsTable } from "@/components/admin/AdminSessionsTable";
+import { Polled } from "@/components/admin/Polled";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,38 +19,6 @@ import { formatShortDate, sessionStageLabel } from "@/lib/adminFormat";
 import { usePolling } from "@/lib/usePolling";
 import { cn } from "@/lib/utils";
 import { adminSessionsAtom } from "@/rpc";
-
-function LoadError({ text }: { text: string }) {
-  return <p className="text-sm text-destructive">{text}</p>;
-}
-
-/**
- * Результат опрашиваемого запроса: первый ответ ещё не пришёл — `skeleton`; очередной
- * запрос упал — ошибка над прошлыми данными (если они были), а не вместо них. Та же
- * логика, что у `Polled` в `routes/admin.tsx` — отдельная копия здесь, чтобы вкладка
- * не зависела от роута (а роут — от вкладки).
- */
-function Polled<A, E>({
-  result,
-  error,
-  skeleton,
-  children,
-}: {
-  result: AsyncResult.AsyncResult<A, E>;
-  error: string;
-  skeleton: React.ReactNode;
-  children: (value: A) => React.ReactNode;
-}) {
-  const value = AsyncResult.value(result);
-  return (
-    <>
-      {AsyncResult.isFailure(result) && <LoadError text={error} />}
-      {Option.isSome(value)
-        ? children(value.value)
-        : AsyncResult.isInitial(result) && skeleton}
-    </>
-  );
-}
 
 /** Статус строки истории: `failed` — причина красным бейджем, иначе — этап нейтральным. */
 function HistoryStatus({ session }: { session: AdminSession }) {
@@ -112,7 +79,9 @@ export function SessionsTab({
   onStop: (sessionId: string) => void;
 }) {
   // «Сейчас идут» всегда без фильтра; «История» — с тем, что выбрал тумблер (при
-  // `false` это тот же запрос/атом, что у «Сейчас идут» — повторной сети не будет).
+  // `false` это тот же запрос/атом, что у «Сейчас идут» — `Atom.family` отдаёт один и
+  // тот же объект на одинаковый аргумент). Опрашиваем его только одним интервалом —
+  // второй `usePolling` ниже на этот же атом выключен, иначе опрос шёл бы вдвое чаще.
   const [failedOnly, setFailedOnly] = React.useState(false);
 
   const activeAtom = adminSessionsAtom(false);
@@ -121,7 +90,7 @@ export function SessionsTab({
 
   const historyAtom = adminSessionsAtom(failedOnly);
   const history = useAtomValue(historyAtom);
-  usePolling(historyAtom);
+  usePolling(historyAtom, 5000, historyAtom !== activeAtom);
 
   // Опрос перерисовывает вкладку раз в 5 с — «Идёт» и «Ввод» в таблице считаются от этого.
   const now = Date.now();

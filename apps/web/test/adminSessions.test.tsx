@@ -1,6 +1,6 @@
 // Вкладка «Сессии» (`/admin?tab=sessions`, Task 6): «Сейчас идут» со столбцом «Воркер»
 // и пустым состоянием, «История за 7 дней» с переключателем «Только сбои» (у сбоя —
-// причина красным бейджем).
+// причина красным бейджем, тумблер переключается туда и обратно).
 //
 // `../src/rpc` подменяется целиком (см. комментарий в `appPages.test.tsx` про
 // `mock.module`). `adminSessionsAtom` — семейный атом (`Atom.family`), поэтому для него,
@@ -8,7 +8,15 @@
 // для `failedOnly: true` (который тест засевает заранее, пока вкладка показывает
 // `failedOnly: false`) снимается сразу после монтажа без подписчика, и засеянное
 // значение пропадает до переключения тумблера.
-import { describe, expect, it, mock } from "bun:test";
+//
+// Отдельный тест ниже (`polls the shared...`) — регрессия на баг «двойного опроса»:
+// «Сейчас идут» и «История» при `failedOnly: false` читают один и тот же атом
+// (`adminSessionsAtom(false)`), и раньше оба ставили свой `setInterval(…, 5000)` на
+// него же — тот же атом опрашивался дважды в 5 с. Спайим `setInterval`/`clearInterval`
+// тем же приёмом, что и тест 30-секундного опроса в `appPages.test.tsx`: перехватываем
+// только вызовы с `timeout === 5000` (`usePolling`'s default), остальные — настоящим
+// таймерам (их использует сама `@testing-library` внутри `findByText`/`waitFor`).
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { AdminSession, CurrentUserShape } from "@cg/rpc";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
@@ -170,7 +178,14 @@ describe("SessionsTab", () => {
     ).toBeTruthy();
   });
 
-  it("filters history to only failed sessions, with the reason as a red badge", async () => {
+  it("shows the unfiltered empty-history message", async () => {
+    renderSessions({ unfiltered: { active: [], recent: [] } });
+    expect(
+      await screen.findByText("За 7 дней сессий не было"),
+    ).toBeTruthy();
+  });
+
+  it("filters history to only failed sessions and back, with the reason as a red badge", async () => {
     const ended = session({
       id: "s2",
       userName: "Петя",
@@ -195,12 +210,63 @@ describe("SessionsTab", () => {
     expect(screen.getByText("Петя")).toBeTruthy();
     expect(screen.getByText("Коля")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Только сбои" }));
+    const toggle = screen.getByRole("button", { name: "Только сбои" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
 
     expect(
       await screen.findByText("Не удалось остановить игровой сервер"),
     ).toBeTruthy();
     expect(screen.getByText("Коля")).toBeTruthy();
     expect(screen.queryByText("Петя")).toBeNull();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+
+    // Назад: тумблер выключен — снова обе строки, реакция на отключённый фильтр.
+    fireEvent.click(toggle);
+    expect(await screen.findByText("Петя")).toBeTruthy();
+    expect(screen.getByText("Коля")).toBeTruthy();
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("polls the shared active/history request only once (regression: it used to poll twice)", async () => {
+    // Приёмы те же, что у «sets up a 30s setInterval...» в `appPages.test.tsx`: свой
+    // узкий интерфейс вместо перегрузок DOM/Node/Bun, перехват только нужного таймаута,
+    // остальное — настоящим таймерам (их использует сама testing-library).
+    interface IntervalGlobals {
+      setInterval(handler: () => void, timeout?: number): number;
+      clearInterval(id?: number): void;
+    }
+    const globals = globalThis as unknown as IntervalGlobals;
+    const realSetInterval = globals.setInterval.bind(globals);
+    const realClearInterval = globals.clearInterval.bind(globals);
+    const pollIntervalId = 555_555;
+    let pollSetupCalls = 0;
+
+    const setIntervalSpy = spyOn(globals, "setInterval").mockImplementation(
+      (handler, timeout) => {
+        if (timeout === 5000) {
+          pollSetupCalls += 1;
+          return pollIntervalId;
+        }
+        return realSetInterval(handler, timeout);
+      },
+    );
+    const clearIntervalSpy = spyOn(globals, "clearInterval").mockImplementation(
+      (id) => {
+        if (id !== pollIntervalId) realClearInterval(id);
+      },
+    );
+
+    try {
+      renderSessions({ unfiltered: { active: [], recent: [] } });
+      expect(await screen.findByText("Сейчас никто не играет")).toBeTruthy();
+
+      // «Сейчас идут» и «История» (не отфильтрованная) читают один и тот же атом —
+      // должен стоять ровно один `setInterval(…, 5000)`, не два.
+      expect(pollSetupCalls).toBe(1);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 });
