@@ -241,13 +241,22 @@ const make = Effect.gen(function* () {
       const workerId = byClient.get(clientId);
       if (workerId === undefined) return yield* new AgentNotConnected();
       // Снимок загрузки — только в БД (история не нужна), без публикации в
-      // PubSub: подписчики хаба (SessionRunner и т.п.) его не ждут.
+      // PubSub: подписчики хаба (SessionRunner и т.п.) его не ждут. Сбой
+      // записи (транзиентная ошибка БД) — не повод рвать agent.report и с ним
+      // соединение агента: следующий снимок придёт через STATS_INTERVAL.
       if (agentReport._tag === "WorkerStats") {
         yield* db
           .update(workers)
           .set({ stats: agentReport.stats, statsAt: new Date() })
           .where(eq(workers.id, workerId))
-          .pipe(Effect.orDie);
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Worker stats write failed", {
+                workerId,
+                cause,
+              }),
+            ),
+          );
         return;
       }
       yield* PubSub.publish(events, {

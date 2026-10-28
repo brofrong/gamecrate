@@ -391,6 +391,51 @@ describe("agent hub", () => {
       }),
     ));
 
+  it("a failed WorkerStats write is logged, not agent.report failing or dropping the link", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        const events = yield* hub.subscribe;
+        const { client } = yield* connectAgent(hello("w-stats-write-fails"));
+        yield* waitEvent(events, isTag("Connected", "w-stats-write-fails"));
+
+        // Симулируем сбой записи (как транзиентная ошибка БД): ломаем update
+        // ровно того столбца, который пишет WorkerStats, временно убрав его.
+        yield* db.$client.unsafe("ALTER TABLE workers DROP COLUMN stats");
+        try {
+          const stats = {
+            cpuPercent: 1,
+            memory: { totalBytes: 1, usedBytes: 1, cacheBytes: 0 },
+            gpus: [],
+            filesystems: [],
+            uptimeSeconds: 1,
+          };
+          // Effect.orDie тут завалил бы agent.report (и с ним — WebSocket);
+          // catchCause должен просто залогировать и вернуть успех.
+          yield* client["agent.report"]({ _tag: "WorkerStats", stats });
+        } finally {
+          yield* db.$client.unsafe("ALTER TABLE workers ADD COLUMN stats jsonb");
+        }
+
+        // Соединение агента всё ещё живо: обычный отчёт после сбоя доходит и
+        // публикуется, как будто ничего не случилось.
+        yield* client["agent.report"]({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+        const next = yield* waitEvent(
+          events,
+          isTag("Report", "w-stats-write-fails"),
+        );
+        expect(next.report).toEqual({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+        expect(hub.connected().has("w-stats-write-fails")).toBe(true);
+      }),
+    ));
+
   it("report without connect is AgentNotConnected", () =>
     run(
       Effect.gen(function* () {
