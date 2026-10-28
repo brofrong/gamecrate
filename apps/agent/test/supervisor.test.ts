@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentCommand, AgentReport, ProfileCommit } from "@cg/rpc";
@@ -46,6 +52,14 @@ import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
+
+/** Ошибка dockerd, когда процесс контейнера висит в D-состоянии. */
+const hung = (operation: string) =>
+  new DockerError({
+    operation,
+    status: 500,
+    message: "tried to kill container, but did not receive an exit event",
+  });
 
 /** Фейковый dockerd, хранилище профилей и оркестратор: состояние и общий журнал вызовов. */
 const makeFake = () => {
@@ -117,6 +131,13 @@ const makeFake = () => {
     putFail: false,
     commits: [] as ProfileCommit[],
     commit: "accept" as "accept" | "reject" | "fail",
+    /**
+     * Сколько ближайших `stop`/`remove` контейнеров сессий (`cg-session-*`) и
+     * `removeVolume` падают, как при процессе в D-состоянии.
+     */
+    stopFails: 0,
+    removeFails: 0,
+    removeVolumeFails: 0,
   };
   /** Свободно на ФС scratch (`FreeSpace`) и каталоги, которые проверялись. */
   const disk = {
@@ -158,8 +179,23 @@ const makeFake = () => {
         return state.helperExit[name] ?? 0;
       }),
     stop: (name, timeoutSec) =>
-      Effect.sync(() => record(`stop ${name} ${timeoutSec}`)),
-    remove: (name) => Effect.sync(() => record(`remove ${name}`)),
+      Effect.suspend(() => {
+        record(`stop ${name} ${timeoutSec}`);
+        if (name.startsWith("cg-session-") && state.stopFails > 0) {
+          state.stopFails--;
+          return Effect.fail(hung("stop"));
+        }
+        return Effect.void;
+      }),
+    remove: (name) =>
+      Effect.suspend(() => {
+        record(`remove ${name}`);
+        if (name.startsWith("cg-session-") && state.removeFails > 0) {
+          state.removeFails--;
+          return Effect.fail(hung("remove"));
+        }
+        return Effect.void;
+      }),
     inspect: (name) =>
       Effect.sync(() => {
         record(`inspect ${name}`);
@@ -180,7 +216,15 @@ const makeFake = () => {
       }),
     createVolume: (volume) =>
       Effect.sync(() => record(`createVolume ${volume.name}`)),
-    removeVolume: (name) => Effect.sync(() => record(`removeVolume ${name}`)),
+    removeVolume: (name) =>
+      Effect.suspend(() => {
+        record(`removeVolume ${name}`);
+        if (state.removeVolumeFails > 0) {
+          state.removeVolumeFails--;
+          return Effect.fail(hung("removeVolume"));
+        }
+        return Effect.void;
+      }),
     volumeExists: (name) =>
       Effect.sync(() => {
         record(`volumeExists ${name}`);
@@ -2366,4 +2410,318 @@ describe("SessionSupervisor stages", () => {
     const pattern = new RegExp(commands.game(1794680)[2] ?? "");
     expect(pattern.test(commands.stage(1794680).join(" "))).toBe(false);
   });
+});
+
+/** Отчёты без `Heartbeat`. */
+const withoutHeartbeats = (reports: ReadonlyArray<AgentReport>) =>
+  reports.filter((report) => report._tag !== "Heartbeat");
+
+/** Остановленный или запущенный контейнер `s9` прошлого запуска агента с меткой `profile-saved`. */
+const savedProfileContainer = (fake: Fake, running: boolean) => {
+  mkdirSync(join(fake.state.scratch, "s9", "client", "upper"), {
+    recursive: true,
+  });
+  writeFileSync(join(fake.state.scratch, "s9", "profile-saved"), "");
+  fake.state.existing = [
+    {
+      name: "cg-session-s9",
+      labels: {
+        "cg.session": "s9",
+        "cg.user": "u1",
+        "cg.base-version": "7",
+        "cg.slot": "1",
+        "cg.app": "1794680",
+      },
+      running,
+    },
+  ];
+};
+
+describe("stuck container", () => {
+  it("hung stop after a saved profile: Stopped with cleanupPending, kill and remove retried every 30 s", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({
+            ...start,
+            profile: { version: 7, objectKey: "profiles/u1/v7.cgp" },
+          });
+          yield* h.tick("0 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+              cleanupPending: true,
+            },
+          ]);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+          expect(
+            existsSync(join(h.fake.state.scratch, "s1", "profile-saved")),
+          ).toBe(true);
+          // Слот держится: heartbeat называет сессию.
+          yield* h.tick("30 seconds");
+          expect(yield* h.drain).toEqual([
+            { _tag: "Heartbeat", sessionIds: ["s1"] },
+          ]);
+          yield* h.tick("30 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            "stop cg-session-s1 15",
+            "remove cg-session-s1",
+            "remove cg-session-s1",
+            ...removedWithLayers("s1").slice(1),
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+          yield* h.tick("30 seconds");
+          expect(yield* h.drain).toEqual([
+            { _tag: "Heartbeat", sessionIds: [] },
+          ]);
+        }),
+      (fake) => {
+        fake.state.stopFails = 1;
+        fake.state.removeFails = 2;
+      },
+    ));
+
+  it("layer cleanup failure keeps the session until the layers are gone", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+              cleanupPending: true,
+            },
+          ]);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+          yield* h.tick("30 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            "stop cg-session-s1 15",
+            "remove cg-session-s1",
+            "removeVolume cg-s-s1-client",
+            ...removedWithLayers("s1").slice(1),
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.removeVolumeFails = 1;
+      },
+    ));
+
+  it("stuck container is given up after 60 minutes", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+              cleanupPending: true,
+            },
+          ]);
+          yield* h.tick("59 minutes");
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+          expect(h.fake.state.logged.join("\n")).not.toContain(
+            "session-container-stuck",
+          );
+          yield* h.tick("1 minute");
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(h.fake.state.logged.join("\n")).toContain(
+            "session-container-stuck",
+          );
+          expect(h.fake.state.logged.join("\n")).toContain(
+            "Session container cleanup failed, retrying",
+          );
+          // Слои занятого контейнера не трогаются.
+          expect(h.fake.state.calls).not.toContain(
+            "removeVolume cg-s-s1-client",
+          );
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+          const removes = h.fake.state.calls.filter(
+            (call) => call === "remove cg-session-s1",
+          ).length;
+          yield* h.tick("5 minutes");
+          expect(
+            h.fake.state.calls.filter((call) => call === "remove cg-session-s1")
+              .length,
+          ).toBe(removes);
+        }),
+      (fake) => {
+        fake.state.removeFails = Number.POSITIVE_INFINITY;
+      },
+    ));
+
+  it("profile-unsaved session with a hung stop retries stop only and never removes", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: false,
+              cleanupPending: true,
+            },
+          ]);
+          expect(
+            existsSync(join(h.fake.state.scratch, "s1", "profile-saved")),
+          ).toBe(false);
+          yield* h.tick("60 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            "stop cg-session-s1 15",
+            "stop cg-session-s1 15",
+            "stop cg-session-s1 15",
+            ...unmarked("s1"),
+          ]);
+          expect(h.fake.state.calls).not.toContain("remove cg-session-s1");
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.putFail = true;
+        fake.state.stopFails = 2;
+      },
+    ));
+
+  it("failed session whose container cannot be removed reports Failed with cleanupPending", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("118 seconds");
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+          yield* h.tick("4 seconds");
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([
+            {
+              _tag: "Failed",
+              sessionId: "s1",
+              reason: failReasons.streamTimeout,
+              cleanupPending: true,
+            },
+          ]);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+          yield* h.tick("30 seconds");
+          expect(callsFrom(h.fake, "remove cg-session-s1")).toEqual([
+            "remove cg-session-s1",
+            ...removedWithLayers("s1").slice(1),
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(withoutHeartbeats(yield* h.drain)).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.selkies = false;
+        fake.state.removeFails = 1;
+      },
+    ));
+
+  it("prefix template is checked only after a retried remove succeeds", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          mkdirSync(
+            join(
+              h.fake.state.scratch,
+              "s1",
+              "apps",
+              "upper",
+              "compatdata",
+              "1794680",
+            ),
+            { recursive: true },
+          );
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(h.fake.state.calls).not.toContain("templates.ensure 1794680");
+          yield* h.tick("30 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            "stop cg-session-s1 15",
+            "remove cg-session-s1",
+            ...removedWithLayers("s1").slice(1),
+            "templates.ensure 1794680",
+          ]);
+        }),
+      (fake) => {
+        fake.state.removeFails = 1;
+      },
+      { templates: true },
+    ));
+
+  it("agent start removes a stopped session container whose profile was saved", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Профиль уже сохранён: контейнер не останавливается, а удаляется сразу.
+          expect(callsFrom(h.fake, "remove cg-session-s9")).toEqual(
+            removedWithLayers("s9").slice(1),
+          );
+          expect(h.fake.state.calls).not.toContain("stop cg-session-s9 15");
+          expect(h.fake.state.calls).not.toContain("create cg-s-s9-unmark");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s9",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => savedProfileContainer(fake, false),
+    ));
+
+  it("agent start removes a running session container whose profile was saved", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          expect(callsFrom(h.fake, "remove cg-session-s9")).toEqual(
+            removedWithLayers("s9").slice(1),
+          );
+          // Профиль второй раз не снимается.
+          expect(h.fake.state.calls).not.toContain(
+            "exec cg-session-s9 /usr/local/bin/cg-profile-pack",
+          );
+          expect(h.fake.state.commits).toEqual([]);
+          expect(h.fake.state.calls).not.toContain("create cg-s-s9-unmark");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s9",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      (fake) => savedProfileContainer(fake, true),
+    ));
 });

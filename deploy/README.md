@@ -371,7 +371,8 @@ ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-f
 удаляет** контейнер: `cg-session-<id>` остаётся остановленным вместе с томами `cg-s-<id>-*` и
 каталогом `<SCRATCH_DIR>/<id>`, в логе агента — `profile-unsaved` (`sessionId`, `userId`, `stage`,
 `error`). Сессия завершается (`profileSaved: false`), слот свободен; следующая сессия пользователя
-получит предыдущую версию профиля. Оркестратор пишет в свой лог предупреждение
+получит предыдущую версию профиля. Если `docker stop` завис, агент повторяет его, и слот держится до
+остановки (см. «Контейнер сессии не остановился»). Оркестратор пишет в свой лог предупреждение
 `Session profile not saved` (`sessionId`, `userId`). Ни остановка, ни перезапуск агента такой
 контейнер не удаляют — решает человек.
 
@@ -418,6 +419,45 @@ ssh brofrong 'docker ps -a --filter label=cg.session --filter status=exited --fo
    root, руками без sudo не удалить).
 
 Пункты 2 и 3 описаны по коду агента и на сервере не проверялись — после первого случая уточнить.
+
+## Контейнер сессии не остановился (`docker stop` завис)
+
+Признак: в логе агента `Session container cleanup failed, retrying` (`sessionId`, `container`,
+`mode`, `error` — обычно `tried to kill container, but did not receive an exit event`), контейнер
+`cg-session-<id>` есть, а сессия в БД уже `ended`/`failed`. Причина — процесс контейнера в
+D-состоянии (непрерываемое ожидание ядра, например `sync()` Proton при выходе из игры): его не
+убить, пока ядро не отпустит (на пробах — 15–35 мин).
+
+Что делает агент:
+
+- Игрок видит конец сессии сразу (обычный `Stopped`/`Failed` с `cleanupPending: true`), а не
+  «Сохраняем прогресс…» и не ошибку остановки.
+- Каждые 30 с агент повторяет уборку. Профиль сохранён (`mode: "remove"`): `docker rm -f`, затем
+  тома `cg-s-<id>-*` и `<SCRATCH_DIR>/<id>`. Профиль не сохранён (`mode: "stop"`): только
+  `docker stop`, контейнер со слоями остаётся (см. «Профиль не сохранён»).
+- Пока идут повторы, сессия остаётся в heartbeat агента, и слот держится: на её GPU и UDP-порт
+  новую сессию не назначат. Убрал — ближайший heartbeat без сессии освобождает слот.
+- Сразу после сохранения профиля агент пишет метку `<SCRATCH_DIR>/<id>/profile-saved`.
+  Перезапуск агента такой контейнер (запущенный или нет) удалит вместе со слоями, профиль второй
+  раз не снимается.
+- Через 60 мин агент сдаётся: в логе `session-container-stuck` (`sessionId`, `container`, `mode`),
+  сессия уходит из heartbeat, и слот освобождается, хотя контейнер всё ещё есть. Дальше решает
+  человек.
+
+```sh
+ssh brofrong 'docker logs cg-agent 2>&1 | grep -E "Session container cleanup failed|session-container-stuck"'
+ssh brofrong 'docker ps -a --filter label=cg.session --format "{{.Names}} {{.Status}}"; ls /home/brofrong/cloud-gaming-scratch/*/profile-saved'
+```
+
+После `session-container-stuck`:
+
+1. Найти процесс в D: `ssh brofrong "ps -eo pid,stat,wchan:32,cmd | awk '\$2 ~ /D/'"`.
+2. Дождаться его выхода (в D процесс не убить даже `kill -9`).
+3. `ssh brofrong 'docker restart cg-agent'`. Метка `profile-saved` есть — агент удалит контейнер
+   со слоями. Метки нет (профиль не сохранён) — порядок из «Профиль не сохранён».
+
+Предупреждение об установках из «Профиль не сохранён», п. 1, действует и здесь: перезапуск агента
+прерывает идущие установки.
 
 ## Профиль в RustFS потерян, повреждён или сменился `PROFILE_KEY`
 

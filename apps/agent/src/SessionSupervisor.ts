@@ -2,9 +2,11 @@
 // готовит overlay-слои, создаёт контейнер, кладёт в него профиль пользователя и
 // запускает, ждёт Selkies, следит за процессом игры; при остановке ждёт выгрузку
 // облака Steam, сохраняет профиль и убирает контейнер со слоями (профиль не
-// сохранён — контейнер со слоями остаётся). Отчёты складывает в очередь `reports`
-// (их по порядку отправляет OrchestratorLink).
-import { existsSync, readdirSync } from "node:fs";
+// сохранён — контейнер со слоями остаётся). Зависшую остановку (процесс в
+// D-состоянии) повторяет в фоне до `CLEANUP_GIVE_UP`, итог сессии сообщает сразу
+// (`cleanupPending`). Отчёты складывает в очередь `reports` (их по порядку
+// отправляет OrchestratorLink).
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgentCommand,
@@ -82,6 +84,18 @@ export const STAGE_SLOW_POLL = Duration.seconds(10);
 export const STAGE_CHECK_TIMEOUT = Duration.seconds(10);
 export const HEARTBEAT_INTERVAL = Duration.seconds(30);
 export const STOP_TIMEOUT_SEC = 15;
+/** Пауза между попытками убрать контейнер, чья остановка не удалась. */
+export const CLEANUP_RETRY = Duration.seconds(30);
+/**
+ * Сколько повторять уборку (процессы в D-состоянии внутри `sync()` висели
+ * 15–35 мин); дальше — `session-container-stuck` в лог, решает человек.
+ */
+export const CLEANUP_GIVE_UP = Duration.minutes(60);
+/**
+ * Метка в `<SCRATCH_DIR>/<id>`: профиль сессии уже сохранён — контейнер можно
+ * удалить со слоями (в том числе после перезапуска агента). Уходит вместе со scratch.
+ */
+export const PROFILE_SAVED_MARKER = "profile-saved";
 export const SHM_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Причины `Failed` (их видит пользователь). */
@@ -90,7 +104,6 @@ export const failReasons = {
   streamTimeout: "Стрим не запустился за 2 минуты",
   gpuCapture: "На сервере не работает захват экрана GPU",
   containerGone: "Игровой сервер неожиданно остановился",
-  stop: "Не удалось остановить игровой сервер",
   invalidCommand: "Некорректная команда запуска сессии",
   profileRestore: "Не удалось загрузить профиль пользователя",
   profileTooLarge: "Профиль пользователя слишком большой (больше 200 МиБ)",
@@ -101,6 +114,11 @@ export const failReasons = {
 export { isValidId };
 
 export const containerName = (sessionId: string) => `cg-session-${sessionId}`;
+/** `<SCRATCH_DIR>/<id>/profile-saved` (см. `PROFILE_SAVED_MARKER`). */
+export const profileSavedMarker = (
+  config: AgentConfigValues,
+  sessionId: string,
+) => join(config.scratchDir, sessionId, PROFILE_SAVED_MARKER);
 export const streamUrlFor = (sessionId: string) =>
   `http://${containerName(sessionId)}:${SELKIES_PORT}`;
 
@@ -241,6 +259,16 @@ const isScriptStage = (stage: string): stage is SessionStage =>
 
 type Phase = "starting" | "ready" | "stopping";
 
+/**
+ * Как убрать контейнер в конце сессии: `remove` — удалить (`rm -f`) вместе со
+ * слоями (профиль сохранён или контейнер не нужен), `stop` — только остановить,
+ * контейнер и слои остаются (`profile-unsaved`).
+ */
+type CleanupMode = "remove" | "stop";
+
+/** Итог сессии для оркестратора. */
+type Outcome = Extract<AgentReport, { _tag: "Stopped" | "Failed" }>;
+
 /** Число маркеров облака; `unknown` — подсчёт не удался (exec упал, grep вернул ошибку). */
 type CloudCount = number | "unknown";
 
@@ -279,14 +307,12 @@ interface Session {
 type Target = Pick<Session, "name" | "appId">;
 
 /**
- * Сессию нельзя продолжать: убрать контейнер со слоями и сообщить `Failed`.
- * `keep` — в upper-слоях могут быть несохранённые данные игры: контейнер только
- * остановить, ни его, ни слои не удалять.
+ * Сессию нельзя продолжать: убрать контейнер со слоями и сообщить `Failed`
+ * (после готовности стрима — только остановить, см. `fail`).
  */
 class Abort extends Data.TaggedError("Abort")<{
   readonly reason: string;
   readonly cause?: unknown;
-  readonly keep?: boolean;
 }> {}
 
 /** Проверка в контейнере не дала ответа (неожиданный код выхода). */
@@ -569,20 +595,106 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * Остановка: облако (если игра шла) → профиль → stop → remove → слои →
-   * `Stopped`. Профиль не сохранён (в том числе коммит отклонён: база устарела)
-   * — контейнер только останавливается и вместе со слоями остаётся
-   * (`profile-unsaved` в логе), следующая сессия получит предыдущую версию
-   * профиля. Proton создавал префикс игры (`compatdata/<appId>` в upper слоя
-   * apps) — после удаления контейнера и слоёв в фоне проверяется шаблон
-   * префикса этой игры (`PrefixTemplates.ensure`: нет или устарел — собрать).
+   * Одна попытка убрать контейнер (`CleanupMode`); `false` — не вышло (лог).
+   * `remove`: `rm -f` (kill + remove) → тома и scratch; `stop`: штатный `stop`
+   * → снять `volatile` со слоёв (сбой этого — только лог, см. `keepStopped`).
+   */
+  const cleanupOnce = (session: Session, mode: CleanupMode) =>
+    (mode === "remove"
+      ? docker
+          .remove(session.name)
+          .pipe(Effect.andThen(cleanup(session.overlays).pipe(withServices)))
+      : docker
+          .stop(session.name, STOP_TIMEOUT_SEC)
+          .pipe(
+            Effect.andThen(keepStopped(session.sessionId, session.overlays)),
+          )
+    ).pipe(
+      Effect.as(true),
+      Effect.catchTag(["DockerError", "OverlayError"], (error) =>
+        Effect.logWarning("Session container cleanup failed, retrying", {
+          sessionId: session.sessionId,
+          container: session.name,
+          mode,
+          error: error.message,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+
+  /**
+   * Конец сессии: убрать контейнер (`mode`) и сообщить итог `report`. Первая
+   * попытка удалась — сессия уходит из `sessions`, затем `report`. Нет —
+   * `report` сразу с `cleanupPending: true` (игрок видит конец сессии), а
+   * попытки повторяются каждые `CLEANUP_RETRY` до `CLEANUP_GIVE_UP`: всё это
+   * время сессия в `sessions` — её называет heartbeat, и оркестратор держит
+   * слот. Убрали (или сдались — `session-container-stuck`) — сессия уходит из
+   * `sessions`, ближайший heartbeat без неё выпускает слот. Proton создавал
+   * префикс игры (`compatdata/<appId>` в upper слоя apps) и контейнер удалён
+   * после `Stopped` — в фоне проверяется шаблон префикса этой игры
+   * (`PrefixTemplates.ensure`: нет или устарел — собрать).
+   */
+  const settle = (session: Session, mode: CleanupMode, report: Outcome) =>
+    Effect.gen(function* () {
+      const protonUsed =
+        mode === "remove" &&
+        report._tag === "Stopped" &&
+        existsSync(
+          join(
+            session.overlays.apps.upper,
+            "compatdata",
+            String(session.appId),
+          ),
+        );
+      const startedAt = yield* Clock.currentTimeMillis;
+      let done = yield* cleanupOnce(session, mode);
+      if (done) {
+        sessions.delete(session.sessionId);
+        yield* emit(report);
+      } else {
+        yield* emit({ ...report, cleanupPending: true });
+        while (!done) {
+          yield* Effect.sleep(CLEANUP_RETRY);
+          done = yield* cleanupOnce(session, mode);
+          const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
+          if (!done && elapsed >= Duration.toMillis(CLEANUP_GIVE_UP)) {
+            yield* Effect.logError("session-container-stuck", {
+              sessionId: session.sessionId,
+              container: session.name,
+              mode,
+            });
+            break;
+          }
+        }
+        sessions.delete(session.sessionId);
+      }
+      if (done && protonUsed)
+        yield* Effect.forkIn(templates.ensure(session.appId), scope);
+    });
+
+  /** Метка `profile-saved`; не записалась — только предупреждение. */
+  const markProfileSaved = (sessionId: string) =>
+    Effect.try(() =>
+      writeFileSync(profileSavedMarker(config, sessionId), ""),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Writing the profile-saved marker failed", {
+          sessionId,
+          error: String(error),
+        }),
+      ),
+    );
+
+  /**
+   * Остановка: облако (если игра шла) → профиль → метка `profile-saved` →
+   * штатный stop (его сбой — только лог) → `settle` в режиме `remove` (контейнер
+   * и слои) → `Stopped`. Профиль не сохранён (в том числе коммит отклонён: база
+   * устарела) — `settle` в режиме `stop`: контейнер только останавливается и
+   * вместе со слоями остаётся (`profile-unsaved` в логе), следующая сессия
+   * получит предыдущую версию профиля. Зависшую остановку повторяет `settle`.
    */
   const finish = (session: Session) =>
     Effect.gen(function* () {
       session.phase = "stopping";
-      const protonUsed = existsSync(
-        join(session.overlays.apps.upper, "compatdata", String(session.appId)),
-      );
       let cloudSynced = false;
       if (session.gameRunning) {
         // StopSession посреди игры: база — прямо перед SIGTERM (всё выгруженное
@@ -606,6 +718,13 @@ const make = Effect.gen(function* () {
         baseVersion: session.baseVersion,
         steamLoginSeeded: session.seeded,
       }).pipe(withServices, Effect.result);
+      const profileSaved = Result.isSuccess(saved);
+      const stopped: Outcome = {
+        _tag: "Stopped",
+        sessionId: session.sessionId,
+        cloudSynced,
+        profileSaved,
+      };
       if (Result.isFailure(saved)) {
         yield* Effect.logError("profile-unsaved", {
           sessionId: session.sessionId,
@@ -614,35 +733,19 @@ const make = Effect.gen(function* () {
           stage: saved.failure.stage,
           error: saved.failure.message,
         });
-        yield* docker
-          .stop(session.name, STOP_TIMEOUT_SEC)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new Abort({ reason: failReasons.stop, cause, keep: true }),
-            ),
-          );
-        yield* keepStopped(session.sessionId, session.overlays);
+        yield* settle(session, "stop", stopped);
       } else {
+        yield* markProfileSaved(session.sessionId);
         yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
-          Effect.andThen(docker.remove(session.name)),
-          Effect.mapError(
-            (cause) =>
-              new Abort({ reason: failReasons.stop, cause, keep: false }),
+          Effect.catchTag("DockerError", (error) =>
+            Effect.logWarning("Stopping session container failed", {
+              sessionId: session.sessionId,
+              error: error.message,
+            }),
           ),
         );
-        yield* cleanupLogged(session.overlays);
-        if (protonUsed)
-          yield* Effect.forkIn(templates.ensure(session.appId), scope);
+        yield* settle(session, "remove", stopped);
       }
-      const profileSaved = Result.isSuccess(saved);
-      sessions.delete(session.sessionId);
-      yield* emit({
-        _tag: "Stopped",
-        sessionId: session.sessionId,
-        cloudSynced,
-        profileSaved,
-      });
       yield* Effect.logInfo("Session stopped", {
         sessionId: session.sessionId,
         cloudSynced,
@@ -652,62 +755,45 @@ const make = Effect.gen(function* () {
 
   /**
    * Сбой: контейнер и слои убрать (слот и UDP-порт свободны), затем `Failed`.
-   * После готовности стрима пользователь мог играть: такой контейнер (если не
-   * сказано иное) только останавливается и остаётся вместе со слоями.
+   * После готовности стрима пользователь мог играть: такой контейнер только
+   * останавливается и остаётся вместе со слоями. Зависшую уборку повторяет `settle`.
    */
   const fail = (session: Session, abort: Abort) =>
     Effect.gen(function* () {
-      const keep = abort.keep ?? session.phase !== "starting";
+      // После готовности стрима в upper-слоях могут быть несохранённые данные игры.
+      const keep = session.phase !== "starting";
       yield* Effect.logError("Session failed", {
         sessionId: session.sessionId,
         reason: abort.reason,
         cause: abort.cause,
       });
+      const failed: Outcome = {
+        _tag: "Failed",
+        sessionId: session.sessionId,
+        reason: abort.reason,
+      };
       if (keep) {
         yield* Effect.logError("profile-unsaved", {
           sessionId: session.sessionId,
           userId: session.userId,
           container: session.name,
         });
-        yield* docker.stop(session.name, STOP_TIMEOUT_SEC).pipe(
-          Effect.andThen(keepStopped(session.sessionId, session.overlays)),
-          Effect.catchTag("DockerError", (error) =>
-            Effect.logError("Stopping failed session container failed", {
-              sessionId: session.sessionId,
-              error: error.message,
-            }),
-          ),
-        );
-      } else if (session.created) {
-        const removed = yield* docker.remove(session.name).pipe(
-          Effect.as(true),
-          Effect.catchTag("DockerError", (error) =>
-            Effect.logError("Removing failed session container failed", {
-              sessionId: session.sessionId,
-              error: error.message,
-            }).pipe(Effect.as(false)),
-          ),
-        );
-        if (removed) yield* cleanupLogged(session.overlays);
-      } else {
-        // Слои убираем, только если контейнера с этим именем нет вовсе: иначе
-        // они его (например, остановленного с несохранённым профилем).
-        const existing = yield* docker
-          .inspect(session.name)
-          .pipe(Effect.orElseSucceed(() => "unknown" as const));
-        if (existing === undefined) yield* cleanupLogged(session.overlays);
-        else
-          yield* Effect.logWarning(
-            "Leaving a container this session did not create",
-            { sessionId: session.sessionId, name: session.name },
-          );
+        return yield* settle(session, "stop", failed);
       }
+      if (session.created) return yield* settle(session, "remove", failed);
+      // Слои убираем, только если контейнера с этим именем нет вовсе: иначе
+      // они его (например, остановленного с несохранённым профилем).
+      const existing = yield* docker
+        .inspect(session.name)
+        .pipe(Effect.orElseSucceed(() => "unknown" as const));
+      if (existing === undefined) yield* cleanupLogged(session.overlays);
+      else
+        yield* Effect.logWarning(
+          "Leaving a container this session did not create",
+          { sessionId: session.sessionId, name: session.name },
+        );
       sessions.delete(session.sessionId);
-      yield* emit({
-        _tag: "Failed",
-        sessionId: session.sessionId,
-        reason: abort.reason,
-      });
+      yield* emit(failed);
     });
 
   /** Новый контейнер: слои → create → профиль → посев входа → start. */
@@ -824,7 +910,9 @@ const make = Effect.gen(function* () {
       Session,
       "sessionId" | "userId" | "baseVersion" | "appId" | "slot" | "name"
     > &
-      Partial<Pick<Session, "created" | "gameRunning" | "cloudBaseline">>,
+      Partial<
+        Pick<Session, "created" | "phase" | "gameRunning" | "cloudBaseline">
+      >,
   ) =>
     Effect.gen(function* () {
       const session: Session = {
@@ -832,7 +920,7 @@ const make = Effect.gen(function* () {
         overlays: sessionLayers(config, fields.sessionId),
         streamUrl: streamUrlFor(fields.sessionId),
         created: fields.created ?? false,
-        phase: "starting",
+        phase: fields.phase ?? "starting",
         seeded: false,
         gameRunning: fields.gameRunning ?? false,
         stage: undefined,
@@ -1054,13 +1142,66 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Контейнеры, пережившие перезапуск агента: живые подхватить, живые с
-   * испорченными метками (MVP-2, без cg.user) убрать. Остановленные не
-   * удаляются никогда: в их слоях — несохранённый профиль (`profile-unsaved`).
+   * Контейнер с меткой `profile-saved` (профиль уже сохранён, а убрать его
+   * прошлый запуск агента не успел): под надзор в фазе `stopping` и сразу
+   * `settle` в режиме `remove` (запущенный — тоже, профиль второй раз не
+   * снимается), затем `Stopped`. Метки, кроме `cg.session`, здесь не нужны —
+   * испорченные заменяются нулями (их видит только `snapshot`).
+   */
+  const adoptSaved = (container: ContainerInfo, sessionId: string) =>
+    Effect.gen(function* () {
+      const label = (name: string) => {
+        const value = Number(container.labels[name]);
+        return Number.isInteger(value) ? value : 0;
+      };
+      const session = yield* register({
+        sessionId,
+        userId: container.labels[USER_LABEL] ?? "",
+        baseVersion:
+          parseBaseVersion(container.labels[BASE_VERSION_LABEL]) ?? null,
+        appId: label("cg.app"),
+        slot: label("cg.slot"),
+        name: container.name,
+        created: true,
+        phase: "stopping",
+      });
+      yield* Effect.logInfo(
+        "Removing a session container with a saved profile",
+        {
+          sessionId,
+          name: container.name,
+          running: container.running,
+        },
+      );
+      yield* Effect.forkIn(
+        settle(session, "remove", {
+          _tag: "Stopped",
+          sessionId,
+          cloudSynced: false,
+          profileSaved: true,
+        }),
+        scope,
+      );
+    });
+
+  /**
+   * Контейнеры, пережившие перезапуск агента: с меткой `profile-saved` — удалить
+   * со слоями (`adoptSaved`), живые подхватить, живые с испорченными метками
+   * (MVP-2, без cg.user) убрать. Остановленные без метки не удаляются никогда: в
+   * их слоях — несохранённый профиль (`profile-unsaved`).
    */
   const adopt = Effect.gen(function* () {
     const containers = yield* docker.listByLabel("cg.session");
     for (const container of containers) {
+      const labelled = container.labels["cg.session"] ?? "";
+      if (
+        isValidId(labelled) &&
+        !sessions.has(labelled) &&
+        existsSync(profileSavedMarker(config, labelled))
+      ) {
+        yield* adoptSaved(container, labelled);
+        continue;
+      }
       if (!container.running) {
         const sessionId = container.labels["cg.session"] ?? "";
         yield* Effect.logWarning(
@@ -1103,7 +1244,8 @@ const make = Effect.gen(function* () {
 
   /**
    * Слои сессий (тома `cg-s-<id>-*` и `<SCRATCH_DIR>/<id>`), у которых контейнера
-   * `cg-session-<id>` нет вовсе. Слои остановленного контейнера — его, не трогаются.
+   * `cg-session-<id>` нет вовсе и которые не под надзором. Слои остановленного
+   * контейнера — его, не трогаются.
    */
   const removeOrphanLayers = Effect.gen(function* () {
     const ids = new Set<string>();
@@ -1124,6 +1266,8 @@ const make = Effect.gen(function* () {
     for (const dir of dirs)
       if (dir.isDirectory() && isValidId(dir.name)) ids.add(dir.name);
     for (const id of ids) {
+      // Слои сессии под надзором (например, `adoptSaved`) убирает сама сессия.
+      if (sessions.has(id)) continue;
       if ((yield* docker.inspect(containerName(id))) !== undefined) continue;
       yield* Effect.logInfo("Removing orphan session layers", {
         sessionId: id,

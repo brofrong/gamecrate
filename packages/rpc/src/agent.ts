@@ -196,14 +196,22 @@ export const AgentReport = Schema.Union([
     jobId: Schema.String,
     reason: Schema.String,
   }),
+  /**
+   * Итог сессии. `cleanupPending: true` — контейнер ещё не убран (остановка
+   * зависла, агент повторяет её в фоне): сессия ещё в heartbeat агента, слот
+   * выпустит heartbeat без неё. Нет поля или `false` — контейнер уже убран
+   * или остановлен.
+   */
   Schema.TaggedStruct("Stopped", {
     sessionId: Schema.String,
     cloudSynced: Schema.Boolean,
     profileSaved: Schema.Boolean,
+    cleanupPending: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("Failed", {
     sessionId: Schema.String,
     reason: Schema.String,
+    cleanupPending: Schema.optional(Schema.Boolean),
   }),
 ]);
 export type AgentReport = typeof AgentReport.Type;

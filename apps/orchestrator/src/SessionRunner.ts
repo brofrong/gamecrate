@@ -349,19 +349,23 @@ const make = (options: SessionRunnerOptions) =>
               case "Stopped": {
                 // Профиль не сохранён: агент оставил контейнер со слоями
                 // (`profile-unsaved`) — нужен разбор вручную (deploy/README.md).
-                // Контейнер остановлен в любом случае (сохранён профиль или
-                // нет) — слот выпускаем независимо от состояния строки: она
-                // может быть уже терминальной (например, если сессию погасили
-                // как неизвестную при сверке), `step` для неё ничего не делает.
+                // Контейнер остановлен (сохранён профиль или нет) — слот
+                // выпускаем независимо от состояния строки: она может быть уже
+                // терминальной (например, если сессию погасили как неизвестную
+                // при сверке), `step` для неё ничего не делает. Кроме
+                // `cleanupPending`: остановка зависла, агент повторяет её в
+                // фоне, и сессия остаётся в его heartbeat.
                 let userId: string | undefined;
                 return Effect.gen(function* () {
                   yield* step(report.sessionId, now, (row) => {
                     userId = row.userId;
                     return fromWorker(workerId, { _tag: "StopFinished" })(row);
                   });
-                  yield* withDb(
-                    SessionRepo.releaseSlot(workerId, report.sessionId, now),
-                  );
+                  // Контейнер ещё убирается — слот выпустит heartbeat без сессии.
+                  if (report.cleanupPending !== true)
+                    yield* withDb(
+                      SessionRepo.releaseSlot(workerId, report.sessionId, now),
+                    );
                   if (!report.profileSaved)
                     yield* Effect.logWarning(
                       "Session profile not saved (profile-unsaved on the agent)",
@@ -371,7 +375,8 @@ const make = (options: SessionRunnerOptions) =>
               }
               case "Failed":
                 // Агент шлёт `Failed` уже после удаления контейнера — слот
-                // выпускаем вместе с переводом сессии в `failed`.
+                // выпускаем вместе с переводом сессии в `failed` (кроме
+                // `cleanupPending`: контейнер ещё убирается).
                 return Effect.gen(function* () {
                   yield* step(
                     report.sessionId,
@@ -381,9 +386,11 @@ const make = (options: SessionRunnerOptions) =>
                       reason: report.reason,
                     }),
                   );
-                  yield* withDb(
-                    SessionRepo.releaseSlot(workerId, report.sessionId, now),
-                  );
+                  // Контейнер ещё убирается — слот выпустит heartbeat без сессии.
+                  if (report.cleanupPending !== true)
+                    yield* withDb(
+                      SessionRepo.releaseSlot(workerId, report.sessionId, now),
+                    );
                 });
               case "InstallProgress":
               case "InstallFinished":

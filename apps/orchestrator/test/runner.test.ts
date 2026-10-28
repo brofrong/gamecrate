@@ -1107,6 +1107,86 @@ describe("slot release", () => {
       }),
     ));
 
+  /**
+   * Агент сообщил итог (`Stopped`/`Failed`), но его контейнер ещё убирается
+   * (`cleanupPending`): слот держится, пока heartbeat называет сессию.
+   */
+  const cleanupPendingKeepsSlot = (
+    agentReport: AgentReport,
+    expected: Record<string, unknown>,
+  ) =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-new");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          state: "stopping",
+          workerId: "w-a",
+          slot: 0,
+          stateSince: t0,
+          agentSeenAt: t0,
+        });
+        yield* insertSession({ id: "s-new", userId: "u-new", createdAt: t0 });
+
+        yield* runner.handle(report("w-a", agentReport), at(t0, 5));
+        like(yield* sessionRow("s-old"), {
+          ...expected,
+          slotReleasedAt: null,
+        });
+
+        yield* Scheduler.tick(at(t0, 6));
+        expect((yield* sessionRow("s-new")).state).toBe("queued");
+
+        // Контейнер ещё убирается: heartbeat называет s-old.
+        yield* runner.handle(
+          report("w-a", { _tag: "Heartbeat", sessionIds: ["s-old"] }),
+          at(t0, 30),
+        );
+        expect((yield* sessionRow("s-old")).slotReleasedAt).toBeNull();
+
+        // Убран — heartbeat без s-old выпускает слот.
+        yield* runner.handle(
+          report("w-a", { _tag: "Heartbeat", sessionIds: [] }),
+          at(t0, 60),
+        );
+        like(yield* sessionRow("s-old"), { slotReleasedAt: at(t0, 60) });
+
+        yield* Scheduler.tick(at(t0, 61));
+        like(yield* sessionRow("s-new"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+      }),
+    );
+
+  it("Stopped with cleanupPending keeps the slot until a heartbeat without the session", () =>
+    cleanupPendingKeepsSlot(
+      {
+        _tag: "Stopped",
+        sessionId: "s-old",
+        cloudSynced: false,
+        profileSaved: true,
+        cleanupPending: true,
+      },
+      { state: "ended" },
+    ));
+
+  it("Failed with cleanupPending keeps the slot until a heartbeat without the session", () =>
+    cleanupPendingKeepsSlot(
+      {
+        _tag: "Failed",
+        sessionId: "s-old",
+        reason: "boom",
+        cleanupPending: true,
+      },
+      { state: "failed", failReason: "boom" },
+    ));
+
   it("lost agent that stays connected: heartbeat without the session releases the slot", () =>
     run((fake) =>
       Effect.gen(function* () {
