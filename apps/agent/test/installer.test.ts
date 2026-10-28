@@ -131,6 +131,8 @@ const makeFake = () => {
     failRemove: undefined as string | undefined,
     /** Помощник `delete-game` выходит с этим кодом, ничего не удалив (0 — удаляет). */
     deleteHelperExit: 0,
+    /** `wait` помощника `delete-game` бросает (дефект, не `DockerError`) — симулирует баг. */
+    deleteHelperDefect: false,
     calls: [] as string[],
     dockerCalls: 0,
     created: [] as ContainerSpec[],
@@ -147,6 +149,8 @@ const makeFake = () => {
     failSeed: false,
     /** Контейнеры `cg.install`, оставшиеся с прошлого запуска. */
     existing: [] as ContainerInfo[],
+    /** Живые контейнеры с меткой `cg.app` (сессии игр) — защита `DeleteGame`. */
+    appContainers: [] as ContainerInfo[],
     labelledVolumes: [] as Array<{
       name: string;
       labels: Record<string, string>;
@@ -202,11 +206,11 @@ const makeFake = () => {
         record(`wait ${name}`);
         // Помощник очистки: `rm -rf <путь>…` от root.
         const entrypoint = specs.get(name)?.entrypoint ?? [];
-        if (
-          specs.get(name)?.labels["cg.helper"] === "delete-game" &&
-          state.deleteHelperExit !== 0
-        )
-          return state.deleteHelperExit;
+        if (specs.get(name)?.labels["cg.helper"] === "delete-game") {
+          if (state.deleteHelperDefect)
+            throw new Error("unexpected helper bug");
+          if (state.deleteHelperExit !== 0) return state.deleteHelperExit;
+        }
         if (entrypoint[0] === "rm")
           for (const path of entrypoint.slice(2)) rootRm(path);
         return 0;
@@ -229,7 +233,9 @@ const makeFake = () => {
     listByLabel: (label) =>
       Effect.sync(() => {
         record(`list ${label}`);
-        return label === "cg.install" ? state.existing : [];
+        if (label === "cg.install") return state.existing;
+        if (label === "cg.app") return state.appContainers;
+        return [];
       }),
     createVolume: (volume) =>
       Effect.sync(() => record(`createVolume ${volume.name}`)),
@@ -1893,6 +1899,44 @@ describe("Installer DeleteGame", () => {
   );
 
   it.skipIf(process.getuid?.() === 0)(
+    "a defect while emptying the trash after the move still reports GameDeleted (manifest already gone from Steam)",
+    () =>
+      run(
+        (h) =>
+          Effect.gen(function* () {
+            yield* h.installer.deleteGame(2379780);
+            // Манифест и каталоги уже перенесены в корзину — Steam игру не
+            // видит, итог GameDeleted, несмотря на баг в очистке корзины.
+            expect(yield* awaitReports(h, 1)).toEqual([
+              { _tag: "GameDeleted", appId: 2379780 },
+            ]);
+            expect(
+              existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
+            ).toBe(false);
+            expect(existsSync(join(h.fake.state.lower, "common/Balatro"))).toBe(
+              false,
+            );
+            // Другое удаление после дефекта не висит и не ломается.
+            h.fake.state.deleteHelperDefect = false;
+            h.fake.state.deleteHelperExit = 0;
+            yield* h.installer.deleteGame(1493710);
+            expect(yield* awaitReports(h, 1)).toEqual([
+              { _tag: "GameDeleted", appId: 1493710 },
+            ]);
+          }),
+        {
+          setup: (fake) => {
+            balatroInLibrary(fake);
+            const locked = join(fake.state.lower, "common/Balatro/locked");
+            write(locked, { "file.bin": "x" });
+            chmodSync(locked, 0o555);
+            fake.state.deleteHelperDefect = true;
+          },
+        },
+      ),
+  );
+
+  it.skipIf(process.getuid?.() === 0)(
     "dir rename failure after the manifest moved restores it and reports GameDeleteFailed",
     () =>
       run(
@@ -1983,6 +2027,65 @@ describe("Installer DeleteGame", () => {
           });
         },
       },
+    ));
+
+  it("DeleteGame while a live cg.app container (e.g. a game session) exists reports GameDeleteFailed", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.deleteGame(2379780);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            {
+              _tag: "GameDeleteFailed",
+              appId: 2379780,
+              reason: "Игра запущена",
+            },
+          ]);
+          // Игра на месте: до переноса в корзину дело не дошло.
+          expect(
+            existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
+          ).toBe(true);
+          expect(
+            existsSync(join(h.fake.state.lower, "common/Balatro")),
+          ).toBe(true);
+          // Другую игру (не из cg.app меток) удалить можно.
+          yield* h.installer.deleteGame(1493710);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            { _tag: "GameDeleted", appId: 1493710 },
+          ]);
+        }),
+      {
+        setup: (fake) => {
+          balatroInLibrary(fake);
+          fake.state.appContainers = [
+            {
+              name: "cg-session-s1",
+              labels: { "cg.app": "2379780" },
+              running: true,
+            },
+          ];
+        },
+      },
+    ));
+
+  it("duplicate DeleteGame for the same app while a removal is in flight is dropped", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Обе команды уходят подряд — вторая видит appId уже «в работе».
+          yield* h.installer.deleteGame(2379780);
+          yield* h.installer.deleteGame(2379780);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            { _tag: "GameDeleted", appId: 2379780 },
+          ]);
+          // Удаление завершилось, appId освободился — повтор снова запускает его
+          // (отличается от команды, пришедшей, пока первая ещё шла).
+          yield* h.installer.deleteGame(2379780);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            { _tag: "GameDeleted", appId: 2379780 },
+          ]);
+        }),
+      { setup: balatroInLibrary },
     ));
 
   it("invalid appId reports GameDeleteFailed without touching the library", () =>

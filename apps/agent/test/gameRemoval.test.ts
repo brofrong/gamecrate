@@ -125,6 +125,37 @@ describe("planRemoval", () => {
     write({ "common/Balatro/Balatro.exe": "game" });
     expect(planRemoval(steamapps, 2379780)).toBeUndefined();
   });
+
+  it("на installdir ссылается другой манифест (демка/саундтрек) — common не в плане", () => {
+    write({
+      "appmanifest_2379780.acf": balatro,
+      // Демка той же игры установлена в тот же common/Balatro.
+      "appmanifest_2379781.acf": acf({
+        appid: "2379781",
+        name: "Balatro Demo",
+        installdir: "Balatro",
+      }),
+      "common/Balatro/Balatro.exe": "game",
+      "shadercache/2379780/cache": "x",
+    });
+    expect(planRemoval(steamapps, 2379780)).toEqual({
+      manifest: join(steamapps, "appmanifest_2379780.acf"),
+      dirs: [join(steamapps, "shadercache", "2379780")],
+    });
+    // Удаление демки (другого appId) — installdir общий и в обратную
+    // сторону, пока манифест основной игры на месте: common тоже не в плане.
+    expect(planRemoval(steamapps, 2379781)).toEqual({
+      manifest: join(steamapps, "appmanifest_2379781.acf"),
+      dirs: [],
+    });
+    // Манифеста основной игры больше нет (уже удалён) — демка теперь
+    // единственная, кто ссылается на installdir, common снова в плане.
+    rmSync(join(steamapps, "appmanifest_2379780.acf"));
+    expect(planRemoval(steamapps, 2379781)).toEqual({
+      manifest: join(steamapps, "appmanifest_2379781.acf"),
+      dirs: [join(steamapps, "common", "Balatro")],
+    });
+  });
 });
 
 describe("moveToTrash", () => {

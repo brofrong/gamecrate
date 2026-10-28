@@ -125,6 +125,7 @@ export const installReasons = {
 export const deleteReasons = {
   notGamestore: "Нет роли gamestore",
   installing: "Игра сейчас устанавливается",
+  running: "Игра запущена",
   invalidCommand: "Некорректная команда удаления",
 } as const;
 
@@ -1022,6 +1023,13 @@ const make = Effect.gen(function* () {
 
   /** Удаления игр и очистка корзины — по одному (общие корзина и помощник). */
   const removals = yield* Semaphore.make(1);
+  /**
+   * `appId`, для которых уже идёт `removeGame` (ждут семафор `removals` или
+   * выполняются): повторная `DeleteGame` для того же приложения (оркестратор
+   * повторяет недоставленную команду после переподключения) не запускает
+   * второе удаление — результат первого отвечает и на неё.
+   */
+  const pendingDeletes = new Set<number>();
   const deleteFailed = (appId: number, reason: string) =>
     emit({ _tag: "GameDeleteFailed", appId, reason });
   const clearTrash = emptyTrash.pipe(
@@ -1032,7 +1040,9 @@ const make = Effect.gen(function* () {
   /**
    * Манифест и каталоги игры — `rename` в корзину (игра сразу пропадает из
    * библиотеки), затем корзина очищается. Установка той же игры — отказ: её
-   * перенос в библиотеку столкнулся бы с удалением.
+   * перенос в библиотеку столкнулся бы с удалением; живой контейнер с
+   * `cg.app=<appId>` (сессия или установщик) — тоже отказ (защита от гонки
+   * с устаревшей проверкой api/оркестратора).
    *
    * Оркестратор по `GameDeleted` убирает игру, по `GameDeleteFailed` считает
    * её установленной — поэтому итог отражает, видит ли Steam игру: перенос
@@ -1060,6 +1070,24 @@ const make = Effect.gen(function* () {
         });
         return yield* emit({ _tag: "GameDeleted", appId });
       }
+      // Защита от гонки с оркестратором (его сессия/задача может быть
+      // устаревшими данными в БД): живой контейнер с меткой `cg.app` — игра
+      // ещё запущена (сессия или сам установщик), как и проверяет
+      // `PrefixTemplate.ts` перед переносом шаблона префикса.
+      const running = yield* docker
+        .listByLabel("cg.app")
+        .pipe(Effect.mapError(removalError));
+      if (
+        running.some(
+          (container) => container.labels["cg.app"] === String(appId),
+        )
+      ) {
+        yield* Effect.logWarning(
+          "DeleteGame while a container for the app is running",
+          { appId },
+        );
+        return yield* deleteFailed(appId, deleteReasons.running);
+      }
       const stamp = String(yield* Clock.currentTimeMillis);
       const moved = yield* Effect.try({
         try: () => moveToTrash(plan, config.libraryDir, stamp),
@@ -1067,11 +1095,21 @@ const make = Effect.gen(function* () {
           error instanceof TrashMoveError ? error : removalError(error),
       });
       yield* Effect.logInfo("Game moved to trash", { appId, moved });
+      // Манифест уже в корзине — по контракту (`GameDeleted`/`GameDeleteFailed`
+      // отражают, видит ли Steam игру) это GameDeleted при любом исходе
+      // очистки корзины, включая дефект (не только ожидаемую
+      // `GameRemovalError`): дочистит следующее удаление или старт агента.
       yield* clearTrash.pipe(
         Effect.catchTag("GameRemovalError", (error) =>
           Effect.logWarning("Emptying the library trash failed", {
             appId,
             error: error.message,
+          }),
+        ),
+        Effect.catchDefect((defect) =>
+          Effect.logWarning("Emptying the library trash failed", {
+            appId,
+            defect: String(defect),
           }),
         ),
       );
@@ -1110,8 +1148,20 @@ const make = Effect.gen(function* () {
         yield* Effect.logError("Rejected invalid DeleteGame", { appId });
         return yield* deleteFailed(appId, deleteReasons.invalidCommand);
       }
+      if (pendingDeletes.has(appId)) {
+        yield* Effect.logInfo("DeleteGame dropped: already removing", {
+          appId,
+        });
+        return;
+      }
+      pendingDeletes.add(appId);
       yield* Effect.logInfo("DeleteGame accepted", { appId });
-      yield* Effect.forkIn(removeGame(appId), scope);
+      yield* Effect.forkIn(
+        removeGame(appId).pipe(
+          Effect.ensuring(Effect.sync(() => void pendingDeletes.delete(appId))),
+        ),
+        scope,
+      );
     });
 
   yield* reconcile;

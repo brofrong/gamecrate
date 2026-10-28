@@ -77,9 +77,35 @@ export interface RemovalPlan {
 }
 
 /**
+ * `installdir` других манифестов `steamapps` (кроме `appId`) — демки,
+ * саундтреки и выделенные сервера нередко ставятся Steam в тот же
+ * `common/<installdir>`, что и основная игра (отдельный `appmanifest_*.acf`,
+ * общий каталог). Битые манифесты пропускаются, как в `scanLibrary`.
+ */
+const othersInstallDirs = (steamapps: string, appId: number): Set<string> => {
+  let entries;
+  try {
+    entries = readdirSync(steamapps, { withFileTypes: true });
+  } catch {
+    return new Set();
+  }
+  const dirs = new Set<string>();
+  for (const entry of entries) {
+    const match = MANIFEST_FILE.exec(entry.name);
+    if (match === null || !entry.isFile() || Number(match[1]) === appId)
+      continue;
+    const installDir = readManifest(join(steamapps, entry.name))?.installdir;
+    if (isInstallDir(installDir)) dirs.add(installDir);
+  }
+  return dirs;
+};
+
+/**
  * Что убрать из библиотеки для `appId`: манифест и существующие каталоги
- * `common/<installdir>` (только если `installdir` — один компонент пути) и
- * `shadercache/<appId>`. Манифеста нет — `undefined` (игры уже нет).
+ * `common/<installdir>` (только если `installdir` — один компонент пути и на
+ * него не ссылается другой манифест `steamapps` — общий каталог демки,
+ * саундтрека или выделенного сервера не трогаем) и `shadercache/<appId>`.
+ * Манифеста нет — `undefined` (игры уже нет).
  */
 export const planRemoval = (
   steamapps: string,
@@ -88,8 +114,11 @@ export const planRemoval = (
   const manifest = join(steamapps, `appmanifest_${appId}.acf`);
   if (lstat(manifest) === undefined) return undefined;
   const installDir = readManifest(manifest)?.installdir;
+  const shared = isInstallDir(installDir)
+    ? othersInstallDirs(steamapps, appId).has(installDir)
+    : false;
   const candidates = [
-    ...(isInstallDir(installDir)
+    ...(isInstallDir(installDir) && !shared
       ? [join(steamapps, "common", installDir)]
       : []),
     join(steamapps, "shadercache", String(appId)),
