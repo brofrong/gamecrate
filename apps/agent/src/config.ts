@@ -79,6 +79,14 @@ const fields = Config.all({
   udpPortBase: Config.Port("UDP_PORT_BASE").pipe(Config.withDefault(59000)),
   /** Образ сессии, напр. `cg-session:550.163.01`. */
   sessionImage: Config.NonEmptyString("SESSION_IMAGE"),
+  /**
+   * Коммит сборки агента (`CG_COMMIT`, ставит деплой) — для блока «Версии»
+   * админки; не задан или пуст — `unknown`.
+   */
+  agentCommit: Config.String("CG_COMMIT").pipe(
+    Config.withDefault(""),
+    Config.map((commit) => commit.trim() || "unknown"),
+  ),
   /** Docker-сеть контейнеров сессий. */
   sessionNetwork: Config.NonEmptyString("SESSION_NETWORK").pipe(
     Config.withDefault("cg-sessions"),

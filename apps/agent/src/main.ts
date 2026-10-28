@@ -12,6 +12,7 @@ import { prefixTemplatesLayer } from "./PrefixTemplate";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { ProfileStore } from "./profile/ProfileStore";
 import { SessionSupervisor } from "./SessionSupervisor";
+import { WorkerMonitor } from "./WorkerMonitor";
 
 const Agent = OrchestratorLink.layer.pipe(
   // По очереди, не параллельно: супервизор при старте убирает всех помощников
@@ -25,6 +26,8 @@ const Agent = OrchestratorLink.layer.pipe(
   Layer.provideMerge(ProfileCommitter.layer),
   Layer.provide(ProfileStore.layer),
   Layer.provide(DockerClient.layer),
+  // Железо, версии и загрузка воркера для админки.
+  Layer.provide(WorkerMonitor.layer),
   Layer.provideMerge(AgentConfig.layer),
 );
 

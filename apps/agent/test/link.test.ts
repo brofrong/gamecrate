@@ -6,6 +6,9 @@ import {
   type AgentReport,
   AgentRpcs,
   type ProfileCommit,
+  type WorkerHardware,
+  type WorkerStats,
+  type WorkerVersions,
 } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import {
@@ -36,6 +39,7 @@ import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { WorkerMonitor, type WorkerMonitorShape } from "../src/WorkerMonitor";
 import { testConfig } from "./fakes";
 
 const token = "link-test-token-0123456789abcdef!";
@@ -161,6 +165,64 @@ const config = (): AgentConfigValues =>
     roles: ["worker", "gamestore"],
   });
 
+const hardware: WorkerHardware = {
+  cpuModel: "AMD Ryzen 5 2600X Six-Core Processor",
+  cpuCores: 6,
+  cpuThreads: 12,
+  memoryBytes: 32 * 2 ** 30,
+  gpus: [
+    { name: "NVIDIA GeForce GTX 1650 SUPER", memoryBytes: 4096 * 2 ** 20 },
+  ],
+  disks: [
+    {
+      name: "nvme0n1",
+      kind: "nvme",
+      sizeBytes: 250 * 10 ** 9,
+      raidLevel: null,
+      members: [],
+    },
+  ],
+};
+
+const versions: WorkerVersions = {
+  agentCommit: "abc1234",
+  sessionImage: "cg-session:test",
+  driver: "550.163.01",
+  steamClientBuiltAt: null,
+};
+
+const stats: WorkerStats = {
+  cpuPercent: 12,
+  memory: { totalBytes: 100, usedBytes: 40, cacheBytes: 30 },
+  gpus: [
+    {
+      utilPercent: 5,
+      encoderPercent: null,
+      temperatureC: 40,
+      memoryUsedBytes: 4,
+      memoryTotalBytes: 4096,
+    },
+  ],
+  filesystems: [
+    {
+      purposes: ["scratch", "steamClient"],
+      totalBytes: 10,
+      usedBytes: 4,
+      freeBytes: 6,
+    },
+  ],
+  uptimeSeconds: 1234,
+};
+
+/** Фейковый WorkerMonitor: снимки железа/версий и очередь отчётов `WorkerStats`. */
+const fakeMonitor = (
+  reports: Queue.Queue<AgentReport>,
+): WorkerMonitorShape => ({
+  hardware: Effect.succeed(hardware),
+  versions: Effect.succeed(versions),
+  reports,
+});
+
 const waitUntil = (condition: () => boolean, ms = 5000) =>
   Effect.promise(async () => {
     const deadline = Date.now() + ms;
@@ -222,10 +284,14 @@ describe("OrchestratorLink", () => {
           running: () => ["j0"],
           reports: installReports,
         };
+        const monitorReports = yield* Queue.unbounded<AgentReport>();
         yield* Layer.build(
           OrchestratorLink.layer.pipe(
             Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
             Layer.provide(Layer.succeed(Installer, installer)),
+            Layer.provide(
+              Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),
+            ),
             Layer.provide(Layer.succeed(ProfileCommitter, committer)),
             Layer.provide(Layer.succeed(AgentConfig, config())),
           ),
@@ -249,6 +315,9 @@ describe("OrchestratorLink", () => {
           // Роли — из ROLES, установки — живые задачи установщика.
           roles: ["worker", "gamestore"],
           installs: ["j0"],
+          // Снимок железа и версий воркера — для админки.
+          hardware,
+          versions,
         });
 
         expect(yield* Fiber.join(early)).toBe(true);
@@ -329,6 +398,12 @@ describe("OrchestratorLink", () => {
         ]);
         server.reports.splice(3);
 
+        // Снимок загрузки — третий источник отчётов.
+        yield* Queue.offer(monitorReports, { _tag: "WorkerStats", stats });
+        yield* waitUntil(() => server.reports.length === 4);
+        expect(server.reports[3]).toEqual({ _tag: "WorkerStats", stats });
+        server.reports.splice(3);
+
         // Оркестратор отклонил итоговый отчёт: переподключение, отчёт уходит первым.
         server.rejectReports = 1;
         yield* Queue.offer(reports, {
@@ -404,10 +479,14 @@ describe("OrchestratorLink", () => {
         reports: installReports,
       };
       const before = server.streams.length;
+      const monitorReports = yield* Queue.unbounded<AgentReport>();
       yield* Layer.build(
         OrchestratorLink.layer.pipe(
           Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
           Layer.provide(Layer.succeed(Installer, installer)),
+          Layer.provide(
+            Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),
+          ),
           Layer.provide(ProfileCommitter.layer),
           Layer.provide(Layer.succeed(AgentConfig, config())),
         ),

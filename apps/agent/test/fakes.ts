@@ -16,6 +16,7 @@ export const testConfig = (
   slots: 2,
   udpPortBase: 59000,
   sessionImage: "cg-session:550.163.01",
+  agentCommit: "unknown",
   sessionNetwork: "cg-sessions",
   s3Endpoint: "http://cg-rustfs:9000",
   s3Bucket: "cg-profiles",

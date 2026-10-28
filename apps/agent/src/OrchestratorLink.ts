@@ -1,8 +1,9 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
 // (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды сессий
-// передаёт SessionSupervisor, команды установки — Installer; их отчёты отправляет
-// по одному, по порядку (каждого источника); на время соединения через него идут
-// `agent.profileCommit` (ProfileCommitter).
+// передаёт SessionSupervisor, команды установки — Installer; их отчёты и снимки
+// загрузки WorkerMonitor отправляет по одному, по порядку (каждого источника); на
+// время соединения через него идут `agent.profileCommit` (ProfileCommitter).
+// `agent.connect` несёт железо и версии воркера (WorkerMonitor).
 // Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
 // переподключение с паузой 1 → 30 с.
 import {
@@ -28,6 +29,7 @@ import { AgentConfig } from "./config";
 import { Installer } from "./Installer";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { SessionSupervisor } from "./SessionSupervisor";
+import { WorkerMonitor } from "./WorkerMonitor";
 
 export const RECONNECT_MIN = Duration.seconds(1);
 export const RECONNECT_MAX = Duration.seconds(30);
@@ -53,6 +55,7 @@ export const run = Effect.gen(function* () {
   const supervisor = yield* SessionSupervisor;
   const installer = yield* Installer;
   const committer = yield* ProfileCommitter;
+  const monitor = yield* WorkerMonitor;
   const protocol = RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
       BunSocket.layerWebSocket(config.orchestratorUrl, {
@@ -71,11 +74,12 @@ export const run = Effect.gen(function* () {
   const carry: Array<AgentReport> = [];
 
   /**
-   * Отчёты сессий и установок в одной очереди (порядок внутри источника
-   * сохраняется); перекачка идёт всё время жизни агента, и со связью, и без.
+   * Отчёты сессий, установок и снимки загрузки в одной очереди (порядок внутри
+   * источника сохраняется); перекачка идёт всё время жизни агента, и со связью,
+   * и без.
    */
   const outbox = yield* Queue.unbounded<AgentReport>();
-  for (const source of [supervisor.reports, installer.reports])
+  for (const source of [supervisor.reports, installer.reports, monitor.reports])
     yield* Queue.take(source).pipe(
       Effect.flatMap((report) => Queue.offer(outbox, report)),
       Effect.forever,
@@ -100,6 +104,8 @@ export const run = Effect.gen(function* () {
       running: yield* supervisor.snapshot,
       roles: config.roles,
       installs: installer.running(),
+      hardware: yield* monitor.hardware,
+      versions: yield* monitor.versions,
     };
     yield* Effect.logInfo("Connecting to orchestrator", {
       url: config.orchestratorUrl,
@@ -170,5 +176,5 @@ export const run = Effect.gen(function* () {
 export const layer: Layer.Layer<
   never,
   never,
-  AgentConfig | SessionSupervisor | Installer | ProfileCommitter
+  AgentConfig | SessionSupervisor | Installer | ProfileCommitter | WorkerMonitor
 > = Layer.effectDiscard(run.pipe(Effect.forkScoped));
