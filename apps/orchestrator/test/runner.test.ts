@@ -433,6 +433,36 @@ describe("scheduler", () => {
         ]);
       }),
     ));
+
+  it("draining worker gets no new sessions, undrain places the queued one", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w-a", 1);
+        yield* db
+          .update(workers)
+          .set({ draining: true })
+          .where(eq(workers.id, "w-a"));
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+        expect((yield* sessionRow("s1")).state).toBe("queued");
+        expect(fake.sent).toEqual([]);
+
+        yield* db
+          .update(workers)
+          .set({ draining: false })
+          .where(eq(workers.id, "w-a"));
+        yield* Scheduler.tick(t0);
+        like(yield* sessionRow("s1"), {
+          state: "starting",
+          workerId: "w-a",
+          slot: 0,
+        });
+      }),
+    ));
 });
 
 describe("session runner", () => {

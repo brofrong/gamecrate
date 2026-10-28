@@ -522,6 +522,30 @@ describe("install jobs", () => {
       }),
     ));
 
+  it("draining gamestore worker gets no install jobs", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs", ["gamestore"], 1);
+        yield* db
+          .update(workers)
+          .set({ draining: true })
+          .where(eq(workers.id, "gs"));
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { appId: DOTA, state: "queued", workerId: null });
+
+        yield* dispatcher.tick(at(t0, 2));
+        like(yield* onlyJob(), { state: "queued", workerId: null });
+        expect(installCommands(fake)).toEqual([]);
+      }),
+    ));
+
   it("owner without a Steam login sees the login hint, other waiters the generic reason", () =>
     run((fake) =>
       Effect.gen(function* () {

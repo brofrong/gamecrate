@@ -8,8 +8,10 @@ import {
   type AgentReport,
   type AgentRoles,
   type RunningSession,
+  type WorkerHardware,
+  type WorkerVersions,
 } from "@cg/rpc";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   type Cause,
   Context,
@@ -29,8 +31,11 @@ export interface WorkerInfo {
   readonly slots: number;
   /** Слот `i` — UDP-порт `udpPortBase + i`. В БД не хранится. */
   readonly udpPortBase: number;
-  /** `worker` — принимает сессии, `gamestore` — установки игр. В БД не хранится. */
+  /** `worker` — принимает сессии, `gamestore` — установки игр; пишется в `workers.roles`. */
   readonly roles: AgentRoles;
+  /** Снимок железа и версий воркера (админка); нет в `agent.connect` → `undefined`, в БД — `null`. */
+  readonly hardware?: WorkerHardware | undefined;
+  readonly versions?: WorkerVersions | undefined;
 }
 
 /**
@@ -116,6 +121,9 @@ const make = Effect.gen(function* () {
         id: info.workerId,
         publicIp: info.publicIp,
         slots: info.slots,
+        roles: [...info.roles],
+        hardware: info.hardware ?? null,
+        versions: info.versions ?? null,
         lastSeenAt: now,
       })
       .onConflictDoUpdate({
@@ -123,6 +131,9 @@ const make = Effect.gen(function* () {
         set: {
           publicIp: sql`excluded.public_ip`,
           slots: sql`excluded.slots`,
+          roles: sql`excluded.roles`,
+          hardware: sql`excluded.hardware`,
+          versions: sql`excluded.versions`,
           lastSeenAt: now,
         },
       });
@@ -229,6 +240,16 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const workerId = byClient.get(clientId);
       if (workerId === undefined) return yield* new AgentNotConnected();
+      // Снимок загрузки — только в БД (история не нужна), без публикации в
+      // PubSub: подписчики хаба (SessionRunner и т.п.) его не ждут.
+      if (agentReport._tag === "WorkerStats") {
+        yield* db
+          .update(workers)
+          .set({ stats: agentReport.stats, statsAt: new Date() })
+          .where(eq(workers.id, workerId))
+          .pipe(Effect.orDie);
+        return;
+      }
       yield* PubSub.publish(events, {
         _tag: "Report",
         workerId,
