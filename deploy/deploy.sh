@@ -6,7 +6,8 @@
 # вручную (см. README.md). Этот скрипт его никогда не перезаписывает и не выводит значения;
 # единственное изменение — дописать строки AGENT_TOKEN, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY,
 # PROFILE_KEY из локального .env.production, если таких ключей на сервере ещё нет.
-# Из серверного .env читаются только несекретные пути CG_DATA_DIR, SCRATCH_DIR и STEAM_CLIENT_DIR.
+# Из серверного .env читаются только несекретные пути CG_DATA_DIR, SCRATCH_DIR,
+# STEAM_CLIENT_DIR и STEAM_CLIENT_PARENT.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -106,8 +107,9 @@ append_secret PROFILE_KEY base64_32 "base64 ровно 32 байт" "openssl ran
 echo "==> каталоги библиотеки, клиента Steam и scratch"
 # Владелец — brofrong (uid 1000), без sudo. Пустой <STEAM_CLIENT_DIR>/steamapps нужен до первой
 # сессии: overlay библиотеки монтируется внутрь overlay клиента, без каталога Docker создал бы его от
-# root. Значения по умолчанию — как в compose.yaml (CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR); в
-# .env — без кавычек.
+# root. Значения по умолчанию — как в compose.yaml (CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR,
+# STEAM_CLIENT_PARENT); в .env — без кавычек. STEAM_CLIENT_PARENT создаётся отдельно от
+# STEAM_CLIENT_DIR (а не через dirname) — так же, как его читает compose.yaml для своего bind.
 ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" <<'REMOTE'
 set -euo pipefail
 envval() { local v; v="$(sed -n "s/^$1=//p" ~/"${REMOTE_DIR}"/.env | tail -n 1)"; printf '%s' "${v:-$2}"; }
@@ -115,8 +117,9 @@ REMOTE_DIR="$1"
 data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
 scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming-scratch)"
 client="$(envval STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client)"
+client_parent="$(envval STEAM_CLIENT_PARENT /home/brofrong/cloud-gaming-steam)"
 dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/install-scratch" "${scratch}"
-  "$(dirname "${client}")" "${client}" "${client}/steamapps")
+  "${client_parent}" "${client}" "${client}/steamapps")
 mkdir -p "${dirs[@]}"
 for d in "${dirs[@]}"; do
   if [ "$(stat -c %u "${d}")" != 1000 ]; then

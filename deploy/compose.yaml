@@ -122,11 +122,18 @@ services:
   # от root, и агент с uid 1000 не смог бы в нём писать).
   # STEAM_CLIENT_DIR (шаблон клиента Steam) — на NVMe, а не в CG_DATA_DIR на HDD: с
   # холодного кэша Steam читал его с RAID и стартовал 50–90 с вместо ~16. Агент передаёт
-  # его dockerd как lower overlay, а в сам агент он смонтирован отдельно, read_only —
-  # только чтобы прочитать mtime каталога (дата сборки шаблона для блока «Версии»
-  # админки, см. hostProbe.ts/WorkerMonitor.ts); писать агент туда не должен.
-  # Значения по умолчанию CG_DATA_DIR, SCRATCH_DIR и STEAM_CLIENT_DIR повторены в
-  # deploy.sh, README и build-steam-client.sh — менять вместе.
+  # его dockerd как lower overlay по пути хоста (не через bind ниже), а в сам агент
+  # нужен только на чтение — mtime каталога для даты сборки шаблона в блоке «Версии»
+  # админки (hostProbe.ts/WorkerMonitor.ts); писать агент туда не должен.
+  # В агент смонтирован не сам STEAM_CLIENT_DIR, а его родитель STEAM_CLIENT_PARENT
+  # (read_only), и именно по этой причине: build-steam-client.sh заменяет каталог
+  # `mv -T --exchange` — bind конкретного пути (STEAM_CLIENT_DIR) держал бы старый
+  # inode после обмена (bind-mount помнит дентри на момент монтирования, а не путь),
+  # и mtime навсегда остался бы от прошлой сборки. Bind родителя при каждом обращении
+  # резолвит имя заново и видит актуальный каталог.
+  # Значения по умолчанию CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR и
+  # STEAM_CLIENT_PARENT повторены в deploy.sh, README и build-steam-client.sh —
+  # менять вместе.
   # GPU (capabilities: [utility], без него у cg-agent GPU нет) — только чтобы
   # NVIDIA Container Toolkit подложил nvidia-smi и NVML для метрик админки;
   # видеопамять и вычисления агент не занимает (это не сессия).
@@ -155,6 +162,8 @@ services:
       DOCKER_SOCKET: /var/run/docker.sock
       ROLES: ${ROLES:-worker,gamestore}
       LIBRARY_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/library
+      # Родитель — STEAM_CLIENT_PARENT (по умолчанию /home/brofrong/cloud-gaming-steam,
+      # см. волюм ниже и комментарий выше про bind родителя, а не самого каталога).
       STEAM_CLIENT_DIR: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
       INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/install-scratch
       SCRATCH_DIR: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
@@ -180,8 +189,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
-        target: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
+        source: ${STEAM_CLIENT_PARENT:-/home/brofrong/cloud-gaming-steam}
+        target: ${STEAM_CLIENT_PARENT:-/home/brofrong/cloud-gaming-steam}
         read_only: true
         bind:
           create_host_path: false
