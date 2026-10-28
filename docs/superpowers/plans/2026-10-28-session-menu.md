@@ -4,7 +4,8 @@
 
 **Goal:** Вместо «Выйти из игры» поверх стрима — неприметная кнопка меню (качество, отладка,
 «Закончить игру») с подсказкой новичку, кнопка «На весь экран» с захватом клавиш и отладочная
-статистика «Коротко»/«Подробно»; настройки и признак «меню уже открывали» хранятся в аккаунте.
+статистика «Коротко»/«Подробно»; настройки и признак «меню уже открывали» хранятся в аккаунте;
+разрешение применяется только со следующей игры (оркестратор → `StartSession` → env контейнера).
 
 **Architecture:** Настройки — строка `user_stream_settings` (jsonb) на пользователя, группа RPC
 `streamSettings.*`; веб держит их локально (`useStreamSettings`), сохраняет с debounce и применяет к
@@ -13,17 +14,22 @@ iframe, на каждое `serverSettings` Selkies и на каждое изме
 WebRTC не отвечает на `getStats`, поэтому мост включает его сбор (`statsOpen`) и раз в секунду читает
 `window.stream_stats.latest`/`window.stream_client` окна iframe; время кадра — `requestVideoFrameCallback`
 на `<video>` Selkies (у WebRTC-пути `sink: "<video> element"`); минутное окно и перцентили — чистый
-модуль `streamStats.ts`. «Авто» на сервере — `SELKIES_CONGESTION_CONTROL=true` в образе, перетег —
+модуль `streamStats.ts`. Разрешение в идущей сессии не меняется никогда (Unity-игры падают на смене
+XRandR): мост не шлёт Selkies сообщений о разрешении, оркестратор читает настройки пользователя при
+размещении и передаёт размер экрана в `StartSession.display`, агент ставит по нему
+`SELKIES_MANUAL_WIDTH/HEIGHT` и `DISPLAY_SIZEW/H` (белый список с откатом на 1920×1080 на обеих
+сторонах). «Авто» на сервере — `SELKIES_CONGESTION_CONTROL=true` в образе, перетег —
 только по слову владельца.
 
 **Tech Stack:** Bun, Effect 4 (`effect/rpc`, `effect/reactivity`, Schema), drizzle-orm 1.0 rc +
 Postgres, React 19 + TanStack Router + Tailwind 4 + shadcn (`radix-ui` 1.8.1: Popover, Switch,
 Slider, ToggleGroup), `bun test` + Testing Library (happy-dom).
 
-**Spec:** `docs/superpowers/specs/2026-10-28-session-menu-design.md` (одобрена владельцем). Факты о
+**Spec:** `docs/superpowers/specs/2026-10-28-session-menu-design.md` (одобрена владельцем; §4.1 —
+слово владельца 2026-10-28 «Применять со следующей игры»). Факты о
 Selkies сверены по `selkies-core.js` образа (копия `/tmp/selkies-src/selkies-core.js`): путь WebRTC —
-обработчик `message` с `case "settings"` (→ `vb,<n>`), `setManualResolution`,
-`resetResolutionToWindow`, `statsOpen`, `requestFullscreen`; `getStats`/ответ `stats` есть только в
+обработчик `message` с `case "settings"` (→ `vb,<n>`), `statsOpen`, `requestFullscreen` (сообщения о
+разрешении есть, но не используются — §4.1); `getStats`/ответ `stats` есть только в
 другом (websockets) пути; `serverSettings` Selkies шлёт `window.postMessage` в своё окно после
 применения настроек сервера (в т.ч. «server-enforced manual resolution» 1920×1080 из
 `SELKIES_MANUAL_WIDTH/HEIGHT`).
@@ -33,13 +39,17 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 - Тексты интерфейса — точно как в спеке: кнопки «На весь экран» и меню (`aria-label` «Меню», иконка
   `lucide-react` `Menu`; у полноэкранной — `Maximize`); плашка «Здесь **настройки игры** и выход»;
   разделы «Качество», «Отладка»; переключатель «Авто — под вашу сеть»; ползунок «Битрейт» (значение
-  «N Мбит/с»), под ним мелко «максимум; при плохой сети будет ниже»; «Разрешение»: «По окну» /
-  «720p» / «1080p» / «1440p»; отладка «Выкл» / «Коротко» / «Подробно»; «Закончить игру» → диалог
+  «N Мбит/с»), под ним мелко «максимум; при плохой сети будет ниже»; «Разрешение»: «720p» /
+  «1080p» / «1440p», под ним мелко «со следующего запуска» («По окну» нет); отладка «Выкл» /
+  «Коротко» / «Подробно»; «Закончить игру» → диалог
   «Закончить игру? Прогресс сохранится.» / «Игра закроется, сохранения синхронизируются со Steam
   Cloud.» / «Продолжить играть» / «Закончить игру» (тексты нынешнего `ExitButton`).
 - Значения: битрейт 2–40 Мбит/с (целые), потолок «Авто» 20 Мбит/с; разрешения 720p = 1280×720,
-  1080p = 1920×1080, 1440p = 2560×1440; окно статистики 60 с, обновление раз в 1 с, порог плохого
+  1080p = 1920×1080, 1440p = 2560×1440 — единственные допустимые размеры экрана (белый список и в
+  оркестраторе, и в агенте; иное, «Авто», нет настроек, нет поля в команде — 1920×1080); окно статистики 60 с, обновление раз в 1 с, порог плохого
   кадра 25 мс; сбор статистики — только при отладке не «Выкл».
+- Разрешение идущей сессии не меняется: веб не шлёт `setManualResolution`/`resetResolutionToWindow`;
+  новое поле протокола агента — необязательное (`Schema.optional`), старый агент/оркестратор работают.
 - Не цели: частота кадров, кодек, звук, микрофон, горячая клавиша меню, мобильная вёрстка.
 - Не сломать: iframe — первый ребёнок `<main>` в `Player` (не переподключается), экран загрузки
   поверх скрытого стрима (`hidden`/`inert`), `IdlePrompt`, `useInputActivity` (`onFrameLoad` по-прежнему
@@ -68,14 +78,13 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 
 ## Review Focus
 
-1. **Unity-игра и смена разрешения.** `images/session/Dockerfile` фиксирует 1920×1080, потому что
-   Unity-игры (Vampire Survivors) падают на смене выходов XRandR. Поэтому «Авто» шлёт
-   `setManualResolution 1920×1080` (то же, что сегодня), а не «По окну»; «По окну» и смена
-   разрешения — только явный выбор игрока. Тест — Task 2, `auto keeps the image resolution`;
-   живая проверка — Task 7, шаг Unity.
-2. **Selkies перезаписывает наши настройки после подключения** (server-enforced 1920×1080, свой
-   `localStorage` от прошлой сессии на общем origin, перезагрузка iframe по 5xx): настройки
-   повторно применяются на `serverSettings` и на каждый `load`, старый слушатель снимается. Тесты —
+1. **Unity-игра и смена разрешения.** Unity-игры (Vampire Survivors) падают на смене выходов XRandR
+   (`images/session/Dockerfile`). Ни выбор в меню, ни перезагрузка iframe, ни `localStorage` Selkies
+   с разрешением прошлой сессии не должны менять экран идущей сессии. Тесты — Task 2, `bridge never
+   sends resolution messages`; Task 1.1, `StartSession carries the stored display size`, `session
+   env gets the commanded display size`; живая проверка — Task 7, шаг Unity (сессия 720p, затем 1080p).
+2. **Selkies перезаписывает наш битрейт после подключения** (настройки сервера, свой `localStorage`
+   от прошлой сессии на общем origin, перезагрузка iframe по 5xx): битрейт повторно применяется на `serverSettings` и на каждый `load`, старый слушатель снимается. Тесты —
    Task 2, `serverSettings re-applies the current settings`, `reattach drops the old listener`.
 3. **Вкладка свёрнута / видео на паузе:** промежуток в десятки секунд между кадрами не должен
    считаться одним кадром (испортил бы p99, макс и 1% low). Тест — Task 3, `gaps over a second are
@@ -107,18 +116,23 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
   - `@cg/rpc`:
     ```ts
     StreamQuality = Schema.Literals(["auto", "manual"])
-    StreamResolution = Schema.Literals(["window", "720p", "1080p", "1440p"])
+    StreamResolution = Schema.Literals(["720p", "1080p", "1440p"])
     DebugMode = Schema.Literals(["off", "short", "detailed"])
     minBitrateMbps = 2; maxBitrateMbps = 40; autoBitrateMbps = 20
     StreamSettings = Schema.Struct({
       quality: StreamQuality,
       bitrateMbps: Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 40 })), // ручной потолок
-      resolution: StreamResolution,                                                 // ручной режим
+      resolution: StreamResolution,                                                 // ручной режим, со следующей игры
       debug: DebugMode,
       menuSeen: Schema.Boolean,                                                     // меню уже открывали
     })
     defaultStreamSettings: StreamSettings = { quality: "auto", bitrateMbps: 20, resolution: "1080p", debug: "off", menuSeen: false }
     decodeStreamSettings(value: unknown): StreamSettings
+    type DisplaySize = { readonly width: number; readonly height: number }
+    streamDisplaySizes: Record<StreamResolution, DisplaySize>   // 720p 1280×720, 1080p 1920×1080, 1440p 2560×1440
+    defaultDisplaySize: DisplaySize = { width: 1920, height: 1080 }
+    displaySizeOf(settings: StreamSettings): DisplaySize         // «Авто» → defaultDisplaySize
+    allowedDisplaySize(value: unknown): DisplaySize              // не из белого списка → defaultDisplaySize
     StreamSettingsRpcs = RpcGroup.make(
       Rpc.make("streamSettings.get", { success: StreamSettings }),
       Rpc.make("streamSettings.save", { payload: StreamSettings, success: StreamSettings }),
@@ -142,7 +156,10 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
   - `packages/rpc/test/streamSettings.test.ts`: `schema rejects bitrate 1, 41 and 2.5`;
     `decode falls back per field`: `decodeStreamSettings({ quality: "turbo", bitrateMbps: 99, debug: "detailed", menuSeen: true, extra: 1 })`
     → `{ ...defaultStreamSettings, debug: "detailed", menuSeen: true }` (без `extra`);
-    `"garbage"`, `null`, `[]` → `defaultStreamSettings`.
+    `"garbage"`, `null`, `[]` → `defaultStreamSettings`; `resolution: "window"` (старое значение) → `"1080p"`.
+    `display size`: `displaySizeOf` ручной `720p` → 1280×720, `1440p` → 2560×1440, «Авто» с `1440p` →
+    1920×1080; `allowedDisplaySize({ width: 2560, height: 1440 })` → то же, `{ 1000, 700 }`,
+    `{ 1280, 1080 }`, `undefined`, `"1080p"` → 1920×1080.
   - `apps/api/test/streamSettings.test.ts`: `get returns defaults when nothing is stored`;
     `save then get returns the saved value` (второй `save` перезаписывает, строка одна);
     `broken stored value falls back per field` (сырая вставка jsonb как выше);
@@ -169,6 +186,46 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 - [ ] **Step 4: Run** те же тесты — PASS; затем пакеты целиком и `bun run check --force`.
 - [ ] **Step 5: Commit** `feat: настройки стрима в аккаунте — таблица, RPC streamSettings, хук веба`.
 
+### Task 1.1: Разрешение со следующей игры — оркестратор → `StartSession` → env контейнера
+
+**Files:**
+- Modify: `packages/rpc/src/agent.ts` (`StartSession`, комментарий у `AgentCommand`)
+- Modify: `apps/orchestrator/src/SessionRepo.ts` (чтение настроек), `apps/orchestrator/src/Scheduler.ts` (`tick`)
+- Modify: `apps/agent/src/SessionSupervisor.ts` (`sessionSpec`)
+- Modify: `images/session/Dockerfile` (комментарий у `SELKIES_MANUAL_WIDTH/HEIGHT`: значения образа —
+  умолчание, агент задаёт их на сессию)
+- Test: `apps/orchestrator/test/runner.test.ts` (describe `scheduler`), `apps/agent/test/supervisor.test.ts`;
+  прежние ожидания `StartSession` в `runner.test.ts`, `install.test.ts`, `agentHub.test.ts` дополнить
+  `display: { width: 1920, height: 1080 }`
+
+**Interfaces:**
+- Consumes: Task 1 — `userStreamSettings`, `decodeStreamSettings`, `displaySizeOf`, `allowedDisplaySize`,
+  `defaultDisplaySize`, `DisplaySize`.
+- Produces:
+  - `StartSession.display: Schema.optional(Schema.Struct({ width: Schema.Int, height: Schema.Int }))` —
+    размер экрана сессии; нет поля — 1920×1080.
+  - Оркестратор: `SessionRepo.displaySizeFor(userId: string): Effect.Effect<DisplaySize, never, Db>` —
+    строка `user_stream_settings` → `decodeStreamSettings` → `displaySizeOf` → `allowedDisplaySize`;
+    строки нет — `defaultDisplaySize`. `tick` кладёт результат в `display` каждой `StartSession`.
+  - Агент: `sessionSpec` добавляет в `env` `SELKIES_MANUAL_WIDTH`, `SELKIES_MANUAL_HEIGHT`,
+    `DISPLAY_SIZEW`, `DISPLAY_SIZEH` из `allowedDisplaySize(command.display)` (строки).
+
+- [ ] **Step 1: Write the failing tests:**
+  - `runner.test.ts` › `StartSession carries the stored display size`: у `u1` строка
+    `{ quality: "manual", resolution: "720p", … }` → `display: { width: 1280, height: 720 }`; у `u1`
+    `{ quality: "auto", resolution: "1440p" }` → 1920×1080; строки нет → 1920×1080; `value` = `"garbage"`
+    → 1920×1080.
+  - `supervisor.test.ts` › `session env gets the commanded display size`: `{ ...start, display: { width: 2560, height: 1440 } }`
+    → в `env` `SELKIES_MANUAL_WIDTH: "2560"`, `SELKIES_MANUAL_HEIGHT: "1440"`, `DISPLAY_SIZEW: "2560"`,
+    `DISPLAY_SIZEH: "1440"`; `display: { width: 1000, height: 700 }` и без `display` → `"1920"`/`"1080"`.
+    `start creates container with slot port, labels, overlay mounts and env` — те же четыре ключа с 1920/1080.
+- [ ] **Step 2: Run** `cd apps/orchestrator && TEST_DATABASE_URL=postgres://cg:cg@127.0.0.1:5442/postgres bun test test/runner.test.ts`;
+  `cd apps/agent && bun test test/supervisor.test.ts` — FAIL.
+- [ ] **Step 3: Implement** поле протокола, `displaySizeFor`, `tick`, `sessionSpec`, комментарий в Dockerfile.
+- [ ] **Step 4: Run** `apps/orchestrator`, `apps/agent` целиком (`bun test`, оркестратор — с `TEST_DATABASE_URL`),
+  `bun run check --force` — PASS/чисто.
+- [ ] **Step 5: Commit** `feat: разрешение стрима со следующей игры — StartSession и env контейнера`.
+
 ### Task 2: Мост к Selkies
 
 **Files:**
@@ -179,14 +236,10 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 - Consumes: Task 1 — `StreamSettings`, `autoBitrateMbps`.
 - Produces:
   ```ts
-  STREAM_RESOLUTIONS = { "720p": { width: 1280, height: 720 }, "1080p": { width: 1920, height: 1080 }, "1440p": { width: 2560, height: 1440 } } as const
-  AUTO_RESOLUTION = STREAM_RESOLUTIONS["1080p"]   // разрешение образа; см. Review Focus 1
-  type SelkiesMessage =
+  type SelkiesMessage =                                           // о разрешении сообщений нет (§4.1)
     | { type: "settings"; settings: { video_bitrate: number } }   // кбит/с
-    | { type: "setManualResolution"; width: number; height: number }
-    | { type: "resetResolutionToWindow" }
     | { type: "statsOpen"; open: boolean }
-  settingsMessages(settings: StreamSettings): ReadonlyArray<SelkiesMessage>          // [битрейт, разрешение]
+  settingsMessages(settings: StreamSettings): ReadonlyArray<SelkiesMessage>          // [битрейт]
   changedSettingsMessages(prev: StreamSettings, next: StreamSettings): ReadonlyArray<SelkiesMessage>
   type SelkiesSample = { fps: number | null; mbps: number | null; rttMs: number | null; decodeMs: number | null;
     jitterMs: number | null; lossPercent: number | null; framesDropped: number | null; codec: string | null; resolution: string | null }
@@ -205,12 +258,13 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
   `resolution`. Не число/не строка — `null`.
 
 - [ ] **Step 1: Write the failing tests** (фейковые `frame`/окно: `{ contentWindow: { postMessage: mock(), addEventListener, removeEventListener } } as unknown as HTMLIFrameElement`):
-  - `auto keeps the image resolution`: `settingsMessages(defaultStreamSettings)` →
-    `[{ type: "settings", settings: { video_bitrate: 20000 } }, { type: "setManualResolution", width: 1920, height: 1080 }]`.
-  - `manual sends the chosen ceiling and resolution`: `{ quality: "manual", bitrateMbps: 8, resolution: "720p" }`
-    → `video_bitrate: 8000`, `1280×720`; `resolution: "window"` → `{ type: "resetResolutionToWindow" }`.
+  - `auto sends the 20 Mbit ceiling`: `settingsMessages(defaultStreamSettings)` →
+    `[{ type: "settings", settings: { video_bitrate: 20000 } }]`; ручной `bitrateMbps: 8` → `8000`.
+  - `bridge never sends resolution messages`: `settingsMessages` и `changedSettingsMessages` для
+    `resolution` `720p`/`1080p`/`1440p` в ручном и авто-режиме не содержат ни одного сообщения, кроме
+    `settings`; смена только `resolution` → `[]`.
   - `only changed values are sent`: смена только битрейта → один `settings`; смена `debug`/`menuSeen` → `[]`;
-    `auto` → `manual` при умолчаниях (20, 1080p) → `[]`.
+    `auto` → `manual` при умолчаниях (20) → `[]`.
   - `attach posts all settings with the page origin`: `postMessage` вызван с каждым сообщением и
     `"http://localhost:3000"`.
   - `serverSettings re-applies the current settings`: после `attach` слушатель окна iframe получает
@@ -228,7 +282,8 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 - [ ] **Step 3: Implement** `selkiesBridge.ts`. Отправка —
   `frame.contentWindow.postMessage(msg, window.location.origin)` в `try`; слушатель — `message` на
   `frame.contentWindow` (Selkies шлёт `serverSettings` в своё окно, родителю не пишет). Шапка файла —
-  кратко факты §5 спеки с поправкой про `getStats` (см. заголовок плана).
+  кратко факты §5 спеки с поправкой про `getStats` (см. заголовок плана) и почему разрешение здесь не
+  трогается (§4.1).
 - [ ] **Step 4: Run** тот же тест — PASS; `bun run check --force`.
 - [ ] **Step 5: Commit** `feat(web): мост к Selkies — настройки стрима и чтение статистики`.
 
@@ -318,7 +373,9 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
 `AlertDialog` (управляемый); его закрытие тоже возвращает фокус в стрим. Ползунок: значение на экране
 меняется при перетаскивании, `update({ bitrateMbps })` — в `onValueCommit`. Переключатель «Авто»:
 `update({ quality: checked ? "auto" : "manual" })`; ползунок и «Разрешение» видны только в ручном
-режиме; «Разрешение» и «Отладка» — `ToggleGroup type="single"` (пустой выбор игнорировать).
+режиме; «Разрешение» (720p/1080p/1440p, подпись «со следующего запуска») и «Отладка» —
+`ToggleGroup type="single"` (пустой выбор игнорировать). Выбор разрешения только сохраняется
+(`update`), к стриму не применяется.
 
 - [ ] **Step 1: Write the failing tests** (`sessionMenu.test.tsx`; `Player` в `playing` с фейковым
   `bridge` из `mock()` и `streamSettings` из теста; `HTMLElement.prototype.requestFullscreen`,
@@ -331,7 +388,9 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
     `menuSeen` не вызывает.
   - `auto hides manual controls`: в «Авто» нет «Битрейт»/«Разрешение»; клик по «Авто — под вашу сеть»
     → `update({ quality: "manual" })`; при `manual` — ползунок со значением «20 Мбит/с», подпись
-    «максимум; при плохой сети будет ниже», клик «720p» → `update({ resolution: "720p" })`.
+    «максимум; при плохой сети будет ниже», варианты разрешения ровно «720p»/«1080p»/«1440p» (нет
+    «По окну»), подпись «со следующего запуска», клик «720p» → `update({ resolution: "720p" })`, а
+    `bridge.update` получает `next.resolution = "720p"` (сообщений о разрешении мост не шлёт — Task 2).
   - `slider commits on release`: фокус на бегунке, `ArrowRight` → `update({ bitrateMbps: 21 })`.
   - `debug mode switch`: «Подробно» → `update({ debug: "detailed" })`.
   - `end game asks for confirmation`: «Меню» → «Закончить игру» → диалог «Закончить игру? Прогресс
@@ -453,12 +512,14 @@ Selkies сверены по `selkies-core.js` образа (копия `/tmp/sel
   `ssh brofrong 'docker exec cg-postgres psql -U cg -d cloud_gaming -c "\d user_stream_settings"'`.
 - [ ] **Step 2:** ручная проверка владельцем в Chrome: подсказка видна до первого открытия и не
   возвращается в другом браузере; настройки переживают новую сессию; ручной битрейт 5 Мбит/с —
-  в «Коротко» битрейт ≤ 5; 720p — разрешение в статистике 1280×720; полный экран: короткий Esc и
+  в «Коротко» битрейт ≤ 5; 720p — в идущей сессии разрешение не меняется, в следующей статистика
+  показывает 1280×720 с самого начала (`docker inspect` контейнера: `SELKIES_MANUAL_WIDTH=1280`); полный экран: короткий Esc и
   Alt+Tab уходят в игру, удержание Esc выходит; после закрытия меню клавиши идут в игру;
   «Подробно» — графики и таблица правдоподобны, 1% low не выше FPS.
-- [ ] **Step 3:** Unity-игра (Vampire Survivors): «По окну» + вход/выход из полного экрана и
-  переключение 720p ↔ 1080p во время игры — игра не падает. Падает — стоп, к владельцу (варианты:
-  скрыть «По окну»/смену разрешения во время игры для таких игр или оставить с предупреждением).
+- [ ] **Step 3:** Unity-игра (Vampire Survivors): сессия в 720p, затем сессия в 1080p (в
+  `localStorage` Selkies осталось 1280×720 от прошлой); в каждой — вход/выход из полного экрана и
+  выбор другого разрешения в меню во время игры — игра не падает, разрешение в статистике всё время
+  то, с которым сессия стартовала. Падает или разрешение «прыгает» при подключении — стоп, к владельцу.
 - [ ] **Step 4:** в консоли страницы и логах `cg-api` нет имени аккаунта Steam (`grep -c`, значение
   не печатать).
 - [ ] **Step 5: Commit** `docs: проверка меню сессии владельцем`.
