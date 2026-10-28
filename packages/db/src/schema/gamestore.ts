@@ -42,6 +42,7 @@ export type InstallJobState = (typeof installJobStates)[number];
 export const installStages = [
   "preparing",
   "login",
+  "library",
   "downloading",
   "moving",
 ] as const;

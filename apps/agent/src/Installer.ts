@@ -481,7 +481,8 @@ const make = Effect.gen(function* () {
       );
 
   /**
-   * Опрос манифеста цели: `InstallProgress` при изменении байтов загрузки, итог
+   * Опрос манифеста цели: этап `downloading`, как только у цели появился
+   * размер загрузки, `InstallProgress` при изменении байтов загрузки, итог
    * — поля манифеста со `StateFlags 4`. Ход установки — любое изменение байтов
    * загрузки и распаковки (`BytesStaged`: после загрузки Steam распаковывает и
    * проверяет) или `StateFlags`, а также любое изменение байтов/состояния
@@ -503,6 +504,7 @@ const make = Effect.gen(function* () {
       let lastState: string | undefined;
       let lastActivity: string | undefined;
       let lastReported: number | undefined;
+      let downloadStarted = false;
       let changedAt = yield* Clock.currentTimeMillis;
       while (true) {
         const fields = yield* readManifest(job);
@@ -512,6 +514,14 @@ const make = Effect.gen(function* () {
         const bytesTotal = count(fields?.BytesToDownload);
         if (manifestBytes !== undefined && bytesTotal !== undefined) {
           let bytesDownloaded = manifestBytes;
+          if (bytesTotal > 0 && !downloadStarted) {
+            downloadStarted = true;
+            yield* emit({
+              _tag: "InstallStage",
+              jobId: job.jobId,
+              stage: "downloading",
+            });
+          }
           if (bytesTotal > 0) {
             const downloading = yield* measureDownloading(downloadingDir(job));
             bytesDownloaded = Math.max(bytesDownloaded, downloading);
@@ -735,11 +745,10 @@ const make = Effect.gen(function* () {
       });
       yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "login" });
       yield* waitForSteamLogon(job, logOffset);
-      yield* emit({
-        _tag: "InstallStage",
-        jobId: job.jobId,
-        stage: "downloading",
-      });
+      // Вход принят, но до скачивания Steam ещё десятки секунд готовится
+      // (данные библиотеки, общие компоненты Windows): `downloading` — когда у
+      // цели появится размер загрузки (`watch`).
+      yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "library" });
       return yield* watch(job);
     });
 

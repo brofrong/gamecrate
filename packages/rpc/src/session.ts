@@ -46,12 +46,14 @@ export type SessionStage = typeof SessionStage.Type;
 /**
  * Этап задачи установки игры в общую библиотеку (спека §2 «Этапы», установка):
  * `preparing` — готовим установщик (контейнер создаётся и стартует), `login` —
- * входим в Steam, `downloading` — скачиваем игру, `moving` — переносим игру в
- * библиотеку.
+ * входим в Steam, `library` — Steam вошёл и готовит загрузку (данные
+ * библиотеки, общие компоненты), а размера загрузки у игры ещё нет,
+ * `downloading` — скачиваем игру, `moving` — переносим игру в библиотеку.
  */
 export const InstallStage = Schema.Literals([
   "preparing",
   "login",
+  "library",
   "downloading",
   "moving",
 ]);

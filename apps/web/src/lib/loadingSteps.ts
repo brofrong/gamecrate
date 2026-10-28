@@ -23,8 +23,9 @@ type LaunchStage = Exclude<SessionStage, "visible">;
 type TimedInstallStage = Exclude<InstallStage, "downloading">;
 
 /**
- * Ориентировочные длительности этапов, мс (замеры 2026-10-27). Только для полоски
- * внутри этапа: она ползёт к концу этапа, но не доходит до следующего.
+ * Ориентировочные длительности этапов, мс (замеры 2026-10-27: запуск — 20 Minutes
+ * Till Dawn, установка — Peglin и Balatro). Только для полоски внутри этапа: она
+ * ползёт к концу этапа, но не доходит до следующего.
  */
 export const STAGE_MS: {
   readonly launch: Readonly<Record<LaunchStage, number>>;
@@ -37,7 +38,7 @@ export const STAGE_MS: {
     prepare: 30_000,
     loading: 15_000,
   },
-  install: { preparing: 20_000, login: 30_000, moving: 20_000 },
+  install: { preparing: 5_000, login: 45_000, library: 45_000, moving: 15_000 },
 };
 
 /** Потолок доли внутри этапа: полоска не доходит до следующего этапа, пока он не начался. */
@@ -54,6 +55,7 @@ const launchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
 const installSteps: ReadonlyArray<readonly [InstallStage, string]> = [
   ["preparing", "Готовим установщик"],
   ["login", "Входим в Steam"],
+  ["library", "Steam готовит загрузку"],
   ["downloading", "Скачиваем игру"],
   ["moving", "Переносим игру в библиотеку"],
 ];
