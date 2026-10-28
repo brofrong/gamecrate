@@ -5,6 +5,8 @@ import {
   formatBytes,
   formatDuration,
   formatUsage,
+  installProgressLabel,
+  installStageLabel,
   purposeLabel,
   sessionStageLabel,
 } from "../src/lib/adminFormat";
@@ -96,5 +98,26 @@ describe("sessionStageLabel", () => {
     expect(sessionStageLabel("playing", "loading")).toBe("Загружаем игру");
     expect(sessionStageLabel("queued", null)).toBe("Ждём свободный сервер");
     expect(sessionStageLabel("failed", null)).toBe("сбой");
+  });
+});
+
+describe("installStageLabel", () => {
+  it("queued — «В очереди», иначе этап как на экране загрузки установки", () => {
+    expect(installStageLabel("queued", null)).toBe("В очереди");
+    expect(installStageLabel("running", "downloading")).toBe(
+      "Скачиваем игру",
+    );
+    expect(installStageLabel("running", "moving")).toBe(
+      "Переносим игру в библиотеку",
+    );
+    expect(installStageLabel("running", null)).toBe("—");
+  });
+});
+
+describe("installProgressLabel", () => {
+  it("процент и объём в единице итога; нет байтов — «—»", () => {
+    expect(installProgressLabel(45, 100)).toBe("45 % · 45 из 100 Б");
+    expect(installProgressLabel(null, 100)).toBe("—");
+    expect(installProgressLabel(45, null)).toBe("—");
   });
 });

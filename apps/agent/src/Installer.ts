@@ -8,6 +8,8 @@
 // каталога `downloading` upper-слоя (его агент читает прямо на хосте, не через
 // exec). Готово → профиль сохраняется, контейнер и тома удаляются, новые
 // приложения переносятся `rename` из upper в библиотеку. Одна установка за раз.
+// Он же удаляет игры из библиотеки (`DeleteGame`, `GameRemoval.ts`): установка
+// и удаление одной игры не идут одновременно.
 import {
   lstatSync,
   mkdirSync,
@@ -35,6 +37,7 @@ import {
   Option,
   Queue,
   Result,
+  Semaphore,
 } from "effect";
 import { AgentConfig, type AgentConfigValues } from "./config";
 import {
@@ -44,6 +47,14 @@ import {
   isGone,
 } from "./DockerClient";
 import { FreeSpace, hasFreeSpace } from "./DiskSpace";
+import {
+  emptyTrash,
+  MANIFEST_FILE,
+  moveToTrash,
+  planRemoval,
+  removalError,
+  TrashMoveError,
+} from "./GameRemoval";
 import { isValidId } from "./ids";
 import {
   cleanup,
@@ -108,6 +119,14 @@ export const installReasons = {
   noSpace: "На сервере закончилось место",
   notGamestore: "Этот сервер не устанавливает игры",
   unexpected: "Внутренняя ошибка установщика",
+} as const;
+
+/** Причины `GameDeleteFailed` (их видит администратор); иначе — текст ошибки. */
+export const deleteReasons = {
+  notGamestore: "Нет роли gamestore",
+  installing: "Игра сейчас устанавливается",
+  running: "Игра запущена",
+  invalidCommand: "Некорректная команда удаления",
 } as const;
 
 export const installContainerName = (jobId: string) => `cg-install-${jobId}`;
@@ -219,8 +238,6 @@ export { parseAppManifest };
 /** Неотрицательное целое из поля манифеста (байты); иначе `undefined`. */
 const count = (value: string | undefined) =>
   value !== undefined && /^\d{1,15}$/.test(value) ? Number(value) : undefined;
-
-const MANIFEST_FILE = /^appmanifest_([1-9]\d{0,9})\.acf$/;
 
 const lstat = (path: string) => lstatSync(path, { throwIfNoEntry: false });
 
@@ -336,6 +353,14 @@ export interface InstallerShape {
   readonly install: (command: InstallGame) => Effect.Effect<void>;
   /** `CancelInstall`: контейнер и scratch удаляются, `InstallFailed`. */
   readonly cancel: (jobId: string) => Effect.Effect<void>;
+  /**
+   * `DeleteGame`; возвращается сразу, удаление идёт в фоне (по одному за раз):
+   * манифест и каталоги игры — в корзину, корзина — очистить; итог —
+   * `GameDeleted` (Steam игру больше не видит, в том числе если её и не было)
+   * или `GameDeleteFailed` (игра на месте: идёт её установка или перенос в
+   * корзину сорвался и откатился).
+   */
+  readonly deleteGame: (appId: number) => Effect.Effect<void>;
   /** Идущие установки для `agent.connect.installs` (не больше одной). */
   readonly running: () => ReadonlyArray<string>;
   /** Отчёты установок в порядке возникновения. */
@@ -996,17 +1021,177 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /** Удаления игр и очистка корзины — по одному (общие корзина и помощник). */
+  const removals = yield* Semaphore.make(1);
+  /**
+   * `appId`, для которых уже идёт `removeGame` (ждут семафор `removals` или
+   * выполняются): повторная `DeleteGame` для того же приложения (оркестратор
+   * повторяет недоставленную команду после переподключения) не запускает
+   * второе удаление — результат первого отвечает и на неё.
+   */
+  const pendingDeletes = new Set<number>();
+  const deleteFailed = (appId: number, reason: string) =>
+    emit({ _tag: "GameDeleteFailed", appId, reason });
+  const clearTrash = emptyTrash.pipe(
+    Effect.provideService(AgentConfig, config),
+    Effect.provideService(DockerClient, docker),
+  );
+
+  /**
+   * Манифест и каталоги игры — `rename` в корзину (игра сразу пропадает из
+   * библиотеки), затем корзина очищается. Установка той же игры — отказ: её
+   * перенос в библиотеку столкнулся бы с удалением; живой контейнер с
+   * `cg.app=<appId>` (сессия или установщик) — тоже отказ (защита от гонки
+   * с устаревшей проверкой api/оркестратора).
+   *
+   * Оркестратор по `GameDeleted` убирает игру, по `GameDeleteFailed` считает
+   * её установленной — поэтому итог отражает, видит ли Steam игру: перенос
+   * удался — `GameDeleted`, даже если корзину очистить не вышло (только
+   * предупреждение: её дочистит следующее удаление или старт агента); перенос
+   * сорвался и откатился — `GameDeleteFailed`; откат тоже не удался (манифеста
+   * в `steamapps` уже нет) — `GameDeleted` с ошибкой в логе.
+   */
+  const removeGame = (appId: number) =>
+    Effect.gen(function* () {
+      if (current?.appId === appId) {
+        yield* Effect.logWarning("DeleteGame while the app is installing", {
+          appId,
+          jobId: current.jobId,
+        });
+        return yield* deleteFailed(appId, deleteReasons.installing);
+      }
+      const plan = yield* Effect.try({
+        try: () => planRemoval(join(config.libraryDir, "steamapps"), appId),
+        catch: removalError,
+      });
+      if (plan === undefined) {
+        yield* Effect.logInfo("DeleteGame: app is not in the library", {
+          appId,
+        });
+        return yield* emit({ _tag: "GameDeleted", appId });
+      }
+      // Защита от гонки с оркестратором (его сессия/задача может быть
+      // устаревшими данными в БД): живой контейнер с меткой `cg.app` — игра
+      // ещё запущена (сессия или сам установщик), как и проверяет
+      // `PrefixTemplate.ts` перед переносом шаблона префикса.
+      const running = yield* docker
+        .listByLabel("cg.app")
+        .pipe(Effect.mapError(removalError));
+      if (
+        running.some(
+          (container) => container.labels["cg.app"] === String(appId),
+        )
+      ) {
+        yield* Effect.logWarning(
+          "DeleteGame while a container for the app is running",
+          { appId },
+        );
+        return yield* deleteFailed(appId, deleteReasons.running);
+      }
+      const stamp = String(yield* Clock.currentTimeMillis);
+      const moved = yield* Effect.try({
+        try: () => moveToTrash(plan, config.libraryDir, stamp),
+        catch: (error) =>
+          error instanceof TrashMoveError ? error : removalError(error),
+      });
+      yield* Effect.logInfo("Game moved to trash", { appId, moved });
+      // Манифест уже в корзине — по контракту (`GameDeleted`/`GameDeleteFailed`
+      // отражают, видит ли Steam игру) это GameDeleted при любом исходе
+      // очистки корзины, включая дефект (не только ожидаемую
+      // `GameRemovalError`): дочистит следующее удаление или старт агента.
+      yield* clearTrash.pipe(
+        Effect.catchTag("GameRemovalError", (error) =>
+          Effect.logWarning("Emptying the library trash failed", {
+            appId,
+            error: error.message,
+          }),
+        ),
+        Effect.catchDefect((defect) =>
+          Effect.logWarning("Emptying the library trash failed", {
+            appId,
+            defect: String(defect),
+          }),
+        ),
+      );
+      yield* Effect.logInfo("Game deleted", { appId });
+      yield* emit({ _tag: "GameDeleted", appId });
+    }).pipe(
+      Effect.catchTag("TrashMoveError", (error) =>
+        error.restored
+          ? Effect.logError("DeleteGame failed, game restored", {
+              appId,
+              error: error.message,
+            }).pipe(Effect.andThen(deleteFailed(appId, error.message)))
+          : Effect.logError(
+              "DeleteGame failed and could not be rolled back; the manifest stays in the trash",
+              { appId, error: error.message },
+            ).pipe(Effect.andThen(emit({ _tag: "GameDeleted", appId }))),
+      ),
+      Effect.catchTag("GameRemovalError", (error) =>
+        Effect.logError("DeleteGame failed", {
+          appId,
+          error: error.message,
+        }).pipe(Effect.andThen(deleteFailed(appId, error.message))),
+      ),
+      Effect.catchDefect((defect) =>
+        Effect.logError("DeleteGame failed", { appId, defect }).pipe(
+          Effect.andThen(deleteFailed(appId, String(defect))),
+        ),
+      ),
+      removals.withPermit,
+    );
+
+  const deleteGame = (appId: number) =>
+    Effect.gen(function* () {
+      if (!Number.isSafeInteger(appId) || appId <= 0) {
+        // Значение уходит в путь манифеста.
+        yield* Effect.logError("Rejected invalid DeleteGame", { appId });
+        return yield* deleteFailed(appId, deleteReasons.invalidCommand);
+      }
+      if (pendingDeletes.has(appId)) {
+        yield* Effect.logInfo("DeleteGame dropped: already removing", {
+          appId,
+        });
+        return;
+      }
+      pendingDeletes.add(appId);
+      yield* Effect.logInfo("DeleteGame accepted", { appId });
+      yield* Effect.forkIn(
+        removeGame(appId).pipe(
+          Effect.ensuring(Effect.sync(() => void pendingDeletes.delete(appId))),
+        ),
+        scope,
+      );
+    });
+
   yield* reconcile;
+  // Корзина прошлого запуска (агент упал посреди очистки) — в фоне: удаление
+  // десятков ГБ не должно задерживать подключение агента.
+  yield* Effect.forkIn(
+    clearTrash.pipe(
+      Effect.catchTag("GameRemovalError", (error) =>
+        Effect.logWarning("Emptying the library trash failed", {
+          error: error.message,
+        }),
+      ),
+      removals.withPermit,
+    ),
+    scope,
+  );
 
   return {
     install,
     cancel,
+    deleteGame,
     running: () => (current === undefined ? [] : [current.jobId]),
     reports,
   } satisfies InstallerShape;
 });
 
-/** Агент без роли gamestore: установок не ведёт, команды — защитный отказ. */
+/**
+ * Агент без роли gamestore: установок и удалений не ведёт, команды — защитный
+ * отказ.
+ */
 const disabled = Effect.gen(function* () {
   const reports = yield* Queue.unbounded<AgentReport>();
   return {
@@ -1027,6 +1212,19 @@ const disabled = Effect.gen(function* () {
       Effect.logWarning("CancelInstall on an agent without role gamestore", {
         jobId,
       }),
+    deleteGame: (appId) =>
+      Effect.logWarning("DeleteGame on an agent without role gamestore", {
+        appId,
+      }).pipe(
+        Effect.andThen(
+          Queue.offer(reports, {
+            _tag: "GameDeleteFailed",
+            appId,
+            reason: deleteReasons.notGamestore,
+          }),
+        ),
+        Effect.asVoid,
+      ),
     running: () => [],
     reports,
   } satisfies InstallerShape;

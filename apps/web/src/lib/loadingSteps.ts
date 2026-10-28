@@ -53,7 +53,8 @@ export const launchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
   ["loading", "Загружаем игру"],
 ];
 
-const installSteps: ReadonlyArray<readonly [InstallStage, string]> = [
+/** Подписи этапов установки по порядку (переиспользует и админка — столбец «Этап»). */
+export const installSteps: ReadonlyArray<readonly [InstallStage, string]> = [
   ["preparing", "Готовим установщик"],
   ["login", "Входим в Steam"],
   ["library", "Steam готовит загрузку"],

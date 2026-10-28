@@ -1,8 +1,9 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
 // (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды сессий
-// передаёт SessionSupervisor, команды установки — Installer; их отчёты и снимки
-// загрузки WorkerMonitor отправляет по одному, по порядку (каждого источника); на
-// время соединения через него идут `agent.profileCommit` (ProfileCommitter).
+// передаёт SessionSupervisor, команды установки и удаления игр — Installer; их
+// отчёты и снимки загрузки WorkerMonitor отправляет по одному, по порядку
+// (каждого источника); на время соединения через него идут
+// `agent.profileCommit` (ProfileCommitter).
 // `agent.connect` несёт железо и версии воркера (WorkerMonitor).
 // Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
 // переподключение с паузой 1 → 30 с.
@@ -38,13 +39,15 @@ export const HEALTHY_CONNECTION = Duration.seconds(60);
 
 /**
  * Итоговые отчёты: их не заменяет снимок `running`/`installs` при
- * переподключении.
+ * переподключении (итог удаления игры — тем более: его нет ни в каком снимке).
  */
 export const isTerminal = (report: AgentReport) =>
   report._tag === "Stopped" ||
   report._tag === "Failed" ||
   report._tag === "InstallFinished" ||
-  report._tag === "InstallFailed";
+  report._tag === "InstallFailed" ||
+  report._tag === "GameDeleted" ||
+  report._tag === "GameDeleteFailed";
 
 /** Следующая пауза: удвоение до RECONNECT_MAX. */
 export const nextDelay = (delay: Duration.Duration) =>
@@ -121,6 +124,8 @@ export const run = Effect.gen(function* () {
           return installer.install(command);
         case "CancelInstall":
           return installer.cancel(command.jobId);
+        case "DeleteGame":
+          return installer.deleteGame(command.appId);
         default:
           return supervisor.handle(command);
       }
@@ -129,7 +134,12 @@ export const run = Effect.gen(function* () {
       Stream.runForEach((command) =>
         Effect.logInfo("Command received", {
           command: command._tag,
-          id: "sessionId" in command ? command.sessionId : command.jobId,
+          id:
+            "sessionId" in command
+              ? command.sessionId
+              : "jobId" in command
+                ? command.jobId
+                : command.appId,
         }).pipe(Effect.andThen(route(command))),
       ),
     );

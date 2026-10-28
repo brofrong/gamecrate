@@ -12,7 +12,15 @@ import {
   userGames,
 } from "@cg/db";
 import { isSessionId, type SessionState, type SessionView } from "@cg/rpc";
-import { and, eq, notInArray, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  isNotNull,
+  isNull,
+  notInArray,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { DateTime, Effect } from "effect";
 import { loadSessionSettings } from "../admin/settings";
 
@@ -30,6 +38,18 @@ export const terminalStates: Array<DbSessionState> = ["ended", "failed"];
  * этого условия там не нужна).
  */
 export const isActive = notInArray(sessions.state, terminalStates);
+
+/**
+ * Условие «слот воркера удерживается» — своя копия того же условия, что и в
+ * `apps/orchestrator/src/SessionRepo.ts` (`holdsSlot`): строка может быть уже
+ * `ended`/`failed`, но контейнер на GPU воркера ещё не погашен (агент не
+ * прислал `Stopped`/`Failed`). Используется в `admin/games.ts`, чтобы не
+ * удалять игру, пока её контейнер ещё жив.
+ */
+export const holdsSlot = and(
+  isNotNull(sessions.slot),
+  isNull(sessions.slotReleasedAt),
+);
 
 /** Строка сессии вместе с названием игры и байтами её задачи установки (если есть). */
 const sessionWithGame = {

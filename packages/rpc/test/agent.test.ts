@@ -185,6 +185,39 @@ describe("agent protocol", () => {
     };
     const report = { _tag: "WorkerStats", stats } as const;
     expect(Schema.decodeUnknownSync(AgentReport)(report)).toEqual(report);
+    // Список библиотеки (роль gamestore) — необязательный.
+    const withLibrary = {
+      _tag: "WorkerStats",
+      stats: {
+        ...stats,
+        library: [{ appId: 2379780, name: "Balatro", sizeBytes: 67108864 }],
+      },
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(withLibrary)).toEqual(
+      withLibrary,
+    );
+    expect(() =>
+      Schema.decodeUnknownSync(WorkerStats)({
+        ...stats,
+        library: [{ appId: 1, name: "x", sizeBytes: -1 }],
+      }),
+    ).toThrow();
+  });
+
+  it("DeleteGame, GameDeleted и GameDeleteFailed декодируются", () => {
+    const command = { _tag: "DeleteGame", appId: 2379780 } as const;
+    expect(Schema.decodeUnknownSync(AgentCommand)(command)).toEqual(command);
+    const deleted = { _tag: "GameDeleted", appId: 2379780 } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(deleted)).toEqual(deleted);
+    const failed = {
+      _tag: "GameDeleteFailed",
+      appId: 2379780,
+      reason: "Игра сейчас устанавливается",
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(failed)).toEqual(failed);
+    expect(() =>
+      Schema.decodeUnknownSync(AgentCommand)({ _tag: "DeleteGame", appId: 1.5 }),
+    ).toThrow();
   });
 
   it("ProfileCommit requires steamLoginSeeded", () => {
