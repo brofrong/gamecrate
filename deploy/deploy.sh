@@ -6,7 +6,7 @@
 # вручную (см. README.md). Этот скрипт его никогда не перезаписывает и не выводит значения;
 # единственное изменение — дописать строки AGENT_TOKEN, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY,
 # PROFILE_KEY из локального .env.production, если таких ключей на сервере ещё нет.
-# Из серверного .env читаются только несекретные пути CG_DATA_DIR и SCRATCH_DIR.
+# Из серверного .env читаются только несекретные пути CG_DATA_DIR, SCRATCH_DIR и STEAM_CLIENT_DIR.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -104,17 +104,19 @@ append_secret RUSTFS_SECRET_KEY min16 "не короче 16 символов" "o
 append_secret PROFILE_KEY base64_32 "base64 ровно 32 байт" "openssl rand -base64 32"
 
 echo "==> каталоги библиотеки, клиента Steam и scratch"
-# Владелец — brofrong (uid 1000), без sudo. Пустой steam-client/steamapps нужен до первой сессии:
-# overlay библиотеки монтируется внутрь overlay клиента, без каталога Docker создал бы его от root.
-# Значения по умолчанию — как в compose.yaml (CG_DATA_DIR, SCRATCH_DIR); в .env — без кавычек.
+# Владелец — brofrong (uid 1000), без sudo. Пустой <STEAM_CLIENT_DIR>/steamapps нужен до первой
+# сессии: overlay библиотеки монтируется внутрь overlay клиента, без каталога Docker создал бы его от
+# root. Значения по умолчанию — как в compose.yaml (CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR); в
+# .env — без кавычек.
 ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" <<'REMOTE'
 set -euo pipefail
 envval() { local v; v="$(sed -n "s/^$1=//p" ~/"${REMOTE_DIR}"/.env | tail -n 1)"; printf '%s' "${v:-$2}"; }
 REMOTE_DIR="$1"
 data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
 scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming-scratch)"
-dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/steam-client"
-  "${data}/steam-client/steamapps" "${data}/install-scratch" "${scratch}")
+client="$(envval STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client)"
+dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/install-scratch" "${scratch}"
+  "$(dirname "${client}")" "${client}" "${client}/steamapps")
 mkdir -p "${dirs[@]}"
 for d in "${dirs[@]}"; do
   if [ "$(stat -c %u "${d}")" != 1000 ]; then
@@ -123,8 +125,8 @@ for d in "${dirs[@]}"; do
   fi
   echo "    ${d}"
 done
-if [ ! -x "${data}/steam-client/ubuntu12_32/steam" ]; then
-  echo "    ВНИМАНИЕ: клиент Steam в ${data}/steam-client не собран — ./deploy/build-steam-client.sh" >&2
+if [ ! -x "${client}/ubuntu12_32/steam" ]; then
+  echo "    ВНИМАНИЕ: клиент Steam в ${client} не собран — ./deploy/build-steam-client.sh" >&2
   echo "    (без него каждая сессия скачивает клиент заново, ~2,5 ГБ)." >&2
 fi
 REMOTE

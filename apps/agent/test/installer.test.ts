@@ -1729,25 +1729,65 @@ const stagesOf = (reports: ReadonlyArray<AgentReport>) =>
   );
 
 describe("Installer stages", () => {
-  it("reports preparing, login, downloading, moving in order", () =>
+  it("reports preparing, login, library, downloading, moving in order", () =>
     run((h) =>
       Effect.gen(function* () {
         yield* h.installer.install(install);
         yield* h.tick("0 seconds");
-        // Контейнер поднят и клиент сразу вошёл (autoLogin) — все три этапа
-        // загрузки видны уже после первого тика.
+        // Контейнер поднят и клиент сразу вошёл (autoLogin): Steam готовит
+        // загрузку, размера у цели ещё нет.
         expect(stagesOf(yield* h.drainAll)).toEqual([
           ["j1", "preparing"],
           ["j1", "login"],
-          ["j1", "downloading"],
+          ["j1", "library"],
         ]);
+        // Steam начал обновление цели: размер загрузки известен.
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "88",
+          BytesDownloaded: "0",
+        });
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "downloading"]]);
         steamInstalls(h.fake);
         yield* h.tick("2 seconds");
         expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "moving"]]);
       }),
     ));
 
-  it("reports login before a slow Steam logon, downloading only after it", () =>
+  it("stays in library while the target has no download size", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        yield* h.drainAll;
+        // Steam записал манифест цели, но загрузку ещё не посчитал
+        // (данные библиотеки, общие компоненты Windows).
+        h.fake.state.manifest = acf({
+          appid: "736260",
+          StateFlags: "1026",
+          BytesToDownload: "0",
+          BytesDownloaded: "0",
+        });
+        for (let i = 0; i < 5; i++) yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([]);
+      }),
+    ));
+
+  it("goes from library straight to moving when the size never showed up", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.installer.install(install);
+        yield* h.tick("0 seconds");
+        yield* h.drainAll;
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "moving"]]);
+      }),
+    ));
+
+  it("reports login before a slow Steam logon, library only after it", () =>
     run((h) =>
       Effect.gen(function* () {
         h.fake.state.autoLogin = false;
@@ -1759,7 +1799,7 @@ describe("Installer stages", () => {
         ]);
         h.fake.state.connectionLog += LOGGED_ON;
         yield* h.tick("2 seconds");
-        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "downloading"]]);
+        expect(stagesOf(yield* h.drainAll)).toEqual([["j1", "library"]]);
       }),
     ));
 });

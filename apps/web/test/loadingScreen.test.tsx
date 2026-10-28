@@ -90,6 +90,7 @@ describe("loading screen", () => {
     expect(loadingSteps(installing)).toEqual([
       { label: "Готовим установщик", status: "done" },
       { label: "Входим в Steam", status: "done" },
+      { label: "Steam готовит загрузку", status: "done" },
       { label: "Скачиваем игру · 42 %", status: "now" },
       { label: "Переносим игру в библиотеку", status: "next" },
     ]);
@@ -141,6 +142,7 @@ describe("loading screen", () => {
     const installStages: ReadonlyArray<InstallStage> = [
       "preparing",
       "login",
+      "library",
       "downloading",
       "moving",
     ];
@@ -170,6 +172,24 @@ describe("loading screen", () => {
     expect(at(10)).toBeGreaterThan(at(0));
   });
 
+  it("library: Steam prepares the download, the bar creeps without a percent", () => {
+    const library = view("installing", {
+      installStage: "library",
+      installPercent: 0,
+    });
+    expect(loadingSteps(library)).toEqual([
+      { label: "Готовим установщик", status: "done" },
+      { label: "Входим в Steam", status: "done" },
+      { label: "Steam готовит загрузку", status: "now" },
+      { label: "Скачиваем игру", status: "next" },
+      { label: "Переносим игру в библиотеку", status: "next" },
+    ]);
+    // Внутри этапа — по времени: через 30 с заметно дальше начала.
+    expect(loadingProgress(library, 30_000)).toBeGreaterThan(
+      loadingProgress(library, 0) + 0.02,
+    );
+  });
+
   it("one bar across install and launch: it does not slide back after install", () => {
     const forever = 10 ** 9;
     const moving = loadingProgress(
@@ -186,6 +206,7 @@ describe("loading screen", () => {
       view("queued"),
       view("installing", { hadInstall: true }),
       view("installing", { installStage: "login", hadInstall: true }),
+      view("installing", { installStage: "library", hadInstall: true }),
       view("installing", {
         installStage: "downloading",
         installPercent: 100,

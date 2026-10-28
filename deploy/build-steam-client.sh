@@ -21,9 +21,9 @@
 # 5. Замена каталога переименованием (`mv --exchange`), старый удаляется контейнером-помощником
 #    от root (в старом шаблоне могут быть файлы root).
 #
-# Пути и образ — из ~/cloud-gaming/.env на воркере (только несекретные CG_DATA_DIR, SESSION_IMAGE,
-# GBM_ALLOCATOR_PATH), иначе значения по умолчанию как в deploy/compose.yaml. sudo не нужен;
-# ничего, кроме своего каталога, своих контейнеров с меткой cg.template и сети cg-sessions
+# Путь и образ — из ~/cloud-gaming/.env на воркере (только несекретные STEAM_CLIENT_DIR,
+# SESSION_IMAGE, GBM_ALLOCATOR_PATH), иначе значения по умолчанию как в deploy/compose.yaml. sudo
+# не нужен; ничего, кроме своего каталога, своих контейнеров с меткой cg.template и сети cg-sessions
 # (создаётся, если её нет), не меняет.
 set -euo pipefail
 
@@ -38,10 +38,11 @@ envval() {
   [ -f ~/"${REMOTE_DIR}"/.env ] && v="$(sed -n "s/^$1=//p" ~/"${REMOTE_DIR}"/.env | tail -n 1)"
   printf '%s' "${v:-$2}"
 }
-data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
+target="$(envval STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client)"
+# Родитель шаблона: в нём <шаблон>.new, его монтирует помощник от root.
+parent="$(dirname "${target}")"
 image="$(envval SESSION_IMAGE cg-session:550.163.01)"
 gbm="$(envval GBM_ALLOCATOR_PATH /usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01)"
-target="${data}/steam-client"
 new="${target}.new"
 name="cg-steam-client-build"
 label="cg.template=steam-client"
@@ -76,7 +77,7 @@ refuse_if_busy() {
 rootrm_new() {
   [ -e "${new}" ] || return 0
   docker run --rm --network none --user 0 --security-opt no-new-privileges:true \
-    --label "${label}-cleanup" -v "${data}:${data}" --entrypoint rm "${image}" -rf -- "${new}"
+    --label "${label}-cleanup" -v "${parent}:${parent}" --entrypoint rm "${image}" -rf -- "${new}"
 }
 
 echo "==> ${target} из образа ${image}"
@@ -97,7 +98,7 @@ fi
 cleanup() { docker rm -f "${name}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-mkdir -p "${data}"
+mkdir -p "${parent}"
 docker network inspect cg-sessions >/dev/null 2>&1 || docker network create cg-sessions >/dev/null
 
 gbm_binds=()
