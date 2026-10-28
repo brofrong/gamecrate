@@ -28,14 +28,17 @@ export const installErrors = {
   interrupted: "Установка прервана",
   /** Ни одна сессия больше не ждёт задачу, агенту она ещё не выдана. */
   cancelled: "Установка отменена",
+  /** Задачу отменил админ (`cancelRequestedAt`); её видят и ждущие сессии. */
+  cancelledByAdmin: InstallRepo.cancelledByAdminError,
 } as const;
 
 export interface InstallDispatcherShape {
   /** Обработать событие хаба в момент `now`. Сбои логируются. */
   readonly handle: (event: AgentHubEvent, now: Date) => Effect.Effect<void>;
   /**
-   * Проход: брошенные задачи (CancelInstall / `failed`), потерянные агентом
-   * (`failed`), затем выдача `queued`-задач свободным агентам gamestore.
+   * Проход: отменённые админом и брошенные задачи (CancelInstall / `failed`),
+   * потерянные агентом (`failed`), затем выдача `queued`-задач свободным
+   * агентам gamestore.
    */
   readonly tick: (now: Date) => Effect.Effect<void>;
 }
@@ -74,10 +77,11 @@ const make = (options: InstallDispatcherOptions) =>
       { workerId: string; deadline: Date; cancel: boolean }
     >();
     /**
-     * Брошенные `running`-задачи, которым мы запросили CancelInstall (до их
-     * итога); `delivered` — команда ушла в текущее соединение агента. Сессии,
-     * присоединившиеся к такой задаче, при её отменном итоге возвращаются в
-     * очередь, а не проваливаются.
+     * Брошенные или отменённые админом `running`-задачи, которым мы запросили
+     * CancelInstall (до их итога); `delivered` — команда ушла в текущее
+     * соединение агента. Сессии, присоединившиеся к брошенной задаче, при её
+     * отменном итоге возвращаются в очередь, а не проваливаются (у отменённой
+     * админом — проваливаются, это решает `InstallRepo.fail`).
      */
     const cancels = new Map<string, { workerId: string; delivered: boolean }>();
 
@@ -249,6 +253,41 @@ const make = (options: InstallDispatcherOptions) =>
         if (cancel) yield* hub.send(workerId, { _tag: "CancelInstall", jobId });
       }).pipe(logFailure("Failing a lost install job failed", { jobId }));
 
+    /** CancelInstall `running`-задачи агенту; повтор, пока не доставлен в текущее соединение. */
+    const requestCancel = (jobId: string, workerId: string) =>
+      Effect.gen(function* () {
+        const sent = yield* hub.send(workerId, {
+          _tag: "CancelInstall",
+          jobId,
+        });
+        cancels.set(jobId, { workerId, delivered: sent });
+        if (sent)
+          yield* Effect.logInfo("CancelInstall sent", { jobId, workerId });
+      });
+
+    /**
+     * Отменённые админом: `queued` — сразу `failed` (`cancelledByAdmin`, ждущие
+     * тоже), `running` — CancelInstall, задача ждёт итога агента.
+     */
+    const cancelRequested = (now: Date) =>
+      Effect.gen(function* () {
+        for (const job of yield* withDb(InstallRepo.cancelRequestedJobs())) {
+          if (job.state === "queued") {
+            const waiters = yield* withDb(
+              InstallRepo.fail(job.id, installErrors.cancelledByAdmin, now),
+            );
+            if (waiters !== undefined)
+              yield* Effect.logInfo("Queued install job cancelled by admin", {
+                jobId: job.id,
+                sessions: waiters,
+              });
+            continue;
+          }
+          if (job.workerId === null || cancels.get(job.id)?.delivered) continue;
+          yield* requestCancel(job.id, job.workerId);
+        }
+      });
+
     /** Ни одна сессия не ждёт задачу: `queued` — `failed`, `running` — CancelInstall. */
     const cancelAbandoned = Effect.gen(function* () {
       // Итог мог не дойти (задачу провалили иначе) — забываем завершённые.
@@ -269,17 +308,7 @@ const make = (options: InstallDispatcherOptions) =>
           });
           continue;
         }
-        const sent = yield* hub.send(outcome.workerId, {
-          _tag: "CancelInstall",
-          jobId,
-        });
-        cancels.set(jobId, { workerId: outcome.workerId, delivered: sent });
-        if (sent) {
-          yield* Effect.logInfo("CancelInstall sent", {
-            jobId,
-            workerId: outcome.workerId,
-          });
-        }
+        yield* requestCancel(jobId, outcome.workerId);
       }
     });
 
@@ -348,6 +377,9 @@ const make = (options: InstallDispatcherOptions) =>
 
     const tick: InstallDispatcherShape["tick"] = (now) =>
       Effect.gen(function* () {
+        yield* cancelRequested(now).pipe(
+          logFailure("Cancelling installs by admin failed"),
+        );
         yield* cancelAbandoned.pipe(logFailure("Cancelling installs failed"));
         yield* failLost(now).pipe(logFailure("Checking installs failed"));
         yield* dispatch(now);
