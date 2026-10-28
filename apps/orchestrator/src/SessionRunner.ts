@@ -406,6 +406,9 @@ const make = (options: SessionRunnerOptions) =>
                     report.stage,
                   ),
                 );
+              case "WorkerStats":
+                // Хранение снимка — Task 3 (колонки `workers.stats`/`stats_at`).
+                return Effect.void;
             }
           })();
           return effect.pipe(

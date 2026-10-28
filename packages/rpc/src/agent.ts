@@ -64,11 +64,92 @@ export const AgentRoles = Schema.Array(
 );
 export type AgentRoles = typeof AgentRoles.Type;
 
+/** Неотрицательное число байт (или мегабайт/секунд — везде, где считаем по данным хоста). */
+const NonNegativeNumber = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0));
+
+/**
+ * Железо воркера — снимается агентом один раз при подключении (`/proc/cpuinfo`,
+ * `/proc/meminfo`, `nvidia-smi`, `/sys/block/*`, спека §«Как устроено сейчас»).
+ * `disks` — физические диски и RAID-массивы (без `loop*`/`ram*`/`zram*`/`dm-*`);
+ * `members` у RAID — имена дисков-членов (`md/slaves/`), у остальных — пусто.
+ */
+export const WorkerHardware = Schema.Struct({
+  cpuModel: Schema.String,
+  cpuCores: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  cpuThreads: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  memoryBytes: NonNegativeNumber,
+  gpus: Schema.Array(
+    Schema.Struct({ name: Schema.String, memoryBytes: NonNegativeNumber }),
+  ),
+  disks: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      kind: Schema.Literals(["nvme", "ssd", "hdd", "raid"]),
+      sizeBytes: NonNegativeNumber,
+      raidLevel: Schema.NullOr(Schema.String),
+      members: Schema.Array(Schema.String),
+    }),
+  ),
+});
+export type WorkerHardware = typeof WorkerHardware.Type;
+
+/**
+ * Версии и сборки воркера — снимаются агентом один раз при подключении.
+ * `driver` — версия драйвера NVIDIA (`nvidia-smi`), `null` — GPU нет или
+ * `nvidia-smi` недоступен; `steamClientBuiltAt` — mtime `STEAM_CLIENT_DIR`
+ * (ISO), `null` — каталог не смонтирован или недоступен.
+ */
+export const WorkerVersions = Schema.Struct({
+  agentCommit: Schema.String,
+  sessionImage: Schema.String,
+  driver: Schema.NullOr(Schema.String),
+  steamClientBuiltAt: Schema.NullOr(Schema.String),
+});
+export type WorkerVersions = typeof WorkerVersions.Type;
+
+/**
+ * Текущая загрузка воркера — отчёт `WorkerStats` раз в ~5 с (спека: оркестратор
+ * хранит только последний снимок, без истории). GPU-поля и `filesystems`
+ * пусты/`null`, если измерить не удалось (нет GPU, `nvidia-smi` упал,
+ * `statfs` не прошёл) — карточка в админке покажет «нет данных», не упадёт.
+ */
+export const WorkerStats = Schema.Struct({
+  cpuPercent: Schema.Number,
+  memory: Schema.Struct({
+    totalBytes: NonNegativeNumber,
+    usedBytes: NonNegativeNumber,
+    cacheBytes: NonNegativeNumber,
+  }),
+  gpus: Schema.Array(
+    Schema.Struct({
+      utilPercent: Schema.NullOr(Schema.Number),
+      encoderPercent: Schema.NullOr(Schema.Number),
+      temperatureC: Schema.NullOr(Schema.Number),
+      memoryUsedBytes: Schema.NullOr(NonNegativeNumber),
+      memoryTotalBytes: Schema.NullOr(NonNegativeNumber),
+    }),
+  ),
+  filesystems: Schema.Array(
+    Schema.Struct({
+      purposes: Schema.Array(
+        Schema.Literals(["scratch", "steamClient", "library"]),
+      ),
+      totalBytes: NonNegativeNumber,
+      usedBytes: NonNegativeNumber,
+      freeBytes: NonNegativeNumber,
+    }),
+  ),
+  uptimeSeconds: NonNegativeNumber,
+});
+export type WorkerStats = typeof WorkerStats.Type;
+
 /**
  * Подключение агента. `workerId` — имя воркера из конфига агента; слот `i`
  * на воркере — UDP-порт `udpPortBase + i`, публичный IP — `publicIp`.
  * `installs` — id задач установки, чьи контейнеры у агента ещё живы (роль
  * `gamestore`; снимок для переподключения, как `running` для сессий).
+ * `hardware`/`versions` — снимок железа и версий воркера (админка, спека
+ * 2026-10-28); необязательные — старый агент без этих полей совместим.
  */
 export const AgentConnect = Schema.Struct({
   workerId: Schema.String,
@@ -80,6 +161,8 @@ export const AgentConnect = Schema.Struct({
   running: Schema.Array(RunningSession),
   roles: AgentRoles,
   installs: Schema.Array(Schema.String),
+  hardware: Schema.optional(WorkerHardware),
+  versions: Schema.optional(WorkerVersions),
 });
 export type AgentConnect = typeof AgentConnect.Type;
 
@@ -213,6 +296,8 @@ export const AgentReport = Schema.Union([
     reason: Schema.String,
     cleanupPending: Schema.optional(Schema.Boolean),
   }),
+  /** Снимок текущей загрузки воркера, раз в ~5 с (админка, вкладка «Воркеры»). */
+  Schema.TaggedStruct("WorkerStats", { stats: WorkerStats }),
 ]);
 export type AgentReport = typeof AgentReport.Type;
 

@@ -5,6 +5,7 @@ import {
   AgentConnect,
   AgentReport,
   ProfileCommit,
+  WorkerStats,
 } from "../src/agent";
 import { InstallStage, SessionStage } from "../src/session";
 
@@ -107,6 +108,83 @@ describe("agent protocol", () => {
     // Кодирование обратно отдаёт исходный JSON — токен всё же уходит агенту
     // по WebSocket, Redacted только защищает от случайного лога/печати.
     expect(Schema.encodeSync(AgentCommand)(decoded)).toEqual(json);
+  });
+
+  it("AgentConnect без hardware/versions декодируется (старый агент совместим)", () => {
+    const base = {
+      workerId: "w1",
+      publicIp: "203.0.113.7",
+      slots: 1,
+      udpPortBase: 59000,
+      running: [],
+      roles: ["worker"],
+      installs: [],
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentConnect)(base)).toEqual(base);
+  });
+
+  it("AgentConnect с hardware/versions декодируется", () => {
+    const withExtras = {
+      workerId: "w1",
+      publicIp: "203.0.113.7",
+      slots: 1,
+      udpPortBase: 59000,
+      running: [],
+      roles: ["worker"],
+      installs: [],
+      hardware: {
+        cpuModel: "AMD Ryzen 5 2600X Six-Core Processor",
+        cpuCores: 6,
+        cpuThreads: 12,
+        memoryBytes: 32795732 * 1024,
+        gpus: [{ name: "NVIDIA GeForce GTX 1650 SUPER", memoryBytes: 4096 * 2 ** 20 }],
+        disks: [
+          {
+            name: "nvme0n1",
+            kind: "nvme",
+            sizeBytes: 488397168 * 512,
+            raidLevel: null,
+            members: [],
+          },
+        ],
+      },
+      versions: {
+        agentCommit: "abc1234",
+        sessionImage: "cg-session:latest",
+        driver: "550.163.01",
+        steamClientBuiltAt: "2026-10-28T00:00:00.000Z",
+      },
+    } as const;
+    expect(Schema.decodeUnknownSync(AgentConnect)(withExtras)).toEqual(
+      withExtras,
+    );
+  });
+
+  it("AgentReport WorkerStats декодируется", () => {
+    const stats: WorkerStats = {
+      cpuPercent: 42,
+      memory: { totalBytes: 100, usedBytes: 50, cacheBytes: 10 },
+      gpus: [
+        {
+          utilPercent: 10,
+          encoderPercent: 0,
+          temperatureC: 40,
+          memoryUsedBytes: 1,
+          memoryTotalBytes: 2,
+        },
+      ],
+      filesystems: [
+        {
+          purposes: ["scratch", "steamClient"],
+          totalBytes: 100,
+          usedBytes: 50,
+          freeBytes: 50,
+        },
+      ],
+      uptimeSeconds: 12345,
+    };
+    const report = { _tag: "WorkerStats", stats } as const;
+    expect(Schema.decodeUnknownSync(AgentReport)(report)).toEqual(report);
   });
 
   it("ProfileCommit requires steamLoginSeeded", () => {
