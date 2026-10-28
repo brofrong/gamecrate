@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Db, profiles, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import type { SteamLoginSeed } from "@cg/rpc";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Logger, Redacted, References } from "effect";
 import { applyProfileCommit } from "../src/http";
 import * as SessionRepo from "../src/SessionRepo";
@@ -290,6 +290,23 @@ describe("profile commit", () => {
       }),
     ));
 
+  it("M3: clears a mark stored with microsecond precision when the echo matches its millisecond truncation", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedUser("u1");
+        // Запись с микросекундами — как если бы пометку поставили руками
+        // (`now()` в SQL), а не агент (JS `Date`, точность — миллисекунды).
+        yield* db.execute(
+          sql`update "user" set steam_login_reset_at = ${"2026-10-28 10:00:00.123456+00"}::timestamptz where id = ${"u1"}`,
+        );
+        // Эхо агента — то же мгновение, усечённое до миллисекунд.
+        const echo = new Date("2026-10-28T10:00:00.123Z");
+        expect(yield* SessionRepo.clearSteamLoginReset("u1", echo)).toBe(true);
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toBeNull();
+      }),
+    ));
+
   it("logs whether the commit was seeded and cleared the pending login", async () => {
     const logged: Array<ReadonlyArray<unknown>> = [];
     const capture = Logger.make(({ message }) => {
@@ -379,5 +396,80 @@ describe("profile commit", () => {
         workerId: "w1",
       },
     ]);
+  });
+
+  it("M2: a failed clear of the reset mark warns but the accepted commit still stands", async () => {
+    const logged: Array<ReadonlyArray<unknown>> = [];
+    const capture = Logger.make(({ logLevel, message }) => {
+      logged.push([logLevel, ...(Array.isArray(message) ? message : [message])]);
+    });
+    const resetAt = new Date("2026-10-28T10:00:00.000Z");
+    const { result, resetAfter } = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const db = yield* Db;
+        yield* db
+          .update(user)
+          .set({ steamLoginResetAt: resetAt })
+          .where(eq(user.id, "u1"));
+        // `clearSteamLoginReset` снимает пометку через `db.update(user)`:
+        // подменяем только эту ветку, чтобы она падала дефектом, как при
+        // реальном сбое БД, не трогая `commitProfile` (`db.update(profiles)`/
+        // `insert`), которому полагается пройти как обычно.
+        const real = yield* Db;
+        const sabotaged = new Proxy(real, {
+          get(target, prop, _receiver) {
+            if (prop === "update")
+              return (table: unknown) =>
+                table === user
+                  ? {
+                      set: () => ({
+                        where: () => ({
+                          returning: () =>
+                            Effect.die(new Error("simulated DB failure")),
+                        }),
+                      }),
+                    }
+                  : target.update(table as never);
+            const value = Reflect.get(target, prop, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }) as typeof real;
+        const result = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 1,
+            steamLoginSeeded: false,
+            steamLoginResetAt: resetAt.toISOString(),
+          },
+          "w1",
+        ).pipe(Effect.provideService(Db, sabotaged));
+        // Снятие провалилось дефектом внутри `applyProfileCommit` — не наружу:
+        // если бы это пробросило дефект, `Effect.runPromise` сам упал бы здесь.
+        const resetAfter = yield* SessionRepo.steamLoginResetAt("u1");
+        return { result, resetAfter };
+      }).pipe(
+        Effect.provide(DbTest),
+        Effect.provide(SteamLoginSeeds.layer),
+        Effect.provide(Logger.layer([capture])),
+        Effect.provideService(References.MinimumLogLevel, "All"),
+      ),
+    );
+    // Коммит принят — агент не узнаёт об отказе снятия пометки.
+    expect(result).toEqual({ accepted: true });
+    // Пометка осталась (снятие провалилось) — следующий коммит с тем же
+    // эхом снимет её (`lte`, fail-safe).
+    expect(resetAfter).not.toBeNull();
+    const warning = logged.find(
+      (line) => line[1] === "Clearing Steam login reset mark failed, commit stays accepted",
+    );
+    expect(warning?.[0]).toBe("Warn");
+    const detail = warning?.[2] as Record<string, unknown> | undefined;
+    expect(detail?.userId).toBe("u1");
+    expect(detail?.workerId).toBe("w1");
+    // Никаких секретов (вход Steam) в предупреждении нет.
+    expect(JSON.stringify(detail)).not.toContain("steamuser");
   });
 });

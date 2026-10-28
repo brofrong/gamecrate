@@ -29,7 +29,6 @@ import {
   inArray,
   isNotNull,
   isNull,
-  lte,
   notInArray,
   sql,
 } from "drizzle-orm";
@@ -515,6 +514,11 @@ export const steamLoginResetAt = (
  * Снять пометку сброса входа Steam, если она не новее `upTo` — момента сброса,
  * который агент исполнил (эхо `ProfileCommit.steamLoginResetAt`). Пометка
  * новее (админ сбросил ещё раз, пока шла сессия) остаётся. Снята — `true`.
+ *
+ * Сравнение — по миллисекундам (`date_trunc`), а не точное `<=`: эхо агента
+ * округлено до миллисекунд (api пишет пометку из JS `Date`), а запись с
+ * микросекундами (например, ручная правка `now()` в БД) иначе навсегда
+ * оставляла бы пометку снятой лишь «с точностью до будущего» (M3).
  */
 export const clearSteamLoginReset = (
   userId: string,
@@ -525,7 +529,12 @@ export const clearSteamLoginReset = (
     const cleared = yield* db
       .update(user)
       .set({ steamLoginResetAt: null })
-      .where(and(eq(user.id, userId), lte(user.steamLoginResetAt, upTo)))
+      .where(
+        and(
+          eq(user.id, userId),
+          sql`date_trunc('milliseconds', ${user.steamLoginResetAt}) <= ${upTo}`,
+        ),
+      )
       .returning({ id: user.id });
     return cleared.length === 1;
   }).pipe(Effect.orDie);
