@@ -456,10 +456,12 @@ describe("PrefixTemplates.ensure", () => {
             expect(existsSync(join(dir, path))).toBe(true);
           expect(layerDirsExist(h.fake)).toEqual([false, false]);
           const calls = h.fake.state.calls;
-          expect(calls.indexOf("list cg.app")).toBeGreaterThan(
+          expect(calls.lastIndexOf("list cg.app")).toBeGreaterThan(
             calls.indexOf(`wait cg-i-pfx-${APP}-build`),
           );
           expect(calls).toEqual([
+            // Игра не занята — собирать есть смысл.
+            "list cg.app",
             // Остатки прошлой попытки: тома (каталогов нет — без помощника).
             "removeVolume cg-i-pfx-1966900-client",
             "removeVolume cg-i-pfx-1966900-apps",
@@ -534,13 +536,20 @@ describe("PrefixTemplates.ensure", () => {
       }),
     ));
 
-  it("ensure defers the swap while a container of the app exists", () =>
+  it("ensure does not build while a container of the app exists", () =>
     run(
       (h) =>
         Effect.gen(function* () {
           expect(yield* h.ensure(APP)).toBe("deferred");
           expect(existsSync(target(h.fake))).toBe(false);
           expect(layerDirsExist(h.fake)).toEqual([false, false]);
+          // Помощник не запускался, слои не создавались.
+          expect(h.fake.state.calls).not.toContain(
+            `create cg-i-pfx-${APP}-build`,
+          );
+          expect(h.fake.state.calls).not.toContain(
+            `createVolume cg-i-pfx-${APP}-client`,
+          );
         }),
       {
         setup: (fake) => {
@@ -553,6 +562,28 @@ describe("PrefixTemplates.ensure", () => {
           ];
         },
       },
+    ));
+
+  it("ensure defers the swap when a container of the app appears during the build", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const gate = yield* Deferred.make<void>();
+        h.fake.state.gate = gate;
+        const fiber = yield* Effect.forkChild(h.ensure(APP));
+        for (let i = 0; i < 50; i++) yield* Effect.yieldNow;
+        expect(h.fake.state.calls).toContain(`wait cg-i-pfx-${APP}-build`);
+        h.fake.state.apps = [
+          {
+            name: "cg-session-s1",
+            labels: { "cg.session": "s1", "cg.app": "1966900" },
+            running: true,
+          },
+        ];
+        yield* Deferred.succeed(gate, undefined);
+        expect(yield* Fiber.join(fiber)).toBe("deferred");
+        expect(existsSync(target(h.fake))).toBe(false);
+        expect(layerDirsExist(h.fake)).toEqual([false, false]);
+      }),
     ));
 
   it("a container of another app does not defer the swap", () =>
@@ -630,7 +661,10 @@ describe("PrefixTemplates.ensure", () => {
             false,
           );
           expect(layerDirsExist(h.fake)).toEqual([false, false]);
-          expect(h.fake.state.calls).not.toContain("list cg.app");
+          // Только проверка до сборки: до переноса не дошло.
+          expect(
+            h.fake.state.calls.filter((call) => call === "list cg.app"),
+          ).toHaveLength(1);
           expect(h.fake.state.calls.slice(-7)).toEqual([
             "removeVolume cg-i-pfx-1966900-client",
             "removeVolume cg-i-pfx-1966900-apps",
