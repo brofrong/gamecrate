@@ -78,7 +78,8 @@ const run = (args: string[]) =>
     },
   });
 
-const probeEnv = () => (existsSync(probeOut) ? readFileSync(probeOut, "utf8") : null);
+const probeEnv = () =>
+  existsSync(probeOut) ? readFileSync(probeOut, "utf8") : null;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "cg-session-exec-"));
@@ -139,7 +140,11 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("cg-session-exec", () => {
   it("takes the environment from the Steam client", () => {
-    addProcess(STEAM_PID, "steam", "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent");
+    addProcess(
+      STEAM_PID,
+      "steam",
+      "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent",
+    );
     setEnviron(STEAM_PID, SESSION_VARS);
 
     const result = run(["probe"]);
@@ -153,7 +158,11 @@ describe("cg-session-exec", () => {
   });
 
   it("prefers the Steam client over the compositor when both are running", () => {
-    addProcess(STEAM_PID, "steam", "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent");
+    addProcess(
+      STEAM_PID,
+      "steam",
+      "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent",
+    );
     setEnviron(STEAM_PID, SESSION_VARS);
     addProcess(LABWC_PID, "labwc", "/usr/bin/labwc");
     setEnviron(LABWC_PID, { ...SESSION_VARS, DISPLAY: ":9" });
@@ -174,6 +183,36 @@ describe("cg-session-exec", () => {
     expect(probeEnv()).toContain(`HOME=${SESSION_VARS.HOME}`);
   });
 
+  it("cg-session-exec uses the nested Wayland socket when falling back to labwc", () => {
+    // В /proc/<labwc>/environ — сокет внешнего композитора Selkies (wayland-1): labwc
+    // выставляет себе wayland-0 через setenv, а /proc показывает только начальный блок.
+    addProcess(LABWC_PID, "labwc", "/usr/bin/labwc");
+    setEnviron(LABWC_PID, { ...SESSION_VARS, WAYLAND_DISPLAY: "wayland-1" });
+
+    const result = run(["probe"]);
+
+    expect(result.exitCode).toBe(0);
+    const output = probeEnv();
+    expect(output).toContain("WAYLAND_DISPLAY=wayland-0\n");
+    expect(output).not.toContain("WAYLAND_DISPLAY=wayland-1");
+    expect(output).toContain(`DISPLAY=${SESSION_VARS.DISPLAY}\n`);
+  });
+
+  it("keeps the Steam client's own Wayland socket", () => {
+    addProcess(
+      STEAM_PID,
+      "steam",
+      "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent",
+    );
+    setEnviron(STEAM_PID, { ...SESSION_VARS, WAYLAND_DISPLAY: "wayland-0" });
+    addProcess(LABWC_PID, "labwc", "/usr/bin/labwc");
+    setEnviron(LABWC_PID, { ...SESSION_VARS, WAYLAND_DISPLAY: "wayland-1" });
+
+    run(["probe"]);
+
+    expect(probeEnv()).toContain("WAYLAND_DISPLAY=wayland-0\n");
+  });
+
   it("falls back to plasmashell on the KDE image", () => {
     addProcess(PLASMA_PID, "plasmashell", "/usr/bin/plasmashell");
     setEnviron(PLASMA_PID, SESSION_VARS);
@@ -188,12 +227,18 @@ describe("cg-session-exec", () => {
     const result = run(["probe"]);
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("[cg-session-exec] no session process");
+    expect(result.stderr.toString()).toContain(
+      "[cg-session-exec] no session process",
+    );
     expect(probeEnv()).toBeNull();
   });
 
   it("passes only the session variables", () => {
-    addProcess(STEAM_PID, "steam", "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent");
+    addProcess(
+      STEAM_PID,
+      "steam",
+      "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent",
+    );
     setEnviron(STEAM_PID, { ...SESSION_VARS, SECRET: "x" });
 
     run(["probe"]);

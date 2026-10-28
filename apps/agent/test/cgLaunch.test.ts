@@ -11,7 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Скрипт образа сессии: его запускает автостарт KDE в контейнере. */
+/**
+ * Скрипт образа сессии: его запускает автостарт labwc в контейнере
+ * (/etc/xdg/labwc/autostart).
+ */
 const script = join(import.meta.dir, "../../../images/session/cg-launch");
 
 let dir: string;

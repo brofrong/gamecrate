@@ -7,7 +7,11 @@
 # Источник окружения — первый найденный процесс:
 #   1. клиент Steam (…/ubuntu12_32/steam, не steam-runtime/steamwebhelper) — его окружение и
 #      нужно в большинстве случаев (steam -shutdown, повторный steam -silent);
-#   2. композитор сессии labwc (образ kiosk, план 4) — когда клиента ещё нет;
+#   2. композитор сессии labwc (образ kiosk, план 4) — когда клиента ещё нет. В его
+#      /proc/<pid>/environ WAYLAND_DISPLAY — сокет внешнего композитора захвата Selkies
+#      (wayland-1): свой сокет сессии (wayland-0) labwc выставляет себе через setenv, а /proc
+#      показывает только начальный блок. Поэтому для labwc WAYLAND_DISPLAY=wayland-0 — тот же,
+#      что у клиента Steam в этой сессии (проба киоска, план 4, Task 2);
 #   3. plasmashell — старый образ KDE: откат на него и сборка шаблона со старым образом
 #      продолжают работать без доработок.
 # Нет ни одного — стдерр `[cg-session-exec] no session process` и код 1.
@@ -31,27 +35,30 @@ fi
 
 # Первый найденный — порядок важен (см. выше). pgrep -f нашёл бы и сам этот скрипт, если бы его
 # командная строка совпала с шаблоном, но «ubuntu12_32/steam» в её аргументах не встречается.
+# Печатает «pid источник».
 session_pid() {
   local pid
   pid="$(pgrep -f 'ubuntu12_32/steam( |$)' | head -1)"
   if [ -n "${pid}" ]; then
-    printf '%s\n' "${pid}"
+    printf '%s steam\n' "${pid}"
     return 0
   fi
   pid="$(pgrep -xo labwc)"
   if [ -n "${pid}" ]; then
-    printf '%s\n' "${pid}"
+    printf '%s labwc\n' "${pid}"
     return 0
   fi
   pid="$(pgrep -xo plasmashell)"
   if [ -n "${pid}" ]; then
-    printf '%s\n' "${pid}"
+    printf '%s plasmashell\n' "${pid}"
     return 0
   fi
   return 1
 }
 
-pid="$(session_pid)"
+read -r pid src <<<"$(session_pid)"
+pid="${pid:-}"
+src="${src:-}"
 environ="${proc_dir}/${pid}/environ"
 if [ -z "${pid}" ] || [ ! -r "${environ}" ]; then
   echo "[cg-session-exec] no session process" >&2
@@ -59,9 +66,16 @@ if [ -z "${pid}" ] || [ ! -r "${environ}" ]; then
 fi
 
 args=(env -i "PATH=${PATH}")
+# Вложенная сессия labwc, а не внешний композитор Selkies (см. выше).
+if [ "${src}" = "labwc" ]; then
+  args+=("WAYLAND_DISPLAY=wayland-0")
+fi
 while IFS= read -r -d '' var; do
   case "${var}" in
-    DISPLAY=* | WAYLAND_DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
+    WAYLAND_DISPLAY=*)
+      [ "${src}" = "labwc" ] || args+=("${var}")
+      ;;
+    DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
       USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
       args+=("${var}")
       ;;

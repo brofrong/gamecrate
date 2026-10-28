@@ -1,22 +1,58 @@
 # Образ сессии `cg-session:<версия драйвера>`
 
-Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma на Wayland) + Steam.
-Видео — WebRTC по одному UDP-порту, NVENC H.264, захват Wayland zero-copy. Игра запускается сама
-при входе в графическую сессию. Основа — рабочий конфиг спайка (`spike/`).
+Образ-киоск: Selkies 2.0 `base` (`ghcr.io/selkies-project/selkies/base:2.0.0-ubuntu26.04`,
+закреплён по digest; без рабочего стола) + вложенный композитор labwc + Steam. Видео — WebRTC по
+одному UDP-порту, NVENC H.264, захват Wayland zero-copy. В трансляции — только окна Steam и игры:
+нет рабочего стола, панели, меню, терминала, файлового менеджера, браузера; горячие клавиши
+композитора (Alt+F4, Alt+Tab, меню фона) выключены; буфер обмена, передача файлов и печать Selkies
+выключены. Игра запускается сама при старте сессии (автостарт labwc).
+
+Прежний образ — KDE Plasma на `selkies-egl-desktop:26.04` (в истории git до плана 4); на воркере он
+остаётся как `cg-session:550.163.01-kde` для отката, `cg-session-exec` его поддерживает. Проба,
+из которой взят рецепт, — `spike/kiosk/` и спека плана 4, «Результаты» → «Проба киоска».
 
 ## Файлы
 
-- `Dockerfile` — 32-битные библиотеки NVIDIA версии драйвера хоста (Steam 32-битный, toolkit их не
-  прокидывает), постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт, скрипты профиля;
-  каталоги `~/.local/share/Steam/steamapps` и `~/.steam` (с родителями) заранее, владелец `ubuntu`.
+- `Dockerfile` — база по digest; Steam (`steam-launcher` из репозитория Valve), `proot`/`proot-bwrap`,
+  `python3-gi` для `cg-nm-stub`, `libfakechroot`; без `xterm` (зависимость `steam-launcher`, удаляется);
+  32-битные библиотеки NVIDIA версии драйвера хоста (Steam 32-битный, toolkit их не прокидывает);
+  постоянные настройки Selkies (`ENV`), `cg-launch` + автостарт labwc, скрипты профиля; каталоги
+  `~/.local/share/Steam/steamapps` и `~/.steam` (с родителями) заранее, владелец `ubuntu`; `PATH` с
+  `/usr/games`.
 - `cg-launch` — `steam -silent -applaunch "$CG_APP_ID"`; пустой `CG_APP_ID` — ничего не делает,
   не число — ошибка (exit 1). `CG_MODE=install` (установщик) — `steam -silent` без игры, `CG_APP_ID`
   не нужен. Запускает Steam не больше одного раза за жизнь контейнера: замок
   `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`; `CG_LAUNCH_LOCK` —
-  другой путь, для тестов); если Plasma перезапустится и автостарт сработает снова —
+  другой путь, для тестов); если композитор перезапустится и автостарт сработает снова —
   `[cg-launch] already launched …, skipping`.
-- `cg-launch.desktop` → `/etc/xdg/autostart/`: KDE запускает `cg-launch` внутри сессии Plasma,
-  где есть `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит геймпад, спека §7.3).
+- `labwc/autostart` → `/etc/xdg/labwc/autostart`: поднимает сессионную шину D-Bus (`dbus-launch`;
+  в базе её никто не поднимает, а Steam и `cg-steam-shutdown` её ищут) и запускает `cg-launch` в
+  окружении сессии labwc — там `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит
+  геймпад, спека §7.3), `DISPLAY=:0` (Xwayland), `WAYLAND_DISPLAY=wayland-0`. Служба
+  `/etc/service/wayland` базы запускает labwc напрямую, без systemd user, поэтому
+  `/etc/xdg/autostart/*.desktop` здесь не работает.
+- `labwc/rc.xml` → `/etc/xdg/labwc/rc.xml` (заменяет штатный): без рамок, зазора и панели задач,
+  окна во весь экран (`fullscreenForced`, `ignoreConfigureRequest`); одна безвредная привязка
+  клавиши и фокус по клику — пустые `<keyboard>`/`<mouse>` labwc 0.9.7 отвергает и грузит
+  встроенные Alt+F4/Alt+Tab/меню. Оба файла — в `/etc/xdg`, не в `~/.config` (тот — профиль игрока).
+- `vendor/` — то, чего нет в `base`, взято из `ghcr.io/selkies-project/selkies-egl-desktop@sha256:92c80f75c0a6bdfabd1cbac650690e0260a1726ef0b3164d7be8ff60f55a30fa`
+  (`26.04`, собран 2026-09-12; там `proot`, `proot-bwrap`, обёртки `steam`/`steamdeps` ставит
+  `install.sh` из `github.com/selkies-project/proot-bwrap`, ref `main`) без изменений, чтобы новый
+  воркер не тянул 9,5 ГБ десктопного образа ради нескольких файлов:
+  - `steam.gpg` → `/usr/share/keyrings/` — публичный ключ apt Valve (RSA 2048, 2012), sha256
+    `98e9fc5b108bba854f03021a8ac38a5cbb01c32cb723c37433967c0d5d3db763`; `steam-stable.list` → `/etc/apt/sources.list.d/` — `repo.steampowered.com/steam
+    stable` (`signed-by` этим ключом). Из него ставится `steam-launcher` 1:1.0.0.87 (как в KDE-образе):
+    Debian `steam-installer` висит на диалоге zenity и ставит клиент в `~/.steam/debian-installation`.
+  - `proot` → `/usr/local/bin/` — proot 5.5.0 (ELF x86-64, нужен `libtalloc2`), sha256
+    `5ca5290b8248cece55f89aa94dcfce104faf92f69bf111b9fb11d1907ee17b7e`. В apt базы — 5.4.0, а `proot-bwrap` требует ≥ 5.5.0 (старые оставляют свой
+    временный файл в `AT_EXECFN`, и coreutils Ubuntu 25.10+ не работают). При обновлении — брать из
+    свежего `selkies-egl-desktop` или собрать из `proot-me/proot` ≥ 5.5.0.
+  - `proot-bwrap` → `/usr/local/bin/` — Python-скрипт (MPL-2.0, Selkies) вместо `bwrap` для
+    pressure-vessel и `steamwebhelper` без user namespaces; sha256 `de6dd745726075b00a0e7cff3d3a15e08d87fc755c63ac005603c7d314953045`. Ищет `proot`
+    рядом с собой; запасной режим — `libfakechroot`.
+  - `steam` → `/usr/bin/steam` (оригинал уведён `dpkg-divert` в `steam.distrib`) — `BWRAP=/usr/local/bin/proot-bwrap`
+    и `exec /usr/lib/steam/steam`; `steamdeps` → `/usr/bin/steamdeps` — `exit 0` (зависимости уже
+    стоят, ставить их нечем: нет root и терминала).
 - `cg-profile-pack` — профиль из `$HOME` в `/tmp/cg-profile.tar` (GNU tar, записи 1000:1000) по
   whitelist: `.local/share/Steam/config` (без `htmlcache`, `avatarcache`), `.local/share/Steam/local.vdf`,
   `.local/share/Steam/userdata`, `.steam/registry.vdf`, `.config`, всё в `.local/share` кроме `Steam`,
@@ -25,11 +61,16 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
   записи всех каталогов-родителей (от `.local`/`.steam`): иначе при распаковке Docker создаёт их от
   root, и Steam молча выходит (`bin_steam.sh: ln: Permission denied`). `--list` — только напечатать
   записи. Агент зовёт его `docker exec` при остановке и как entrypoint помощника импорта старого тома.
-- `cg-steam-shutdown` — `steam -shutdown` в окружении сессии Plasma (переменные из
-  `/proc/<plasmashell>/environ`: `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`,
-  `DBUS_SESSION_BUS_ADDRESS`, `HOME`, `USER`, `LD_PRELOAD`, `XAUTHORITY`, `XDG_SESSION_TYPE`; без
-  `XAUTHORITY` — «Unable to open X11 display»), ждёт выхода `ubuntu12_32/steam` до 30 с. Клиент не
-  запущен — 0; не вышел или нет Plasma — 1.
+- `cg-session-exec <команда>` — выполнить команду в окружении процесса сессии (`docker exec` его не
+  знает): переменные `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`,
+  `HOME`, `USER`, `LD_PRELOAD`, `XAUTHORITY`, `XDG_SESSION_TYPE` из `/proc/<pid>/environ` первого
+  найденного: клиент Steam (`ubuntu12_32/steam`), композитор `labwc`, `plasmashell` (образ KDE).
+  Для labwc `WAYLAND_DISPLAY=wayland-0`: в его `/proc/environ` — `wayland-1`, сокет внешнего
+  композитора захвата Selkies (сокет `wayland-0` слушает labwc, `wayland-1` — `selkies`; проверено
+  смоуком). Нет ни одного — exit 1.
+- `cg-steam-shutdown` — `steam -shutdown` через `cg-session-exec` (без `DISPLAY` и т.п. —
+  «Unable to open X11 display»), ждёт выхода `ubuntu12_32/steam` до 30 с. Клиент не запущен — 0;
+  не вышел — 1.
 - `cg-nm-stub` → `/usr/local/bin/`: заглушка `org.freedesktop.NetworkManager` на системной шине
   контейнера (python3 + dbus-python из базового образа). Отвечает «сеть есть»: одно активное
   ethernet-устройство `eth0` (`State=100`), активное соединение, `State=70`, `Connectivity=4`;
@@ -52,18 +93,20 @@ Selkies 2.0 (`ghcr.io/selkies-project/selkies-egl-desktop:26.04`, KDE Plasma н�
   Proton запускает exe игры; служебные exe самого Proton и Windows не в счёт); `prepare` — есть
   `reaper` с `AppId=<appid>`; `login` — в `logs/steamui_login.txt` есть строка `SetLoginState`;
   иначе `steam`. Агент зовёт `docker exec` раз в 2 с.
-- `.dockerignore` — в контекст сборки идут только эти файлы и `nv/x/32/`.
+- `.dockerignore` — в контекст сборки идут только эти файлы, `labwc/`, `vendor/` и `nv/x/32/`.
 
 ## Сборка
 
 ```sh
-./deploy/build-session-image.sh            # воркер по умолчанию: brofrong
+./deploy/build-session-image.sh                  # воркер по умолчанию: brofrong → cg-session:<ver>
+./deploy/build-session-image.sh brofrong kiosk   # → cg-session:<ver>-kiosk, рабочий тег не трогается
 ```
 
 rsync этого каталога в `~/cg-session-image` на воркере, версия драйвера из `nvidia-smi`, скачивание
 `NVIDIA-Linux-x86_64-<ver>.run` и `--extract-only` в `nv/x` (кешируется, повторно не качается),
-`docker build --build-arg NV_VER=<ver> -t cg-session:<ver>`. После обновления драйвера на хосте
-образ нужно пересобрать — тег сменится сам.
+`docker build --build-arg NV_VER=<ver> -t cg-session:<ver>[-<суффикс>]`. После обновления драйвера на
+хосте образ нужно пересобрать — тег сменится сам. Суффикс — чтобы собрать новый образ рядом с
+рабочим: агент берёт тот, что в `SESSION_IMAGE`.
 
 ### Шаблон клиента Steam (`STEAM_CLIENT_DIR`)
 
@@ -75,8 +118,8 @@ Lower overlay `~/.local/share/Steam` сессий и установщиков �
 (~2,5 ГБ, без входа, без игр, пустой `steamapps/` 1000:1000). Скрипт запускает контейнер образа с пустым
 домом и `CG_MODE=install` (`cg-launch` → `steam -silent`), дважды ждёт входа клиента в цикл
 (`logs/connection_log.txt` и 60 с без роста каталога больше 1 МБ, без `logs/`, `htmlcache/`,
-`dumps/`) и закрывает его `cg-steam-shutdown` (второй цикл — `steam -silent` через `docker exec` в
-окружении Plasma, как в `cg-steam-shutdown`: за один цикл `steamrt64`/`appcache` распакованы не до
+`dumps/`) и закрывает его `cg-steam-shutdown` (второй цикл — `steam -silent` через `docker exec` и
+`cg-session-exec`, в окружении сессии, как в `cg-steam-shutdown`: за один цикл `steamrt64`/`appcache` распакованы не до
 конца), копирует `~/.local/share/Steam` без `logs/` и заменяет каталог
 переименованием. Подробности и когда пересобирать — `deploy/README.md`, «Клиент Steam: пересборка
 шаблона». Образ при этом не меняется: шаблон зависит от клиента Steam, а не от драйвера.
@@ -117,7 +160,9 @@ Lower overlay `~/.local/share/Steam` сессий и установщиков �
 `SELKIES_ENABLE_HTTPS=false`, `SELKIES_ENABLE_BASIC_AUTH=false`, `SELKIES_UI_SHOW_SIDEBAR=false`,
 `SELKIES_ENABLE_DUAL_MODE=false` (клиент не может переключить медиа на websockets/TCP),
 `SELKIES_WAYLAND_X11_FALLBACK=false`, `SELKIES_MANUAL_WIDTH=1920`, `SELKIES_MANUAL_HEIGHT=1080`,
-`TZ=Europe/Moscow`.
+`SELKIES_WAYLAND_COMPOSITOR=labwc` (в `base` пусто → автоопределение, тоже labwc),
+`SELKIES_ENABLE_CLIPBOARD=false`, `SELKIES_FILE_TRANSFERS=none`, `SELKIES_PRINTING_ENABLED=false`
+(в `base` все три включены по умолчанию), `TZ=Europe/Moscow`, `PATH` с `/usr/local/games:/usr/games`.
 
 **Разрешение зафиксировано 1920x1080.** Без этого Selkies подгоняет экран под окно браузера при
 подключении (на Mac с Retina — 2560x1600, scale 2), при ресайзе и полноэкранном режиме. Vampire
@@ -126,7 +171,39 @@ Survivors (Unity, X11 через XWayland) на такой смене падае
 подключения клиента. С фиксированным разрешением браузер просто масштабирует картинку, игра живёт
 при подключении, переподключении и ресайзе окна.
 
-## Ручная проверка на brofrong (2026-10-17, риск №3 спеки)
+## Ручная проверка образа-киоска на brofrong (2026-10-28, план 4, Task 7)
+
+`./deploy/build-session-image.sh brofrong kiosk` → `cg-session:550.163.01-kiosk`, 4,75 ГБ (KDE —
+9,68 ГБ); `cg-session:550.163.01` при сборке не изменился (id `96225fee6f18` до и после). Контейнер
+`cg-kiosk-smoke` с флагами `desktopSpec` (GPU, GBM, `no-new-privileges`, tmpfs `/dev/input`, сеть
+`cg-sessions`, `-p 59001:59001/udp`), метка `cg.probe=kiosk`, пустой дом, `CG_MODE=install`
+(запуск — `spike/kiosk/gpu-run.sh`); браузер — headless Chrome на Mac через `ssh -L` на веб-порт.
+Время — от `docker run`.
+
+| Что | Результат |
+| --- | --- |
+| `GET /api/status` 200 | 8,9 с |
+| процесс `ubuntu12_32/steam` | 11,9 с; `[cg-launch] install mode: steam -silent` из автостарта labwc |
+| Кодирование (после подключения браузера) | `[Wayland] Encoder: NVENC H264 4:2:0 on NVIDIA GeForce GTX 1650 SUPER`, `Zero-copy capture: output 1 1920x1080 rendered on /dev/dri/renderD128, encoded in place on NVENC`, `CBR 10000`, 60 fps |
+| WebRTC | UDP mux 59001, `CandidatePair(('37.153.14.138', 59001) -> …) SUCCEEDED`, `ICE completed` |
+| Окно входа Steam | 170,2 с (пустой дом — почти всё время скачивание клиента); `cg-session-exec xdotool search --onlyvisible --class steam` → одно окно «Sign in to Steam», 700x440 |
+| `cg-session-stage 1966900` | `steam` до окна входа, `login` на нём |
+| NetworkManager `State` | `uint32 70` |
+| Окружение Steam | `LD_PRELOAD` с `selkies_input_interposer.so`, `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`, `DBUS_SESSION_BUS_ADDRESS` (от `dbus-launch` автостарта), `BWRAP=/usr/local/bin/proot-bwrap`; `XAUTHORITY` нет (не нужен) |
+| Сокеты Wayland | `wayland-0` слушает `labwc` (сессия), `wayland-1` — `selkies` (захват); в `/proc/<labwc>/environ` — `wayland-1`. Selkies: `Wayland app compositor 'wayland-0' … capture stays on 'wayland-1'` |
+| Трансляция | только окно Steam на чёрном фоне: нет рабочего стола, панели, рамки; процессов `plasma`/`kwin`/`lxqt`/панелей/терминалов нет |
+| Пакеты (`dpkg -l`) | ни терминала (`xterm` удалён, `x-terminal-emulator` нет), ни файлового менеджера, ни браузера |
+| Окно во весь экран, нажимается | окно входа фиксированного размера (min = max 700x440) labwc не растягивает — стоит в левом верхнем углу кадра (X сообщает 610,320, как в пробе). Клик в трансляции по «Remember me» снял галку; указатель X — 661,577 = 610+51, 320+257, совпадает с точкой клика |
+| Буфер обмена | `Rejecting clipboard read: outbound clipboard disabled` |
+| `cg-steam-shutdown` | 0 за 3,1 с, клиента `ubuntu12_32/steam` нет |
+| `cg-session-exec` без Steam (labwc) | `WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:0`; `xdotool` работает |
+| `cg-profile-pack --list` / `cg-profile-pack` | 0, 16 записей (`.steam/registry.vdf`, `.config/…`, `.local/share/…`) |
+| GPU (браузер подключён, окно входа) | 301 МиБ VRAM, GPU 1 %, NVENC 15 % |
+
+Не проверено этим смоуком: вход в аккаунт и запуск игры (нужен аккаунт игрока), геймпад, звук,
+клавиатура в настоящем браузере (на пробе подтвердил владелец), окна игр во весь экран — Task 9.
+
+## Ручная проверка на brofrong (2026-10-17, риск №3 спеки, прежний образ KDE)
 
 Bridge-сеть `cg-sessions`, копия дома спайка (вход Steam владельца, Vampire Survivors 1794680),
 `-p 59001:59001/udp`, `SELKIES_WEBRTC_UDP_MUX_PORT=59001`, `CG_APP_ID=1794680`, метка

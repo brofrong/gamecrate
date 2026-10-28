@@ -1,0 +1,16 @@
+#!/bin/sh
+# Автостарт сессии labwc → /etc/xdg/labwc/autostart. labwc читает его на старте сессии, если в
+# профиле игрока нет своего (~/.config/labwc/autostart) — у нас его нет никогда. Служба
+# /etc/service/wayland базового образа запускает labwc напрямую, без systemd user и без KDE, так
+# что /etc/xdg/autostart/*.desktop здесь никто не обрабатывает. Дети автостарта получают окружение
+# сессии labwc: LD_PRELOAD интерпозера ввода Selkies (иначе Steam не видит геймпад), DISPLAY
+# Xwayland и WAYLAND_DISPLAY вложенной сессии (wayland-0).
+#
+# Сессионную шину D-Bus в этой базе никто не поднимает (служба dbus — только системная, её видит
+# cg-nm-stub), а Steam и cg-steam-shutdown её ищут — поднимаем dbus-launch (dbus-x11 есть в базе).
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+  eval "$(dbus-launch --sh-syntax --exit-with-session)"
+  export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
+fi
+
+/usr/local/bin/cg-launch &

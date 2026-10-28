@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
 # Сборка образа сессии cg-session:<версия драйвера> на воркере (по умолчанию brofrong).
 #
-#   ./deploy/build-session-image.sh [ssh-хост]
+#   ./deploy/build-session-image.sh [ssh-хост] [суффикс]
+#
+# Суффикс — тег cg-session:<версия>-<суффикс> (например kiosk: новый образ рядом с рабочим, который
+# агент берёт по SESSION_IMAGE); без суффикса — cg-session:<версия>, как раньше.
 #
 # 1. rsync images/session -> <хост>:~/cg-session-image (каталог nv/ на воркере не трогается).
 # 2. Версия драйвера = nvidia-smi --query-gpu=driver_version на воркере.
 # 3. Если библиотек этой версии ещё нет: скачать NVIDIA-Linux-x86_64-<ver>.run и распаковать
 #    (--extract-only) в nv/x. Скачанный .run и распаковка кешируются в ~/cg-session-image/nv.
-# 4. docker build --build-arg NV_VER=<ver> -t cg-session:<ver>.
+# 4. docker build --build-arg NV_VER=<ver> -t cg-session:<ver>[-<суффикс>].
 #
 # Ничего, кроме своего каталога и своего образа, на воркере не меняет; sudo не нужен.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_HOST="${1:-brofrong}"
+TAG_SUFFIX="${2:-}"
 REMOTE_DIR="cg-session-image"
+
+if [ -n "${TAG_SUFFIX}" ] && ! [[ "${TAG_SUFFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+  echo "ОШИБКА: суффикс тега — буквы, цифры, «_», «.», «-»: '${TAG_SUFFIX}'" >&2
+  exit 1
+fi
 
 echo "==> rsync images/session -> ${REMOTE_HOST}:~/${REMOTE_DIR}"
 ssh "${REMOTE_HOST}" "mkdir -p ~/${REMOTE_DIR}"
@@ -28,11 +37,13 @@ if ! [[ "${NV_VER}" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
   exit 1
 fi
 echo "    ${NV_VER}"
+IMAGE_TAG="cg-session:${NV_VER}${TAG_SUFFIX:+-${TAG_SUFFIX}}"
 
-ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" "${NV_VER}" <<'REMOTE'
+ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" "${NV_VER}" "${IMAGE_TAG}" <<'REMOTE'
 set -euo pipefail
 cd ~/"$1"
 ver="$2"
+tag="$3"
 run="nv/NVIDIA-Linux-x86_64-${ver}.run"
 mkdir -p nv
 
@@ -50,9 +61,9 @@ else
   sh "${run}" --extract-only --target nv/x
 fi
 
-echo "==> docker build cg-session:${ver}"
-docker build --build-arg NV_VER="${ver}" -t "cg-session:${ver}" .
-docker images "cg-session:${ver}"
+echo "==> docker build ${tag}"
+docker build --build-arg NV_VER="${ver}" -t "${tag}" .
+docker images "${tag}"
 REMOTE
 
-echo "==> готово: cg-session:${NV_VER} на ${REMOTE_HOST}"
+echo "==> готово: ${IMAGE_TAG} на ${REMOTE_HOST}"

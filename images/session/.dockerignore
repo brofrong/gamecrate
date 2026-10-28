@@ -6,12 +6,14 @@
 # контекст ~165 МБ = только nv/x/32, без .run и 64-битной распаковки).
 *
 !cg-launch
-!cg-launch.desktop
 !cg-profile-pack
 !cg-steam-shutdown
+!cg-session-exec
 !cg-session-stage
 !cg-nm-stub
 !cg-nm-stub.conf
 !cg-nm-stub.run
 !cg-nm-stub.finish
+!labwc/
+!vendor/
 !nv/x/32/

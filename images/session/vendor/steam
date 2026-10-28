@@ -1,0 +1,5 @@
+#!/bin/sh
+# Start Steam with a bubblewrap that works without user namespaces.
+BWRAP="${BWRAP:-/usr/local/bin/proot-bwrap}"
+export BWRAP
+exec /usr/lib/steam/steam "$@"
