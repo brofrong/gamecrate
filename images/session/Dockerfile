@@ -129,6 +129,8 @@ ENV PATH="${PATH}:/usr/local/games:/usr/games"
 # Важно: базовый образ при этом не падает, а остаётся на Wayland с программным композитингом
 # (/etc/container-entrypoint.sh: «GPU: the compositor cannot reach it; compositing in software»).
 # Признак здоровой сессии — в логе «Zero-copy capture ... encoded in place on NVENC».
+# Битрейт: `SELKIES_CONGESTION_CONTROL=true` — подстройка под сеть по отчётам WebRTC, цена —
+# постоянный потолок из меню сессии; «Авто» устанавливает фиксированные 20 Мбит/с.
 ENV TZ=Europe/Moscow \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=all \
@@ -140,6 +142,7 @@ ENV TZ=Europe/Moscow \
     SELKIES_ENCODER=h264enc \
     SELKIES_RATE_CONTROL_MODE=cbr \
     SELKIES_VIDEO_BITRATE=10000,2000-40000 \
+    SELKIES_CONGESTION_CONTROL=true \
     SELKIES_FRAMERATE=60,30-120 \
     SELKIES_KEYFRAME_INTERVAL=2 \
     SELKIES_WEBRTC_ICE_LITE=true \
