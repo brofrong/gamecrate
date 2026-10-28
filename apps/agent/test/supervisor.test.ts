@@ -1418,6 +1418,67 @@ describe("SessionSupervisor", () => {
       }),
     ));
 
+  it("StartSession with steamLoginResetAt clears login before seeding and echoes it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLogin = testSteamLogin();
+        const steamLoginResetAt = "2026-10-28T10:00:00.000Z";
+        yield* h.supervisor.handle({ ...start, steamLogin, steamLoginResetAt });
+        yield* h.tick("0 seconds");
+        // Восстановление профиля (его в этой сессии нет — пустой дом) →
+        // стирание (четыре чтения, дом пуст — запись не нужна) → посев
+        // (ещё четыре чтения и запись) → старт.
+        expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+          "create cg-session-s1",
+          ...held("s1"),
+          "volumeExists cg-home-u1",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
+          "putArchive cg-session-s1 /home/ubuntu",
+          "start cg-session-s1",
+          "remove cg-s-s1-hold",
+        ]);
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits[0]?.steamLoginResetAt).toBe(
+          steamLoginResetAt,
+        );
+      }),
+    ));
+
+  it("StartSession without steamLoginResetAt does not clear and the commit omits it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLogin = testSteamLogin();
+        yield* h.supervisor.handle({ ...start, steamLogin });
+        yield* h.tick("0 seconds");
+        // Без steamLoginResetAt — только посев, одно чтение каждого файла.
+        expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+          "create cg-session-s1",
+          ...held("s1"),
+          "volumeExists cg-home-u1",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
+          "putArchive cg-session-s1 /home/ubuntu",
+          "start cg-session-s1",
+          "remove cg-s-s1-hold",
+        ]);
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect("steamLoginResetAt" in (h.fake.state.commits[0] ?? {})).toBe(
+          false,
+        );
+      }),
+    ));
+
   it("session without a Steam login does not touch login files", () =>
     run((h) =>
       Effect.gen(function* () {

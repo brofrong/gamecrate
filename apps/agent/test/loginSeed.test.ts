@@ -3,6 +3,7 @@ import { crc32 } from "node:zlib";
 import { getPath, parseVdf } from "../src/steam/vdf";
 import {
   applyLoginSeed,
+  clearLogin,
   connectCacheKey,
   decryptConnectCache,
   encryptConnectCache,
@@ -285,6 +286,124 @@ describe("applyLoginSeed", () => {
     expect(getPath(loginUsers, ["users", seed.steamId, "AccountName"])).toBe(
       seed.accountName,
     );
+  });
+});
+
+describe("clearLogin", () => {
+  it("removes a seeded login", () => {
+    const seeded = applyLoginSeed({}, seed, 1_760_000_000);
+    const cleared = clearLogin(seeded);
+
+    const local = parseVdf(cleared.localVdf ?? "");
+    expect(
+      getPath(local, [
+        "MachineUserConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "ConnectCache",
+        connectCacheKey(seed.accountName),
+      ]),
+    ).toBeUndefined();
+
+    const loginUsers = parseVdf(cleared.loginUsers ?? "");
+    expect(getPath(loginUsers, ["users", seed.steamId])).toBeUndefined();
+
+    const config = parseVdf(cleared.config ?? "");
+    expect(
+      getPath(config, [
+        "InstallConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "Accounts",
+        seed.accountName,
+      ]),
+    ).toBeUndefined();
+
+    expect(cleared.registry).toContain('"AutoLoginUser"\t\t""');
+    expect(cleared.registry).toContain('"RememberPassword"\t\t"0"');
+    const registry = parseVdf(cleared.registry ?? "");
+    expect(
+      getPath(registry, [
+        "Registry",
+        "HKCU",
+        "Software",
+        "Valve",
+        "Steam",
+        "AutoLoginUser",
+      ]),
+    ).toBe("");
+    expect(
+      getPath(registry, [
+        "Registry",
+        "HKCU",
+        "Software",
+        "Valve",
+        "Steam",
+        "RememberPassword",
+      ]),
+    ).toBe("0");
+
+    for (const text of Object.values(cleared))
+      expect(text).not.toContain(seed.accountName);
+  });
+
+  it("keeps unrelated keys", () => {
+    const config = [
+      '"InstallConfigStore"',
+      "{",
+      '\t"Software"',
+      "\t{",
+      '\t\t"Valve"',
+      "\t\t{",
+      '\t\t\t"Steam"',
+      "\t\t\t{",
+      '\t\t\t\t"CompatToolMapping"',
+      "\t\t\t\t{",
+      '\t\t\t\t\t"440"\t\t"proton_7"',
+      "\t\t\t\t}",
+      '\t\t\t\t"Accounts"',
+      "\t\t\t\t{",
+      `\t\t\t\t\t"${seed.accountName}"`,
+      "\t\t\t\t\t{",
+      `\t\t\t\t\t\t"SteamID"\t\t"${seed.steamId}"`,
+      "\t\t\t\t\t}",
+      "\t\t\t\t}",
+      "\t\t\t}",
+      "\t\t}",
+      "\t}",
+      "}",
+      "",
+    ].join("\n");
+
+    const cleared = clearLogin({ config });
+    const nodes = parseVdf(cleared.config ?? "");
+    expect(
+      getPath(nodes, [
+        "InstallConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "CompatToolMapping",
+        "440",
+      ]),
+    ).toBe("proton_7");
+    expect(
+      getPath(nodes, [
+        "InstallConfigStore",
+        "Software",
+        "Valve",
+        "Steam",
+        "Accounts",
+        seed.accountName,
+      ]),
+    ).toBeUndefined();
+  });
+
+  it("skips missing and unreadable", () => {
+    expect(clearLogin({})).toEqual({});
+    expect(clearLogin({ localVdf: "garbage {" })).toEqual({});
   });
 });
 

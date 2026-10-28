@@ -229,3 +229,69 @@ export const applyLoginSeed = (
   config: applyConfig(current.config, seed),
   registry: applyRegistry(current.registry, seed),
 });
+
+type LoginFile = keyof typeof LOGIN_FILES;
+
+/** `local.vdf`: пустой `ConnectCache` (стирание входа, спека §4); остальное — как было. */
+const clearLocalVdf = (nodes: ReadonlyArray<VdfNode>): ReadonlyArray<VdfNode> =>
+  setPath(
+    nodes,
+    ["MachineUserConfigStore", "Software", "Valve", "Steam", "ConnectCache"],
+    [],
+  );
+
+/** `loginusers.vdf`: пустой блок `users` — все записи автологина убраны. */
+const clearLoginUsers = (nodes: ReadonlyArray<VdfNode>): ReadonlyArray<VdfNode> =>
+  setPath(nodes, ["users"], []);
+
+/** `config.vdf`: пустой блок `Accounts`; остальное (в т.ч. `CompatToolMapping`) — как было. */
+const clearConfig = (nodes: ReadonlyArray<VdfNode>): ReadonlyArray<VdfNode> =>
+  setPath(
+    nodes,
+    ["InstallConfigStore", "Software", "Valve", "Steam", "Accounts"],
+    [],
+  );
+
+/** `registry.vdf`: автологин выключен — `AutoLoginUser` пуст, `RememberPassword` сброшен. */
+const clearRegistry = (nodes: ReadonlyArray<VdfNode>): ReadonlyArray<VdfNode> => {
+  const withoutUser = setPath(
+    nodes,
+    ["Registry", "HKCU", "Software", "Valve", "Steam", "AutoLoginUser"],
+    "",
+  );
+  return setPath(
+    withoutUser,
+    ["Registry", "HKCU", "Software", "Valve", "Steam", "RememberPassword"],
+    "0",
+  );
+};
+
+const CLEARERS: Record<
+  LoginFile,
+  (nodes: ReadonlyArray<VdfNode>) => ReadonlyArray<VdfNode>
+> = {
+  localVdf: clearLocalVdf,
+  loginUsers: clearLoginUsers,
+  config: clearConfig,
+  registry: clearRegistry,
+};
+
+/**
+ * Стирает вход §4 из каждого файла, который есть и разбирается (нет файла или
+ * не парсится — он просто отсутствует в результате, вызывающий решает, что
+ * с этим делать); остальное содержимое каждого файла — как было. Чистая
+ * функция: чтение/запись контейнера — дело вызывающего (`clearSteamLogin`).
+ */
+export const clearLogin = (
+  current: Partial<Record<LoginFile, string>>,
+): Partial<Record<LoginFile, string>> => {
+  const result: Partial<Record<LoginFile, string>> = {};
+  for (const key of Object.keys(LOGIN_FILES) as Array<LoginFile>) {
+    const text = current[key];
+    if (text === undefined) continue;
+    const nodes = parseVdf(text);
+    if (nodes === undefined) continue;
+    result[key] = formatVdf(CLEARERS[key](nodes));
+  }
+  return result;
+};
