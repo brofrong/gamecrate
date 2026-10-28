@@ -571,7 +571,7 @@ describe("install jobs", () => {
       }),
     ));
 
-  it("queued job of a blocked owner fails with Доступ закрыт, the next job is claimed in the same pass", () =>
+  it("queued job of a blocked owner requeues its other waiter, the next job is claimed in the same pass", () =>
     run((fake) =>
       Effect.gen(function* () {
         const t0 = new Date();
@@ -616,16 +616,11 @@ describe("install jobs", () => {
           },
           { id: otherJob.id, state: "running", workerId: "gs-a" },
         ]);
-        // Владелец видит «Доступ закрыт», присоединившийся — общую причину.
-        like(yield* sessionRow("s-owner"), {
-          state: "failed",
-          failReason: accessDeniedReason,
-          endedAt: at(t0, 4),
-        });
-        like(yield* sessionRow("s-joined"), {
-          state: "failed",
-          failReason: failReasons.installFailed,
-        });
+        // M1: сам владелец не в счёт (его разберёт планировщик), но u-joined
+        // ни при чём, и его сессия не падает вместе с задачей — она ждёт
+        // новую попытку в очереди.
+        like(yield* sessionRow("s-owner"), { state: "queued" });
+        like(yield* sessionRow("s-joined"), { state: "queued" });
         like(yield* sessionRow("s-other"), {
           state: "installing",
           installJobId: otherJob.id,
@@ -635,6 +630,26 @@ describe("install jobs", () => {
             s.command._tag === "InstallGame" ? s.command.jobId : "",
           ),
         ).toEqual([otherJob.id]);
+
+        // Следующий проход планировщика: владелец всё ещё заблокирован —
+        // «Доступ закрыт» при размещении (`blockedFailure`); u-joined не
+        // заблокирован — ему выписывается новая задача под своим профилем.
+        yield* Scheduler.tick(at(t0, 5));
+        like(yield* sessionRow("s-owner"), {
+          state: "failed",
+          failReason: accessDeniedReason,
+          endedAt: at(t0, 5),
+        });
+        const joinedRow = yield* sessionRow("s-joined");
+        expect(joinedRow.state).toBe("installing");
+        expect(joinedRow.installJobId).not.toBe(blockedJob.id);
+        const allJobs = yield* jobs();
+        const newJob = allJobs.find(
+          (j) => j.id !== blockedJob.id && j.id !== otherJob.id,
+        );
+        if (newJob === undefined) return yield* Effect.die("expected a new job");
+        expect(newJob.userId).toBe("u-joined");
+        expect(newJob.state).toBe("queued");
       }),
     ));
 

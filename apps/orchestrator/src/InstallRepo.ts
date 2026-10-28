@@ -153,7 +153,15 @@ export const claimNext = (candidates: ReadonlyArray<string>, now: Date) =>
             job = rest;
             break;
           }
-          const waiters = yield* fail(next.id, accessDeniedReason, now);
+          // Другие пользователи ждут не из-за себя — их сессии возвращаются в
+          // очередь (`InstallCancelled`) и получат новую задачу под своим
+          // профилем. Сессии самого владельца к этому моменту уже
+          // stop-requested через `setBlocked`, так что `UserStop` кончит их
+          // раньше; если какая-то всё же проскочила сюда, `placeOne` увидит
+          // блокировку заново и провалит её `blockedFailure` с «Доступ закрыт».
+          const waiters = yield* fail(next.id, accessDeniedReason, now, {
+            requeueWaiters: true,
+          });
           yield* Effect.logInfo("Queued install job of a blocked user failed", {
             jobId: next.id,
             sessions: waiters,
