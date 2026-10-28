@@ -411,6 +411,10 @@ const make = (options: SessionRunnerOptions) =>
                 // публикует это событие в PubSub (Task 3) — сюда оно не
                 // попадает; case — для исчерпанности switch по `AgentReport`.
                 return Effect.void;
+              case "GameDeleted":
+              case "GameDeleteFailed":
+                // Удаление игры к сессиям не относится (обработка — не здесь).
+                return Effect.void;
             }
           })();
           return effect.pipe(

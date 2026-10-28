@@ -108,10 +108,24 @@ export const WorkerVersions = Schema.Struct({
 export type WorkerVersions = typeof WorkerVersions.Type;
 
 /**
+ * Приложение в общей библиотеке воркера с ролью `gamestore` — по одному на
+ * `steamapps/appmanifest_<id>.acf` (игры и служебные пакеты: Proton, Steam
+ * Linux Runtime). `sizeBytes` — `SizeOnDisk` манифеста (нет — 0).
+ */
+export const LibraryApp = Schema.Struct({
+  appId: Schema.Int,
+  name: Schema.String,
+  sizeBytes: NonNegativeNumber,
+});
+export type LibraryApp = typeof LibraryApp.Type;
+
+/**
  * Текущая загрузка воркера — отчёт `WorkerStats` раз в ~5 с (спека: оркестратор
  * хранит только последний снимок, без истории). GPU-поля и `filesystems`
  * пусты/`null`, если измерить не удалось (нет GPU, `nvidia-smi` упал,
  * `statfs` не прошёл) — карточка в админке покажет «нет данных», не упадёт.
+ * `library` — содержимое общей библиотеки, только у агента с ролью
+ * `gamestore` (вкладка «Игры» админки); у остальных поля нет.
  */
 export const WorkerStats = Schema.Struct({
   cpuPercent: Schema.Number,
@@ -140,6 +154,7 @@ export const WorkerStats = Schema.Struct({
     }),
   ),
   uptimeSeconds: NonNegativeNumber,
+  library: Schema.optional(Schema.Array(LibraryApp)),
 });
 export type WorkerStats = typeof WorkerStats.Type;
 
@@ -199,7 +214,9 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
 
 /**
  * Команда оркестратора агенту: поднять или погасить контейнер сессии,
- * запустить или отменить установку игры в общую библиотеку (роль `gamestore`).
+ * запустить или отменить установку игры в общую библиотеку, удалить игру из
+ * неё (`DeleteGame`, итог — `GameDeleted`/`GameDeleteFailed`; всё — роль
+ * `gamestore`).
  * `steamLogin` — ожидающий вход пользователя для посева (`SteamLoginSeeds`
  * оркестратора); `null` — его нет. `InstallGame.steamLoginTimeoutSeconds` —
  * сколько установщик ждёт входа клиента Steam (ответа на его попытку входа
@@ -227,6 +244,7 @@ export const AgentCommand = Schema.Union([
     steamLoginTimeoutSeconds: Schema.Int,
   }),
   Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
+  Schema.TaggedStruct("DeleteGame", { appId: Schema.Int }),
 ]);
 export type AgentCommand = typeof AgentCommand.Type;
 
@@ -298,6 +316,12 @@ export const AgentReport = Schema.Union([
   }),
   /** Снимок текущей загрузки воркера, раз в ~5 с (админка, вкладка «Воркеры»). */
   Schema.TaggedStruct("WorkerStats", { stats: WorkerStats }),
+  /** Итог `DeleteGame`: игры в библиотеке больше нет (или не было). */
+  Schema.TaggedStruct("GameDeleted", { appId: Schema.Int }),
+  Schema.TaggedStruct("GameDeleteFailed", {
+    appId: Schema.Int,
+    reason: Schema.String,
+  }),
 ]);
 export type AgentReport = typeof AgentReport.Type;
 
