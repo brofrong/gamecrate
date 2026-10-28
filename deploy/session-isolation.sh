@@ -5,47 +5,60 @@
 # Контейнеры сессий и установщиков должны видеть интернет (Steam, игры), но не адреса хоста,
 # локальную сеть и другие контейнеры моста cg-sessions, кроме cg-api -> :8080 (Selkies-стрим
 # сессии через cg-api). Ответы на уже установленные соединения (ESTABLISHED,RELATED) разрешены
-# всегда — иначе сломается и сам интернет-трафик сессий. Подробности — спека §4.4
+# всегда — иначе сломается и сам интернет-трафик сессий. DNS-серверы хоста (`--resolver`, их
+# находит `detect`) открыты для :53 — встроенный DNS Docker (127.0.0.11) шлёт внешние запросы
+# из сети контейнера, и без этого исключения DNS сессий ломается, если сервер в частной сети
+# (10/8, 192.168/16, 169.254/16…). Подробности — спека §4.4
 # (docs/superpowers/specs/2026-10-27-kiosk-image-design.md).
 #
 #   ./deploy/session-isolation.sh detect [ssh-хост=brofrong]
-#     только читает (ничего не меняет и не применяет) `docker network inspect cg-sessions` и
-#     `docker inspect cg-api` на сервере; печатает готовую строку аргументов для `print`.
+#     только читает (ничего не меняет и не применяет) `docker network inspect cg-sessions`,
+#     `docker inspect cg-api` и DNS-серверы хоста (`/run/systemd/resolve/resolv.conf`, если он
+#     есть, иначе `/etc/resolv.conf`; 127.x и ::1 пропускаются — их Docker спрашивает из сети
+#     хоста, IPv6-серверы тоже, с предупреждением) на сервере; печатает готовую строку
+#     аргументов для `print`.
 #
 #   ./deploy/session-isolation.sh print --subnet <cidr> --bridge <ifname> --api-ip <ip> \
-#       [--subnet6 <cidr>]
+#       [--resolver <ipv4>]… [--subnet6 <cidr>]
 #     печатает в stdout фрагмент дампа `iptables-save` (таблица `filter`, цепочки `DOCKER-USER`
-#     и `INPUT`) — сам ничего не применяет. Неверный или неполный набор аргументов — код 2,
-#     stdout пуст.
+#     и `CG-SESSIONS-IN`) и в комментарии — команду перехода из INPUT в CG-SESSIONS-IN (см. шаг
+#     3б); сам ничего не применяет. Неверный или неполный набор аргументов — код 2, stdout пуст.
 #
 # Как применить на новом сервере (владелец, вручную, с sudo — см. раздел в deploy/README.md):
-#   1. ./deploy/session-isolation.sh detect <хост>            — узнать подсеть/мост/IP cg-api;
+#   1. ./deploy/session-isolation.sh detect <хост>            — узнать подсеть/мост/IP cg-api/DNS;
 #   2. ./deploy/session-isolation.sh print <аргументы detect> — посмотреть правила глазами;
 #   3. применить:
+#      а) цепочки:
 #        ssh <хост> './deploy/session-isolation.sh print <аргументы> \
 #          | sed "/^# ip6tables/,\$d" | sudo iptables-restore -n'
 #        # если detect напечатал --subnet6 — вторая часть вывода (после строки "# ip6tables"):
 #        ssh <хост> './deploy/session-isolation.sh print <аргументы> \
 #          | sed -n "/^# ip6tables/,\$p" | tail -n +2 | sudo ip6tables-restore -n'
-#      `-n` (noflush) не трогает остальные таблицы/правила хоста; политики встроенных цепочек в
-#      дампе помечены `-` — `*tables-restore` их не меняет. Цепочка `DOCKER-USER` — общая для всех
-#      сетей docker на хосте: если на сервере появятся другие сети/сервисы с правилами в ней, этот
-#      дамп нужно будет совмещать с ними руками (здесь `-n` не защищает от повторного накопления
-#      дублей при повторном применении — перед повтором стоит почистить старые строки);
+#      б) переход из INPUT — первым правилом, чтобы разрешения хоста (ufw, `--dport 22 -j ACCEPT`
+#         и т. п.) не срабатывали раньше; `-C` не даёт ему задвоиться при повторном применении:
+#        ssh <хост> 'sudo iptables -C INPUT -i <мост> -j CG-SESSIONS-IN 2>/dev/null \
+#          || sudo iptables -I INPUT 1 -i <мост> -j CG-SESSIONS-IN'
+#        # и так же `ip6tables`, если есть --subnet6.
+#      `-n` (noflush) не трогает остальные таблицы и встроенные цепочки хоста, но объявленная в
+#      дампе пользовательская цепочка (`:DOCKER-USER`, `:CG-SESSIONS-IN`) очищается целиком и
+#      заполняется заново. Поэтому повторное применение не копит дублей, но СТИРАЕТ любые другие
+#      правила в DOCKER-USER: эта цепочка общая для всех сетей docker на хосте — если на сервере
+#      появятся свои правила в ней, их нужно дописать в этот дамп руками до применения.
 #   4. сохранить после перезагрузки (Debian/Ubuntu, пакет iptables-persistent):
 #        sudo apt install iptables-persistent && sudo netfilter-persistent save
 #      (или вручную: sudo sh -c 'iptables-save > /etc/iptables/rules.v4' и так же для ip6tables);
 #   5. проверить: ./deploy/check-session-isolation.sh <хост> → код 0, все «закрыто» — закрыто.
 #
-# Если `cg-api` пересоздан с другим IP — повторить шаги 1–3 (правило с его старым IP само не
-# исчезнет, его нужно убрать так же руками, как при любом повторном применении).
+# Если `cg-api` пересоздан с другим IP или сменились DNS-серверы хоста — повторить шаги 1–3
+# (цепочки перезапишутся целиком, переход из INPUT останется один).
 set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
 Использование:
   deploy/session-isolation.sh detect [ssh-хост=brofrong]
-  deploy/session-isolation.sh print --subnet <cidr> --bridge <ifname> --api-ip <ip> [--subnet6 <cidr>]
+  deploy/session-isolation.sh print --subnet <cidr> --bridge <ifname> --api-ip <ip> \
+      [--resolver <ipv4>]... [--subnet6 <cidr>]
 USAGE
 }
 
@@ -76,10 +89,12 @@ is_ifname() {
 }
 
 cmd_print() {
-  local subnet="" bridge="" api_ip="" subnet6=""
+  local subnet="" bridge="" api_ip="" subnet6="" resolver
+  # `${resolvers[@]+…}` ниже — пустой массив под `set -u` в bash < 4.4.
+  local -a resolvers=()
   while [ $# -gt 0 ]; do
     case "$1" in
-    --subnet | --bridge | --api-ip | --subnet6)
+    --subnet | --bridge | --api-ip | --subnet6 | --resolver)
       # Флаг без значения: `shift 2` при единственном оставшемся аргументе под `set -e` уронит
       # скрипт с кодом 1 без сообщения — проверяем заранее и даём код 2, как остальным ошибкам.
       if [ $# -lt 2 ]; then
@@ -103,6 +118,10 @@ cmd_print() {
       ;;
     --subnet6)
       subnet6="$2"
+      shift 2
+      ;;
+    --resolver)
+      resolvers+=("$2")
       shift 2
       ;;
     *)
@@ -135,41 +154,64 @@ cmd_print() {
       exit 2
     }
   fi
+  for resolver in ${resolvers[@]+"${resolvers[@]}"}; do
+    is_ipv4 "${resolver}" || {
+      echo "ОШИБКА: --resolver не похож на IPv4: ${resolver}" >&2
+      exit 2
+    }
+  done
 
-  # :INPUT/:DOCKER-USER со значением "-" вместо политики — *tables-restore не трогает текущую
-  # политику встроенной цепочки INPUT, а DOCKER-USER (не встроенная) всегда "-".
+  # DNS хоста: в DOCKER-USER (сервер в сети/LAN) — до DROP частных диапазонов; в CG-SESSIONS-IN
+  # (сервер — сам хост) — до DROP. Порядок `-A` в цепочке = порядок проверки.
+  local dns_forward="" dns_input="" proto
+  for resolver in ${resolvers[@]+"${resolvers[@]}"}; do
+    for proto in udp tcp; do
+      dns_forward+="-A DOCKER-USER -i ${bridge} -d ${resolver} -p ${proto} --dport 53 -j RETURN"$'\n'
+      dns_input+="-A CG-SESSIONS-IN -d ${resolver} -p ${proto} --dport 53 -j ACCEPT"$'\n'
+    done
+  done
+
+  # Объявление пользовательской цепочки при `*tables-restore -n` очищает её — повторное
+  # применение перезаписывает DOCKER-USER и CG-SESSIONS-IN целиком (и стирает чужие правила в
+  # DOCKER-USER). Встроенная INPUT в дампе не объявлена и не трогается: переход в CG-SESSIONS-IN
+  # ставится отдельной командой с `-C` (в дампе `-I INPUT 1` задваивался бы при каждом повторе).
   cat <<RULES
 *filter
-:INPUT - [0:0]
 :DOCKER-USER - [0:0]
+:CG-SESSIONS-IN - [0:0]
 -A DOCKER-USER -i ${bridge} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 -A DOCKER-USER -i ${bridge} -o ${bridge} -s ${api_ip} -p tcp --dport 8080 -j RETURN
 -A DOCKER-USER -i ${bridge} -o ${bridge} -j DROP
--A DOCKER-USER -i ${bridge} -d 10.0.0.0/8 -j DROP
+${dns_forward}-A DOCKER-USER -i ${bridge} -d 10.0.0.0/8 -j DROP
 -A DOCKER-USER -i ${bridge} -d 172.16.0.0/12 -j DROP
 -A DOCKER-USER -i ${bridge} -d 192.168.0.0/16 -j DROP
 -A DOCKER-USER -i ${bridge} -d 169.254.0.0/16 -j DROP
 -A DOCKER-USER -i ${bridge} -d 100.64.0.0/10 -j DROP
--A INPUT -i ${bridge} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A INPUT -i ${bridge} -j DROP
+-A CG-SESSIONS-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+${dns_input}-A CG-SESSIONS-IN -j DROP
 COMMIT
+# Затем переход из INPUT первым правилом (не задваивается при повторе):
+#   iptables -C INPUT -i ${bridge} -j CG-SESSIONS-IN 2>/dev/null || iptables -I INPUT 1 -i ${bridge} -j CG-SESSIONS-IN
 RULES
 
   if [ -n "${subnet6}" ]; then
     # Без отдельного IPv6-адреса cg-api (--api-ip — только IPv4, см. детект): бридж-бридж по v6
     # закрыт целиком — cg-api -> сессии ходит по v4, это не хуже, чем изоляция, которую просят.
+    # DNS-серверы — только IPv4 (`--resolver`), по v6 исключений нет.
     cat <<RULES6
 # ip6tables
 *filter
-:INPUT - [0:0]
 :DOCKER-USER - [0:0]
+:CG-SESSIONS-IN - [0:0]
 -A DOCKER-USER -i ${bridge} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 -A DOCKER-USER -i ${bridge} -o ${bridge} -j DROP
 -A DOCKER-USER -i ${bridge} -d fc00::/7 -j DROP
 -A DOCKER-USER -i ${bridge} -d fe80::/10 -j DROP
--A INPUT -i ${bridge} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A INPUT -i ${bridge} -j DROP
+-A CG-SESSIONS-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A CG-SESSIONS-IN -j DROP
 COMMIT
+# Затем переход из INPUT первым правилом (не задваивается при повторе):
+#   ip6tables -C INPUT -i ${bridge} -j CG-SESSIONS-IN 2>/dev/null || ip6tables -I INPUT 1 -i ${bridge} -j CG-SESSIONS-IN
 RULES6
   fi
 }
@@ -183,11 +225,29 @@ set -euo pipefail
 docker network inspect cg-sessions \
   -f '{{.Id}}|{{json .Options}}|{{range .IPAM.Config}}{{.Subnet}};{{end}}'
 docker inspect cg-api -f '{{(index .NetworkSettings.Networks "cg-sessions").IPAddress}}'
+# DNS-серверы хоста, которые Docker отдаёт встроенному резолверу (systemd-resolved — его
+# настоящие серверы, а не заглушка 127.0.0.53). Одной строкой через пробел, может быть пустой.
+conf=/etc/resolv.conf
+[ -r /run/systemd/resolve/resolv.conf ] && conf=/run/systemd/resolve/resolv.conf
+awk '$1 == "nameserver" { printf "%s ", $2 }' "${conf}"
+echo
 REMOTE
   )"
 
   net_line="$(printf '%s\n' "${out}" | sed -n '1p')"
   api_ip="$(printf '%s\n' "${out}" | sed -n '2p')"
+  local resolver_line resolver resolver_args=""
+  resolver_line="$(printf '%s\n' "${out}" | sed -n '3p')"
+  for resolver in ${resolver_line}; do
+    case "${resolver}" in
+    127.* | ::1) continue ;; # loopback Docker спрашивает из сети хоста — правило не нужно
+    esac
+    if is_ipv4 "${resolver}"; then
+      resolver_args+=" --resolver ${resolver}"
+    else
+      echo "ПРЕДУПРЕЖДЕНИЕ: DNS-сервер ${resolver} не IPv4 — исключения для него нет" >&2
+    fi
+  done
   IFS='|' read -r net_id options_json subnets <<<"${net_line}"
 
   # {{json .Options}} — валидный JSON ({} если опций нет); извлекаем ключ без jq (его на
@@ -214,7 +274,8 @@ REMOTE
     exit 1
   fi
 
-  printf -- '--subnet %s --bridge %s --api-ip %s' "${subnet}" "${bridge}" "${api_ip}"
+  printf -- '--subnet %s --bridge %s --api-ip %s%s' "${subnet}" "${bridge}" "${api_ip}" \
+    "${resolver_args}"
   if [ -n "${subnet6}" ]; then
     printf -- ' --subnet6 %s' "${subnet6}"
   fi
