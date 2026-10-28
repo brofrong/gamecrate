@@ -1,5 +1,5 @@
 // `/admin`: админка — вкладки «Воркеры» (карточки воркеров и «Последние сбои»), «Сессии»,
-// «Игры» (общая библиотека хранилища), «Установки» (заглушка — таблицу строит Task 5) и
+// «Игры» (общая библиотека хранилища), «Установки» (активные и недавние задачи установки) и
 // «Настройки» («Настройки сессий»). Без сессии — вход через Pocket ID, игрок — «Нет доступа».
 import type { AdminWorker, SessionSettings } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
 import { FailuresCard } from "@/components/admin/FailuresCard";
 import { GamesTab } from "@/components/admin/GamesTab";
+import { InstallsTab } from "@/components/admin/InstallsTab";
 import { Polled } from "@/components/admin/Polled";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { SessionsTab } from "@/components/admin/SessionsTab";
@@ -304,11 +305,6 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
       </Polled>
     </div>
   );
-}
-
-/** Заглушка вкладки «Установки» — таблицу задач установки строит Task 5. */
-function InstallsTab() {
-  return <p className="text-sm text-muted-foreground">Скоро</p>;
 }
 
 function AdminHome() {
