@@ -23,7 +23,8 @@
 ## Global Constraints
 
 - Цель скорости: медиана 3 повторных запусков до этапа `visible` ≤ 40 с для Can of Wormholes
-  (1295320) и 20 Minutes Till Dawn (1966900) на brofrong.
+  (1295320) и 20 Minutes Till Dawn (1966900) на brofrong. Владелец 2026-10-28: пока не
+  обязательна — замер записывается как есть (Task 8, Task 9).
 - Драйвер brofrong 550.163.01 не меняется. Признак здорового захвата в логе контейнера:
   `Zero-copy capture ... encoded in place on NVENC`. Нет его на новой базе — стоп, к владельцу.
 - Контракт образа не меняется: `CG_APP_ID`, `CG_MODE=install`, `SELKIES_WEBRTC_UDP_MUX_PORT`,
@@ -65,6 +66,14 @@
   и Task 7 (`/proc/<steam>/environ`), Task 9 — владелец с геймпадом.
 - **IPv6 на новом сервере:** правила только v4 оставили бы дыру. Тест — Task 1,
   `rules cover ipv6 when the network has an ipv6 subnet`.
+- **Новый игрок без файлов префикса в профиле** (первая сессия сразу после установки): шаблон
+  должен работать и без `user.reg`/`steamuser` игрока. Тест — Task 8.1, `ensure builds in the
+  install scratch…` (умолчания остаются в шаблоне); проверка — Task 10, шаг 2.
+- **Сессия той же игры жива, пока собирается шаблон:** lower нельзя менять под её overlay. Тест —
+  Task 8.1, `ensure defers the swap while a container of the app exists`.
+- **Агент перезапустился, пока добивал зависший контейнер:** контейнер с сохранённым профилем не
+  должен стать «вечным» `profile-unsaved`. Тест — Task 8.2, `agent start removes a stopped session
+  container whose profile was saved`.
 
 ---
 
@@ -353,12 +362,383 @@
 
 ### Task 8: Ускорение запуска (дополнение по итогам Task 3)
 
-После одобрения владельцем предложения из Task 3 — дописать в этот план задачи 8.x тем же навыком
-(`superpowers:writing-plans`): файлы, интерфейсы и тесты для выбранных вариантов (например,
-окружение pressure-vessel в образе; шаблон префикса: кто пишет — агент, single-flight на
-`(appid, версия Proton)`, каталог рядом и `rename`, никаких данных игрока, сессия в библиотеку не
-пишет). Дополнение — отдельным коммитом в этот файл, потом реализация. Без одобрения владельца
-Task 8 не начинать.
+Одобрено владельцем 2026-10-28: цель 40 с пока снята (принимаем текущее время), делаем ровно две
+вещи — шаблон префикса (8.1) и уборку зависшего контейнера (8.2); вариант A (pressure-vessel)
+отброшен. 8.1 и 8.2 друг от друга не зависят и обе — после Task 7; образ сессии не меняется,
+поэтому всё работает и с `-kde`, и с `-kiosk`.
+
+### Task 8.1: Шаблон префикса Proton на игру
+
+Решения (спека §4.3, «Пробы ускорения (2026-10-28)», отчёт Task 3):
+- **Где лежит.** `<LIBRARY_DIR>/steamapps/compatdata/<appid>` — внутри lower тома `cg-s-<id>-apps`.
+  Сессия видит его без единой правки запуска, пишет только в свой upper (copy-up), файлы игрока
+  из профиля ложатся сверху тем же `putArchive`, что и сегодня. Копия в upper сессии отвергнута:
+  375 МБ на каждый старт на общий NVMe — секунды и грязные страницы, то есть ровно то, на чём
+  висит `sync()`. Отдельный overlay-том на `(appid, версия)` отвергнут: третий том, вложенное
+  монтирование, правки `prepare`/`holdVolumes`/`unmarkVolatile`/`cleanup` и путей после
+  перезапуска агента. Цена выбора: в lower один шаблон на игру (версия — в метке), а менять lower
+  под живым overlay той же игры нельзя — замена только когда нет ни одного контейнера с
+  `cg.app=<appid>` (иначе `deferred`, повтор при следующем поводе).
+- **Ключ `(appid, версия Proton)`.** Proton — `steamapps/common/Proton - Experimental` библиотеки
+  (им шли обе игры проб). Версия — первая строка его файла `version`
+  (`1791989105 experimental-11.0-20261014`), она же пишется в метку шаблона
+  `compatdata/<appid>/cg-template`. Метки нет или там другая строка — шаблон `stale`, его
+  пересобирают. Пока не пересобран, сессии видят старый: Proton обновляет его в своём upper без
+  создания префикса (`creation_sync_guard` есть, `sync()` не зовёт), так что это не хуже, чем без
+  шаблона. Сам Proton в библиотеке не меняется (установщик не переносит обновления уже
+  установленных приложений); если его сменили вручную — CLI для всех игр (README).
+  Single-flight — по appid внутри агента (Proton один, ключ сводится к appid).
+- **Как делается.** Не из сессии. Помощник из образа сессии (как у всех помощников; образ не
+  меняется): без сети, без GPU, без входа в Steam и профиля, uid 1000. Слои — как у установщика:
+  `installLayers(config, "pfx-<appid>")` (клиент — lower `STEAM_CLIENT_DIR`; apps — lower
+  библиотека, upper в `INSTALL_SCRATCH_DIR`, на ФС библиотеки), смонтированные по тем же путям,
+  что в сессии. Тогда пути Proton в `config_info`, ссылки шрифтов и диск `s:` совпадут с тем, что
+  увидит сессия. Proton запускается через Steam Linux Runtime так же, как это делает Steam:
+  `_v2-entry-point --verb=waitforexitandrun -- proton waitforexitandrun …`. `setup_prefix`
+  создаёт префикс и делает оба своих `sync()` в помощнике, а не в сессии игрока. Готовый
+  `compatdata/<appid>` переносится из upper через `rename` (одна ФС), как игра в `applyPromotion`.
+  Сессия в библиотеку не пишет никогда.
+- **Когда.** (1) После установки, до `InstallFinished`: ждём не больше `TEMPLATE_INSTALL_WAIT`
+  (2 мин), чтобы первая же сессия игрока шла с шаблоном. Дольше — сборка продолжается в фоне, а
+  сессия стартует без шаблона. (2) Лениво: после сессии, в которой был префикс
+  (`compatdata/<appid>` в upper `apps`), если шаблона нет или он `stale` — уже после удаления её
+  контейнера. (3) Вручную: `prefixTemplateCli.ts` (Task 9). Игры без `.exe` на глубине до 4
+  пропускаются: нативным Linux-играм Proton не нужен.
+- **Что внутри.** Весь префикс, который создал Proton, **включая** умолчания `pfx/user.reg` и
+  `pfx/drive_c/users/steamuser` из `default_pfx`. Это отступление от формулировки «исключить
+  steamuser и user.reg»: она была про префикс из сессии игрока, а этот шаблон собран без игрока
+  (нет входа, нет сети, нет профиля). Без умолчаний новый игрок (первая сессия после установки —
+  самый частый случай) получил бы префикс без HKCU и без `%USERPROFILE%`: при готовом
+  `creation_sync_guard` Proton их не создаёт (`copy_pfx` в `setup_prefix` зовётся только без
+  guard). Файлы игрока из профиля перекрывают умолчания: `user.reg` — целиком, `steamuser` — по
+  файлам. Страховка: если в префиксе найден `steam_autocloud.vdf`, шаблон не переносится
+  (`failed`). Следствие: `cg-profile-pack` (glob `compatdata/*/pfx`) положит в профиль умолчания и
+  для игр с шаблоном, в которые игрок не играл, — килобайты на игру, не данные игрока.
+- **`MachineGuid`** (`system.reg`) — общий у всех игроков игры на сервере до пересборки шаблона.
+  Сегодня он новый в каждой сессии (префикс создаётся заново), так что постоянный общий не хуже; с
+  аккаунтом он не связан. Свой GUID у игрока потребовал бы править `system.reg` (копия в upper) на
+  каждом старте и хранить его в профиле — не делаем.
+- **Без шаблона** (нет Proton или runtime в библиотеке, нет `INSTALL_SCRATCH_DIR`, мало места,
+  сборка упала или отложена) — как сегодня: Proton создаёт префикс в сессии.
+
+**Files:**
+- Create: `apps/agent/src/PrefixTemplate.ts` — чтение Proton и шаблона, спецификация помощника,
+  перенос, сервис `PrefixTemplates`
+- Create: `apps/agent/src/prefixTemplateCli.ts` — разовая сборка для списка appid
+- Create: `apps/agent/test/prefixTemplate.test.ts`
+- Modify: `apps/agent/src/Installer.ts` (`finish`, `parseAppManifest` → реэкспорт),
+  `apps/agent/src/steam/vdf.ts` (`parseAppManifest`), `apps/agent/src/SessionSupervisor.ts`
+  (`finish`), `apps/agent/src/main.ts`
+- Test: `apps/agent/test/installer.test.ts`, `apps/agent/test/supervisor.test.ts`
+- Modify: `deploy/README.md` — раздел «Шаблоны префикса Proton»; строка `LIBRARY_DIR` в таблице
+  каталогов; приёмка MVP-3, п. 6 (`compatdata/<appid>` с `cg-template` теперь в библиотеке есть)
+- Modify: `docs/superpowers/specs/2026-10-27-kiosk-image-design.md` — «Результаты», подраздел
+  «Шаблон префикса: проба сборки»
+
+**Interfaces:**
+- Consumes: `installLayers`, `prepare`, `removeVolumes`, `removeScratch`, `cleanup`, `STEAM_DIR`,
+  `STEAMAPPS_DIR` (`Overlay.ts`); `helperSpec`, `runHelper` (`Helper.ts`); `tokenize`
+  (`steam/vdf.ts`); `FreeSpace`, `hasFreeSpace` (`DiskSpace.ts`); `parseAppManifest` — перенести
+  из `Installer.ts` в `steam/vdf.ts` (иначе цикл импорта `Installer` → `PrefixTemplate` →
+  `Installer`), в `Installer.ts` оставить реэкспорт для его тестов.
+- Produces (`apps/agent/src/PrefixTemplate.ts`):
+  - `TEMPLATE_PROTON_DIR = "Proton - Experimental"`, `TEMPLATE_MARKER = "cg-template"`,
+    `TEMPLATE_INSTALL_WAIT = Duration.minutes(2)`;
+  - `interface ProtonTool { readonly dirName: string; readonly build: string; readonly runtimeDirName: string }`;
+  - `readProtonTool(steamapps: string): ProtonTool | undefined` — `common/<TEMPLATE_PROTON_DIR>/version`
+    (первая строка) и `toolmanifest.vdf` → `require_tool_appid` → `appmanifest_<id>.acf` →
+    `installdir`; чего-то нет — `undefined`;
+  - `templateDir(config: AgentConfigValues, appId: number): string` —
+    `<LIBRARY_DIR>/steamapps/compatdata/<appId>`;
+  - `templateState(dir: string, tool: ProtonTool): "fresh" | "missing" | "stale"`;
+  - `hasWindowsExe(dir: string, depth?: number): boolean` (по умолчанию 4, ссылки не разыменовываются);
+  - `playerDataIn(dir: string): ReadonlyArray<string>` — относительные пути `steam_autocloud.vdf`;
+  - `templateLayers(config, appId: number): Overlays` = `installLayers(config, \`pfx-${appId}\`)`
+    (остатки после падения агента убирает `Installer.reconcile`: метка `cg.install`);
+  - `templateBuildSpec(config, appId: number, installDir: string, tool: ProtonTool): ContainerSpec`;
+  - `promoteTemplate(built: string, target: string, trash: string): void` — `mkdir -p` родителя
+    `target`; есть `target` — `rename(target, trash)`; затем `rename(built, target)`;
+  - `type TemplateOutcome = "fresh" | "built" | "deferred" | "skipped" | "failed"`;
+  - `interface PrefixTemplatesShape { readonly ensure: (appId: number) => Effect.Effect<TemplateOutcome> }`
+    — никогда не падает: сбои уходят в лог и дают `failed`;
+  - `PrefixTemplates = Context.Reference<PrefixTemplatesShape>("@cg/agent/PrefixTemplates", …)` —
+    по умолчанию `ensure: () => Effect.succeed("skipped")` (как `FreeSpace`/`DownloadingBytes`:
+    существующие тесты супервизора и установщика не меняются);
+  - `prefixTemplatesLayer: Layer.Layer<PrefixTemplates, never, AgentConfig | DockerClient>`.
+- Produces: `bun apps/agent/src/prefixTemplateCli.ts <appId>…` — по очереди `ensure`, строка
+  `<appId> <outcome>` на каждый, код 1, если есть `failed` или неверный appid.
+
+Спецификация помощника `templateBuildSpec` (значения для теста; argv уточняет проба, шаг 1):
+`helperSpec` с `name: cg-i-pfx-<appId>-build`, `kind: "prefix-template"`, `user: "1000"`,
+`mounts: mountsFor(templateLayers(config, appId))`, env:
+`HOME=/home/ubuntu`, `SteamAppId`, `SteamGameId`, `STEAM_COMPAT_APP_ID` = `<appId>`,
+`STEAM_COMPAT_DATA_PATH=<STEAMAPPS_DIR>/compatdata/<appId>`,
+`STEAM_COMPAT_CLIENT_INSTALL_PATH=<STEAM_DIR>`,
+`STEAM_COMPAT_INSTALL_PATH=<STEAMAPPS_DIR>/common/<installDir>`,
+`STEAM_COMPAT_LIBRARY_PATHS=<STEAMAPPS_DIR>`,
+`STEAM_COMPAT_TOOL_PATHS=<STEAMAPPS_DIR>/common/<dirName>:<STEAMAPPS_DIR>/common/<runtimeDirName>`,
+`PRESSURE_VESSEL_VARIABLE_DIR=/tmp/cg-pv` (копия runtime — в слой контейнера помощника, а не
+609 МБ в upper на RAID); entrypoint:
+`[<STEAMAPPS_DIR>/common/<runtimeDirName>/_v2-entry-point, --verb=waitforexitandrun, --,
+<STEAMAPPS_DIR>/common/<dirName>/proton, waitforexitandrun, C:\windows\system32\cmd.exe, /c, exit, 0]`.
+
+`ensure(appId)` по шагам (каждый «нет» — исход без Docker, кроме оговорённого):
+1. Уже идёт сборка этой игры — ждать её исход (`Deferred`, сама сборка — в scope сервиса:
+   таймаут установщика её не прерывает; по завершении запись из `Map` удаляется).
+2. Нет `installScratchDir` → `skipped`; `readProtonTool` → `undefined` → `skipped`; нет
+   `appmanifest_<appId>.acf` или `installdir` в библиотеке → `skipped`; `!hasWindowsExe(common/<installdir>)`
+   → `skipped`; `templateState` = `fresh` → `fresh`; мало места на ФС `INSTALL_SCRATCH_DIR`
+   (`hasFreeSpace`, `MIN_FREE_GB`) → `skipped`.
+3. `cleanup(templateLayers)` (остатки прошлой попытки; не вышло → `failed`) → `prepare` →
+   `runHelper(templateBuildSpec, Effect.void)` → `removeVolumes`.
+4. `built = <apps upper>/compatdata/<appId>`: нет `version` или `pfx/creation_sync_guard` →
+   `failed`; `playerDataIn(built)` не пуст → `failed` (лог `Prefix template has player data`,
+   только пути).
+5. Записать `built/cg-template` = `tool.build + "\n"`.
+6. `docker.listByLabel("cg.app")`: есть контейнер с `labels["cg.app"] === String(appId)` →
+   `deferred`.
+7. `promoteTemplate(built, templateDir(config, appId), <INSTALL_SCRATCH_DIR>/pfx-<appId>/old)` →
+   `built`.
+8. Всегда в конце (и при `failed`/`deferred`) — `cleanup(templateLayers)` с логом при сбое. Логи:
+   `Prefix template built` (`appId`, `build`), `… deferred: app in use`, `… skipped` (`why`),
+   `… build failed` (`error`).
+
+- [ ] **Step 1: Проба сборки на brofrong** (GPU и слот не нужны; временный контейнер с явным
+  `--entrypoint`, всё только чтение, кроме `/tmp` контейнера; `--rm`). Сначала на хосте:
+  `grep -n "def setup_prefix\|creation_sync_guard\|os.sync()\|^CURRENT_PREFIX_VERSION"` по
+  `/raid/cloud-gaming/library/steamapps/common/Proton - Experimental/proton` — подтвердить, что
+  `copy_pfx` и `sync()` стоят только под `if not file_exists(self.creation_sync_guard…)`;
+  `head -1 …/version`; `grep require_tool_appid …/toolmanifest.vdf` и `installdir` из
+  `appmanifest_<этот id>.acf` (→ `<runtime>`) и `appmanifest_1966900.acf` (→ `<installdir>`);
+  `grep -E "^(Dirty|Writeback):" /proc/meminfo`. Затем (`S=/home/ubuntu/.local/share/Steam`,
+  `A=$S/steamapps`):
+  ```sh
+  docker run --rm --name cg-pfx-probe --label cg.probe=prefix-template --network none --user 1000 \
+    --security-opt no-new-privileges:true \
+    -v /raid/cloud-gaming/steam-client:$S:ro -v /raid/cloud-gaming/library/steamapps:$A:ro \
+    -e HOME=/home/ubuntu -e SteamAppId=1966900 -e SteamGameId=1966900 -e STEAM_COMPAT_APP_ID=1966900 \
+    -e STEAM_COMPAT_DATA_PATH=/tmp/cgp/1966900 -e STEAM_COMPAT_CLIENT_INSTALL_PATH=$S \
+    -e STEAM_COMPAT_INSTALL_PATH="$A/common/<installdir>" -e STEAM_COMPAT_LIBRARY_PATHS=$A \
+    -e STEAM_COMPAT_TOOL_PATHS="$A/common/Proton - Experimental:$A/common/<runtime>" \
+    -e PRESSURE_VESSEL_VARIABLE_DIR=/tmp/cg-pv \
+    --entrypoint bash cg-session:550.163.01 -c '<mkdir /tmp/cgp/1966900 /tmp/cg-pv; time argv
+    из спецификации выше; echo rc=$?; ls -A /tmp/cgp/1966900 /tmp/cgp/1966900/pfx; head -1
+    …/version; du -sh …; find … -name steam_autocloud.vdf | wc -l; ls …/pfx/drive_c/users>'
+  ```
+  (`STEAM_COMPAT_DATA_PATH` здесь в `/tmp`: в библиотеку только чтение; в агенте путь — тот же,
+  что у сессии.) Ожидается: `rc=0`; набор как у шаблона проб (`version`, `config_info`,
+  `tracked_files`, `pfx.lock`, `pfx/{creation_sync_guard, dosdevices, drive_c, system.reg,
+  user.reg, userdef.reg, .update-timestamp}`); `version` = `11.0-100`; 0 файлов
+  `steam_autocloud.vdf`; в `users` есть `steamuser`; время. Не вышло — попробовать
+  `waitforexitandrun` → `run`, `cmd.exe …` → `wineboot.exe`; рабочий argv — в спецификацию
+  `templateBuildSpec`. Не вышло никак — **стоп, к владельцу** (запасной путь: сбор из upper
+  сессии после удаления её контейнера — отдельное решение). Итог (argv, время, `Dirty`, состав) —
+  в «Результаты» спеки, подраздел «Шаблон префикса: проба сборки».
+- [ ] **Step 2: Падающие тесты** `apps/agent/test/prefixTemplate.test.ts` (`bun:test`; библиотека,
+  scratch и install-scratch — `mkdtemp`, как `installer.test.ts`; свой фейк Docker на
+  `unusedDocker`: `wait cg-i-pfx-<id>-build` «играет Proton» — пишет в
+  `<installScratch>/pfx-<id>/apps/upper/compatdata/<id>` файлы `version` (`11.0-100`),
+  `pfx/creation_sync_guard`, `pfx/system.reg`, `pfx/user.reg`,
+  `pfx/drive_c/users/steamuser/Documents/.keep`; помощник `rm` удаляет свои пути, как в
+  `installer.test.ts`; в библиотеке — `common/Proton - Experimental/{version, toolmanifest.vdf}`
+  (`"require_tool_appid" "1628350"`), `appmanifest_1628350.acf` (`installdir`
+  `SteamLinuxRuntime_4`), `appmanifest_1966900.acf` (`installdir` `MinutesTillDawn`),
+  `common/MinutesTillDawn/MinutesTillDawn.exe`):
+  - `readProtonTool reads the build and the runtime from the library` →
+    `{ dirName: "Proton - Experimental", build: "1791989105 experimental-11.0-20261014", runtimeDirName: "SteamLinuxRuntime_4" }`;
+  - `readProtonTool without Proton or its runtime manifest is undefined`;
+  - `templateState: missing without the dir or marker, stale for another build, fresh for this build`;
+  - `build spec mounts the template layers at the session paths and runs Proton through the runtime offline`
+    — `network: "none"`, `gpus: false`, `user: "1000"`, `labels["cg.helper"] = "prefix-template"`,
+    `mounts` = `[{ volume: "cg-i-pfx-1966900-client", target: STEAM_DIR }, { volume: "cg-i-pfx-1966900-apps", target: STEAMAPPS_DIR }]`,
+    env и entrypoint — ровно как в спецификации выше;
+  - `ensure builds in the install scratch and renames the template into the library` → `built`;
+    `<library>/steamapps/compatdata/1966900/cg-template` = `"1791989105 experimental-11.0-20261014\n"`;
+    там же есть `pfx/creation_sync_guard`, `pfx/user.reg`, `pfx/drive_c/users/steamuser`
+    (умолчания остаются); `<installScratch>/pfx-1966900` и `<scratch>/.install/pfx-1966900` нет;
+    `listByLabel cg.app` — после `wait cg-i-pfx-1966900-build`;
+  - `ensure replaces a stale template and keeps nothing of the old one` — до: метка `old-build\n`
+    и файл `pfx/old-only`; после: метка новой сборки, `pfx/old-only` нет, исход `built`;
+  - `ensure is single-flight per app` — два `ensure(1966900)` одновременно (`wait` закрыт
+    `Deferred`), один `create cg-i-pfx-1966900-build`, оба исхода `built`;
+  - `ensure defers the swap while a container of the app exists` — `listByLabel` отдаёт
+    `cg-session-s1` с `cg.app=1966900` → `deferred`, `compatdata/1966900` в библиотеке нет,
+    scratch убран;
+  - `a container of another app does not defer the swap` — `cg.app=1295320` → `built`;
+  - `template with steam_autocloud.vdf is not promoted` → `failed`, в библиотеке пусто, scratch
+    убран;
+  - `prefix without creation_sync_guard is not promoted` → `failed`;
+  - `failed helper leaves the library untouched` (`helperExit` 1) → `failed`, слои убраны;
+  - `fresh template, native game, no Proton or no INSTALL_SCRATCH_DIR: no Docker calls` — по
+    исходу `fresh`/`skipped`/`skipped`/`skipped`, `dockerCalls` 0;
+  - `not enough free space on the install scratch FS skips the build` (`FreeSpace` → 1 ГиБ при
+    `minFreeGb` 20) → `skipped`, `dockerCalls` 0.
+- [ ] **Step 3:** `cd apps/agent && bun test test/prefixTemplate.test.ts` → FAIL (модуля нет).
+- [ ] **Step 4:** `apps/agent/src/PrefixTemplate.ts` — интерфейсы и `ensure` по шагам выше;
+  `prefixTemplatesLayer` — `Layer.effect(PrefixTemplates, …)` со своим scope для форков сборок и
+  `Map<number, Deferred<TemplateOutcome>>`. Шапка файла — по-русски, как у `Installer.ts`: что
+  это, где лежит, почему lower, почему с умолчаниями, про `MachineGuid`.
+- [ ] **Step 5:** `cd apps/agent && bun test test/prefixTemplate.test.ts` → PASS.
+- [ ] **Step 6: Падающие тесты подключения** (фейк `PrefixTemplates` через
+  `Effect.provideService(PrefixTemplates, …)` пишет `templates.ensure <appId>` в журнал вызовов
+  фейка):
+  - installer: `finished install asks for the prefix template before InstallFinished` — вызов
+    `templates.ensure 1966900` после переноса (манифест цели уже в библиотеке), `InstallFinished`
+    в отчётах после него;
+  - installer: `slow template build does not hold InstallFinished longer than 2 minutes` —
+    `ensure` = `Effect.never`; через 119 с `InstallFinished` нет, через 120 с есть;
+  - installer: `failed install does not ask for a template`;
+  - supervisor: `session that had a prefix asks for a template after its container is removed` —
+    до `StopSession` создать `<scratch>/s1/apps/upper/compatdata/1794680`; в журнале
+    `templates.ensure 1794680` после `remove cg-s-s1-cleanup`;
+  - supervisor: `session without a prefix in its upper does not ask for a template`;
+  - supervisor: `profile-unsaved session does not ask for a template` (контейнер оставлен).
+- [ ] **Step 7:** `cd apps/agent && bun test test/installer.test.ts test/supervisor.test.ts` → новые FAIL.
+- [ ] **Step 8:** подключение:
+  - `Installer.finish` — после `applyPromotion`, до `current = undefined`/`InstallFinished`:
+    `templates.ensure(job.appId)` с `Effect.timeoutOrElse({ duration: TEMPLATE_INSTALL_WAIT, orElse: () => Effect.succeed("pending") })`,
+    исход — полем `prefixTemplate` в лог `Install finished`;
+  - `SessionSupervisor.finish` — `protonUsed = existsSync(<apps upper>/compatdata/<appId>)` до
+    остановки; после удаления контейнера и слоёв (ветка «профиль сохранён»), если `protonUsed` —
+    `Effect.forkIn(templates.ensure(appId), scope)`;
+  - `main.ts` — `Layer.provide(prefixTemplatesLayer)` сразу после `Layer.provide(Installer.layer)`
+    (его видят и супервизор, и установщик);
+  - `prefixTemplateCli.ts` — `BunRuntime.runMain`, слои `AgentConfig`, `DockerClient`,
+    `prefixTemplatesLayer`; шапка: запускать в `cg-agent` (`docker exec cg-agent bun
+    apps/agent/src/prefixTemplateCli.ts …`), только когда нет сессий и установок (имена
+    помощника те же, что у агента).
+- [ ] **Step 9:** `cd apps/agent && bun test && bun check && bun lint src` → PASS.
+- [ ] **Step 10:** README: раздел «Шаблоны префикса Proton» — что и зачем (`sync()` при создании
+  префикса, цифры из «Результатов»); где (`compatdata/<appid>`, метка `cg-template`); когда
+  собирается (после установки, ждём ≤ 2 мин; после сессии с префиксом; CLI); что внутри
+  (умолчания Proton, игрока нет, общий `MachineGuid`); как посмотреть
+  (`cat …/compatdata/*/cg-template`, `docker logs cg-agent 2>&1 | grep "Prefix template"`); как
+  пересобрать после смены Proton в библиотеке (CLI для всех `appmanifest_*.acf`; только без
+  сессий и установок); как выбросить битый (как в «common без манифеста»: `mv` в
+  `/raid/cloud-gaming/orphans/` без живых сессий этой игры); помощник завис в `sync()` —
+  `docker ps -a --filter label=cg.helper`, установка ждёт его не дольше 2 мин, уберётся при
+  следующем старте агента.
+- [ ] **Step 11: Коммит** `feat(agent): шаблон префикса Proton на игру в общей библиотеке`
+
+### Task 8.2: Агент добивает контейнер сессии, чья остановка зависла
+
+Сейчас `finish` после сохранения профиля делает `stop` → `remove`. Если процесс в D-состоянии
+(`sync()`), то `stop` падает (`did not receive an exit event`), затем `Abort(stop)` → `fail` →
+`remove` тоже падает (только лог) → `Failed` «Не удалось остановить игровой сервер», и слот
+выпускается. Контейнер остаётся навсегда: после перезапуска агента `adopt` считает остановленный
+контейнер `profile-unsaved`.
+
+Решения:
+- **Повторы.** Первая попытка — как сейчас. Не вышло — повтор каждые `CLEANUP_RETRY` (30 с) до
+  `CLEANUP_GIVE_UP` (60 мин; D-процессы проб висели 15–35 мин). Режим `remove` (профиль сохранён
+  или контейнер не нужен): `remove` (`rm -f` = kill + remove) → `cleanup` (тома `cg-s-<id>-*` и
+  `<SCRATCH_DIR>/<id>`); успех — оба. В `finish` перед первой попыткой, как сейчас, — штатный
+  `stop` с `STOP_TIMEOUT_SEC` (его сбой больше не обрывает остановку): порядок вызовов в обычном
+  случае не меняется. Режим `stop` (профиль не
+  сохранён или `keep`): `stop` → `keepStopped`; контейнер и слои не удаляются никогда — правило
+  `profile-unsaved` не меняется.
+- **Слот.** Пока идут повторы, сессия остаётся в `sessions` агента: её видят heartbeat и
+  `snapshot`, и слот держится (правило Task 5: `ended`/`failed` строка в heartbeat — слот занят).
+  Убрали — сессия уходит из `sessions`, ближайший heartbeat без неё выпускает слот
+  (`releaseStaleSlots`). Сдались через 60 мин — то же плюс `logError("session-container-stuck")`
+  (`sessionId`, `container`, `mode`), дальше решает человек (README).
+- **Что видит игрок.** Итог — сразу, а не через полчаса: агент шлёт свой обычный `Stopped`
+  (`profileSaved` как есть) или `Failed` (своя причина) с новым необязательным полем
+  `cleanupPending: true`. Сайт показывает обычный конец сессии вместо «Сохраняем прогресс…» на
+  полчаса и вместо «Не удалось остановить игровой сервер» — профиль ведь сохранён. Оркестратор на
+  `cleanupPending: true` слот не выпускает (его выпустит heartbeat). Новых текстов нет;
+  `failReasons.stop` больше не используется — удалить.
+- **Перезапуск агента во время повторов.** Сразу после сохранения профиля агент пишет метку
+  `<SCRATCH_DIR>/<id>/profile-saved` (каталог агента, uid 1000; уходит вместе со scratch). Если
+  при старте у контейнера `cg.session` (запущенного или нет) есть метка, его профиль уже сохранён:
+  `adopt` берёт его в `sessions` и сразу идёт в режим `remove`, затем `Stopped` (`cloudSynced:
+  false`, `profileSaved: true`; для уже `ended` строки `step` ничего не делает, слот выпускается).
+  Без метки — всё как сейчас.
+
+**Files:**
+- Modify: `packages/rpc/src/agent.ts:199-207` — `cleanupPending: Schema.optional(Schema.Boolean)`
+  у `Stopped` и `Failed`
+- Modify: `apps/orchestrator/src/SessionRunner.ts` — ветки `Stopped`/`Failed` (`releaseSlot` только
+  без `cleanupPending: true`)
+- Modify: `apps/agent/src/SessionSupervisor.ts` — `settle`, метка, `finish`, `fail`, `adopt`;
+  `failReasons.stop` удалить
+- Test: `apps/agent/test/supervisor.test.ts` (новый `describe("stuck container")`; в фейке —
+  `stopFails`, `removeFails`, `removeVolumeFails`: столько ближайших вызовов падают с
+  `DockerError` «tried to kill container, but did not receive an exit event»),
+  `apps/orchestrator/test/runner.test.ts` (`describe("slot release")`)
+- Modify: `deploy/README.md` — раздел «Контейнер сессии не остановился»; в «Профиль не сохранён» —
+  одна фраза: если `stop` завис, агент повторяет его, и слот держится до остановки
+
+**Interfaces:**
+- Produces (`@cg/rpc`): `Stopped`/`Failed` с необязательным `cleanupPending?: boolean`; нет поля
+  или `false` — как сегодня.
+- Produces (`SessionSupervisor.ts`): `CLEANUP_RETRY = Duration.seconds(30)`,
+  `CLEANUP_GIVE_UP = Duration.minutes(60)`, `PROFILE_SAVED_MARKER = "profile-saved"`,
+  `profileSavedMarker(config: AgentConfigValues, sessionId: string): string` (=
+  `<SCRATCH_DIR>/<id>/profile-saved`); внутренний
+  `settle(session: Session, mode: "remove" | "stop", report: Extract<AgentReport, { _tag: "Stopped" | "Failed" }>): Effect<void>`
+  — первая попытка удалась: `sessions.delete`, затем `report`; не удалась: `{ ...report,
+  cleanupPending: true }`, повторы, затем `sessions.delete`.
+- Если 8.1 уже сделана: вызов `templates.ensure` из `finish` переносится в `settle` (после
+  успешного режима `remove`, только если `protonUsed`).
+
+- [ ] **Step 1: Падающие тесты** (агент, `describe("stuck container")`; время — `h.tick`):
+  - `hung stop after a saved profile: Stopped with cleanupPending, kill and remove retried every 30 s`
+    — профиль v7, `stopFails` 1, `removeFails` 2; после `StopSession`: отчёт `Stopped { cloudSynced: false, profileSaved: true, cleanupPending: true }`,
+    `snapshot` содержит `s1`, `existsSync(<scratch>/s1/profile-saved)`; `tick 30 s` → `Heartbeat { sessionIds: ["s1"] }`;
+    ещё `tick 30 s` → в журнале `stop cg-session-s1 15` один раз, `remove cg-session-s1` три раза, затем `removeVolume cg-s-s1-client`,
+    `removeVolume cg-s-s1-apps`, помощник `cg-s-s1-cleanup`; `snapshot` `[]`; следующий heartbeat —
+    `sessionIds: []`; второго `Stopped` нет;
+  - `layer cleanup failure keeps the session until the layers are gone` — `removeVolumeFails` 1 →
+    `Stopped` с `cleanupPending: true`; через 30 с тома и scratch убраны, `snapshot` `[]`;
+  - `stuck container is given up after 60 minutes` — `removeFails` = `Infinity`; через 59 мин
+    `snapshot` всё ещё `[s1]`, через 60 мин `[]`, в логе `session-container-stuck`;
+  - `profile-unsaved session with a hung stop retries stop only and never removes` — `putFail`,
+    `stopFails` 2 → `Stopped { profileSaved: false, cleanupPending: true }`; через 60 с — `unmarked("s1")`;
+    `remove cg-session-s1` в журнале нет; `snapshot` `[]`;
+  - `failed session whose container cannot be removed reports Failed with cleanupPending` —
+    Selkies не отвечает, `removeFails` 1; через 120 с `Failed { reason: failReasons.streamTimeout, cleanupPending: true }`;
+    через 30 с — `remove cg-session-s1` и слои, `snapshot` `[]`;
+  - `agent start removes a stopped session container whose profile was saved` — `existing`:
+    остановленный `cg-session-s9` с метками (`cg.session` s9, `cg.user` u1, `cg.base-version` 7,
+    `cg.slot` 1, `cg.app` 1794680) и файл `<scratch>/s9/profile-saved` → `removedWithLayers("s9")`,
+    отчёт `Stopped { sessionId: "s9", cloudSynced: false, profileSaved: true }`, `unmark` нет;
+  - `agent start removes a running session container whose profile was saved` — то же с
+    `running: true`: `exec … cg-profile-pack` нет (профиль не снимается второй раз);
+  - прежние `startup unmarks stopped session containers` и `stop saves profile then removes
+    container and layers` проходят без правок (без метки и без сбоев — всё как было).
+- [ ] **Step 2: Падающие тесты** (оркестратор, `describe("slot release")`):
+  - `Stopped with cleanupPending keeps the slot until a heartbeat without the session` — `SLOTS=1`,
+    `s-old` `stopping` на `w-a`/0; отчёт `Stopped(s-old, profileSaved: true, cleanupPending: true)`
+    → `s-old` `ended`, `slotReleasedAt` null; `s-new` `queued` → `Scheduler.tick` → `queued`;
+    `Heartbeat(w-a, [s-old])` → null; `Heartbeat(w-a, [])` → `slotReleasedAt` = now;
+    `Scheduler.tick` → `s-new` `starting`, слот 0;
+  - `Failed with cleanupPending keeps the slot until a heartbeat without the session` — то же для
+    `Failed`, `s-old` → `failed` с причиной отчёта.
+- [ ] **Step 3:** `cd apps/agent && bun test test/supervisor.test.ts`,
+  `cd apps/orchestrator && bun run test` → новые FAIL.
+- [ ] **Step 4:** `@cg/rpc` — поле; `SessionRunner` — условие у `releaseSlot` в обеих ветках
+  (комментарий: «контейнер ещё убирается — слот выпустит heartbeat без сессии»).
+- [ ] **Step 5:** `SessionSupervisor`: `settle` по решениям выше (повторы — `Effect.sleep(CLEANUP_RETRY)`
+  в цикле, срок — по `Clock.currentTimeMillis`); `finish`: после успешного `saveProfile` — метка
+  (`writeFileSync`, сбой — только предупреждение), `docker.stop(…, STOP_TIMEOUT_SEC)` со сбоем в
+  лог, затем `settle(session, "remove", Stopped…)`;
+  профиль не сохранён — `settle(session, "stop", Stopped…)`. `fail`: `keep` → `settle(…, "stop", Failed…)`,
+  `created` → `settle(…, "remove", Failed…)`, ветка «контейнер не наш» не меняется. `adopt`:
+  метка есть → `register` (`phase: "stopping"`, `created: true`) и `forkIn(settle(…, "remove", Stopped…))`
+  до проверок «остановлен/запущен». Шапку файла и комментарий `finish` поправить.
+- [ ] **Step 6:** `cd apps/agent && bun test && bun check && bun lint src`;
+  `cd apps/orchestrator && bun run test && bun check && bun lint src`; `cd packages/rpc && bun check`
+  → PASS.
+- [ ] **Step 7:** README: раздел «Контейнер сессии не остановился (`docker stop` завис)» —
+  признак (`Session container cleanup failed, retrying` в логе агента, контейнер
+  `cg-session-<id>` есть, а сессия уже `ended`/`failed`); что делает агент (повтор каждые 30 с,
+  слот держится, игрок уже видит конец сессии; профиль сохранён — метка `profile-saved`);
+  перезапуск агента такой контейнер уберёт; после `session-container-stuck` — найти процесс в D
+  (`ps -eo pid,stat,wchan:32,cmd | awk '$2 ~ /D/'`), дождаться его выхода и
+  `docker restart cg-agent` (метка есть — агент удалит контейнер со слоями). Предупреждение про
+  установки из «Профиль не сохранён», п. 1, действует и здесь.
+- [ ] **Step 8: Коммит** `fix(agent): агент добивает контейнер сессии, чья остановка зависла`
 
 ### Task 9: Переключение brofrong на киоск, замер, проверка владельцем
 
@@ -377,15 +757,25 @@ Task 8 не начинать.
   `docker tag cg-session:550.163.01-kiosk cg-session:550.163.01`.
 - [ ] **Step 3:** `./deploy/build-steam-client.sh` (сервис простаивает) — шаблон собран новым
   образом.
-- [ ] **Step 4:** сессия владельца стартует; если нет — сразу откат:
+- [ ] **Step 4:** шаблоны префикса для уже установленных игр (Task 8.1; сервис простаивает, нет
+  `cg.session`/`cg.install`):
+  `ssh brofrong 'docker exec cg-agent bun apps/agent/src/prefixTemplateCli.ts 1966900 1295320 1318690 1794680 1296610 2379780'`
+  → по строке `<appid> built|fresh|skipped`, нет `failed` (неустановленная игра или игра без
+  `.exe` — `skipped`); `ssh brofrong 'head -1 /raid/cloud-gaming/library/steamapps/compatdata/*/cg-template'`
+  — у каждой `built` та же строка, что в `…/common/Proton - Experimental/version`; время сборки
+  каждой (лог `Prefix template built`) — в «Результаты».
+- [ ] **Step 5:** сессия владельца стартует; если нет — сразу откат:
   `docker tag cg-session:550.163.01-kde cg-session:550.163.01` и прежний шаблон (если менялся —
   `build-steam-client.sh` с прежним образом).
-- [ ] **Step 5:** (разрешение владельца) `./deploy/measure-session-start.sh <userId> 1295320 3` и
-  `… 1966900 3` → медиана `visible` по каждой; в «Результаты».
-- [ ] **Step 6:** ручная проверка владельцем в браузере: нет рабочего стола; картинка 60 fps;
+- [ ] **Step 6:** (разрешение владельца) `./deploy/measure-session-start.sh <userId> 1295320 3` и
+  `… 1966900 3` → медиана `visible` по каждой; в «Результаты» рядом с «Пробами ускорения»
+  (ожидаемо `prepare` ~17 с на свободном хосте и без минутных хвостов на занятом). Порог 40 с
+  владелец 2026-10-28 снял — записать как есть. 8.2 на сервере не воспроизводится (зависание не
+  вызвать) — проверено тестами; при первом случае сверить лог с README.
+- [ ] **Step 7:** ручная проверка владельцем в браузере: нет рабочего стола; картинка 60 fps;
   клавиатура, мышь, геймпад, звук; облачные сохранения (`Upload complete` в `cloud_log.txt`);
   повторный запуск — сохранения на месте; окно Steam, если появится, нажимается.
-- [ ] **Step 7: Коммит** `docs: замер и проверка образа-киоска на brofrong`
+- [ ] **Step 8: Коммит** `docs: замер и проверка образа-киоска на brofrong`
 
 ### Task 10: Установка для нового игрока на тестовом аккаунте
 
@@ -394,7 +784,10 @@ Task 8 не начинать.
 - [ ] **Step 1:** выбрать с владельцем небольшую бесплатную игру, которой нет в библиотеке
   (`ls <LIBRARY_DIR>/steamapps/appmanifest_<appid>.acf` — нет), игрок добавляет её в свой Steam.
 - [ ] **Step 2:** вход в Steam по QR на сайте → «Играть» → установка → игра запускается →
-  повторный запуск без QR.
+  повторный запуск без QR. Если игра под Proton: в логе агента `Install finished` с
+  `prefixTemplate: "built"` (или `pending`), есть `compatdata/<appid>/cg-template`; первая сессия
+  нового игрока (своих файлов префикса в профиле нет — работают умолчания шаблона) запускает игру
+  и сохраняет прогресс, повторный запуск — прогресс на месте.
 - [ ] **Step 3:** `docker logs cg-agent 2>&1 | grep -c "Seeded Steam login was not accepted"` → `0`
   за время проверки; в логах агента и оркестратора нет имени тестового аккаунта (`grep -c`,
   значение не печатать).
