@@ -30,9 +30,12 @@ import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { cn } from "@/lib/utils";
 import { SessionMenu } from "./SessionMenu";
 
-/** Полупрозрачная квадратная кнопка поверх игры: ярче при наведении и фокусе. */
+/**
+ * Полупрозрачная квадратная кнопка поверх игры: ярче при наведении и фокусе. Клики берут
+ * только сами кнопки — контейнер сквозной.
+ */
 const overlayButton =
-  "size-[34px] opacity-60 hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
+  "pointer-events-auto size-[34px] opacity-60 hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100";
 
 export function SessionControls({
   control,
@@ -81,7 +84,9 @@ export function SessionControls({
   };
 
   return (
-    <div className="absolute top-3 right-3 z-30 flex items-center gap-2">
+    // Сквозной контейнер: щели между кнопками и плашка подсказки не перехватывают клики по
+    // игре (иначе клик уводит фокус из стрима и клавиши перестают доходить до игры).
+    <div className="pointer-events-none absolute top-3 right-3 z-30 flex items-center gap-2">
       {hint && (
         <div className="pointer-events-none rounded-md border border-brand-cyan/40 bg-black/70 px-3 py-1.5 text-sm text-brand-text shadow-lg">
           Здесь <strong className="text-brand-cyan">настройки игры</strong> и

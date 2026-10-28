@@ -193,6 +193,21 @@ describe("session menu", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("controls do not take clicks meant for the game", () => {
+    renderPlayer({ streamSettings: control() });
+    const fullscreenButton = screen.getByRole("button", {
+      name: "На весь экран",
+    });
+    // Контейнер кнопок сквозной, клики берут только сами кнопки.
+    const bar = fullscreenButton.parentElement as HTMLElement;
+    expect(bar.contains(menuButton())).toBe(true);
+    expect(bar.classList.contains("pointer-events-none")).toBe(true);
+    expect(fullscreenButton.classList.contains("pointer-events-auto")).toBe(
+      true,
+    );
+    expect(menuButton().classList.contains("pointer-events-auto")).toBe(true);
+  });
+
   it("auto hides manual controls", async () => {
     const update = mock<Update>(() => {});
     const bridge = fakeBridge();
