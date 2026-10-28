@@ -1,5 +1,5 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
-import { AppRpcs } from "@cg/rpc";
+import { AppRpcs, type Role } from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity";
@@ -159,6 +159,28 @@ export const adminInstallsAtom = Api.query("admin.installs.list", undefined, {
 export const adminCancelInstallAtom = Api.mutation("admin.installs.cancel");
 export const adminCancelInstallArgs = (jobId: string) =>
   ({ payload: { jobId }, reactivityKeys: adminKeys }) as const;
+
+/** Пользователи (вкладка «Пользователи», опрос раз в 5 с). */
+export const adminUsersAtom = Api.query("admin.users.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Сменить роль пользователя («Сделать админом» / «Сделать игроком»). */
+export const adminSetRoleAtom = Api.mutation("admin.users.setRole");
+export const adminSetRoleArgs = (userId: string, role: Role) =>
+  ({ payload: { userId, role }, reactivityKeys: adminKeys }) as const;
+
+/** Заблокировать/разблокировать пользователя. */
+export const adminSetBlockedAtom = Api.mutation("admin.users.setBlocked");
+export const adminSetBlockedArgs = (userId: string, blocked: boolean) =>
+  ({ payload: { userId, blocked }, reactivityKeys: adminKeys }) as const;
+
+/** Попросить сбросить вход Steam в контейнере пользователя. */
+export const adminResetSteamLoginAtom = Api.mutation(
+  "admin.users.resetSteamLogin",
+);
+export const adminResetSteamLoginArgs = (userId: string) =>
+  ({ payload: { userId }, reactivityKeys: adminKeys }) as const;
 
 /** `_tag` типизированной ошибки RPC (`Unauthorized`, `Forbidden`, `SteamUnavailable`, `RpcClientError`…). */
 export const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>

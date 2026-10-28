@@ -1,8 +1,9 @@
 // Запуск игры с главной `/app` — общий для `MyGamesPage` (библиотека, «Запускал
 // недавно») и `TrendingPage` («В тренде»): активная сессия пользователя, запуск
 // новой («Играть») и переход к активной («Вернуться в игру»), с теми же текстами
-// ошибок (`GameNotOwned`/`Unauthorized`/остальное), что были продублированы в
-// обоих компонентах до вынесения сюда.
+// ошибок (`GameNotOwned`/`AccessDenied`/`Unauthorized`/остальное), что были
+// продублированы в обоих компонентах до вынесения сюда.
+import { accessDeniedReason } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Exit } from "effect";
@@ -40,6 +41,8 @@ export function usePlaySession() {
     const tag = errorTag(exit.cause);
     if (tag === "GameNotOwned") {
       toast.error("Эта игра не найдена в вашей библиотеке Steam");
+    } else if (tag === "AccessDenied") {
+      toast.error(accessDeniedReason);
     } else if (tag === "Unauthorized") {
       window.location.assign("/");
     } else {
