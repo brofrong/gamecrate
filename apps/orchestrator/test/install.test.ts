@@ -16,6 +16,7 @@ import {
   type AgentReport,
   type AgentRoles,
   type SteamLoginSeed,
+  accessDeniedReason,
   sessionSettingsKey,
   steamLoginRequiredReason,
 } from "@cg/rpc";
@@ -567,6 +568,73 @@ describe("install jobs", () => {
         // Без пометки ключа нет вовсе (а не `undefined`).
         expect("steamLoginResetAt" in (commands[2]?.command ?? {})).toBe(false);
         expect(yield* seeds.get("u-old")).toBeNull();
+      }),
+    ));
+
+  it("queued job of a blocked owner fails with Доступ закрыт, the next job is claimed in the same pass", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u-blocked", "u-joined", "u-other");
+        // Задача DOTA владельца u-blocked, к ней присоединился u-joined;
+        // за ней — задача PORTAL другого пользователя.
+        yield* insertSession({ id: "s-owner", userId: "u-blocked" });
+        yield* Scheduler.tick(t0);
+        yield* insertSession({ id: "s-joined", userId: "u-joined" });
+        yield* Scheduler.tick(at(t0, 1));
+        yield* insertSession({
+          id: "s-other",
+          userId: "u-other",
+          appId: PORTAL,
+        });
+        yield* Scheduler.tick(at(t0, 2));
+        const [blockedJob, otherJob] = yield* jobs();
+        if (blockedJob === undefined || otherJob === undefined)
+          return yield* Effect.die("expected two jobs");
+        like(blockedJob, { userId: "u-blocked", appId: DOTA, state: "queued" });
+        like(yield* sessionRow("s-joined"), {
+          state: "installing",
+          installJobId: blockedJob.id,
+        });
+
+        // Админ заблокировал владельца уже после создания задачи.
+        yield* db
+          .update(user)
+          .set({ blockedAt: at(t0, 3) })
+          .where(eq(user.id, "u-blocked"));
+        yield* connectAgent(fake, "gs-a", ["gamestore"], 0);
+        yield* dispatcher.tick(at(t0, 4));
+
+        like(yield* jobs(), [
+          {
+            id: blockedJob.id,
+            state: "failed",
+            error: accessDeniedReason,
+            workerId: null,
+          },
+          { id: otherJob.id, state: "running", workerId: "gs-a" },
+        ]);
+        // Владелец видит «Доступ закрыт», присоединившийся — общую причину.
+        like(yield* sessionRow("s-owner"), {
+          state: "failed",
+          failReason: accessDeniedReason,
+          endedAt: at(t0, 4),
+        });
+        like(yield* sessionRow("s-joined"), {
+          state: "failed",
+          failReason: failReasons.installFailed,
+        });
+        like(yield* sessionRow("s-other"), {
+          state: "installing",
+          installJobId: otherJob.id,
+        });
+        expect(
+          installCommands(fake).map((s) =>
+            s.command._tag === "InstallGame" ? s.command.jobId : "",
+          ),
+        ).toEqual([otherJob.id]);
       }),
     ));
 
@@ -1299,7 +1367,7 @@ describe("admin cancel", () => {
         yield* requestCancel(dota.id, at(t0, 1));
 
         yield* connectAgent(fake, "gs", ["gamestore"], 0);
-        const claim = yield* InstallRepo.claimNext(["gs"]);
+        const claim = yield* InstallRepo.claimNext(["gs"], at(t0, 2));
         expect(claim?.job.id).toBe(portal.id);
         like((yield* jobs())[0], { state: "queued", workerId: null });
       }),

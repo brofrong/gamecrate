@@ -15,9 +15,14 @@ import {
   installStages,
   type InstallStage,
   sessions,
+  user,
   workers,
 } from "@cg/db";
-import { type ProfileRef, steamLoginRequiredReason } from "@cg/rpc";
+import {
+  type ProfileRef,
+  accessDeniedReason,
+  steamLoginRequiredReason,
+} from "@cg/rpc";
 import {
   and,
   asc,
@@ -26,6 +31,7 @@ import {
   isNotNull,
   isNull,
   notExists,
+  sql,
 } from "drizzle-orm";
 import { Effect } from "effect";
 import type { LifecycleEvent } from "./lifecycle";
@@ -101,37 +107,58 @@ export interface Claim {
  */
 export const cancelledByAdminError = "Установка отменена администратором";
 
+/** Владелец задачи (`install_jobs.user_id`) заблокирован админом (`user.blocked_at`). */
+const ownerBlocked = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${installJobs.userId} and ${user.blockedAt} is not null)`;
+
 /**
  * Одна транзакция: самая старая `queued`-задача без запроса отмены админом
  * (`FOR UPDATE SKIP LOCKED`) → первый по id агент из `candidates` со строкой в
  * `workers`, не в обслуживании (`draining = false`) и без `running`-задачи →
  * `state = 'running'`, `workerId`; профиль и пометка сброса входа Steam
  * пользователя задачи читаются в той же транзакции (сбой чтения откатывает
- * выдачу). `undefined` — очередь пуста или свободных агентов нет.
+ * выдачу). Задача, чей владелец заблокирован (`ownerBlocked`) уже после её
+ * создания, не выдаётся: она проваливается (`fail`, ошибка
+ * `accessDeniedReason`, ждущие сессии — как у любой проваленной задачи), и в
+ * той же транзакции берётся следующая. `running`-задачи заблокированных не
+ * трогаются. `undefined` — очередь пуста или свободных агентов нет.
  */
-export const claimNext = (candidates: ReadonlyArray<string>) =>
+export const claimNext = (candidates: ReadonlyArray<string>, now: Date) =>
   Effect.gen(function* () {
     const db = yield* Db;
     if (candidates.length === 0) return undefined;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const [job] = yield* db
-          .select({
-            id: installJobs.id,
-            appId: installJobs.appId,
-            userId: installJobs.userId,
-          })
-          .from(installJobs)
-          .where(
-            and(
-              eq(installJobs.state, "queued"),
-              isNull(installJobs.cancelRequestedAt),
-            ),
-          )
-          .orderBy(asc(installJobs.createdAt))
-          .limit(1)
-          .for("update", { skipLocked: true });
-        if (job === undefined) return undefined;
+        let job: Claim["job"] | undefined;
+        while (job === undefined) {
+          const [next] = yield* db
+            .select({
+              id: installJobs.id,
+              appId: installJobs.appId,
+              userId: installJobs.userId,
+              ownerBlocked,
+            })
+            .from(installJobs)
+            .where(
+              and(
+                eq(installJobs.state, "queued"),
+                isNull(installJobs.cancelRequestedAt),
+              ),
+            )
+            .orderBy(asc(installJobs.createdAt))
+            .limit(1)
+            .for("update", { skipLocked: true });
+          if (next === undefined) return undefined;
+          const { ownerBlocked: blocked, ...rest } = next;
+          if (!blocked) {
+            job = rest;
+            break;
+          }
+          const waiters = yield* fail(next.id, accessDeniedReason, now);
+          yield* Effect.logInfo("Queued install job of a blocked user failed", {
+            jobId: next.id,
+            sessions: waiters,
+          });
+        }
         // Не в обслуживании (`draining`) — такие новых установок не берут.
         const known = yield* db
           .select({ id: workers.id })
@@ -323,7 +350,8 @@ export const finish = (
 /**
  * Задача провалилась (`InstallFailed` агента или агент её потерял): `failed` +
  * `error`, ждущие сессии — `failed` (или `queued`, см. `requeueWaiters`);
- * `steamLoginRequiredReason` владелец задачи видит как есть. Задача, которую
+ * `steamLoginRequiredReason` и `accessDeniedReason` (владелец заблокирован,
+ * `claimNext`) владелец задачи видит как есть. Задача, которую
  * отменил админ (`cancelRequestedAt`), проваливается с `cancelledByAdminError`
  * при любом `error`: ждущие видят эту причину и не возвращаются в очередь.
  * Только активная задача (и, если задан `workerId`, только на этом агенте);
@@ -368,8 +396,9 @@ export const fail = (
             },
             now,
           );
-        // Нужен вход в Steam — это про профиль владельца задачи: ему причина
-        // как есть, остальным ждущим — общая (их профиль ни при чём).
+        // Нужен вход в Steam или владелец заблокирован — это про владельца
+        // задачи: ему причина как есть, остальным ждущим — общая (их профиль
+        // и доступ ни при чём).
         return yield* notifyWaiters(
           jobId,
           options.requeueWaiters === true
@@ -377,7 +406,8 @@ export const fail = (
             : (row) => ({
                 _tag: "InstallFailed",
                 reason: error,
-                ...(error === steamLoginRequiredReason &&
+                ...((error === steamLoginRequiredReason ||
+                  error === accessDeniedReason) &&
                   row.userId === job.userId && { userReason: error }),
               }),
           now,

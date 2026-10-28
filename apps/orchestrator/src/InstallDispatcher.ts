@@ -347,7 +347,7 @@ const make = (options: InstallDispatcherOptions) =>
         if (candidates.length === 0) return;
         const settings = yield* withDb(SessionRepo.loadSettings());
         while (candidates.length > 0) {
-          const claim = yield* withDb(InstallRepo.claimNext(candidates));
+          const claim = yield* withDb(InstallRepo.claimNext(candidates, now));
           if (claim === undefined) return;
           const { job, workerId, profile, steamLoginResetAt } = claim;
           candidates = candidates.filter((id) => id !== workerId);
