@@ -73,7 +73,8 @@ export type AdminWorker = typeof AdminWorker.Type;
 // `admin.sessions.list` — активные и недавние (завершённые за 7 дней, новые
 // сверху, не больше 50) сессии; `failedOnly` — показать только `failed`.
 // `admin.sessions.stop` — попросить остановить любую сессию (без проверки
-// владельца, как `session.stop`); уже завершённая/неверный id — `false`.
+// владельца, как `session.stop`); существующая сессия (хоть активная, хоть уже
+// завершённая) — `true`, неверный/неизвестный id — `false`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),

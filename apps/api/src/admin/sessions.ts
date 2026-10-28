@@ -95,7 +95,10 @@ export const listSessions = (
       .innerJoin(user, eq(sessions.userId, user.id))
       .where(
         failedOnly ? and(isActive, eq(sessions.state, "failed")) : isActive,
-      );
+      )
+      // Без ORDER BY порядок строк не гарантирован — список прыгал бы между
+      // опросами админки.
+      .orderBy(desc(sessions.createdAt));
 
     const recentCutoff = new Date(now.getTime() - recentWindowMs);
     const recentStates = failedOnly ? (["failed"] as const) : terminalStates;

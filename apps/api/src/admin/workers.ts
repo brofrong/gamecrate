@@ -50,7 +50,10 @@ export const listWorkers = (
       .leftJoin(sessions, and(eq(sessions.workerId, workers.id), isActive))
       .leftJoin(games, eq(sessions.appId, games.appId))
       .leftJoin(user, eq(sessions.userId, user.id))
-      .orderBy(workers.id);
+      // workers.id группирует строки по воркеру (см. ниже); sessions.slot
+      // упорядочивает сессии внутри воркера — без него они прыгали бы между
+      // опросами админки (join без ORDER BY не гарантирует порядок строк).
+      .orderBy(workers.id, sessions.slot);
 
     // Группируем построчно: порядок выборки уже по `workers.id`, несколько
     // строк на воркер — по одной на активную сессию (или одна без сессии).
