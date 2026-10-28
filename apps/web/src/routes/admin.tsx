@@ -12,9 +12,9 @@ import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
-import { AdminSessionsTable } from "@/components/admin/AdminSessionsTable";
 import { FailuresCard } from "@/components/admin/FailuresCard";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
+import { SessionsTab } from "@/components/admin/SessionsTab";
 import { WorkerCard } from "@/components/admin/WorkerCard";
 import { AppHeader } from "@/components/AppHeader";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
@@ -328,44 +328,6 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
         {(value) => <FailuresCard sessions={value.recent} />}
       </Polled>
     </div>
-  );
-}
-
-/** Вкладка «Сессии», пока только активные сессии (история и сбои — следующим шагом). */
-function SessionsTab({ onStop }: { onStop: (sessionId: string) => void }) {
-  const sessionsAtom = adminSessionsAtom(false);
-  const sessions = useAtomValue(sessionsAtom);
-  usePolling(sessionsAtom);
-  const now = Date.now();
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Сейчас идут</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Polled
-          result={sessions}
-          error="Не удалось загрузить сессии"
-          skeleton={<Skeleton className="h-24 w-full" />}
-        >
-          {(value) =>
-            value.active.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Сейчас никто не играет
-              </p>
-            ) : (
-              <AdminSessionsTable
-                sessions={value.active}
-                now={now}
-                showWorker
-                onStop={onStop}
-              />
-            )
-          }
-        </Polled>
-      </CardContent>
-    </Card>
   );
 }
 
