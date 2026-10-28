@@ -96,6 +96,7 @@ export const run = Effect.gen(function* () {
     );
     const buffered = yield* Queue.clear(outbox);
     carry.push(...buffered.filter(isTerminal));
+    const { hardware, versions } = yield* monitor.snapshot;
     const payload: AgentConnect = {
       workerId: config.workerId,
       publicIp: config.publicIp,
@@ -104,8 +105,8 @@ export const run = Effect.gen(function* () {
       running: yield* supervisor.snapshot,
       roles: config.roles,
       installs: installer.running(),
-      hardware: yield* monitor.hardware,
-      versions: yield* monitor.versions,
+      hardware,
+      versions,
     };
     yield* Effect.logInfo("Connecting to orchestrator", {
       url: config.orchestratorUrl,

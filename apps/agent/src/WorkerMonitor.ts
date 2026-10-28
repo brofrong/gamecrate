@@ -5,13 +5,13 @@
 // uptime}` и `/sys/block` там показывают хост; каталоги SCRATCH_DIR,
 // STEAM_CLIENT_DIR и LIBRARY_DIR смонтированы по тем же путям, что на хосте.
 import { readdir, readFile, stat, statfs } from "node:fs/promises";
-import type {
-  AgentReport,
+import {
+  type AgentReport,
   WorkerHardware,
   WorkerStats,
   WorkerVersions,
 } from "@cg/rpc";
-import { Context, Duration, Effect, Layer, Queue } from "effect";
+import { Context, Duration, Effect, Layer, Queue, Schema } from "effect";
 import { AgentConfig } from "./config";
 import {
   classifyBlockDevice,
@@ -104,8 +104,17 @@ export const HostProbe = Context.Reference<HostProbeShape>(
 );
 
 export interface WorkerMonitorShape {
-  readonly hardware: Effect.Effect<WorkerHardware>;
-  readonly versions: Effect.Effect<WorkerVersions>;
+  /**
+   * Железо и версии воркера одним снимком (один вызов `nvidia-smi` на двоих —
+   * раньше `hardware` и `versions` звали его отдельно, т.е. дважды на каждое
+   * подключение). Схемно невалидный результат (неразборчивое значение с хоста
+   * проскочило разборщики) — `undefined` с предупреждением в лог: агент
+   * подключается без этого поля, а не падает (AgentConnect их не требует).
+   */
+  readonly snapshot: Effect.Effect<{
+    readonly hardware: WorkerHardware | undefined;
+    readonly versions: WorkerVersions | undefined;
+  }>;
   /** `WorkerStats` раз в STATS_INTERVAL; хранится только последний (скользящая очередь на 1). */
   readonly reports: Queue.Dequeue<AgentReport>;
 }
@@ -113,6 +122,23 @@ export interface WorkerMonitorShape {
 /** Первое число файла (`/sys/block/*\/size`, `/proc/uptime`); нет — 0. */
 const firstNumber = (text: string | undefined) =>
   Number.parseFloat(text?.trim().split(/\s+/)[0] ?? "") || 0;
+
+/**
+ * Значение по схеме — как есть, иначе `undefined` с `logWarning` (не падаем:
+ * разборщики хоста уже стараются не пускать NaN/отрицательные байты дальше,
+ * но лишняя проверка перед кодированием в RPC дешевле отвалившегося
+ * соединения агента).
+ */
+const validOrWarn = <A>(
+  schema: Schema.Schema<A>,
+  value: A,
+  what: string,
+): Effect.Effect<A | undefined> =>
+  Schema.is(schema)(value)
+    ? Effect.succeed(value)
+    : Effect.logWarning(`Invalid ${what} snapshot, omitting`, { value }).pipe(
+        Effect.as(undefined),
+      );
 
 const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
@@ -142,11 +168,13 @@ const make = Effect.gen(function* () {
     return result;
   });
 
-  const hardware = Effect.gen(function* () {
+  // Железо и версии вместе — один вызов nvidia-smi (`smi` читается один раз)
+  // на оба, а не по разу на каждый.
+  const snapshot = Effect.gen(function* () {
     const cpu = parseCpuInfo((yield* probe.readText("/proc/cpuinfo")) ?? "");
     const memory = parseMeminfo((yield* probe.readText("/proc/meminfo")) ?? "");
     const gpus = yield* smi;
-    return {
+    const hardwareResult = {
       cpuModel: cpu.model,
       cpuCores: cpu.cores,
       cpuThreads: cpu.threads,
@@ -157,17 +185,27 @@ const make = Effect.gen(function* () {
       })),
       disks: yield* disks,
     } satisfies WorkerHardware;
-  });
 
-  const versions = Effect.gen(function* () {
-    const gpus = yield* smi;
     const builtAt = yield* probe.mtime(config.steamClientDir);
-    return {
+    const versionsResult = {
       agentCommit: config.agentCommit,
       sessionImage: config.sessionImage,
       driver: gpus[0]?.driver ?? null,
       steamClientBuiltAt: builtAt?.toISOString() ?? null,
     } satisfies WorkerVersions;
+
+    return {
+      hardware: yield* validOrWarn(
+        WorkerHardware,
+        hardwareResult,
+        "worker hardware",
+      ),
+      versions: yield* validOrWarn(
+        WorkerVersions,
+        versionsResult,
+        "worker versions",
+      ),
+    };
   });
 
   /** Каталоги агента по ФС: одна ФС — один элемент; недоступный каталог пропускается. */
@@ -234,7 +272,14 @@ const make = Effect.gen(function* () {
   yield* Effect.sleep(STATS_INTERVAL).pipe(
     Effect.andThen(sample),
     Effect.flatMap((stats) =>
-      Queue.offer(reports, { _tag: "WorkerStats", stats }),
+      // Схемно невалидный снимок (NaN/отрицательные байты просочились мимо
+      // разборщиков) не кладём в очередь — иначе AgentConnect/agent.report
+      // закодировал бы его и оборвал бы соединение; просто ждём следующий.
+      Schema.is(WorkerStats)(stats)
+        ? Queue.offer(reports, { _tag: "WorkerStats", stats })
+        : Effect.logWarning("Invalid worker stats snapshot, dropping", {
+            stats,
+          }),
     ),
     // Сбой одного снимка не останавливает цикл.
     Effect.catchCause((cause) =>
@@ -244,7 +289,7 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
-  return { hardware, versions, reports } satisfies WorkerMonitorShape;
+  return { snapshot, reports } satisfies WorkerMonitorShape;
 });
 
 export class WorkerMonitor extends Context.Service<

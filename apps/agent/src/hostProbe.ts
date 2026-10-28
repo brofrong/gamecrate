@@ -56,7 +56,11 @@ const meminfoField = (lines: ReadonlyArray<string>, key: string): number => {
 /**
  * Память из `/proc/meminfo`, как считает `free`: `cache` = `Buffers` + `Cached`
  * + `SReclaimable`, `used` = `MemTotal` − `MemFree` − `cache` (кБ переводятся
- * в байты × 1024).
+ * в байты × 1024). Поля `/proc/meminfo` не всегда согласованы (например,
+ * `SReclaimable` временно больше реального кэша) — формула может уйти в
+ * минус; тогда берём `MemTotal` − `MemFree` без вычета кэша, а если и это
+ * отрицательно — 0 (схема RPC не пропускает отрицательные байты, см.
+ * WorkerMonitor.ts).
  */
 export const parseMeminfo = (text: string): WorkerStats["memory"] => {
   const lines = text.split("\n");
@@ -66,9 +70,11 @@ export const parseMeminfo = (text: string): WorkerStats["memory"] => {
     meminfoField(lines, "Buffers") +
     meminfoField(lines, "Cached") +
     meminfoField(lines, "SReclaimable");
+  const usedKb = totalKb - freeKb - cacheKb;
+  const safeUsedKb = usedKb >= 0 ? usedKb : Math.max(totalKb - freeKb, 0);
   return {
     totalBytes: totalKb * 1024,
-    usedBytes: (totalKb - freeKb - cacheKb) * 1024,
+    usedBytes: safeUsedKb * 1024,
     cacheBytes: cacheKb * 1024,
   };
 };
@@ -109,9 +115,18 @@ const smiField = (raw: string | undefined): string | null => {
   return value === "" || value === "[N/A]" ? null : value;
 };
 
+/**
+ * Числовое поле `nvidia-smi`: `[N/A]`/пусто — `null` (см. {@link smiField}), а
+ * любое другое неразборчивое значение (`[Not Supported]`, `[Unknown Error]`,
+ * `[Insufficient Permissions]` и т.п. placeholder'ы драйвера) — тоже `null`, а
+ * не `NaN`: `NaN` не проходит схему RPC (`NonNegativeNumber`), и некорректный
+ * снимок уронил бы соединение агента (см. WorkerMonitor.ts).
+ */
 const smiNumber = (raw: string | undefined): number | null => {
   const value = smiField(raw);
-  return value === null ? null : Number(value);
+  if (value === null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 /**

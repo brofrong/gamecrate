@@ -218,8 +218,7 @@ const stats: WorkerStats = {
 const fakeMonitor = (
   reports: Queue.Queue<AgentReport>,
 ): WorkerMonitorShape => ({
-  hardware: Effect.succeed(hardware),
-  versions: Effect.succeed(versions),
+  snapshot: Effect.succeed({ hardware, versions }),
   reports,
 });
 

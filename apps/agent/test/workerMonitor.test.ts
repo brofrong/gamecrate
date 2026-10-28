@@ -81,6 +81,8 @@ const makeHost = () => {
     statReads: 0,
     uptimeReads: 0,
     smi: smi as string | undefined,
+    /** Сколько раз прочитан nvidia-smi (проверка, что snapshot зовёт его один раз). */
+    smiReads: 0,
     fs: new Map<string, FsInfo>([
       [
         "/scratch",
@@ -156,7 +158,10 @@ const makeHost = () => {
       }),
     fsInfo: (dir) => Effect.sync(() => host.fs.get(dir)),
     mtime: (path) => Effect.sync(() => host.mtimes.get(path)),
-    nvidiaSmi: Effect.sync(() => host.smi),
+    nvidiaSmi: Effect.sync(() => {
+      host.smiReads++;
+      return host.smi;
+    }),
   };
   return { host, probe };
 };
@@ -210,7 +215,8 @@ describe("WorkerMonitor", () => {
   it("hardware: CPU, память, GPU и диски brofrong", () =>
     run(({ monitor }) =>
       Effect.gen(function* () {
-        const hardware = yield* monitor.hardware;
+        const { hardware } = yield* monitor.snapshot;
+        if (hardware === undefined) throw new Error("hardware is undefined");
         expect(hardware.cpuModel).toBe("AMD Ryzen 5 2600X Six-Core Processor");
         expect(hardware.cpuCores).toBe(6);
         expect(hardware.cpuThreads).toBe(12);
@@ -256,7 +262,7 @@ describe("WorkerMonitor", () => {
   it("versions: коммит агента, образ сессии, драйвер, сборка клиента Steam", () =>
     run(({ monitor }) =>
       Effect.gen(function* () {
-        expect(yield* monitor.versions).toEqual({
+        expect((yield* monitor.snapshot).versions).toEqual({
           agentCommit: "abc1234",
           sessionImage: "cg-session:550.163.01",
           driver: "550.163.01",
@@ -269,7 +275,7 @@ describe("WorkerMonitor", () => {
     run(
       ({ monitor }) =>
         Effect.gen(function* () {
-          expect((yield* monitor.versions).steamClientBuiltAt).toBeNull();
+          expect((yield* monitor.snapshot).versions?.steamClientBuiltAt).toBeNull();
         }),
       (host) => host.mtimes.clear(),
     ));
@@ -278,14 +284,68 @@ describe("WorkerMonitor", () => {
     run(
       ({ monitor, tick }) =>
         Effect.gen(function* () {
-          expect((yield* monitor.hardware).gpus).toEqual([]);
-          expect((yield* monitor.versions).driver).toBeNull();
+          const { hardware, versions } = yield* monitor.snapshot;
+          expect(hardware?.gpus).toEqual([]);
+          expect(versions?.driver).toBeNull();
           yield* tick(STATS_INTERVAL);
           const [stats] = statsOf(yield* Queue.clear(monitor.reports));
           expect(stats?.gpus).toEqual([]);
         }),
       (host) => {
         host.smi = undefined;
+      },
+    ));
+
+  it("nvidia-smi зовётся один раз на snapshot (не по разу на hardware и versions)", () =>
+    run(({ host, monitor }) =>
+      Effect.gen(function* () {
+        const before = host.smiReads;
+        yield* monitor.snapshot;
+        expect(host.smiReads - before).toBe(1);
+      }),
+    ));
+
+  it("плейсхолдеры nvidia-smi (не [N/A]) — null на своём месте, снимок схемно валиден", () =>
+    run(
+      ({ monitor, tick }) =>
+        Effect.gen(function* () {
+          const { hardware } = yield* monitor.snapshot;
+          // memoryTotalBytes null → в hardware.gpus.memoryBytes это 0 (не nullable там).
+          expect(hardware?.gpus).toEqual([{ name: "Tesla T4", memoryBytes: 0 }]);
+          yield* tick(STATS_INTERVAL);
+          const [stats] = statsOf(yield* Queue.clear(monitor.reports));
+          expect(stats?.gpus).toEqual([
+            {
+              utilPercent: 0,
+              encoderPercent: 0,
+              temperatureC: 40,
+              memoryUsedBytes: null,
+              memoryTotalBytes: null,
+            },
+          ]);
+        }),
+      (host) => {
+        host.smi =
+          "Tesla T4, [Not Supported], [Not Supported], 0, 0, 40, 550.1\n";
+      },
+    ));
+
+  it("схемно невалидный снимок WorkerStats не кладётся в очередь", () =>
+    run(
+      ({ monitor, tick }) =>
+        Effect.gen(function* () {
+          yield* tick(STATS_INTERVAL);
+          expect(yield* Queue.clear(monitor.reports)).toEqual([]);
+        }),
+      (host) => {
+        // Отрицательный usedBytes ФС (statfs отдал что-то странное) — вне
+        // хост-разборщиков агента, но WorkerStats.filesystems его не пропустит.
+        host.fs.set("/scratch", {
+          dev: 2049,
+          totalBytes: 400 * GiB,
+          usedBytes: -1,
+          freeBytes: 280 * GiB,
+        });
       },
     ));
 

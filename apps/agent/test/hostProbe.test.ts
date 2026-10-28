@@ -29,6 +29,36 @@ describe("parseMeminfo", () => {
       cacheBytes: cacheKb * 1024,
     });
   });
+
+  it("формула used = total - free - cache уходит в минус — откат на total - free", () => {
+    // Cache (Buffers+Cached+SReclaimable) больше free+used — несогласованный
+    // /proc/meminfo (бывает на некоторых ядрах/контейнерах).
+    const text = [
+      "MemTotal:       1000000 kB",
+      "MemFree:          10000 kB",
+      "Buffers:          20000 kB",
+      "Cached:          990000 kB",
+      "SReclaimable:         0 kB",
+      "",
+    ].join("\n");
+    expect(parseMeminfo(text)).toEqual({
+      totalBytes: 1000000 * 1024,
+      usedBytes: (1000000 - 10000) * 1024,
+      cacheBytes: (20000 + 990000) * 1024,
+    });
+  });
+
+  it("даже total - free отрицателен — usedBytes = 0, а не минус", () => {
+    const text = [
+      "MemTotal:        10000 kB",
+      "MemFree:         20000 kB",
+      "Buffers:             0 kB",
+      "Cached:               0 kB",
+      "SReclaimable:         0 kB",
+      "",
+    ].join("\n");
+    expect(parseMeminfo(text).usedBytes).toBe(0);
+  });
 });
 
 describe("parseCpuInfo", () => {
@@ -121,6 +151,24 @@ describe("parseNvidiaSmi", () => {
 
   it("пустая строка — пустой массив", () => {
     expect(parseNvidiaSmi("")).toEqual([]);
+  });
+
+  it("плейсхолдеры кроме [N/A] ([Not Supported] и т.п.) — тоже null, не NaN", () => {
+    expect(
+      parseNvidiaSmi(
+        "T4, [Not Supported], [Not Supported], 0, 0, 40, 550.1\n",
+      ),
+    ).toEqual([
+      {
+        name: "T4",
+        memoryTotalBytes: null,
+        memoryUsedBytes: null,
+        utilPercent: 0,
+        encoderPercent: 0,
+        temperatureC: 40,
+        driver: "550.1",
+      },
+    ]);
   });
 });
 
