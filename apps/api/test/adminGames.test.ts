@@ -270,6 +270,30 @@ describe("admin.games", () => {
     expect(result.inUseByJob).toBe("inUse");
     expect(result.notFound).toBe("notFound");
   });
+
+  it("games.delete: ended session still holding a slot (container not released yet) → inUse", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGames(db);
+        yield* insertWorker(db, { id: "w1" });
+        // state уже терминальный, но slotReleasedAt ещё null — агент не
+        // прислал Stopped/Failed, контейнер на GPU воркера жив.
+        yield* insertSession(db, {
+          id: "11111111-1111-1111-1111-111111111111",
+          userId: "u1",
+          appId: 100,
+          workerId: "w1",
+          slot: 0,
+          state: "ended",
+          endedAt: new Date(),
+        });
+
+        return yield* (yield* client)["admin.games.delete"]({ appId: 100 });
+      }),
+    );
+    expect(result).toBe("inUse");
+  });
 });
 
 describe("admin.installs", () => {

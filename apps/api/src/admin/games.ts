@@ -10,9 +10,9 @@ import {
   workers,
 } from "@cg/db";
 import { type AdminGame, type AdminGames } from "@cg/rpc";
-import { and, arrayContains, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { isActive } from "../session/SessionRepo";
+import { holdsSlot, isActive } from "../session/SessionRepo";
 import { activeInstallStates } from "./installs";
 
 /**
@@ -113,11 +113,12 @@ export const listGames = (): Effect.Effect<AdminGames, never, Db> =>
 
 /**
  * Удаление игры: строка `gamestore_apps` под `FOR UPDATE` (нет — `notFound`);
- * активная сессия или активная задача установки этой игры — `inUse`; иначе
- * `deleting_at = coalesce(deleting_at, now)` — `started` (первый запрос не
- * перезаписывается, как `adminStop`). `Scheduler.placeOne` перечитывает
- * строку под `FOR SHARE` перед размещением сессии — либо он видит эту
- * пометку, либо мы здесь увидим его сессию.
+ * активная сессия (или сессия, ещё держащая слот воркера, — контейнер мог
+ * пережить `ended`/`failed`, `holdsSlot`), либо активная задача установки
+ * этой игры — `inUse`; иначе `deleting_at = coalesce(deleting_at, now)` —
+ * `started` (первый запрос не перезаписывается, как `adminStop`).
+ * `Scheduler.placeOne` перечитывает строку под `FOR SHARE` перед размещением
+ * сессии — либо он видит эту пометку, либо мы здесь увидим его сессию.
  */
 export const deleteGame = (
   appId: number,
@@ -134,10 +135,12 @@ export const deleteGame = (
           .for("update");
         if (app === undefined) return "notFound" as const;
 
+        // Активна (не ended/failed) ИЛИ ещё держит слот воркера — строка
+        // уже терминальная, но контейнер на GPU жив и агент его не отпустил.
         const [activeSession] = yield* db
           .select({ id: sessions.id })
           .from(sessions)
-          .where(and(eq(sessions.appId, appId), isActive))
+          .where(and(eq(sessions.appId, appId), or(isActive, holdsSlot)))
           .limit(1);
         if (activeSession !== undefined) return "inUse" as const;
 
