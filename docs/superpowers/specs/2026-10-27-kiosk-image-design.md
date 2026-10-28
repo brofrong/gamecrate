@@ -271,3 +271,40 @@ Selkies сессии `:8080`, ответы на эти соединения, DNS
 - Хранение признака «контейнер точно остановлен» для слота.
 - Текст правил сетевого экрана и проверочного скрипта.
 - Выбор бесплатной игры для проверки установки (вместе с владельцем).
+
+## Результаты
+
+### Проба киоска (2026-10-27/28, brofrong, драйвер 550.163.01)
+
+Образ `cg-session:550.163.01-kiosk-probe` (4,75 ГБ; файлы — `spike/kiosk/`, запуск и замер —
+`spike/kiosk/gpu-run.sh`). Ответ на §6.1: **да, база Selkies + labwc работает на 550.**
+
+| Что | Результат |
+| --- | --- |
+| База | `ghcr.io/selkies-project/selkies/base@sha256:191428b47ee11e6670547a5012a2a939c1b4df257a0a5293c226ab337c8a4723` (2.0.0-ubuntu26.04 — тот же Selkies 2.0, что в `selkies-egl-desktop:26.04`; новых слоёв на диск не добавила) |
+| Захват | `[Wayland] Zero-copy capture: output 1 1920x1080 rendered on /dev/dri/renderD128, encoded in place on NVENC` (кодер стартует при подключении браузера) |
+| WebRTC | UDP mux 59001, кандидат `37.153.14.138:59001`, ICE проходит |
+| Рабочий стол | нет по построению: в `base` нет службы `lxqt`/Plasma, переключатель не нужен. `SELKIES_WAYLAND_COMPOSITOR=labwc` задан явно (по умолчанию пусто → автоопределение) |
+| `SELKIES_*` | переименований нет — все переменные `images/session/Dockerfile` переносятся как есть |
+| Буфер обмена, файлы, печать | в базе включены по умолчанию; выключены `SELKIES_ENABLE_CLIPBOARD=false`, `SELKIES_FILE_TRANSFERS=none`, `SELKIES_PRINTING_ENABLED=false` |
+| Конфиг labwc | `/etc/xdg/labwc/rc.xml` и `/etc/xdg/labwc/autostart` (не `~/.config`). labwc 0.9.7 не принимает пустые `<keyboard>`/`<mouse>` — тогда берёт встроенные Alt+F4/Alt+Tab/меню; нужен непустой список привязок |
+| Чего не хватило в базе | клиент Steam от Valve (`steam-launcher`, ключ и источник apt — из `selkies-egl-desktop`; `steam-installer` Debian висит на диалоге zenity и ставит в `~/.steam/debian-installation`), `proot`/`proot-bwrap` и обёртка `/usr/bin/steam` с `BWRAP=/usr/local/bin/proot-bwrap` (как в прод-базе), `python3-gi` + `gir1.2-glib-2.0` для `cg-nm-stub`, `PATH` с `/usr/games`. Сессионная шина D-Bus — `dbus-launch` в автостарте. `xdotool`, `x11-utils`, `curl`, `procps`, i386, системная шина — уже есть |
+| `cg-nm-stub` | `State` → `uint32 70` |
+| Окружение Steam | `LD_PRELOAD` с интерпозером Selkies, `DISPLAY=:0` (Xwayland), `WAYLAND_DISPLAY=wayland-0`, `DBUS_SESSION_BUS_ADDRESS` есть, `XAUTHORITY` нет (не нужен) |
+| `cg-session-stage 1966900` | `login` на окне входа — скрипт этапов работает без KDE |
+| Окружение labwc | `DISPLAY=:0`, но `WAYLAND_DISPLAY=wayland-1` — сокет внешнего композитора Selkies, а не сессии (`wayland-0`); детей у labwc нет (автостарт и Xwayland — у PID 1) |
+| Время до процесса Steam | 9,7 с (KDE — 12,7 с) от `docker run`. Время до окна входа с пустым домом (220–350 с киоск, 252 с KDE) — это скачивание клиента ~500 МБ, образы им не сравнить; честный замер — с шаблоном клиента в Task 9 |
+| GPU на окне входа | 85–88 МиБ VRAM (KDE — 206 МиБ), 0–1 % |
+| Проверка владельцем в браузере | видно только окно Steam, без рабочего стола и панели; клавиатура печатает; Alt+F4, Alt+Tab, правый клик по фону — ничего; картинка плавная |
+
+Для образа (Task 7):
+
+- `cg-session-exec`: запасной путь через labwc должен ставить `WAYLAND_DISPLAY=wayland-0` (или брать
+  окружение не из labwc).
+- Окно входа Steam фиксированного размера 700×440 во весь экран не растягивается (без рамки, на
+  чёрном фоне). Большие окна Steam и игр — проверить в Task 9.
+- X сообщает окно входа в 610,320, а в стриме оно в левом верхнем углу (`xcb error: op
+  ConfigureWindow` в логе labwc); клики попадают верно. Кто опирается на абсолютные координаты X —
+  учитывать.
+- Ключ и источник apt Valve и `proot`/`proot-bwrap` проба берёт из прод-базы по digest; в образе —
+  решить, оставить так или положить в репозиторий.
