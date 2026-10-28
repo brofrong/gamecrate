@@ -9,6 +9,7 @@ import {
   type SessionStage as DbSessionStage,
   type SessionState as DbSessionState,
   sessions,
+  user,
   userGames,
 } from "@cg/db";
 import { isSessionId, type SessionState, type SessionView } from "@cg/rpc";
@@ -220,6 +221,17 @@ export const ownView = (
     return row === undefined ? undefined : yield* toView(row);
   }).pipe(Effect.orDie);
 
+/** Пользователь заблокирован администратором (`admin.users.setBlocked`). */
+const isBlocked = (userId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ blockedAt: user.blockedAt })
+      .from(user)
+      .where(eq(user.id, userId));
+    return row?.blockedAt !== null && row?.blockedAt !== undefined;
+  });
+
 /** Игра есть и в каталоге, и в библиотеке пользователя. */
 const ownsGame = (userId: string, appId: number) =>
   Effect.gen(function* () {
@@ -234,15 +246,18 @@ const ownsGame = (userId: string, appId: number) =>
 
 /**
  * Активная сессия пользователя: существующая (любой игры) или новая `queued`
- * для `appId`. Игры нет в библиотеке — `"NotOwned"`. Гонка двух вызовов
- * решается частичным уникальным индексом: вставка без конфликта не проходит
- * (`ON CONFLICT DO NOTHING`), и проигравший читает сессию победителя.
+ * для `appId`. Пользователь заблокирован (`user.blocked_at`) — `"Blocked"`
+ * (проверяется до владения игрой — блокировка важнее отсутствия игры). Игры
+ * нет в библиотеке — `"NotOwned"`. Гонка двух вызовов решается частичным
+ * уникальным индексом: вставка без конфликта не проходит (`ON CONFLICT DO
+ * NOTHING`), и проигравший читает сессию победителя.
  */
 export const startSession = (
   userId: string,
   appId: number,
-): Effect.Effect<SessionView | "NotOwned", never, Db> =>
+): Effect.Effect<SessionView | "NotOwned" | "Blocked", never, Db> =>
   Effect.gen(function* () {
+    if (yield* isBlocked(userId)) return "Blocked" as const;
     if (!(yield* ownsGame(userId, appId))) return "NotOwned" as const;
     const db = yield* Db;
     // Активная сессия может закончиться между вставкой и чтением — тогда ещё попытка.

@@ -99,6 +99,15 @@ export class GameNotOwned extends Schema.TaggedError<GameNotOwned>()(
   { appId: Schema.Int },
 ) {}
 
+/** Причина `AccessDenied` для игрока (показывается на экране запуска). */
+export const accessDeniedReason = "Доступ закрыт";
+
+/** Пользователь заблокирован администратором (`user.blocked_at`) — играть нельзя. */
+export class AccessDenied extends Schema.TaggedError<AccessDenied>()(
+  "AccessDenied",
+  {},
+) {}
+
 /** Сессии нет или она чужая (существование чужих сессий не раскрывается). */
 export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(
   "SessionNotFound",
@@ -122,7 +131,8 @@ const SessionId = Schema.Struct({ sessionId: Schema.String });
 
 /**
  * - `session.start` — запустить игру; если у пользователя уже есть активная
- *   сессия — вернуть её (любой игры). Игры нет в библиотеке — `GameNotOwned`.
+ *   сессия — вернуть её (любой игры). Игры нет в библиотеке — `GameNotOwned`;
+ *   пользователь заблокирован (`admin.users.setBlocked`) — `AccessDenied`.
  * - `session.active` — активная сессия пользователя или null.
  * - `session.watch` — поток: сразу текущее представление, затем при каждом
  *   изменении (и не реже чем раз в 5 с, пока меняется `playedSeconds`);
@@ -136,7 +146,7 @@ export const SessionRpcs = RpcGroup.make(
   Rpc.make("session.start", {
     payload: Schema.Struct({ appId: Schema.Int }),
     success: SessionView,
-    error: GameNotOwned,
+    error: Schema.Union([GameNotOwned, AccessDenied]),
   }),
   Rpc.make("session.active", { success: Schema.NullOr(SessionView) }),
   Rpc.make("session.watch", {
