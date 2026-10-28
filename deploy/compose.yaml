@@ -115,13 +115,16 @@ services:
   # путям: агент передаёт их dockerd как lower/upper overlay-томов и bind помощников, а
   # сам создаёт в них upper/work и переносит готовые игры. Перенос `rename` из
   # INSTALL_SCRATCH_DIR в LIBRARY_DIR работает только в пределах одной точки
-  # монтирования (между двумя bind даже одной ФС — EXDEV), поэтому библиотека, клиент
-  # Steam и scratch установок лежат в одном CG_DATA_DIR и монтируются одним bind.
+  # монтирования (между двумя bind даже одной ФС — EXDEV), поэтому библиотека и
+  # scratch установок лежат в одном CG_DATA_DIR и монтируются одним bind.
   # SCRATCH_DIR (scratch сессий, NVMe) — отдельный bind. create_host_path: false —
   # без заранее созданного каталога контейнер не стартует (иначе Docker создал бы его
   # от root, и агент с uid 1000 не смог бы в нём писать).
-  # Значения по умолчанию CG_DATA_DIR и SCRATCH_DIR повторены в deploy.sh, README и
-  # build-steam-client.sh — менять вместе.
+  # STEAM_CLIENT_DIR (шаблон клиента Steam) — на NVMe, а не в CG_DATA_DIR на HDD: с
+  # холодного кэша Steam читал его с RAID и стартовал 50–90 с вместо ~16. Агент только
+  # передаёт его dockerd как lower overlay, поэтому в агент он не монтируется.
+  # Значения по умолчанию CG_DATA_DIR, SCRATCH_DIR и STEAM_CLIENT_DIR повторены в
+  # deploy.sh, README и build-steam-client.sh — менять вместе.
   cg-agent:
     image: *app-image
     pull_policy: never
@@ -144,7 +147,7 @@ services:
       DOCKER_SOCKET: /var/run/docker.sock
       ROLES: ${ROLES:-worker,gamestore}
       LIBRARY_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/library
-      STEAM_CLIENT_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/steam-client
+      STEAM_CLIENT_DIR: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
       INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/install-scratch
       SCRATCH_DIR: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
       # Меньше стольких ГиБ свободно на ФС scratch — старт сессии/установки отклоняется.

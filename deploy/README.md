@@ -48,22 +48,25 @@
   `GBM_ALLOCATOR_PATH=/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01`,
   `SESSION_NETWORK=cg-sessions`, `DOCKER_SOCKET=/var/run/docker.sock`, `ROLES=worker,gamestore`,
   `CG_DATA_DIR=/raid/cloud-gaming`, `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`,
+  `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client`,
   `S3_BUCKET=cg-profiles`, `MIN_FREE_GB=20` (см. «Место на диске»). Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
   `S3_ACCESS_KEY`/`S3_SECRET_KEY` = `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`, `PROFILE_KEY` из
-  `.env`, `LIBRARY_DIR`, `STEAM_CLIENT_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`.
+  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`.
 - Каталоги хоста (владелец `brofrong`, uid 1000; создаёт `deploy.sh` без sudo):
 
   | Каталог                                                  | Что                                                                                       |
   | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
   | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf` и `steamapps/common/<игра>`; lower сессий |
-  | `STEAM_CLIENT_DIR=/raid/cloud-gaming/steam-client`       | шаблон клиента Steam (`build-steam-client.sh`), внутри пустой `steamapps/`; lower сессий  |
+  | `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client` | шаблон клиента Steam (`build-steam-client.sh`, NVMe), внутри пустой `steamapps/`; lower сессий и установщиков |
   | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
   | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
 
   В `cg-agent` они смонтированы по тем же путям: `CG_DATA_DIR` (`/raid/cloud-gaming`) — **одним**
   bind (перенос `rename` между двумя bind даже одной ФС невозможен — `EXDEV`) и `SCRATCH_DIR` —
   отдельным; оба с `create_host_path: false` (нет каталога — агент не стартует, а не получает
-  каталог root). `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming` (его `rsync --delete` и
+  каталог root). `STEAM_CLIENT_DIR` в агент не монтируется: агент только передаёт путь dockerd как
+  lower overlay. Шаблон лежит на NVMe, а не в `CG_DATA_DIR`: с холодного кэша (его вытесняют
+  соседние нагрузки) Steam читал его с RAID на HDD и стартовал 50–90 с вместо ~16. `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming` (его `rsync --delete` и
   контекст сборки не должны задевать слои сессий). В библиотеку пишет только
   агент (перенос установленных игр); руками туда ничего не класть.
 
@@ -195,7 +198,8 @@
      ключи из окружения при каждом старте, данные тома сохраняются).
 
    - Необязательно (не секреты): `CG_DATA_DIR` (по умолчанию `/raid/cloud-gaming`), `SCRATCH_DIR`
-     (по умолчанию `/home/brofrong/cloud-gaming-scratch`), `ROLES`, `S3_BUCKET` — без кавычек.
+     (по умолчанию `/home/brofrong/cloud-gaming-scratch`), `STEAM_CLIENT_DIR` (по умолчанию
+     `/home/brofrong/cloud-gaming-steam/client`), `ROLES`, `S3_BUCKET` — без кавычек.
 
    Каждый сервис получает только перечисленные для него в `deploy/compose.yaml` переменные (не весь
    `.env`): `POSTGRES_PASSWORD` видит лишь `cg-postgres`, `AGENT_TOKEN` — оркестратор и агент,
@@ -289,9 +293,10 @@ port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк ос
 4. Для каждого из `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`: если в
    серверном `.env` нет такого ключа — дописывает строку из локального `.env.production` (значение
    проверяется локально и идёт через stdin ssh, на экран не выводится).
-5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,steam-client/steamapps,install-scratch}` и
-   `SCRATCH_DIR` — `mkdir -p` от `brofrong`, проверка владельца uid 1000 (пути — из серверного
-   `.env`, если там заданы `CG_DATA_DIR`/`SCRATCH_DIR`, иначе по умолчанию). Если шаблон клиента
+5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,install-scratch}`, `SCRATCH_DIR` и
+   `STEAM_CLIENT_DIR/steamapps` — `mkdir -p` от `brofrong`, проверка владельца uid 1000 (пути — из
+   серверного `.env`, если там заданы `CG_DATA_DIR`/`SCRATCH_DIR`/`STEAM_CLIENT_DIR`, иначе по
+   умолчанию). Если шаблон клиента
    Steam не собран — предупреждение (см. «Клиент Steam: пересборка шаблона»).
 6. Создаёт сеть `cg-sessions`, если её нет.
 7. Бакет профилей: `docker compose … run --rm cg-rustfs-bucket` — поднимает `cg-rustfs` (ждёт
@@ -505,7 +510,7 @@ QR-вход не нужен. Код том не изменяет и не уда�
 
 ## Клиент Steam: пересборка шаблона
 
-`STEAM_CLIENT_DIR` (`/raid/cloud-gaming/steam-client`) — чистый клиент Steam без входа и без игр,
+`STEAM_CLIENT_DIR` (`/home/brofrong/cloud-gaming-steam/client`, NVMe) — чистый клиент Steam без входа и без игр,
 lower overlay `~/.local/share/Steam` каждой сессии и установки (без шаблона каждая сессия сама
 скачивала бы обновление ~500 МБ и распаковывала клиент, ~2,5 ГБ). Собирается на воркере:
 
@@ -528,7 +533,7 @@ lower overlay `~/.local/share/Steam` каждой сессии и установ
 1 МБ; `logs/`, `htmlcache/`, `dumps/` не считаются — их клиент пишет и в простое), затем
 `cg-steam-shutdown`. Таких цикла два (второй — `steam -silent` через `docker exec` в окружении
 сессии Plasma, как в `cg-steam-shutdown`): после одного `steamrt64`/`appcache` распакованы не до конца, и сессии потом
-сами докачивали ~480 МБ и долго входили. Затем `docker cp` клиента в `steam-client.new` (без
+сами докачивали ~480 МБ и долго входили. Затем `docker cp` клиента в `<STEAM_CLIENT_DIR>.new` (без
 `logs/`, с пустым `steamapps/`, всё 1000:1000), замена каталога `mv --exchange` и удаление старого
 шаблона помощником от root. Прервался — контейнер `cg-steam-client-build` удаляется сам (если
 остался: `docker rm -f cg-steam-client-build`), рабочий шаблон не меняется до последнего шага.
