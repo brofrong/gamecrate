@@ -1,17 +1,34 @@
-// `/admin`: админка (проверка связи, «Настройки сессий»). Без сессии — вход через Pocket ID,
-// игрок — «Нет доступа».
-import type { SessionSettings } from "@cg/rpc";
+// `/admin`: админка — вкладки «Воркеры» (карточки воркеров и «Последние сбои»), «Сессии»
+// и «Настройки» («Настройки сессий»). Без сессии — вход через Pocket ID, игрок — «Нет доступа».
+import type { AdminWorker, SessionSettings } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { createRoute } from "@tanstack/react-router";
+import {
+  createRoute,
+  Link,
+  type SearchSchemaInput,
+} from "@tanstack/react-router";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { ShieldAlert, ShieldCheck } from "lucide-react";
-import type * as React from "react";
+import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
+import { FailuresCard } from "@/components/admin/FailuresCard";
+import { Polled } from "@/components/admin/Polled";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
+import { SessionsTab } from "@/components/admin/SessionsTab";
+import { WorkerCard } from "@/components/admin/WorkerCard";
 import { AppHeader } from "@/components/AppHeader";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -21,8 +38,16 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePolling } from "@/lib/usePolling";
+import { cn } from "@/lib/utils";
 import {
   adminPingAtom,
+  adminSessionsAtom,
+  adminSetDrainingArgs,
+  adminSetDrainingAtom,
+  adminStopSessionArgs,
+  adminStopSessionAtom,
+  adminWorkersAtom,
   errorTag,
   meAtom,
   resultErrorTag,
@@ -130,9 +155,158 @@ function SessionSettingsCard() {
   );
 }
 
+/** Вкладки админки (часть 1): «Игры», «Установки», «Пользователи» — во второй части. */
+const ADMIN_TABS = [
+  ["workers", "Воркеры"],
+  ["sessions", "Сессии"],
+  ["settings", "Настройки"],
+] as const;
+type AdminTab = (typeof ADMIN_TABS)[number][0];
+
+const isAdminTab = (value: unknown): value is AdminTab =>
+  ADMIN_TABS.some(([tab]) => tab === value);
+
+function Tabs({ tab }: { tab: AdminTab }) {
+  return (
+    <nav aria-label="Разделы админки" className="mb-6 flex flex-wrap gap-2">
+      {ADMIN_TABS.map(([value, label]) => (
+        <Link
+          key={value}
+          to="/admin"
+          search={{ tab: value }}
+          aria-current={tab === value ? "page" : undefined}
+          className={cn(
+            "rounded-full px-4 py-1.5 text-sm font-medium transition-colors",
+            tab === value
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+/** «Остановить» с подтверждением: `sessionId` — какую сессию спрашиваем, `null` — диалог закрыт. */
+function StopSessionDialog({
+  sessionId,
+  onClose,
+}: {
+  sessionId: string | null;
+  onClose: () => void;
+}) {
+  const stop = useAtomSet(adminStopSessionAtom, { mode: "promiseExit" });
+
+  const onConfirm = async () => {
+    if (sessionId === null) return;
+    const exit = await stop(adminStopSessionArgs(sessionId));
+    if (Exit.isFailure(exit)) toast.error("Не удалось остановить сессию");
+    else if (exit.value) toast.success("Сессия останавливается");
+    else toast.error("Сессия не найдена");
+  };
+
+  return (
+    <AlertDialog
+      open={sessionId !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Остановить сессию?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Игра у игрока закроется, профиль сохранится.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Отмена</AlertDialogCancel>
+          <AlertDialogAction onClick={() => void onConfirm()}>
+            Остановить
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function ListSkeleton() {
+  return (
+    <div className="flex flex-col gap-4">
+      <Skeleton className="h-64 w-full" />
+      <Skeleton className="h-24 w-full" />
+    </div>
+  );
+}
+
+function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
+  const workers = useAtomValue(adminWorkersAtom);
+  usePolling(adminWorkersAtom);
+  const failuresAtom = adminSessionsAtom(true);
+  const failures = useAtomValue(failuresAtom);
+  usePolling(failuresAtom);
+  const setDraining = useAtomSet(adminSetDrainingAtom, {
+    mode: "promiseExit",
+  });
+  // Опрос перерисовывает вкладку раз в 5 с — «сигнал … назад» и «Идёт» считаются от этого.
+  const now = Date.now();
+
+  const onDraining = async (worker: AdminWorker, draining: boolean) => {
+    const exit = await setDraining(adminSetDrainingArgs(worker.id, draining));
+    if (Exit.isFailure(exit))
+      toast.error("Не удалось переключить обслуживание");
+    else if (!exit.value) toast.error("Воркер не найден");
+    else
+      toast.success(
+        draining
+          ? `${worker.id} на обслуживании: новые сессии и установки туда не пойдут`
+          : `${worker.id} снова в работе`,
+      );
+  };
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Polled
+        result={workers}
+        error="Не удалось загрузить воркеры"
+        skeleton={<ListSkeleton />}
+      >
+        {(value) =>
+          value.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Воркеров нет: ни один агент ещё не подключался.
+            </p>
+          ) : (
+            value.map((worker) => (
+              <WorkerCard
+                key={worker.id}
+                worker={worker}
+                now={now}
+                onStop={onStop}
+                onDraining={(draining) => void onDraining(worker, draining)}
+              />
+            ))
+          )
+        }
+      </Polled>
+      <Polled
+        result={failures}
+        error="Не удалось загрузить сбои"
+        skeleton={<Skeleton className="h-24 w-full" />}
+      >
+        {(value) => <FailuresCard sessions={value.recent} />}
+      </Polled>
+    </div>
+  );
+}
+
 function AdminHome() {
   const me = useAtomValue(meAtom);
   const ping = useAtomValue(adminPingAtom);
+  const { tab } = adminRoute.useSearch();
+  const [stopId, setStopId] = React.useState<string | null>(null);
 
   if (resultErrorTag(ping) === "Forbidden") return <NoAccess />;
 
@@ -140,26 +314,12 @@ function AdminHome() {
     <div className="min-h-dvh">
       <AppHeader user={AsyncResult.isSuccess(me) ? me.value : undefined} />
       <main className="mx-auto max-w-screen-2xl px-4 py-6 sm:px-6">
-        <h1 className="mb-6 text-2xl font-semibold">Админка</h1>
-        <Card className="max-w-sm">
-          <CardContent className="flex items-center gap-3">
-            {AsyncResult.isFailure(ping) ? (
-              <ShieldAlert className="size-5 text-destructive" />
-            ) : (
-              <ShieldCheck className="size-5 text-emerald-400" />
-            )}
-            <span className="text-sm">
-              {AsyncResult.match(ping, {
-                onInitial: () => "Проверяем связь с сервером…",
-                onFailure: () => "Сервер не ответил на admin.ping",
-                onSuccess: ({ value }) => `admin.ping: ${value}`,
-              })}
-            </span>
-          </CardContent>
-        </Card>
-        <div className="mt-6">
-          <SessionSettingsCard />
-        </div>
+        <h1 className="mb-4 text-2xl font-semibold">Админка</h1>
+        <Tabs tab={tab} />
+        {tab === "workers" && <WorkersTab onStop={setStopId} />}
+        {tab === "sessions" && <SessionsTab onStop={setStopId} />}
+        {tab === "settings" && <SessionSettingsCard />}
+        <StopSessionDialog sessionId={stopId} onClose={() => setStopId(null)} />
       </main>
     </div>
   );
@@ -191,5 +351,12 @@ function AdminPage() {
 export const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/admin",
+  // Вкладка в адресе (`?tab=sessions`), чтобы обновление страницы и ссылка вели туда же;
+  // нет или неизвестная — «Воркеры».
+  validateSearch: (
+    search: { tab?: unknown } & SearchSchemaInput,
+  ): { tab: AdminTab } => ({
+    tab: isAdminTab(search.tab) ? search.tab : "workers",
+  }),
   component: AdminPage,
 });

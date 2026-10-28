@@ -145,3 +145,16 @@ describe("agentConfig MIN_FREE_GB", () => {
     );
   });
 });
+
+describe("agentConfig agentCommit", () => {
+  it("defaults to unknown", async () => {
+    expect((await ok(base)).agentCommit).toBe("unknown");
+  });
+
+  it("reads CG_COMMIT; empty is unknown", async () => {
+    expect((await ok({ ...base, CG_COMMIT: "abc1234" })).agentCommit).toBe(
+      "abc1234",
+    );
+    expect((await ok({ ...base, CG_COMMIT: " " })).agentCommit).toBe("unknown");
+  });
+});

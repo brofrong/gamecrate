@@ -15,6 +15,7 @@
     "test": "bun test --env-file=../../.env"
   },
   "dependencies": {
+    "@cg/rpc": "workspace:*",
     "@effect/sql-pg": "4.0.5",
     "drizzle-orm": "1.0.0-rc.4",
     "effect": "4.0.5"

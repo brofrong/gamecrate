@@ -42,6 +42,15 @@
   связь видна в логе оркестратора и в `workers.last_seen_at`. `mem_limit` 1g (профиль до 200 МиБ сжимается и шифруется в памяти целиком). Роли
   `ROLES=worker,gamestore`: сессии и установка игр в общую библиотеку. Стартует после
   `cg-rustfs` (healthy).
+  GPU: `deploy.resources.reservations.devices` с `capabilities: [utility]` (не `all`/`compute`
+  и не весь набор по умолчанию) — NVIDIA Container Toolkit подкладывает только `nvidia-smi` и
+  NVML для метрик админки, видеопамять и вычисления агент не занимает (это не контейнер сессии).
+  **Из-за этой резервации `cg-agent` не стартует, если NVIDIA Container Toolkit или NVML на
+  хосте не работают** (например, после обновления драйвера без перезагрузки — см. «Обновление
+  драйвера NVIDIA» ниже): `docker compose up`/`docker inspect cg-agent` в этом случае покажет
+  ошибку про `nvidia`/`could not select device driver`/недоступное устройство, а не тихо
+  запустится без GPU. Чинится на уровне хоста (перезагрузка/переустановка toolkit), не в
+  compose — сессиям эта же GPU нужна всё равно, слабже требование тут не поможет.
   Переменные (значения по умолчанию в `compose.yaml` — для brofrong; переопределяются в `.env`):
   `WORKER_ID=brofrong`, `WORKER_PUBLIC_IP=37.153.14.138`, `SLOTS=1`, `UDP_PORT_BASE=59000`,
   `SESSION_IMAGE=cg-session:550.163.01`,
@@ -49,26 +58,39 @@
   `SESSION_NETWORK=cg-sessions`, `DOCKER_SOCKET=/var/run/docker.sock`, `ROLES=worker,gamestore`,
   `CG_DATA_DIR=/raid/cloud-gaming`, `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`,
   `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client`,
+  `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam` (родитель `STEAM_CLIENT_DIR` — см. ниже),
   `S3_BUCKET=cg-profiles`, `MIN_FREE_GB=20` (см. «Место на диске»). Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
   `S3_ACCESS_KEY`/`S3_SECRET_KEY` = `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`, `PROFILE_KEY` из
-  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`.
+  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`, а также `CG_COMMIT`
+  (по умолчанию `unknown`) — коммит этого деплоя для блока «Версии» админки: `deploy.sh` считает
+  его локально (`git rev-parse --short HEAD`, суффикс `-dirty` при незакоммиченных изменениях —
+  `.git` в образ и на сервер не попадает, см. `rsync --exclude ".git/"` ниже) и передаёт
+  `CG_COMMIT=<значение>` в окружении `docker compose up` на сервере — в `.env` эта переменная не
+  пишется и не должна.
 - Каталоги хоста (владелец `brofrong`, uid 1000; создаёт `deploy.sh` без sudo):
 
   | Каталог                                                  | Что                                                                                       |
   | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
   | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf`, `steamapps/common/<игра>` и шаблоны префикса Proton `steamapps/compatdata/<appid>` (см. «Шаблоны префикса Proton»); lower сессий |
   | `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client` | шаблон клиента Steam (`build-steam-client.sh`, NVMe), внутри пустой `steamapps/`; lower сессий и установщиков |
+  | `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam`  | родитель `STEAM_CLIENT_DIR` — то, что реально монтируется в `cg-agent` (см. ниже), сам не используется агентом |
   | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
   | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
 
   В `cg-agent` они смонтированы по тем же путям: `CG_DATA_DIR` (`/raid/cloud-gaming`) — **одним**
   bind (перенос `rename` между двумя bind даже одной ФС невозможен — `EXDEV`) и `SCRATCH_DIR` —
   отдельным; оба с `create_host_path: false` (нет каталога — агент не стартует, а не получает
-  каталог root). `STEAM_CLIENT_DIR` в агент не монтируется: агент только передаёт путь dockerd как
-  lower overlay. Шаблон лежит на NVMe, а не в `CG_DATA_DIR`: с холодного кэша (его вытесняют
-  соседние нагрузки) Steam читал его с RAID на HDD и стартовал 50–90 с вместо ~16. `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming` (его `rsync --delete` и
-  контекст сборки не должны задевать слои сессий). В библиотеку пишет только
-  агент (перенос установленных игр и шаблонов префикса); руками туда ничего не класть.
+  каталог root). Для `STEAM_CLIENT_DIR` в агент смонтирован (**`read_only: true`**) не он сам, а
+  его родитель `STEAM_CLIENT_PARENT`: агенту нужна только mtime каталога (дата сборки шаблона в
+  блоке «Версии» админки) — bind самого `STEAM_CLIENT_DIR` держал бы старый каталог после
+  `build-steam-client.sh` (он меняет каталог через `mv -T --exchange`, а bind-mount помнит
+  дентри на момент монтирования, а не путь — после обмена агент читал бы mtime прошлой сборки
+  до пересоздания контейнера); bind родителя резолвит путь заново при каждом обращении. dockerd
+  клиент передаётся как lower overlay по пути хоста, не через этот bind. Шаблон лежит на NVMe, а
+  не в `CG_DATA_DIR`: с холодного кэша (его вытесняют соседние нагрузки) Steam читал его с RAID
+  на HDD и стартовал 50–90 с вместо ~16. `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming`
+  (его `rsync --delete` и контекст сборки не должны задевать слои сессий). В библиотеку пишет
+  только агент (перенос установленных игр и шаблонов префикса); руками туда ничего не класть.
 
 - `cg-rustfs` (`rustfs/rustfs:1.0.3`, volume `cg-rustfs-data` → `/data`) — хранилище профилей
   (S3, `:9000`), только сеть `cg`, порты наружу не публикуются, `mem_limit` 512m. Ключи —
@@ -98,6 +120,25 @@
 - Реверс-прокси (Caddy, `ingressi`) снаружи сети `proxy` проксирует `https://game.brofrong.ru` на
   `http://cg-api:3000` — это настраивает владелец сервера (см. шаг 2 ниже), наш деплой этого не
   делает и не трогает чужие контейнеры/сети/конфиг Caddy.
+
+## Админка
+
+`/admin` (вход через Pocket ID, роль `admin`) заменяет хождение по ssh за `docker ps`/`df`/
+`nvidia-smi`/логами. Эта часть (часть 1) добавляет вкладки: **Воркеры** — карточка на каждый
+воркер (онлайн/офлайн, железо: CPU/RAM/GPU/диски; загрузка сейчас: CPU/RAM/GPU/видеопамять/диски;
+версии: коммит агента (`CG_COMMIT`), `SESSION_IMAGE`, драйвер NVIDIA, дата сборки шаблона клиента
+Steam, аптайм; слоты и сессии на этом воркере с кнопкой «Остановить»), под карточками — «Последние
+сбои»; **Сессии** — все живые сессии со всех воркеров + история с причинами сбоев; **Настройки** —
+прежняя карточка «Настройки сессий». Вкладки «Игры», «Установки» и «Пользователи» — в следующих
+частях. Подробности и решения по реализации —
+`docs/superpowers/specs/2026-10-28-admin-orchestration-design.md`.
+
+**«На обслуживание» перед деплоем.** Кнопка на карточке воркера (там же «Вернуть в работу»):
+воркер на обслуживании доигрывает текущие сессии и установки, но новых не берёт — так можно
+заранее перекрыть приток новых сессий, не дожидаясь, пока `deploy.sh` откажется деплоить из-за
+живых `cg.session`/`cg.install` (см. «Шаг 4: деплой»). Флаг (`workers.draining`) переживает
+перезапуск агента и оркестратора; сам деплой его не трогает — возвращать воркер в работу нужно
+руками, после деплоя.
 
 ## Сетевая изоляция контейнеров сессий (новый сервер)
 
@@ -199,7 +240,9 @@
 
    - Необязательно (не секреты): `CG_DATA_DIR` (по умолчанию `/raid/cloud-gaming`), `SCRATCH_DIR`
      (по умолчанию `/home/brofrong/cloud-gaming-scratch`), `STEAM_CLIENT_DIR` (по умолчанию
-     `/home/brofrong/cloud-gaming-steam/client`), `ROLES`, `S3_BUCKET` — без кавычек.
+     `/home/brofrong/cloud-gaming-steam/client`), `STEAM_CLIENT_PARENT` (по умолчанию
+     `/home/brofrong/cloud-gaming-steam` — менять вместе со `STEAM_CLIENT_DIR`, см. выше), `ROLES`,
+     `S3_BUCKET` — без кавычек.
 
    Каждый сервис получает только перечисленные для него в `deploy/compose.yaml` переменные (не весь
    `.env`): `POSTGRES_PASSWORD` видит лишь `cg-postgres`, `AGENT_TOKEN` — оркестратор и агент,
@@ -293,11 +336,11 @@ port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк ос
 4. Для каждого из `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`: если в
    серверном `.env` нет такого ключа — дописывает строку из локального `.env.production` (значение
    проверяется локально и идёт через stdin ssh, на экран не выводится).
-5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,install-scratch}`, `SCRATCH_DIR` и
-   `STEAM_CLIENT_DIR/steamapps` — `mkdir -p` от `brofrong`, проверка владельца uid 1000 (пути — из
-   серверного `.env`, если там заданы `CG_DATA_DIR`/`SCRATCH_DIR`/`STEAM_CLIENT_DIR`, иначе по
-   умолчанию). Если шаблон клиента
-   Steam не собран — предупреждение (см. «Клиент Steam: пересборка шаблона»).
+5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,install-scratch}`, `SCRATCH_DIR`,
+   `STEAM_CLIENT_PARENT` и `STEAM_CLIENT_DIR/steamapps` — `mkdir -p` от `brofrong`, проверка
+   владельца uid 1000 (пути — из серверного `.env`, если там заданы
+   `CG_DATA_DIR`/`SCRATCH_DIR`/`STEAM_CLIENT_DIR`/`STEAM_CLIENT_PARENT`, иначе по умолчанию). Если
+   шаблон клиента Steam не собран — предупреждение (см. «Клиент Steam: пересборка шаблона»).
 6. Создаёт сеть `cg-sessions`, если её нет.
 7. Бакет профилей: `docker compose … run --rm cg-rustfs-bucket` — поднимает `cg-rustfs` (ждёт
    healthy) и пиннутым `amazon/aws-cli:2.38.4` в сети `cg` создаёт `S3_BUCKET`, если его нет

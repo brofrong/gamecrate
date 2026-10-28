@@ -10,6 +10,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import type { WorkerHardware, WorkerStats, WorkerVersions } from "@cg/rpc";
 import { games } from "./library";
 import { user } from "./auth";
 import { installJobs } from "./gamestore";
@@ -44,11 +45,25 @@ export const sessionStages = [
 ] as const;
 export type SessionStage = (typeof sessionStages)[number];
 
-/** Воркер (GPU-хост). `id` — имя воркера из конфига агента, не генерируется БД. */
+/**
+ * Воркер (GPU-хост). `id` — имя воркера из конфига агента, не генерируется БД.
+ * `roles`/`hardware`/`versions` — снимок из `agent.connect` (хаб пишет при
+ * каждом подключении; `hardware`/`versions` — `null`, если агент их не
+ * прислал). `stats`/`statsAt` — последний отчёт `WorkerStats` (раз в ~5 с,
+ * без истории); `statsAt is null` — отчёта ещё не было. `draining` — воркер
+ * не берёт новые сессии/установки (`Scheduler.placeOne`, `InstallRepo.claimNext`),
+ * уже идущие не трогает — админка (Task 4/часть 2).
+ */
 export const workers = pgTable("workers", {
   id: text("id").primaryKey(),
   publicIp: text("public_ip").notNull(),
   slots: integer("slots").notNull(),
+  roles: text("roles").array().notNull().default([]),
+  draining: boolean("draining").notNull().default(false),
+  hardware: jsonb("hardware").$type<WorkerHardware | null>(),
+  versions: jsonb("versions").$type<WorkerVersions | null>(),
+  stats: jsonb("stats").$type<WorkerStats | null>(),
+  statsAt: timestamptz("stats_at"),
   lastSeenAt: timestamptz("last_seen_at"),
   createdAt: timestamptz("created_at").notNull().defaultNow(),
 });

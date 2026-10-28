@@ -305,6 +305,137 @@ describe("agent hub", () => {
       }),
     ));
 
+  it("connect stores roles, hardware and versions; WorkerStats updates stats and stats_at without publishing", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        const events = yield* hub.subscribe;
+        const hardware = {
+          cpuModel: "AMD Ryzen 9 5950X",
+          cpuCores: 16,
+          cpuThreads: 32,
+          memoryBytes: 64_000_000_000,
+          gpus: [{ name: "RTX 4090", memoryBytes: 24_000_000_000 }],
+          disks: [
+            {
+              name: "nvme0n1",
+              kind: "nvme" as const,
+              sizeBytes: 2_000_000_000_000,
+              raidLevel: null,
+              members: [],
+            },
+          ],
+        };
+        const versions = {
+          agentCommit: "abc123",
+          sessionImage: "cg-session:1.2.3",
+          driver: "550.90.07",
+          steamClientBuiltAt: "2026-10-01T00:00:00.000Z",
+        };
+        const { client } = yield* connectAgent({
+          ...hello("w-snapshot"),
+          hardware,
+          versions,
+        });
+        yield* waitEvent(events, isTag("Connected", "w-snapshot"));
+
+        const [row] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-snapshot"));
+        expect(row?.roles).toEqual(["worker", "gamestore"]);
+        expect(row?.hardware?.cpuModel).toBe("AMD Ryzen 9 5950X");
+        expect(row?.versions).toEqual(versions);
+        expect(row?.stats).toBeNull();
+        expect(row?.statsAt).toBeNull();
+
+        const stats = {
+          cpuPercent: 12.5,
+          memory: { totalBytes: 1000, usedBytes: 500, cacheBytes: 100 },
+          gpus: [],
+          filesystems: [],
+          uptimeSeconds: 3600,
+        };
+        yield* client["agent.report"]({ _tag: "WorkerStats", stats });
+
+        // Если бы хаб опубликовал `WorkerStats` как `Report`, его бы и поймал
+        // следующий `waitEvent` (он не фильтрует по вложенному тэгу отчёта) —
+        // вместо этого первым должен прийти следующий отчёт, Heartbeat.
+        yield* client["agent.report"]({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+        const next = yield* waitEvent(events, isTag("Report", "w-snapshot"));
+        expect(next.report).toEqual({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+
+        const [updated] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-snapshot"));
+        expect(updated?.stats?.cpuPercent).toBe(12.5);
+        expect(updated?.statsAt).toBeInstanceOf(Date);
+
+        // Подключение без hardware/versions — `null` в БД.
+        yield* connectAgent(hello("w-plain"));
+        yield* waitEvent(events, isTag("Connected", "w-plain"));
+        const [plainRow] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-plain"));
+        expect(plainRow?.hardware).toBeNull();
+        expect(plainRow?.versions).toBeNull();
+      }),
+    ));
+
+  it("a failed WorkerStats write is logged, not agent.report failing or dropping the link", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        const events = yield* hub.subscribe;
+        const { client } = yield* connectAgent(hello("w-stats-write-fails"));
+        yield* waitEvent(events, isTag("Connected", "w-stats-write-fails"));
+
+        // Симулируем сбой записи (как транзиентная ошибка БД): ломаем update
+        // ровно того столбца, который пишет WorkerStats, временно убрав его.
+        yield* db.$client.unsafe("ALTER TABLE workers DROP COLUMN stats");
+        try {
+          const stats = {
+            cpuPercent: 1,
+            memory: { totalBytes: 1, usedBytes: 1, cacheBytes: 0 },
+            gpus: [],
+            filesystems: [],
+            uptimeSeconds: 1,
+          };
+          // Effect.orDie тут завалил бы agent.report (и с ним — WebSocket);
+          // catchCause должен просто залогировать и вернуть успех.
+          yield* client["agent.report"]({ _tag: "WorkerStats", stats });
+        } finally {
+          yield* db.$client.unsafe("ALTER TABLE workers ADD COLUMN stats jsonb");
+        }
+
+        // Соединение агента всё ещё живо: обычный отчёт после сбоя доходит и
+        // публикуется, как будто ничего не случилось.
+        yield* client["agent.report"]({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+        const next = yield* waitEvent(
+          events,
+          isTag("Report", "w-stats-write-fails"),
+        );
+        expect(next.report).toEqual({
+          _tag: "Heartbeat",
+          sessionIds: ["s-running"],
+        });
+        expect(hub.connected().has("w-stats-write-fails")).toBe(true);
+      }),
+    ));
+
   it("report without connect is AgentNotConnected", () =>
     run(
       Effect.gen(function* () {

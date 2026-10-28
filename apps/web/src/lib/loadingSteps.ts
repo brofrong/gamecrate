@@ -44,7 +44,8 @@ export const STAGE_MS: {
 /** Потолок доли внутри этапа: полоска не доходит до следующего этапа, пока он не начался. */
 const STAGE_CAP = 0.95;
 
-const launchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
+/** Подписи этапов запуска по порядку (их же показывает админка в столбце «Этап»). */
+export const launchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
   ["computer", "Готовим компьютер"],
   ["steam", "Запускаем Steam"],
   ["login", "Входим в аккаунт"],

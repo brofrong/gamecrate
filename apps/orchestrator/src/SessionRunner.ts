@@ -406,6 +406,11 @@ const make = (options: SessionRunnerOptions) =>
                     report.stage,
                   ),
                 );
+              case "WorkerStats":
+                // AgentHub сам пишет снимок в `workers.stats`/`stats_at` и не
+                // публикует это событие в PubSub (Task 3) — сюда оно не
+                // попадает; case — для исчерпанности switch по `AgentReport`.
+                return Effect.void;
             }
           })();
           return effect.pipe(

@@ -133,8 +133,9 @@ const startInstall = (
  * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
  * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
  * установленной игры: первый по `id` воркер из `candidates` со строкой в
- * `workers` и свободным слотом, слот — наименьший свободный. Запись `workerId`,
- * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит.
+ * `workers`, не в обслуживании (`draining = false`) и со свободным слотом,
+ * слот — наименьший свободный. Запись `workerId`, `slot`, `state = 'starting'`,
+ * `stateSince = agentSeenAt = now` и коммит.
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -150,11 +151,17 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
         const session = yield* lockOldestQueued(appInstalled);
         if (session === undefined) return undefined;
 
-        // Только воркеры, чья строка уже записана хабом (на неё ссылается FK).
+        // Только воркеры, чья строка уже записана хабом (на неё ссылается FK)
+        // и которые не в обслуживании (`draining` — новых сессий не берут).
         const known = yield* db
           .select({ id: workers.id })
           .from(workers)
-          .where(inArray(workers.id, [...candidates]))
+          .where(
+            and(
+              inArray(workers.id, [...candidates]),
+              eq(workers.draining, false),
+            ),
+          )
           .orderBy(asc(workers.id));
         const taken = yield* db
           .select({ workerId: sessions.workerId, slot: sessions.slot })

@@ -113,6 +113,33 @@ export const updateSessionSettingsAtom = Api.mutation("admin.settings.update");
 export const updateSessionSettingsArgs = <A>(payload: A) =>
   ({ payload, reactivityKeys: settingsKeys }) as const;
 
+/** Ключ реактивности воркеров и сессий админки: «Остановить»/обслуживание перезапрашивают списки. */
+const adminKeys = ["admin"] as const;
+
+/** Воркеры со снимками железа/загрузки и активными сессиями (вкладка «Воркеры», опрос раз в 5 с). */
+export const adminWorkersAtom = Api.query("admin.workers.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Активные и недавние сессии; `true` — только сбои («Последние сбои», «Только сбои»). */
+export const adminSessionsAtom = Atom.family((failedOnly: boolean) =>
+  Api.query(
+    "admin.sessions.list",
+    { failedOnly },
+    { reactivityKeys: adminKeys },
+  ),
+);
+
+/** «Остановить» чужую сессию из админки (тот же `stop_requested_at`, что у игрока). */
+export const adminStopSessionAtom = Api.mutation("admin.sessions.stop");
+export const adminStopSessionArgs = (sessionId: string) =>
+  ({ payload: { sessionId }, reactivityKeys: adminKeys }) as const;
+
+/** «На обслуживание» / «Вернуть в работу». */
+export const adminSetDrainingAtom = Api.mutation("admin.workers.setDraining");
+export const adminSetDrainingArgs = (workerId: string, draining: boolean) =>
+  ({ payload: { workerId, draining }, reactivityKeys: adminKeys }) as const;
+
 /** `_tag` типизированной ошибки RPC (`Unauthorized`, `Forbidden`, `SteamUnavailable`, `RpcClientError`…). */
 export const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>
   Option.getOrUndefined(

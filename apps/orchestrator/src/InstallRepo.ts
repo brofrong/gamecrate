@@ -87,9 +87,9 @@ export interface Claim {
 
 /**
  * Одна транзакция: самая старая `queued`-задача (`FOR UPDATE SKIP LOCKED`) →
- * первый по id агент из `candidates` со строкой в `workers` и без
- * `running`-задачи → `state = 'running'`, `workerId`. `undefined` — очередь
- * пуста или свободных агентов нет.
+ * первый по id агент из `candidates` со строкой в `workers`, не в
+ * обслуживании (`draining = false`) и без `running`-задачи → `state =
+ * 'running'`, `workerId`. `undefined` — очередь пуста или свободных агентов нет.
  */
 export const claimNext = (candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -109,10 +109,16 @@ export const claimNext = (candidates: ReadonlyArray<string>) =>
           .limit(1)
           .for("update", { skipLocked: true });
         if (job === undefined) return undefined;
+        // Не в обслуживании (`draining`) — такие новых установок не берут.
         const known = yield* db
           .select({ id: workers.id })
           .from(workers)
-          .where(inArray(workers.id, [...candidates]))
+          .where(
+            and(
+              inArray(workers.id, [...candidates]),
+              eq(workers.draining, false),
+            ),
+          )
           .orderBy(asc(workers.id));
         const busy = yield* db
           .select({ workerId: installJobs.workerId })
