@@ -120,9 +120,7 @@ describe("session", () => {
     for (const state of ["playing", "disconnected"] as const) {
       const playing = renderPlayer(view(state));
       expectStream(playing.container);
-      expect(
-        screen.getByRole("button", { name: "Выйти из игры" }),
-      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Меню" })).toBeTruthy();
       playing.unmount();
     }
 
@@ -368,7 +366,8 @@ describe("session", () => {
   it("exit asks for confirmation before stopping", async () => {
     const onExit = mock(() => {});
     renderPlayer(view("playing"), { onExit });
-    fireEvent.click(screen.getByRole("button", { name: "Выйти из игры" }));
+    fireEvent.click(screen.getByRole("button", { name: "Меню" }));
+    fireEvent.click(screen.getByRole("button", { name: "Закончить игру" }));
     expect(
       await screen.findByText("Закончить игру? Прогресс сохранится."),
     ).toBeTruthy();
@@ -425,8 +424,8 @@ describe("session", () => {
     const first = streamFrame(container);
     expect(first).not.toBeNull();
     expect(loadingShown()).toBe(true);
-    // Пока экран загрузки — своя «Отменить», без «Выйти из игры» поверх него.
-    expect(screen.queryByRole("button", { name: "Выйти из игры" })).toBeNull();
+    // Пока экран загрузки — своя «Отменить», без меню поверх него.
+    expect(screen.queryByRole("button", { name: "Меню" })).toBeNull();
 
     // Steam запустил игру (`playing`), окна ещё нет — экран загрузки остаётся.
     rerenderPlayer(rerender, view("playing", { stage: "loading" }));
@@ -441,7 +440,7 @@ describe("session", () => {
     expect(streamFrame(container)).toBe(first);
     expect(loadingShown()).toBe(false);
     expect(first?.hasAttribute("inert")).toBe(false);
-    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Меню" })).toBeTruthy();
   });
 
   it("show screen reveals the stream and stays revealed", () => {
@@ -453,7 +452,7 @@ describe("session", () => {
     expect(loadingShown()).toBe(false);
     expect(streamFrame(container)).toBe(first);
     expect(first?.hasAttribute("inert")).toBe(false);
-    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Меню" })).toBeTruthy();
 
     // Новые этапы не возвращают экран загрузки.
     for (const stage of ["prepare", "loading", "visible"] as const) {
@@ -482,7 +481,7 @@ describe("session", () => {
     const { container } = renderPlayer(view("playing"));
     expectStream(container);
     expect(loadingShown()).toBe(false);
-    expect(screen.getByRole("button", { name: "Выйти из игры" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Меню" })).toBeTruthy();
   });
 
   it("playing with a stage before prepare shows the stream", () => {
@@ -492,9 +491,7 @@ describe("session", () => {
       const { container, unmount } = renderPlayer(view("playing", { stage }));
       expectStream(container);
       expect(loadingShown()).toBe(false);
-      expect(
-        screen.getByRole("button", { name: "Выйти из игры" }),
-      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Меню" })).toBeTruthy();
       unmount();
     }
     // `prepare`/`loading` — игра идёт, окна ещё нет: экран загрузки.

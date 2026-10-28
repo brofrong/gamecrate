@@ -1,24 +1,19 @@
 // Экран сессии: стрим Selkies во весь экран (iframe /stream/<id>/) с плашками поверх,
 // экран загрузки до появления игры (LoadingScreen, поверх ещё скрытого стрима),
 // либо статус без стрима (SessionStatus).
-import type { SessionState, SessionView } from "@cg/rpc";
-import { LogOut } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+  defaultStreamSettings,
+  type SessionState,
+  type SessionView,
+  type StreamSettings,
+} from "@cg/rpc";
+import { type RefObject, useEffect, useRef, useState } from "react";
+import { createSelkiesBridge, type SelkiesBridge } from "@/lib/selkiesBridge";
+import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
 import { LoadingScreen } from "./LoadingScreen";
+import { SessionControls } from "./session/SessionControls";
 import { SessionStatus } from "./SessionStatus";
 import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
 
@@ -73,17 +68,20 @@ function StreamFrame({
   sessionId,
   hidden,
   onLoad,
+  ref,
 }: {
   sessionId: string;
   /** Под экраном загрузки: без фокуса и ввода — Tab не уводит клавиши в скрытый стол. */
   hidden: boolean;
-  onLoad: ((frame: HTMLIFrameElement) => void) | undefined;
+  onLoad: (frame: HTMLIFrameElement) => void;
+  ref: RefObject<HTMLIFrameElement | null>;
 }) {
   const retry = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(retry.current), []);
 
   return (
     <iframe
+      ref={ref}
       title="Игра"
       src={`/stream/${sessionId}/`}
       allow="autoplay; fullscreen; gamepad; clipboard-read; clipboard-write"
@@ -92,7 +90,7 @@ function StreamFrame({
       className="absolute inset-0 size-full border-0"
       onLoad={(event) => {
         const frame = event.currentTarget;
-        onLoad?.(frame);
+        onLoad(frame);
         const status = frameStatus(frame);
         if (status !== undefined && status >= 500) {
           clearTimeout(retry.current);
@@ -109,35 +107,41 @@ function StreamFrame({
   );
 }
 
-function ExitButton({ onExit }: { onExit: () => void }) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="secondary"
-          size="sm"
-          className="absolute top-3 right-3 z-30 opacity-60 hover:opacity-100 focus-visible:opacity-100"
-        >
-          <LogOut />
-          Выйти из игры
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Закончить игру? Прогресс сохранится.
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            Игра закроется, сохранения синхронизируются со Steam Cloud.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Продолжить играть</AlertDialogCancel>
-          <AlertDialogAction onClick={onExit}>Закончить игру</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
+/** Настройки по умолчанию, пока маршрут не подал свои (тесты, превью): без сохранения. */
+const defaultStreamSettingsControl: StreamSettingsControl = {
+  settings: defaultStreamSettings,
+  loaded: false,
+  update: () => {},
+};
+
+/**
+ * Мост к Selkies на `Player`: на каждую загрузку iframe — `attach`, на каждую смену настроек —
+ * `update(prev, next)`, при размонтировании — `detach`. Возвращает обработчик загрузки iframe и
+ * номер загрузки (растёт с каждым `load`: новый документ стрима — новые глобалы Selkies).
+ */
+function useSelkiesBridge(
+  bridge: SelkiesBridge,
+  settings: StreamSettings,
+  onFrameLoad: ((frame: HTMLIFrameElement) => void) | undefined,
+) {
+  const [frameGeneration, setFrameGeneration] = useState(0);
+
+  const prevSettings = useRef(settings);
+  useEffect(() => {
+    const prev = prevSettings.current;
+    prevSettings.current = settings;
+    if (prev !== settings) bridge.update(prev, settings);
+  }, [bridge, settings]);
+
+  useEffect(() => () => bridge.detach(), [bridge]);
+
+  const onLoad = (frame: HTMLIFrameElement) => {
+    bridge.attach(frame);
+    setFrameGeneration((n) => n + 1);
+    onFrameLoad?.(frame);
+  };
+
+  return { frameGeneration, onLoad };
 }
 
 export function Player({
@@ -148,9 +152,11 @@ export function Player({
   onFrameLoad,
   onPlayAgain,
   QrLogin = SteamQrLogin,
+  streamSettings = defaultStreamSettingsControl,
+  bridge: bridgeProp,
 }: {
   view: SessionView;
-  /** Пользователь подтвердил «Выйти из игры». */
+  /** Пользователь подтвердил «Закончить игру» (или «Отменить» на экране загрузки). */
   onExit: () => void;
   /** «Я здесь» на предупреждении о простое. */
   onHere: () => void;
@@ -160,7 +166,22 @@ export function Player({
   /** Установщик не дождался входа в Steam: «Готово» на экране QR запускает игру заново. */
   onPlayAgain: () => void;
   QrLogin?: SteamQrLoginComponent;
+  /** Настройки стрима из аккаунта (меню сессии); по умолчанию — умолчания без сохранения. */
+  streamSettings?: StreamSettingsControl;
+  /** Мост к Selkies; по умолчанию свой на каждый `Player` над текущими `streamSettings`. */
+  bridge?: SelkiesBridge;
 }) {
+  const { settings } = streamSettings;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [ownBridge] = useState(() =>
+    createSelkiesBridge(() => settingsRef.current),
+  );
+  const bridge = bridgeProp ?? ownBridge;
+  const { onLoad } = useSelkiesBridge(bridge, settings, onFrameLoad);
+  const rootRef = useRef<HTMLElement>(null);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
   // «Показать экран» — до конца сессии на этой странице (состояние клиента, §4.4).
   // Хранится id сессии: «Играть снова» уводит на новую сессию в том же `Player`.
   const [revealedId, setRevealedId] = useState<string | null>(null);
@@ -189,12 +210,13 @@ export function Player({
   // Порядок детей постоянный: iframe первым — React не пересоздаёт его при смене
   // состояния и при снятии экрана загрузки, и стрим не переподключается.
   return (
-    <main className="fixed inset-0 bg-black">
+    <main ref={rootRef} className="fixed inset-0 bg-black">
       {stream && (
         <StreamFrame
+          ref={frameRef}
           sessionId={view.id}
           hidden={loading}
-          onLoad={onFrameLoad}
+          onLoad={onLoad}
         />
       )}
       {loading && (
@@ -211,7 +233,14 @@ export function Player({
         view.idleDeadline !== null && (
           <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
         )}
-      {!loading && <ExitButton onExit={onExit} />}
+      {!loading && (
+        <SessionControls
+          control={streamSettings}
+          onExit={onExit}
+          rootRef={rootRef}
+          frameRef={frameRef}
+        />
+      )}
     </main>
   );
 }

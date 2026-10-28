@@ -17,12 +17,19 @@ function AlertDialogTrigger(
   );
 }
 
+/**
+ * `container` — куда порталить диалог (по умолчанию `body`). Для полного экрана — корень
+ * полноэкранного элемента: вне его поддерева браузер ничего не показывает.
+ */
 function AlertDialogContent({
   className,
+  container,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+}: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
+  container?: HTMLElement | null;
+}) {
   return (
-    <AlertDialogPrimitive.Portal>
+    <AlertDialogPrimitive.Portal container={container ?? null}>
       <AlertDialogPrimitive.Overlay
         data-slot="alert-dialog-overlay"
         className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/60"

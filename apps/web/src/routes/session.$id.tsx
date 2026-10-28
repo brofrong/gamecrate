@@ -14,6 +14,7 @@ import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
 import { useInputActivity } from "@/lib/inputActivity";
 import { useStalled } from "@/lib/useStalled";
+import { useStreamSettings } from "@/lib/useStreamSettings";
 import {
   errorTag,
   heartbeatAtom,
@@ -107,6 +108,7 @@ function SessionPage() {
   const stop = useAtomSet(stopSessionAtom, { mode: "promiseExit" });
   const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
   const input = useInputActivity();
+  const streamSettings = useStreamSettings();
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
   const tag = resultErrorTag(watch);
@@ -194,6 +196,7 @@ function SessionPage() {
         onLibrary={toLibrary}
         onFrameLoad={input.attachFrame}
         onPlayAgain={() => void onPlayAgain()}
+        streamSettings={streamSettings}
       />
       {stalled && (
         // Стрим идёт отдельным соединением и может работать дальше — не закрываем его.
