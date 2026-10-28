@@ -70,6 +70,29 @@ describe("SteamLoginSeeds", () => {
       }),
     ));
 
+  it("clearOlderThan drops only earlier seeds", () =>
+    run(
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        // Вход положен в t=1000 — сброс в t=2000 его убирает.
+        yield* TestClock.setTime(1000);
+        yield* seeds.put("u1", makeSeed("old"));
+        yield* seeds.clearOlderThan("u1", new Date(2000));
+        expect(yield* seeds.get("u1")).toBeNull();
+
+        // Вход положен в t=3000, после сброса — остаётся.
+        yield* TestClock.setTime(3000);
+        const fresh = makeSeed("new");
+        yield* seeds.put("u1", fresh);
+        yield* seeds.clearOlderThan("u1", new Date(2000));
+        expect(yield* seeds.get("u1")).toBe(fresh);
+
+        // Нет входа — ничего не делает; чужой вход не трогает.
+        yield* seeds.clearOlderThan("u2", new Date(5000));
+        expect(yield* seeds.get("u1")).toBe(fresh);
+      }),
+    ));
+
   it("SEED_TTL is 24 hours", () => {
     expect(Duration.toHours(SEED_TTL)).toBe(24);
   });

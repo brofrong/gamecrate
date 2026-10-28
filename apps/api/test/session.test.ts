@@ -162,6 +162,29 @@ describe("session rpc", () => {
     expect(result.active).toBeNull();
   });
 
+  it("start for a blocked user fails with AccessDenied", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        yield* db
+          .update(user)
+          .set({ blockedAt: new Date() })
+          .where(eq(user.id, alice.id));
+        const rpc = yield* client;
+        const denied = yield* Effect.flip(
+          rpc["session.start"]({ appId: 10 }),
+        );
+        const active = yield* rpc["session.active"]();
+        const rows = yield* db.select().from(sessions);
+        return { denied, active, rows };
+      }),
+    );
+    expect(result.denied._tag).toBe("AccessDenied");
+    expect(result.active).toBeNull();
+    expect(result.rows).toHaveLength(0);
+  });
+
   it("start after the previous session ended creates a new one", async () => {
     const result = await run(
       Effect.gen(function* () {

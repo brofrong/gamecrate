@@ -1,10 +1,16 @@
 // Хендлеры группы `admin.*` (доступ проверяет AdminMiddleware).
-import { AdminRpcs } from "@cg/rpc";
+import { AdminRpcs, CurrentUser } from "@cg/rpc";
 import { DateTime, Effect } from "effect";
 import { deleteGame, listGames } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
 import { adminStop, listSessions } from "./sessions";
+import {
+  listUsers,
+  resetSteamLogin,
+  setBlocked,
+  setRole,
+} from "./users";
 import { listWorkers, setDraining } from "./workers";
 
 export const AdminRpcHandlers = AdminRpcs.toLayer({
@@ -39,5 +45,22 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
     Effect.gen(function* () {
       const now = yield* DateTime.nowAsDate;
       return yield* cancelInstall(jobId, now);
+    }),
+  "admin.users.list": () => listUsers(),
+  "admin.users.setRole": ({ userId, role }) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      return yield* setRole(current.id, userId, role);
+    }),
+  "admin.users.setBlocked": ({ userId, blocked }) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      const now = yield* DateTime.nowAsDate;
+      return yield* setBlocked(current.id, userId, blocked, now);
+    }),
+  "admin.users.resetSteamLogin": ({ userId }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* resetSteamLogin(userId, now);
     }),
 });

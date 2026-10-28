@@ -11,7 +11,8 @@
 // Копия в upper сессии (375 МБ на каждый старт — те же грязные страницы) и
 // отдельный overlay-том на шаблон отвергнуты. Цена: менять lower под живым
 // overlay той же игры нельзя — перенос только без контейнеров `cg.app=<appid>`
-// (иначе `deferred`, повтор при следующем поводе). Метка `cg-template` — сборка
+// (иначе `deferred`, повтор при следующем поводе; проверка и до сборки, чтобы не
+// собирать впустую, и перед переносом). Метка `cg-template` — сборка
 // Proton (первая строка его `version`); другая — шаблон `stale`, его
 // пересобирают, а до того сессии видят старый (Proton обновляет его в своём
 // upper без создания префикса и без `sync()`).
@@ -338,6 +339,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /** Есть контейнер `cg.app=<appId>` (сессия, установщик): lower игры менять нельзя. */
+  const appInUse = (appId: number) =>
+    docker.listByLabel("cg.app").pipe(
+      Effect.map((containers) =>
+        containers.some(
+          (container) => container.labels["cg.app"] === String(appId),
+        ),
+      ),
+      Effect.mapError((error) => new BuildFailed({ error: error.message })),
+    );
+
+  const deferredInUse = (appId: number) =>
+    Effect.logInfo("Prefix template deferred: app in use", { appId }).pipe(
+      Effect.as("deferred" as const),
+    );
+
   /** Шаги 3–7: собрать, проверить, пометить, перенести. Слои убирает вызывающий. */
   const buildAndPromote = (
     appId: number,
@@ -391,19 +408,8 @@ const make = Effect.gen(function* () {
       yield* sync("marker", () =>
         writeFileSync(join(built, TEMPLATE_MARKER), `${tool.build}\n`),
       );
-      const users = yield* docker
-        .listByLabel("cg.app")
-        .pipe(
-          Effect.mapError((error) => new BuildFailed({ error: error.message })),
-        );
-      if (
-        users.some((container) => container.labels["cg.app"] === String(appId))
-      ) {
-        yield* Effect.logInfo("Prefix template deferred: app in use", {
-          appId,
-        });
-        return "deferred" as const;
-      }
+      // Ещё раз: сессия игры могла стартовать, пока шла сборка.
+      if (yield* appInUse(appId)) return yield* deferredInUse(appId);
       yield* sync("promote", () =>
         promoteTemplate(
           built,
@@ -445,6 +451,17 @@ const make = Effect.gen(function* () {
         ))
       )
         return yield* skipped(appId, "not enough free disk space");
+      // Игра занята — не собирать впустую: перенести шаблон всё равно нельзя.
+      const inUse = yield* appInUse(appId).pipe(
+        Effect.catchTag("PrefixTemplateBuildFailed", (error) =>
+          Effect.logError("Prefix template build failed", {
+            appId,
+            error: error.error,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+      if (inUse === undefined) return "failed" as const;
+      if (inUse) return yield* deferredInUse(appId);
       const overlays = templateLayers(config, appId);
       return yield* buildAndPromote(appId, overlays, installDir, tool).pipe(
         Effect.catchTag("PrefixTemplateBuildFailed", (error) =>

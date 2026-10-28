@@ -1,6 +1,7 @@
 // Хендлеры группы `session.*`: сессии текущего пользователя.
 import type { Db } from "@cg/db";
 import {
+  AccessDenied,
   CurrentUser,
   GameNotOwned,
   isTerminalSessionState,
@@ -65,6 +66,7 @@ export const SessionRpcHandlers = SessionRpcs.toLayer(
         Effect.gen(function* () {
           const current = yield* CurrentUser;
           const result = yield* SessionRepo.startSession(current.id, appId);
+          if (result === "Blocked") return yield* new AccessDenied();
           if (result === "NotOwned") return yield* new GameNotOwned({ appId });
           return result;
         }),

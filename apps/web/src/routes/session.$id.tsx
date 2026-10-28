@@ -1,7 +1,11 @@
 // `/session/$id`: экран игры. Состояние — поток `session.watch`; пока страница открыта и
 // сессия активна — heartbeat каждые 5 с с `inputAgeMs` (мс с последнего ввода).
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { isTerminalSessionState, maxInputAgeMs } from "@cg/rpc";
+import {
+  accessDeniedReason,
+  isTerminalSessionState,
+  maxInputAgeMs,
+} from "@cg/rpc";
 import { createRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -56,6 +60,10 @@ export const playAgain = async (
   const tag = errorTag(exit.cause);
   if (tag === "Unauthorized") {
     window.location.assign("/");
+    return;
+  }
+  if (tag === "AccessDenied") {
+    toast.error(accessDeniedReason);
     return;
   }
   toast.error("Не удалось начать игру. Попробуйте ещё раз.");

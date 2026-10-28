@@ -9,6 +9,7 @@ import {
   type SessionState,
   sessions,
   settings,
+  user,
   userStreamSettings,
 } from "@cg/db";
 import {
@@ -519,3 +520,48 @@ export const commitProfile = (commit: ProfileCommit) =>
             .returning({ userId: profiles.userId });
     return { accepted: written.length === 1 };
   });
+
+/**
+ * Момент, когда админ сбросил вход Steam пользователя
+ * (`user.steam_login_reset_at`); пометки нет (или нет пользователя) — `null`.
+ */
+export const steamLoginResetAt = (
+  userId: string,
+): Effect.Effect<Date | null, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ resetAt: user.steamLoginResetAt })
+      .from(user)
+      .where(eq(user.id, userId));
+    return row?.resetAt ?? null;
+  }).pipe(Effect.orDie);
+
+/**
+ * Снять пометку сброса входа Steam, если она не новее `upTo` — момента сброса,
+ * который агент исполнил (эхо `ProfileCommit.steamLoginResetAt`). Пометка
+ * новее (админ сбросил ещё раз, пока шла сессия) остаётся. Снята — `true`.
+ *
+ * Сравнение — по миллисекундам (`date_trunc`), а не точное `<=`: эхо агента
+ * округлено до миллисекунд (api пишет пометку из JS `Date`), а запись с
+ * микросекундами (например, ручная правка `now()` в БД) иначе навсегда
+ * оставляла бы пометку снятой лишь «с точностью до будущего» (M3).
+ */
+export const clearSteamLoginReset = (
+  userId: string,
+  upTo: Date,
+): Effect.Effect<boolean, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const cleared = yield* db
+      .update(user)
+      .set({ steamLoginResetAt: null })
+      .where(
+        and(
+          eq(user.id, userId),
+          sql`date_trunc('milliseconds', ${user.steamLoginResetAt}) <= ${upTo}`,
+        ),
+      )
+      .returning({ id: user.id });
+    return cleared.length === 1;
+  }).pipe(Effect.orDie);

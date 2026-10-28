@@ -1,6 +1,7 @@
 // `/admin`: админка — вкладки «Воркеры» (карточки воркеров и «Последние сбои»), «Сессии»,
-// «Игры» (общая библиотека хранилища), «Установки» (активные и недавние задачи установки) и
-// «Настройки» («Настройки сессий»). Без сессии — вход через Pocket ID, игрок — «Нет доступа».
+// «Игры» (общая библиотека хранилища), «Установки» (активные и недавние задачи установки),
+// «Пользователи» (роль, блокировка, сброс входа Steam) и «Настройки» («Настройки сессий»).
+// Без сессии — вход через Pocket ID, игрок — «Нет доступа».
 import type { AdminWorker, SessionSettings } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
@@ -19,6 +20,7 @@ import { InstallsTab } from "@/components/admin/InstallsTab";
 import { Polled } from "@/components/admin/Polled";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { SessionsTab } from "@/components/admin/SessionsTab";
+import { UsersTab } from "@/components/admin/UsersTab";
 import { WorkerCard } from "@/components/admin/WorkerCard";
 import { AppHeader } from "@/components/AppHeader";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
@@ -158,12 +160,13 @@ function SessionSettingsCard() {
   );
 }
 
-/** Вкладки админки: «Пользователи» — в следующей части. */
+/** Вкладки админки, в порядке вывода. */
 const ADMIN_TABS = [
   ["workers", "Воркеры"],
   ["sessions", "Сессии"],
   ["games", "Игры"],
   ["installs", "Установки"],
+  ["users", "Пользователи"],
   ["settings", "Настройки"],
 ] as const;
 type AdminTab = (typeof ADMIN_TABS)[number][0];
@@ -325,6 +328,7 @@ function AdminHome() {
         {tab === "sessions" && <SessionsTab onStop={setStopId} />}
         {tab === "games" && <GamesTab />}
         {tab === "installs" && <InstallsTab />}
+        {tab === "users" && <UsersTab />}
         {tab === "settings" && <SessionSettingsCard />}
         <StopSessionDialog sessionId={stopId} onClose={() => setStopId(null)} />
       </main>

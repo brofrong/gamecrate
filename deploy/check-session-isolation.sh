@@ -14,10 +14,15 @@
 #     моста, не cg-api;
 #   - cg-api:3000 — контейнеру моста, которому разрешён только исходящий к сессиям :8080, не
 #     входящий от них;
-#   - https://store.steampowered.com — интернет, должен остаться открытым.
+#   - https://store.steampowered.com — интернет (и DNS сессий), должен остаться открытым.
+# «факт»: closed — таймаут (curl 28, его дают DROP-правила); reachable — отказ в соединении
+# (curl 7: адрес ответил, закрыт только порт — изоляции нет); dns-fail — имя не разрешилось
+# (curl 6: DNS сессий сломан); open — соединение установлено (для интернета — только curl 0,
+# прочие коды — fail:<код curl>).
 # Печатает таблицу «цель | ожидается | факт»; код 0 — всё совпало, 1 — где-то открыто то, что
-# должно быть закрыто. На сервере без применённых правил (см. deploy/session-isolation.sh и
-# раздел в deploy/README.md) ожидаемо код 1 — это не баг, а отсутствие правил.
+# должно быть закрыто, или интернет/DNS не работает. На сервере без применённых правил (см.
+# deploy/session-isolation.sh и раздел в deploy/README.md) ожидаемо код 1 — это не баг, а
+# отсутствие правил.
 # Контейнеры удаляются в trap при любом выходе; ничего, кроме них (по метке cg.isolation-check),
 # скрипт не трогает.
 set -euo pipefail
@@ -93,8 +98,10 @@ for ((i = 0; i < 50; i++)); do
   sleep 0.2
 done
 
-# curl -m 3 изнутри ${a}: любое TCP-соединение (даже с протокольной ошибкой HTTP) — "открыто";
-# "не достучались"/таймаут (коды 7, 28) — "закрыто".
+# curl -m 3 изнутри ${a}. Закрытый адрес (`closed`) — только таймаут (28): DROP молчит, а отказ
+# в соединении (7) значит, что хост ответил (`reachable`). 6 — имя (контейнера) не разрешилось,
+# проверки не было (`dns-fail`). Любое другое — соединение было (даже с протокольной ошибкой
+# HTTP) — `open`.
 tcp_check() {
   local url="$1" rc
   set +e
@@ -102,27 +109,44 @@ tcp_check() {
   rc=$?
   set -e
   case "${rc}" in
-  7 | 28) echo closed ;;
+  28) echo closed ;;
+  7) echo reachable ;;
+  6) echo dns-fail ;;
   *) echo open ;;
   esac
 }
 
-printf '%-32s | %-9s | %-6s\n' "цель" "ожидается" "факт"
-printf '%-32s-+-%-9s-+-%-6s\n' "--------------------------------" "---------" "------"
+# Интернет: `open` — только curl 0 (ответ получен, любой HTTP-статус); 6 — `dns-fail` (DNS
+# сессий сломан, например DNS-сервер хоста попал под DROP частных диапазонов).
+internet_check() {
+  local url="$1" rc
+  set +e
+  docker exec "${a}" curl -m 3 -s -o /dev/null "${url}" >/dev/null 2>&1
+  rc=$?
+  set -e
+  case "${rc}" in
+  0) echo open ;;
+  6) echo dns-fail ;;
+  *) echo "fail:${rc}" ;;
+  esac
+}
+
+printf '%-32s | %-9s | %-9s\n' "цель" "ожидается" "факт"
+printf '%-32s-+-%-9s-+-%-9s\n' "--------------------------------" "---------" "---------"
 ok=0
 row() {
-  local name="$1" url="$2" expect="$3" actual
-  actual="$(tcp_check "${url}")"
-  printf '%-32s | %-9s | %-6s\n' "${name}" "${expect}" "${actual}"
+  local name="$1" check="$2" url="$3" expect="$4" actual
+  actual="$("${check}" "${url}")"
+  printf '%-32s | %-9s | %-9s\n' "${name}" "${expect}" "${actual}"
   [ "${actual}" = "${expect}" ] || ok=1
 }
 
-row "шлюз моста cg-sessions:22" "http://${bridge_gw}:22" closed
-row "LAN-адрес хоста:22" "http://${host_ip}:22" closed
-row "LAN-шлюз хоста:80" "http://${lan_gw}:80" closed
-row "второй контейнер моста:8080" "http://${b}:8080" closed
-row "cg-api:3000" "http://cg-api:3000" closed
-row "интернет (store.steampowered.com)" "https://store.steampowered.com" open
+row "шлюз моста cg-sessions:22" tcp_check "http://${bridge_gw}:22" closed
+row "LAN-адрес хоста:22" tcp_check "http://${host_ip}:22" closed
+row "LAN-шлюз хоста:80" tcp_check "http://${lan_gw}:80" closed
+row "второй контейнер моста:8080" tcp_check "http://${b}:8080" closed
+row "cg-api:3000" tcp_check "http://cg-api:3000" closed
+row "интернет (store.steampowered.com)" internet_check "https://store.steampowered.com" open
 
 exit "${ok}"
 REMOTE

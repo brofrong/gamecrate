@@ -81,7 +81,7 @@ import {
   sessionPassword,
   USER_LABEL,
 } from "./SessionSupervisor";
-import { seedSteamLogin } from "./steam/seedContainer";
+import { clearSteamLogin, seedSteamLogin } from "./steam/seedContainer";
 import { isInstallDir, parseAppManifest } from "./steam/vdf";
 
 /** Метка контейнеров и томов установки: `cg.install=<jobId>`. */
@@ -382,6 +382,11 @@ interface Job {
   readonly steamLogin: SteamLoginSeed | null;
   /** Сколько ждать признак входа после старта клиента (спека §5.4). */
   readonly steamLoginTimeoutSeconds: number;
+  /**
+   * Момент сброса входа Steam админом (`steamLoginResetAt` команды);
+   * `undefined` — сброса не было, агент его дом не трогает.
+   */
+  readonly steamLoginResetAt: string | undefined;
   readonly name: string;
   readonly overlays: Overlays;
   /** Пришёл `CancelInstall`. */
@@ -390,6 +395,12 @@ interface Job {
   phase: "downloading" | "finishing";
   /** Вход §4 вписан в этот запуск (для `ProfileCommit.steamLoginSeeded` и предупреждения). */
   seeded: boolean;
+  /**
+   * Момент сброса входа Steam, эхом которого агент стёр вход перед стартом
+   * (для `ProfileCommit.steamLoginResetAt`); `undefined` — стирания в этом
+   * запуске не было.
+   */
+  loginResetAt: string | undefined;
 }
 
 type Services = AgentConfig | DockerClient | ProfileStore | ProfileCommitter;
@@ -679,9 +690,26 @@ const make = Effect.gen(function* () {
                 new Abort({ reason: installReasons.profileRestore, cause }),
             ),
           );
-          // Пустой дом и нечем войти — установщик без входа ждал бы QR, которого
-          // никто не видит, и упал бы через STALL_TIMEOUT.
-          if (from === "empty" && job.steamLogin === null)
+          if (job.steamLoginResetAt !== undefined) {
+            yield* clearSteamLogin({ container: job.name }).pipe(
+              withServices,
+              Effect.mapError(
+                (cause) =>
+                  new Abort({ reason: installReasons.profileRestore, cause }),
+              ),
+            );
+            job.loginResetAt = job.steamLoginResetAt;
+          }
+          // Пустой дом и нечем войти, или этот запуск сам стёр вход и нового
+          // посева нет, — установщик без входа ждал бы QR, которого никто не
+          // видит. Без этой проверки он держал бы единственный слот установки
+          // gamestore-воркера до STEAM_CLIENT_START_TIMEOUT. Коммита профиля
+          // при Abort не происходит (`fail` его не делает), так что стирание
+          // и его эхо в этой ветке ни на что не влияют — том просто уберут.
+          if (
+            job.steamLogin === null &&
+            (from === "empty" || job.loginResetAt !== undefined)
+          )
             return yield* new Abort({ reason: installReasons.steamLogin });
           if (job.steamLogin !== null) {
             yield* seedSteamLogin({
@@ -725,6 +753,7 @@ const make = Effect.gen(function* () {
         appId: job.appId,
         profile: from,
         steamLoginSeeded: job.seeded,
+        steamLoginCleared: job.loginResetAt !== undefined,
       });
       yield* emit({ _tag: "InstallStage", jobId: job.jobId, stage: "login" });
       yield* waitForSteamLogon(job, logOffset);
@@ -753,6 +782,9 @@ const make = Effect.gen(function* () {
         userId: job.userId,
         baseVersion: job.profile?.version ?? null,
         steamLoginSeeded: job.seeded,
+        ...(job.loginResetAt !== undefined
+          ? { steamLoginResetAt: job.loginResetAt }
+          : {}),
       }).pipe(withServices, Effect.result);
       if (Result.isFailure(saved))
         yield* Effect.logError("profile-unsaved", {
@@ -920,11 +952,13 @@ const make = Effect.gen(function* () {
         profile: command.profile,
         steamLogin: command.steamLogin,
         steamLoginTimeoutSeconds: command.steamLoginTimeoutSeconds,
+        steamLoginResetAt: command.steamLoginResetAt,
         name: installContainerName(command.jobId),
         overlays: installLayers(config, command.jobId),
         cancelRequested: yield* Deferred.make<void>(),
         phase: "downloading",
         seeded: false,
+        loginResetAt: undefined,
       };
       current = job;
       yield* Effect.logInfo("InstallGame accepted", {

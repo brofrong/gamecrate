@@ -1,5 +1,6 @@
 import { describe, expect, it, jest, mock, spyOn } from "bun:test";
 import {
+  accessDeniedReason,
   type SessionState,
   type SessionView,
   steamLoginRequiredReason,
@@ -313,6 +314,22 @@ describe("session", () => {
       expect(toastError).toHaveBeenCalledWith(
         "Не удалось начать игру. Попробуйте ещё раз.",
       );
+      toastError.mockRestore();
+    });
+
+    it("shows «Доступ закрыт» and does not navigate when the user is blocked", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () =>
+        Exit.fail({ _tag: "AccessDenied" } as const),
+      );
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(accessDeniedReason);
       toastError.mockRestore();
     });
   });

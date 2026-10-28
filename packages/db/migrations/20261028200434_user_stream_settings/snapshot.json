@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "42355e14-e518-4aba-b4ce-ac369224f2b7",
+  "id": "f6fabe6c-5960-4001-be58-c50ff56b3791",
   "prevIds": [
-    "abeea55d-286b-48e0-bce6-4e3c22f30556"
+    "f950d4f0-b7dc-4e72-991d-a6d060911397"
   ],
   "ddl": [
     {
@@ -520,6 +520,32 @@
       "generated": null,
       "identity": null,
       "name": "library_private",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "blocked_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "user"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "steam_login_reset_at",
       "entityType": "columns",
       "schema": "public",
       "table": "user"

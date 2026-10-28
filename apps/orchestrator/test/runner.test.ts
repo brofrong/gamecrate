@@ -17,6 +17,7 @@ import {
   type AgentReport,
   type RunningSession,
   type SteamLoginSeed,
+  accessDeniedReason,
   defaultSessionSettings,
   sessionSettingsKey,
 } from "@cg/rpc";
@@ -437,6 +438,147 @@ describe("scheduler", () => {
             display: { width: 1920, height: 1080 },
           },
         ]);
+      }),
+    ));
+
+  it("queued session of a blocked user fails with Доступ закрыт", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2", "u3");
+        yield* connectWorker(fake, "w1", 2);
+        // api проверил блокировку раньше, админ заблокировал до размещения.
+        yield* db
+          .update(user)
+          .set({ blockedAt: at(t0, -1) })
+          .where(inArray(user.id, ["u1", "u3"]));
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+        // Игры 730 нет в библиотеке — без блокировки сессия ушла бы в установку.
+        yield* db
+          .insert(games)
+          .values({ appId: 730, name: "Counter-Strike" })
+          .onConflictDoNothing();
+        yield* db.insert(sessions).values({
+          id: "s3",
+          userId: "u3",
+          appId: 730,
+          createdAt: at(t0, -4),
+        });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -3) });
+
+        yield* Scheduler.tick(t0);
+
+        for (const id of ["s1", "s3"])
+          like(yield* sessionRow(id), {
+            state: "failed",
+            failReason: accessDeniedReason,
+            workerId: null,
+            slot: null,
+            installJobId: null,
+            endedAt: t0,
+          });
+        expect(yield* db.select().from(installJobs)).toEqual([]);
+        // Незаблокированный пользователь размещается как обычно.
+        expect(
+          fake.sent.map((s) =>
+            s.command._tag === "StartSession" ? s.command.sessionId : "",
+          ),
+        ).toEqual(["s2"]);
+      }),
+    ));
+
+  it("StartSession carries the reset and drops older seed", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const t0 = new Date();
+        const seeds = yield* SteamLoginSeeds;
+        const seed = (token: string): SteamLoginSeed => ({
+          accountName: Redacted.make("steamuser"),
+          steamId: "76561198000000000",
+          refreshToken: Redacted.make(token),
+        });
+        yield* seedUsers("u-old", "u-new", "u-none");
+        yield* connectWorker(fake, "w1", 3);
+        // Вход положен сейчас (часы процесса); у u-old сброс позже — вход
+        // устарел, у u-new сброс раньше — вход положен после сброса.
+        yield* seeds.put("u-old", seed("old"));
+        const fresh = seed("fresh");
+        yield* seeds.put("u-new", fresh);
+        const none = seed("none");
+        yield* seeds.put("u-none", none);
+        const resetOld = new Date(Date.now() + 60_000);
+        const resetNew = new Date(Date.now() - 60_000);
+        yield* db
+          .update(user)
+          .set({ steamLoginResetAt: resetOld })
+          .where(eq(user.id, "u-old"));
+        yield* db
+          .update(user)
+          .set({ steamLoginResetAt: resetNew })
+          .where(eq(user.id, "u-new"));
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          createdAt: at(t0, -5),
+        });
+        yield* insertSession({
+          id: "s-new",
+          userId: "u-new",
+          createdAt: at(t0, -4),
+        });
+        yield* insertSession({
+          id: "s-none",
+          userId: "u-none",
+          createdAt: at(t0, -3),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        expect(fake.sent.map((s) => s.command)).toEqual([
+          {
+            _tag: "StartSession",
+            sessionId: "s-old",
+            userId: "u-old",
+            appId: 570,
+            slot: 0,
+            udpPort: 59000,
+            profile: null,
+            steamLogin: null,
+            display: { width: 1920, height: 1080 },
+            steamLoginResetAt: resetOld.toISOString(),
+          },
+          {
+            _tag: "StartSession",
+            sessionId: "s-new",
+            userId: "u-new",
+            appId: 570,
+            slot: 1,
+            udpPort: 59001,
+            profile: null,
+            steamLogin: fresh,
+            display: { width: 1920, height: 1080 },
+            steamLoginResetAt: resetNew.toISOString(),
+          },
+          {
+            _tag: "StartSession",
+            sessionId: "s-none",
+            userId: "u-none",
+            appId: 570,
+            slot: 2,
+            udpPort: 59002,
+            profile: null,
+            steamLogin: none,
+            display: { width: 1920, height: 1080 },
+          },
+        ]);
+        // Без пометки ключа нет вовсе (а не `undefined`).
+        expect("steamLoginResetAt" in (fake.sent[2]?.command ?? {})).toBe(
+          false,
+        );
+        // Устаревший вход убран из памяти, а не просто не отправлен.
+        expect(yield* seeds.get("u-old")).toBeNull();
       }),
     ));
 

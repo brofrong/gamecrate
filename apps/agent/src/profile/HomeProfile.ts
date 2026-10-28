@@ -182,6 +182,12 @@ export const saveProfile = (options: {
   readonly baseVersion: number | null;
   /** Вход в Steam §4 был вписан в этот запуск (Task 3, `seedSteamLogin`). */
   readonly steamLoginSeeded: boolean;
+  /**
+   * Момент сброса входа Steam админом (`steamLoginResetAt` команды), если
+   * агент стёр вход в этом запуске (`clearSteamLogin`, admin-part3 Task 2);
+   * нет — стирания не было, поле в коммит не попадает.
+   */
+  readonly steamLoginResetAt?: string;
 }): Effect.Effect<
   void,
   ProfileError,
@@ -233,6 +239,9 @@ export const saveProfile = (options: {
         objectKey,
         sizeBytes,
         steamLoginSeeded: options.steamLoginSeeded,
+        ...(options.steamLoginResetAt !== undefined
+          ? { steamLoginResetAt: options.steamLoginResetAt }
+          : {}),
       })
       .pipe(Effect.mapError(failed("commit")));
     if (!accepted) {
