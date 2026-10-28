@@ -1,5 +1,6 @@
-// Сессии для админки: журнал (активные + недавние) и остановка без проверки
-// владельца — по образцу `SessionRepo`, но для любой сессии, не только своей.
+// Сессии для админки: журнал (активные + недавние). Остановка (`adminStop`)
+// живёт в `SessionRepo` — та же логика `stopRequestedAt`, что у `requestStop`
+// (разница только в проверке владельца), здесь просто реэкспортируется.
 import {
   Db,
   games,
@@ -8,14 +9,12 @@ import {
   sessions,
   user,
 } from "@cg/db";
-import { type AdminSession, isSessionId } from "@cg/rpc";
-import { and, desc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
-import { DateTime, Effect } from "effect";
+import { type AdminSession } from "@cg/rpc";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { Effect } from "effect";
+import { isActive, terminalStates } from "../session/SessionRepo";
 
-const terminalStates: Array<DbSessionState> = ["ended", "failed"];
-
-/** Условие «сессия активна» (не `ended`/`failed`), как в `SessionRepo`. */
-const isActive = notInArray(sessions.state, terminalStates);
+export { adminStop } from "../session/SessionRepo";
 
 /** Окно «недавних» сессий и предел их числа (спека §«Сессии»). */
 const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
@@ -118,31 +117,4 @@ export const listSessions = (
       active: activeRows.map(toAdminSession),
       recent: recentRows.map(toAdminSession),
     };
-  }).pipe(Effect.orDie);
-
-/**
- * Остановка любой сессии администратором: как `SessionRepo.requestStop`, но
- * без проверки владельца. Активной — `stopRequestedAt = coalesce(..., now)`
- * (первый запрос не перезаписывается), завершённой — ничего. Неверный
- * формат id или сессии нет — `false`.
- */
-export const adminStop = (
-  sessionId: string,
-): Effect.Effect<boolean, never, Db> =>
-  Effect.gen(function* () {
-    if (!isSessionId(sessionId)) return false;
-    const db = yield* Db;
-    const now = yield* DateTime.nowAsDate;
-    const [existing] = yield* db
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(eq(sessions.id, sessionId));
-    if (existing === undefined) return false;
-    yield* db
-      .update(sessions)
-      .set({
-        stopRequestedAt: sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`,
-      })
-      .where(and(eq(sessions.id, sessionId), isActive));
-    return true;
   }).pipe(Effect.orDie);

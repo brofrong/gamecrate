@@ -21,10 +21,15 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 const statesMatch: Same<SessionState, DbSessionState> = true;
 void statesMatch;
 
-const terminalStates: Array<DbSessionState> = ["ended", "failed"];
+/** Терминальные состояния сессии (см. `isTerminalSessionState` в `@cg/rpc`). */
+export const terminalStates: Array<DbSessionState> = ["ended", "failed"];
 
-/** Условие «сессия активна» (не `ended`/`failed`). */
-const isActive = notInArray(sessions.state, terminalStates);
+/**
+ * Условие «сессия активна» (не `ended`/`failed`) — единственное определение,
+ * переиспользуется в `apps/api/src/admin/{sessions,workers}.ts` (своя копия
+ * этого условия там не нужна).
+ */
+export const isActive = notInArray(sessions.state, terminalStates);
 
 /** Строка сессии вместе с названием игры и байтами её задачи установки (если есть). */
 const sessionWithGame = {
@@ -272,6 +277,41 @@ export const heartbeat = (
   }).pipe(Effect.orDie);
 
 /**
+ * Общая логика остановки: сессия найдена под `extraCondition` (например,
+ * владелец) — активной выставляется `stopRequestedAt = coalesce(..., now)`
+ * (первый запрос не перезаписывается), завершённой — ничего; формат id
+ * неверный или по `extraCondition` сессии нет — `false`. `requestStop`
+ * (игрок, свою сессию) и `adminStop` (админка, apps/api/src/admin/sessions.ts,
+ * любую сессию, без проверки владельца) — её частные случаи.
+ */
+const stopSession = (
+  sessionId: string,
+  extraCondition: SQL | undefined,
+): Effect.Effect<boolean, never, Db> =>
+  Effect.gen(function* () {
+    if (!isSessionId(sessionId)) return false;
+    const db = yield* Db;
+    const now = yield* DateTime.nowAsDate;
+    const idCondition = eq(sessions.id, sessionId);
+    const [found] = yield* db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(
+        extraCondition === undefined
+          ? idCondition
+          : and(idCondition, extraCondition),
+      );
+    if (found === undefined) return false;
+    yield* db
+      .update(sessions)
+      .set({
+        stopRequestedAt: sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`,
+      })
+      .where(and(idCondition, isActive));
+    return true;
+  }).pipe(Effect.orDie);
+
+/**
  * Запрос остановки своей сессии: активной — `stopRequestedAt = now` (первый
  * запрос не перезаписывается), завершённой — ничего. Чужая/нет — false.
  */
@@ -279,23 +319,15 @@ export const requestStop = (
   userId: string,
   sessionId: string,
 ): Effect.Effect<boolean, never, Db> =>
-  Effect.gen(function* () {
-    if (!isSessionId(sessionId)) return false;
-    const db = yield* Db;
-    const now = yield* DateTime.nowAsDate;
-    const [owned] = yield* db
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(and(eq(sessions.id, sessionId), eq(sessions.userId, userId)));
-    if (owned === undefined) return false;
-    yield* db
-      .update(sessions)
-      .set({
-        stopRequestedAt: sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`,
-      })
-      .where(and(eq(sessions.id, sessionId), isActive));
-    return true;
-  }).pipe(Effect.orDie);
+  stopSession(sessionId, eq(sessions.userId, userId));
+
+/**
+ * Остановка любой сессии администратором (без проверки владельца) — та же
+ * логика `stopRequestedAt`, что и у `requestStop`.
+ */
+export const adminStop = (
+  sessionId: string,
+): Effect.Effect<boolean, never, Db> => stopSession(sessionId, undefined);
 
 /**
  * Адрес стрима сессии для прокси: только своя активная сессия с готовым

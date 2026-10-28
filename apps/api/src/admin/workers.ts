@@ -1,22 +1,11 @@
 // Воркеры для админки: список с онлайном, снимком железа/загрузки и
 // активными сессиями на каждом; включение/выключение обслуживания.
-import {
-  Db,
-  games,
-  type SessionState as DbSessionState,
-  sessions,
-  user,
-  workers,
-} from "@cg/db";
+import { Db, games, sessions, user, workers } from "@cg/db";
 import { type AdminSession, type AdminWorker, WORKER_ONLINE_MS } from "@cg/rpc";
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { isActive } from "../session/SessionRepo";
 import { toAdminSession } from "./sessions";
-
-const terminalStates: Array<DbSessionState> = ["ended", "failed"];
-
-/** Условие «сессия активна» (не `ended`/`failed`), как в `SessionRepo`. */
-const isActiveSession = notInArray(sessions.state, terminalStates);
 
 /**
  * Воркеры + их активные сессии одним select'ом: `left join` сессий (иначе
@@ -58,10 +47,7 @@ export const listWorkers = (
     const rows = yield* db
       .select(workerColumns)
       .from(workers)
-      .leftJoin(
-        sessions,
-        and(eq(sessions.workerId, workers.id), isActiveSession),
-      )
+      .leftJoin(sessions, and(eq(sessions.workerId, workers.id), isActive))
       .leftJoin(games, eq(sessions.appId, games.appId))
       .leftJoin(user, eq(sessions.userId, user.id))
       .orderBy(workers.id);
