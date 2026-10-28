@@ -184,6 +184,15 @@ describe("session menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
+  it("opening the menu before load does not write menuSeen", async () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({ streamSettings: control({}, false, update) });
+
+    await clickMenu();
+    expect(menuShown()).toBe(true);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("auto hides manual controls", async () => {
     const update = mock<Update>(() => {});
     const bridge = fakeBridge();

@@ -20,7 +20,7 @@ export type StreamSettingsControl = {
   readonly settings: StreamSettings;
   /** Загруженное с сервера значение уже применено (раз; дальше его смена не перетирает правки). */
   readonly loaded: boolean;
-  /** Применяет правку сразу (локально) и ставит debounced-сохранение. */
+  /** Применяет правку сразу (локально) и ставит debounced-сохранение (после загрузки). */
   readonly update: (patch: Partial<StreamSettings>) => void;
 };
 
@@ -28,8 +28,13 @@ export type StreamSettingsControl = {
  * `loaded` — значение из `streamSettings.get` (ещё не пришло — `undefined`); принимается
  * в состояние ровно один раз (дальнейшая реактивность запроса не должна перетирать то, что
  * игрок уже успел поменять в меню до её прихода — правки накапливаются отдельно и
- * подмешиваются поверх). `save` — промис; отказ не бросает исключение и не откатывает
- * настройку (она уже применена к стриму) — только предупреждение в консоли без значений.
+ * подмешиваются поверх). До принятия правки только применяются к стриму и в аккаунт не
+ * пишутся: сохранить можно лишь целую запись, а без загруженной она собралась бы из
+ * умолчаний и молча перетёрла бы сохранённые настройки. При принятии, если правки были,
+ * сохраняется один раз `{ ...loaded, ...правки }`; загрузка так и не пришла — правки
+ * действуют до конца страницы, но не запоминаются (спека §4). `save` — промис; отказ не
+ * бросает исключение и не откатывает настройку (она уже применена к стриму) — только
+ * предупреждение в консоли без значений.
  */
 export function useStreamSettingsState(
   loaded: StreamSettings | undefined,
@@ -41,52 +46,55 @@ export function useStreamSettingsState(
   const [isLoaded, setIsLoaded] = useState(false);
   const adoptedRef = useRef(false);
   const editsRef = useRef<Partial<StreamSettings>>({});
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
+  // Последнее значение, считается вне апдейтеров `setSettings` (они должны быть чистыми:
+  // StrictMode вызывает их дважды) — из него же берут сохранение таймер и сброс при уходе.
+  const currentRef = useRef<StreamSettings>(defaultStreamSettings);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveRef = useRef(save);
   saveRef.current = save;
 
-  // Загруженное значение принимается один раз, с учётом правок, сделанных до его прихода.
-  useEffect(() => {
-    if (loaded === undefined || adoptedRef.current) return;
-    adoptedRef.current = true;
-    setIsLoaded(true);
-    setSettings({ ...loaded, ...editsRef.current });
-  }, [loaded]);
-
-  const flush = useCallback((next: StreamSettings) => {
+  const flush = useCallback(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = null;
-    saveRef.current(next).catch(() => {
+    saveRef.current(currentRef.current).catch(() => {
       console.warn("Stream settings not saved");
     });
   }, []);
 
-  const scheduleSave = useCallback(
-    (next: StreamSettings) => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => flush(next), SAVE_DEBOUNCE_MS);
-    },
-    [flush],
-  );
+  const scheduleSave = useCallback(() => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
+  }, [flush]);
+
+  // Загруженное значение принимается один раз, с учётом правок, сделанных до его прихода;
+  // были правки — сохраняем объединённое (до этого момента они не сохранялись).
+  useEffect(() => {
+    if (loaded === undefined || adoptedRef.current) return;
+    adoptedRef.current = true;
+    const merged = { ...loaded, ...editsRef.current };
+    currentRef.current = merged;
+    setIsLoaded(true);
+    setSettings(merged);
+    if (Object.keys(editsRef.current).length > 0) scheduleSave();
+    editsRef.current = {};
+  }, [loaded, scheduleSave]);
 
   const update = useCallback(
     (patch: Partial<StreamSettings>) => {
-      editsRef.current = { ...editsRef.current, ...patch };
-      setSettings((current) => {
-        const next = { ...current, ...patch };
-        scheduleSave(next);
-        return next;
-      });
+      const next = { ...currentRef.current, ...patch };
+      currentRef.current = next;
+      setSettings(next);
+      if (adoptedRef.current) scheduleSave();
+      else editsRef.current = { ...editsRef.current, ...patch };
     },
     [scheduleSave],
   );
 
   // Несохранённая правка не теряется при уходе со страницы — сохраняем сразу без ожидания.
+  // До принятия загруженного таймера нет, сбрасывать нечего.
   useEffect(
     () => () => {
-      if (timerRef.current !== null) flush(settingsRef.current);
+      if (timerRef.current !== null) flush();
     },
     [flush],
   );

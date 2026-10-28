@@ -63,6 +63,86 @@ describe("useStreamSettingsState", () => {
     });
   });
 
+  it("edits before load are not saved until the load", () => {
+    const save = mock(async () => {});
+    jest.useFakeTimers();
+    try {
+      const { result, rerender } = renderHook(
+        ({ loaded }) => useStreamSettingsState(loaded, save),
+        { initialProps: { loaded: undefined as typeof defaultStreamSettings | undefined } },
+      );
+
+      // Правка уже действует (стрим её видит), но запись из умолчаний перетёрла бы аккаунт.
+      act(() => result.current.update({ menuSeen: true }));
+      act(() => result.current.update({ debug: "short" }));
+      expect(result.current.settings.debug).toBe("short");
+      act(() => jest.advanceTimersByTime(1000));
+      expect(save).not.toHaveBeenCalled();
+
+      rerender({
+        loaded: { ...defaultStreamSettings, resolution: "1440p", bitrateMbps: 35 },
+      });
+      act(() => jest.advanceTimersByTime(SAVE_DEBOUNCE_MS));
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledWith({
+        ...defaultStreamSettings,
+        resolution: "1440p",
+        bitrateMbps: 35,
+        menuSeen: true,
+        debug: "short",
+      });
+
+      // Дальше — обычный debounce.
+      act(() => result.current.update({ debug: "off" }));
+      act(() => jest.advanceTimersByTime(SAVE_DEBOUNCE_MS));
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(save).toHaveBeenLastCalledWith({
+        ...defaultStreamSettings,
+        resolution: "1440p",
+        bitrateMbps: 35,
+        menuSeen: true,
+        debug: "off",
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("no save when the load never arrives", () => {
+    const save = mock(async () => {});
+    jest.useFakeTimers();
+    try {
+      const { result, unmount } = renderHook(() =>
+        useStreamSettingsState(undefined, save),
+      );
+
+      act(() => result.current.update({ debug: "detailed" }));
+      expect(result.current.settings.debug).toBe("detailed");
+      act(() => jest.advanceTimersByTime(10_000));
+      unmount();
+      expect(save).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("loading without edits saves nothing", () => {
+    const save = mock(async () => {});
+    jest.useFakeTimers();
+    try {
+      const { rerender, unmount } = renderHook(
+        ({ loaded }) => useStreamSettingsState(loaded, save),
+        { initialProps: { loaded: undefined as typeof defaultStreamSettings | undefined } },
+      );
+      rerender({ loaded: { ...defaultStreamSettings, debug: "short" } });
+      act(() => jest.advanceTimersByTime(1000));
+      unmount();
+      expect(save).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it("update applies at once and saves once after 500 ms", () => {
     const save = mock(async () => {});
     jest.useFakeTimers();

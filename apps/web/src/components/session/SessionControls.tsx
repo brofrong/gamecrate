@@ -59,9 +59,11 @@ export function SessionControls({
   // Пока признак не загрузился — без подсказки (не мигать у тех, кто уже открывал меню).
   const hint = loaded && !settings.menuSeen;
 
+  // Отметка «меню видели» — только когда подсказка была показана: до загрузки настроек
+  // признака ещё не знаем, и записывать его не за что.
   const onMenuOpenChange = (open: boolean) => {
     setMenuOpen(open);
-    if (open && !settings.menuSeen) update({ menuSeen: true });
+    if (open && hint) update({ menuSeen: true });
   };
 
   // Клик по игре уводит фокус в iframe — до документа страницы не доходит ни `pointerdown`,
