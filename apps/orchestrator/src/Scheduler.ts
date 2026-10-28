@@ -2,8 +2,15 @@
 // подключённых воркеров и отправляет агенту StartSession; сессии неустановленных
 // игр отправляет ждать установку (`installing`); сессии удаляемых игр ждут в
 // очереди.
-import { Db, gamestoreApps, installJobs, sessions, workers } from "@cg/db";
-import type { ProfileRef } from "@cg/rpc";
+import {
+  Db,
+  gamestoreApps,
+  installJobs,
+  sessions,
+  user,
+  workers,
+} from "@cg/db";
+import { type ProfileRef, accessDeniedReason } from "@cg/rpc";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { AgentHub } from "./AgentHub";
@@ -38,6 +45,8 @@ interface Placement {
   readonly slot: number;
   readonly udpPort: number;
   readonly profile: ProfileRef | null;
+  /** Пометка сброса входа Steam пользователя (`SessionRepo.steamLoginResetAt`). */
+  readonly steamLoginResetAt: Date | null;
 }
 
 /**
@@ -72,8 +81,16 @@ const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gam
 const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${installJobs.userId} = ${sessions.userId} and ${installJobs.state} in ('queued', 'running'))`;
 
 /**
+ * Пользователь сессии заблокирован админом (`user.blocked_at`). api проверяет
+ * это при создании сессии, но админ мог заблокировать уже после — такую сессию
+ * не размещаем и не ставим в установку, а валим (`blockedFailure`).
+ */
+const userBlocked: SQL<boolean> = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${sessions.userId} and ${user.blockedAt} is not null)`;
+
+/**
  * Самая старая `queued`-сессия без запроса остановки, чей пользователь не
- * владеет активной задачей установки (`ownerFree`), под условием `where`.
+ * владеет активной задачей установки (`ownerFree`), под условием `where`;
+ * `userBlocked` — заблокирован ли её пользователь.
  */
 const lockOldestQueued = (where: SQL) =>
   Effect.gen(function* () {
@@ -85,6 +102,7 @@ const lockOldestQueued = (where: SQL) =>
         appId: sessions.appId,
         stateSince: sessions.stateSince,
         agentSeenAt: sessions.agentSeenAt,
+        userBlocked,
       })
       .from(sessions)
       .where(
@@ -99,6 +117,24 @@ const lockOldestQueued = (where: SQL) =>
       .limit(1)
       .for("update", { skipLocked: true });
     return session;
+  });
+
+/**
+ * Сессия заблокированного пользователя (`userBlocked`): `Failed` с причиной
+ * `accessDeniedReason` вместо установки или размещения; итог `Retry`.
+ */
+const blockedFailure = (now: Date, sessionId: string) =>
+  Effect.gen(function* () {
+    const settings = yield* SessionRepo.loadSettings();
+    yield* SessionRepo.transition(sessionId, now, settings, (row) =>
+      row.state === "queued"
+        ? { _tag: "Failed", reason: accessDeniedReason }
+        : null,
+    );
+    yield* Effect.logInfo("Queued session of a blocked user failed", {
+      sessionId,
+    });
+    return { _tag: "Retry" } as const;
   });
 
 /**
@@ -136,6 +172,8 @@ const startInstall = (
 /**
  * Одна транзакция на одну сессию (`FOR UPDATE SKIP LOCKED`, `LIMIT 1`, без
  * запроса остановки, пользователь не владеет активной задачей установки).
+ * Сессия заблокированного пользователя (в любой из веток ниже) не ставится и
+ * не размещается, а валится с `accessDeniedReason` (`blockedFailure`).
  * Сначала самая старая `queued`-сессия неустановленной
  * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
  * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
@@ -145,6 +183,8 @@ const startInstall = (
  * `candidates` со строкой в `workers`, не в обслуживании (`draining = false`)
  * и со свободным слотом, слот — наименьший свободный. Запись `workerId`,
  * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит.
+ * Профиль и пометка сброса входа Steam читаются в той же транзакции: сбой
+ * чтения откатывает размещение, а не оставляет его без команды.
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -154,11 +194,14 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
       Effect.gen(function* () {
         const uninstalled = yield* lockOldestQueued(sql`not ${appInLibrary}`);
         if (uninstalled !== undefined)
-          return (yield* startInstall(now, uninstalled)) as Outcome;
+          return uninstalled.userBlocked
+            ? yield* blockedFailure(now, uninstalled.id)
+            : ((yield* startInstall(now, uninstalled)) as Outcome);
 
         if (candidates.length === 0) return undefined;
         const session = yield* lockOldestQueued(appInstalled);
         if (session === undefined) return undefined;
+        if (session.userBlocked) return yield* blockedFailure(now, session.id);
         const [app] = yield* db
           .select({ deletingAt: gamestoreApps.deletingAt })
           .from(gamestoreApps)
@@ -205,6 +248,9 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
             })
             .where(eq(sessions.id, session.id));
           const profile = yield* SessionRepo.profileOf(session.userId);
+          const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
+            session.userId,
+          );
           return {
             _tag: "Placed",
             session,
@@ -212,6 +258,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
             slot,
             udpPort: info.udpPortBase + slot,
             profile,
+            steamLoginResetAt,
           } satisfies Placement;
         }
         return undefined;
@@ -249,6 +296,9 @@ const unplace = (placement: Placement) =>
  * больше `SCHEDULE_BATCH` за проход. Сессии размещаются только на агентах с
  * ролью `worker`. StartSession (`udpPort = udpPortBase + slot`)
  * уходит после коммита, поэтому сбой не откатит уже отправленные команды.
+ * Есть пометка сброса входа Steam — посеянный раньше неё вход забывается
+ * (`clearOlderThan`), а команда несёт `steamLoginResetAt` (ISO); пометки нет —
+ * поля в команде нет.
  * `send` вернул `false` — сессия возвращается в `queued` (`unplace`), а воркер
  * до конца прохода не используется. Если процесс упадёт между коммитом и
  * отправкой, сессия останется `starting` без агента и её завершит таймаут
@@ -274,7 +324,11 @@ export const tick = (now: Date) =>
           });
         continue;
       }
-      const { session, workerId, slot, udpPort, profile } = placement;
+      const { session, workerId, slot, udpPort, profile, steamLoginResetAt } =
+        placement;
+      // Вход, посеянный до сброса админом, устарел: не отправляем и забываем.
+      if (steamLoginResetAt !== null)
+        yield* seeds.clearOlderThan(session.userId, steamLoginResetAt);
       const steamLogin = yield* seeds.get(session.userId);
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
@@ -285,6 +339,9 @@ export const tick = (now: Date) =>
         udpPort,
         profile,
         steamLogin,
+        ...(steamLoginResetAt !== null && {
+          steamLoginResetAt: steamLoginResetAt.toISOString(),
+        }),
       });
       if (sent) {
         placed++;

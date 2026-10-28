@@ -330,11 +330,14 @@ const make = (options: InstallDispatcherOptions) =>
     /**
      * Выдача: по одной задаче за транзакцию (`claimNext`), InstallGame — после
      * коммита. `steamLogin` — посеянный вход пользователя задачи
-     * (`SteamLoginSeeds.get`, `null` — нет или просрочен); `steamLoginTimeoutSeconds`
-     * — из текущих настроек сессий (ruling P1), читаются раз на проход. Не
-     * доставлен — задача снова `queued`, агент до конца прохода не
-     * используется. Если процесс упадёт между коммитом и отправкой, задачу
-     * провалит сверка при переподключении агента или таймаут его молчания.
+     * (`SteamLoginSeeds.get`, `null` — нет или просрочен; посеянный раньше
+     * пометки сброса входа — забывается, `clearOlderThan`); пометка есть —
+     * команда несёт `steamLoginResetAt` (ISO), нет — поля нет;
+     * `steamLoginTimeoutSeconds` — из текущих настроек сессий (ruling P1),
+     * читаются раз на проход. Не доставлен — задача снова `queued`, агент до
+     * конца прохода не используется. Если процесс упадёт между коммитом и
+     * отправкой, задачу провалит сверка при переподключении агента или
+     * таймаут его молчания.
      */
     const dispatch = (now: Date) =>
       Effect.gen(function* () {
@@ -344,10 +347,13 @@ const make = (options: InstallDispatcherOptions) =>
         if (candidates.length === 0) return;
         const settings = yield* withDb(SessionRepo.loadSettings());
         while (candidates.length > 0) {
-          const claim = yield* withDb(InstallRepo.claimNext(candidates));
+          const claim = yield* withDb(InstallRepo.claimNext(candidates, now));
           if (claim === undefined) return;
-          const { job, workerId, profile } = claim;
+          const { job, workerId, profile, steamLoginResetAt } = claim;
           candidates = candidates.filter((id) => id !== workerId);
+          // Вход, посеянный до сброса админом, устарел: не отправляем и забываем.
+          if (steamLoginResetAt !== null)
+            yield* seeds.clearOlderThan(job.userId, steamLoginResetAt);
           const steamLogin = yield* seeds.get(job.userId);
           const sent = yield* hub.send(workerId, {
             _tag: "InstallGame",
@@ -357,6 +363,9 @@ const make = (options: InstallDispatcherOptions) =>
             profile,
             steamLogin,
             steamLoginTimeoutSeconds: settings.steamLoginTimeoutSeconds,
+            ...(steamLoginResetAt !== null && {
+              steamLoginResetAt: steamLoginResetAt.toISOString(),
+            }),
           });
           if (sent) {
             dispatchedAt.set(job.id, now);

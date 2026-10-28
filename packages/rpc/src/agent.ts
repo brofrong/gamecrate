@@ -223,6 +223,12 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * в журнале подключения, отсчёт — с этой попытки, а не с первых строк
  * журнала: клиенту может потребоваться время, чтобы начать её) до
  * `InstallFailed` «Войдите в Steam» (из текущих `SessionSettings`).
+ * `steamLoginResetAt` — ISO-момент, когда админ сбросил вход Steam этого
+ * пользователя (`/admin`, часть 3); есть — агент стирает вход Steam из
+ * восстановленного дома (спека §4: `ConnectCache` в `local.vdf`, пользователи
+ * в `loginusers.vdf`, `Accounts` в `config.vdf`, `AutoLoginUser`/
+ * `RememberPassword` в `registry.vdf`; сохранения не трогает) до посева
+ * `steamLogin`, если он тоже есть. `undefined` — сброса не было.
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -233,6 +239,7 @@ export const AgentCommand = Schema.Union([
     udpPort: Schema.Int,
     profile: Schema.NullOr(ProfileRef),
     steamLogin: Schema.NullOr(SteamLoginSeed),
+    steamLoginResetAt: Schema.optional(Schema.String),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
   Schema.TaggedStruct("InstallGame", {
@@ -242,6 +249,7 @@ export const AgentCommand = Schema.Union([
     profile: Schema.NullOr(ProfileRef),
     steamLogin: Schema.NullOr(SteamLoginSeed),
     steamLoginTimeoutSeconds: Schema.Int,
+    steamLoginResetAt: Schema.optional(Schema.String),
   }),
   Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
   Schema.TaggedStruct("DeleteGame", { appId: Schema.Int }),
@@ -338,7 +346,9 @@ export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
  * базовая версия отклоняется — спека §6). `steamLoginSeeded` — профиль
  * сохранён после посева `steamLogin` этой сессией/установкой: принятый такой
  * коммит снимает ожидающий вход пользователя у оркестратора (профиль уже
- * хранит вход, сеять его снова незачем).
+ * хранит вход, сеять его снова незачем). `steamLoginResetAt` — эхо того же
+ * поля команды (`StartSession`/`InstallGame`), если агент стёр вход Steam в
+ * этом запуске; нет поля — стирания не было.
  */
 export const ProfileCommit = Schema.Struct({
   userId: Schema.String,
@@ -346,6 +356,7 @@ export const ProfileCommit = Schema.Struct({
   objectKey: Schema.String,
   sizeBytes: NonNegativeInt,
   steamLoginSeeded: Schema.Boolean,
+  steamLoginResetAt: Schema.optional(Schema.String),
 });
 export type ProfileCommit = typeof ProfileCommit.Type;
 

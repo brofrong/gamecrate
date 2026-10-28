@@ -54,7 +54,7 @@ import { PrefixTemplates } from "./PrefixTemplate";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
 import type { ProfileStore } from "./profile/ProfileStore";
-import { seedSteamLogin } from "./steam/seedContainer";
+import { clearSteamLogin, seedSteamLogin } from "./steam/seedContainer";
 
 /** Журнал облака Steam в доме пользователя (контракт образа). */
 export const CLOUD_LOG = "/home/ubuntu/.local/share/Steam/logs/cloud_log.txt";
@@ -294,6 +294,12 @@ interface Session {
   phase: Phase;
   /** Вход §4 вписан этим агентом перед стартом (для `ProfileCommit.steamLoginSeeded`). */
   seeded: boolean;
+  /**
+   * Момент сброса входа Steam, эхом которого агент стёр вход перед стартом
+   * (для `ProfileCommit.steamLoginResetAt`); `undefined` — стирания в этом
+   * запуске не было.
+   */
+  loginResetAt: string | undefined;
   gameRunning: boolean;
   /** Последний отправленный этап запуска (`undefined` — ещё ни одного). */
   stage: SessionStage | undefined;
@@ -727,6 +733,9 @@ const make = Effect.gen(function* () {
         userId: session.userId,
         baseVersion: session.baseVersion,
         steamLoginSeeded: session.seeded,
+        ...(session.loginResetAt !== undefined
+          ? { steamLoginResetAt: session.loginResetAt }
+          : {}),
       }).pipe(withServices, Effect.result);
       const profileSaved = Result.isSuccess(saved);
       const stopped: Outcome = {
@@ -807,12 +816,13 @@ const make = Effect.gen(function* () {
       yield* emit(failed);
     });
 
-  /** Новый контейнер: слои → create → профиль → посев входа → start. */
+  /** Новый контейнер: слои → create → профиль → стирание входа → посев → start. */
   const launch = (
     session: Session,
     spec: ContainerSpec,
     profile: ProfileRef | null,
     steamLogin: SteamLoginSeed | null,
+    steamLoginResetAt: string | undefined,
   ) =>
     Effect.gen(function* () {
       const dockerStart = (cause: unknown) =>
@@ -850,6 +860,16 @@ const make = Effect.gen(function* () {
                 }),
             ),
           );
+          if (steamLoginResetAt !== undefined) {
+            yield* clearSteamLogin({ container: session.name }).pipe(
+              withServices,
+              Effect.mapError(
+                (cause) =>
+                  new Abort({ reason: failReasons.profileRestore, cause }),
+              ),
+            );
+            session.loginResetAt = steamLoginResetAt;
+          }
           if (steamLogin !== null) {
             yield* seedSteamLogin({
               container: session.name,
@@ -873,6 +893,7 @@ const make = Effect.gen(function* () {
         slot: session.slot,
         profile: from,
         steamLoginSeeded: session.seeded,
+        steamLoginCleared: session.loginResetAt !== undefined,
       });
     });
 
@@ -884,6 +905,7 @@ const make = Effect.gen(function* () {
           readonly spec: ContainerSpec;
           readonly profile: ProfileRef | null;
           readonly steamLogin: SteamLoginSeed | null;
+          readonly steamLoginResetAt: string | undefined;
         }
       | undefined,
   ) =>
@@ -894,6 +916,7 @@ const make = Effect.gen(function* () {
           launchWith.spec,
           launchWith.profile,
           launchWith.steamLogin,
+          launchWith.steamLoginResetAt,
         );
       // Опрос этапов идёт параллельно готовности и игре; scope закрывается
       // (fiber прерван) до finish/fail — после Stopped/Failed этапов нет.
@@ -933,6 +956,7 @@ const make = Effect.gen(function* () {
         created: fields.created ?? false,
         phase: fields.phase ?? "starting",
         seeded: false,
+        loginResetAt: undefined,
         gameRunning: fields.gameRunning ?? false,
         stage: undefined,
         cloudBaseline: fields.cloudBaseline,
@@ -1022,6 +1046,7 @@ const make = Effect.gen(function* () {
           spec: sessionSpec(config, command, sessionPassword()),
           profile: command.profile,
           steamLogin: command.steamLogin,
+          steamLoginResetAt: command.steamLoginResetAt,
         }),
         scope,
       );

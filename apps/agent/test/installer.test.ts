@@ -1600,6 +1600,112 @@ describe("Installer", () => {
       }),
     ));
 
+  it("InstallGame with steamLoginResetAt clears login before seeding and echoes it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        const steamLogin = testSteamLogin();
+        const steamLoginResetAt = "2026-10-28T10:00:00.000Z";
+        yield* h.installer.install({
+          ...install,
+          profile: null,
+          steamLogin,
+          steamLoginResetAt,
+        });
+        yield* h.tick("0 seconds");
+        // Восстановление профиля (пустой дом) → стирание (четыре чтения, дом
+        // пуст — запись не нужна) → посев (ещё четыре чтения и запись) → манифест → старт.
+        expect(callsFrom(h.fake, "create cg-install-j1")).toEqual([
+          "create cg-install-j1",
+          "remove cg-i-j1-hold",
+          "create cg-i-j1-hold",
+          "start cg-i-j1-hold",
+          "volumeExists cg-home-u1",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.steam/registry.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/local.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/config/config.vdf",
+          "getArchive cg-install-j1 /home/ubuntu/.steam/registry.vdf",
+          "putArchive cg-install-j1 /home/ubuntu",
+          `putArchive cg-install-j1 ${STEAMAPPS}`,
+          `archiveSize cg-install-j1 ${CONNECTION_LOG}`,
+          "start cg-install-j1",
+          "remove cg-i-j1-hold",
+        ]);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallFinished",
+            jobId: "j1",
+            sizeBytes: 88382496,
+            buildId: "12345",
+          },
+        ]);
+        expect(h.fake.state.commits[0]?.steamLoginResetAt).toBe(
+          steamLoginResetAt,
+        );
+      }),
+    ));
+
+  it("InstallGame without steamLoginResetAt does not clear and the commit omits it", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        h.fake.state.autoLogin = false;
+        const steamLogin = testSteamLogin();
+        yield* h.installer.install({ ...install, profile: null, steamLogin });
+        yield* h.tick("0 seconds");
+        expect(
+          h.fake.state.calls.filter(
+            (call) =>
+              call ===
+              "getArchive cg-install-j1 /home/ubuntu/.local/share/Steam/local.vdf",
+          ),
+        ).toHaveLength(1);
+        h.fake.state.connectionLog += LOGGED_ON;
+        yield* h.tick("2 seconds");
+        steamInstalls(h.fake);
+        yield* h.tick("2 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "InstallFinished",
+            jobId: "j1",
+            sizeBytes: 88382496,
+            buildId: "12345",
+          },
+        ]);
+        expect("steamLoginResetAt" in (h.fake.state.commits[0] ?? {})).toBe(
+          false,
+        );
+      }),
+    ));
+
+  it("reset with no new seed aborts at once instead of waiting for a login that cannot come", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLoginResetAt = "2026-10-28T10:00:00.000Z";
+        // Дом не пуст (профиль из фикстуры), но вход этим запуском стёрт, и
+        // посева нет: Steam без учётных данных никогда не дойдёт до
+        // STEAM_LOGON_ATTEMPT, и установщик держал бы слот до
+        // STEAM_CLIENT_START_TIMEOUT. Ждём немедленного Abort.
+        yield* h.installer.install({ ...install, steamLoginResetAt });
+        yield* h.tick("0 seconds");
+        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+        // Контейнер не стартует вовсе — дальше ждать нечего.
+        expect(h.fake.state.calls).not.toContain("start cg-install-j1");
+        expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+          removedWithScratch,
+        );
+        expect(h.fake.state.calls).not.toContain("store.put u1");
+        expect(h.installer.running()).toEqual([]);
+      }),
+    ));
+
   it("target that Steam reports installed but did not unpack fails without touching the library", () =>
     run((h) =>
       Effect.gen(function* () {

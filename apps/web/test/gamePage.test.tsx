@@ -4,13 +4,14 @@
 // `../src/rpc` открывает реальный WebSocket, поэтому подменяется целиком через
 // `mock.module` — тот же набор имён, что в `myGamesPage.test.tsx` (см. комментарий там),
 // плюс `gameAtom`. Значения атомов на каждый тест — через `RegistryProvider`.
-import { describe, expect, it, mock } from "bun:test";
-import type {
-  CurrentUserShape,
-  GameView,
-  LibraryView,
-  RecentEntry,
-  SessionView,
+import { describe, expect, it, mock, spyOn } from "bun:test";
+import {
+  accessDeniedReason,
+  type CurrentUserShape,
+  type GameView,
+  type LibraryView,
+  type RecentEntry,
+  type SessionView,
 } from "@cg/rpc";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
@@ -21,6 +22,7 @@ import {
 import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
+import { toast } from "sonner";
 import { testRouter } from "./router";
 
 const meAtom = Atom.make(
@@ -48,8 +50,14 @@ const timeSummaryAtom = Atom.family((_month: string) =>
 const sessionWatchAtom = Atom.family((_sessionId: string) =>
   Atom.make(AsyncResult.initial()),
 );
+// По умолчанию «Играть» всегда успешен; тест ошибки `usePlaySession.onPlay` (ниже)
+// на время своего прогона подставляет сюда ошибку и возвращает `null` в `finally`,
+// чтобы не задеть остальные тесты файла.
+let startSessionFailure: { readonly _tag: string } | null = null;
 const startSessionAtom = Atom.fn((_arg: unknown) =>
-  Effect.succeed({ id: "stub-session" }),
+  startSessionFailure !== null
+    ? Effect.fail(startSessionFailure)
+    : Effect.succeed({ id: "stub-session" }),
 );
 const refreshLibraryAtom = Atom.fn(() =>
   Effect.succeed({
@@ -199,6 +207,27 @@ describe("GamePage", () => {
     expect(
       screen.getByRole("link", { name: "← Мои игры" }).getAttribute("href"),
     ).toBe("/app");
+  });
+
+  it("«Играть» shows «Доступ закрыт» when the user is blocked (usePlaySession.onPlay)", async () => {
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    startSessionFailure = { _tag: "AccessDenied" };
+    try {
+      renderGame(AsyncResult.success(view()));
+      const play = await screen.findByRole("button", {
+        name: "Играть: Baldur's Gate 3",
+      });
+      fireEvent.click(play);
+
+      await waitFor(() => {
+        expect(toastError).toHaveBeenCalledWith(accessDeniedReason);
+      });
+    } finally {
+      startSessionFailure = null;
+      toastError.mockRestore();
+    }
   });
 
   it("«Установить» for a missing game", async () => {

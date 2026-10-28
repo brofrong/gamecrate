@@ -24,6 +24,14 @@ export const user = pgTable("user", {
   role: text("role", { enum: roles }).notNull().default("player"),
   librarySyncedAt: timestamptz("library_synced_at"),
   libraryPrivate: boolean("library_private").notNull().default(false),
+  // Админ заблокировал вход в игру (`admin.users.setBlocked`); сайт логин не
+  // трогает, только живую сессию (`SessionRepo.startSession`). Не в
+  // `additionalFields` Better Auth — пользователь не должен задавать её сам.
+  blockedAt: timestamptz("blocked_at"),
+  // Админ попросил сбросить вход Steam в контейнере (`admin.users.resetSteamLogin`);
+  // `steam_id`/строки `account` не трогает — только отметка для оркестратора
+  // (Task 3). Не в `additionalFields` Better Auth.
+  steamLoginResetAt: timestamptz("steam_login_reset_at"),
 });
 
 export const session = pgTable(

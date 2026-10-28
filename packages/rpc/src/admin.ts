@@ -7,7 +7,7 @@ import {
   WorkerStats,
   WorkerVersions,
 } from "./agent";
-import { AdminMiddleware, AuthMiddleware } from "./auth";
+import { AdminMiddleware, AuthMiddleware, Role } from "./auth";
 import { InstallStage, SessionStage, SessionState } from "./session";
 import { SessionSettings } from "./settings";
 
@@ -101,6 +101,39 @@ export const AdminGames = Schema.Struct({
 });
 export type AdminGames = typeof AdminGames.Type;
 
+/**
+ * Пользователь для админки (вкладка «Пользователи»). `email` — настоящий
+ * (синтетический Steam/Telegram — `null`, см. `isSyntheticEmail`). `providers`
+ * — алфавитный список `account.provider_id` (способы входа, без секретов —
+ * ни refresh token, ни имя аккаунта здесь не отдаются). `steamId` — SteamID64,
+ * у пользователей без Steam — `null`. `lastSessionAt` — `max(sessions.created_at)`.
+ * `playedSeconds` — игровое время за всё время (billable и закрытые отрезки,
+ * как в `TimeRepo`). `profileSizeBytes`/`profileVersion` — облачный профиль
+ * (`profiles`), нет снимка — `null`. `blockedAt` — заблокирован
+ * (`admin.users.setBlocked`); блокировка не запрещает вход на сайт, только
+ * игровую сессию (`session.start` → `AccessDenied`). `steamLoginResetPending`
+ * — админ попросил сбросить вход Steam в контейнере (`steam_login_reset_at`),
+ * оркестратор это обработает (Task 3). `activeSession` — есть сессия под
+ * `isActive`.
+ */
+export const AdminUser = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.NullOr(Schema.String),
+  role: Role,
+  providers: Schema.Array(Schema.String),
+  steamId: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+  lastSessionAt: Schema.NullOr(Schema.String),
+  playedSeconds: NonNegativeInt,
+  profileSizeBytes: Schema.NullOr(Schema.Number),
+  profileVersion: Schema.NullOr(Schema.Int),
+  blockedAt: Schema.NullOr(Schema.String),
+  steamLoginResetPending: Schema.Boolean,
+  activeSession: Schema.Boolean,
+});
+export type AdminUser = typeof AdminUser.Type;
+
 /** Состояние задачи установки, см. `installJobStates` в `@cg/db`. */
 const InstallJobState = Schema.Literals([
   "queued",
@@ -166,6 +199,15 @@ export type AdminInstalls = typeof AdminInstalls.Type;
 // установки. `admin.installs.cancel` — попросить отменить активную задачу
 // (`"Установка отменена администратором"` — причина ждущим сессиям, ставит
 // оркестратор); активная — `true`, иначе `false`.
+// `admin.users.list` — все пользователи, новые сверху (`created_at desc`).
+// `admin.users.setRole` — сменить роль; себе — `"self"` (роль не меняется),
+// нет такого пользователя — `"notFound"`, иначе `"ok"`. `admin.users.setBlocked`
+// — заблокировать/разблокировать; блокировка ещё и запрашивает остановку всех
+// активных сессий пользователя (`stop_requested_at`, как `admin.sessions.stop`);
+// себе — `"self"`, нет пользователя — `"notFound"`, иначе `"ok"`.
+// `admin.users.resetSteamLogin` — попросить сбросить вход Steam в контейнере
+// (не трогает `steam_id`/`account`, только отметку для оркестратора) — `true`,
+// нет пользователя — `false`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -200,6 +242,22 @@ export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.installs.list", { success: AdminInstalls }),
   Rpc.make("admin.installs.cancel", {
     payload: Schema.Struct({ jobId: Schema.String }),
+    success: Schema.Boolean,
+  }),
+  Rpc.make("admin.users.list", { success: Schema.Array(AdminUser) }),
+  Rpc.make("admin.users.setRole", {
+    payload: Schema.Struct({ userId: Schema.String, role: Role }),
+    success: Schema.Literals(["ok", "self", "notFound"]),
+  }),
+  Rpc.make("admin.users.setBlocked", {
+    payload: Schema.Struct({
+      userId: Schema.String,
+      blocked: Schema.Boolean,
+    }),
+    success: Schema.Literals(["ok", "self", "notFound"]),
+  }),
+  Rpc.make("admin.users.resetSteamLogin", {
+    payload: Schema.Struct({ userId: Schema.String }),
     success: Schema.Boolean,
   }),
 )
