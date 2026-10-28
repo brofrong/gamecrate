@@ -295,6 +295,7 @@ describe("install jobs", () => {
               udpPort: 59000,
               profile: { version: 3, objectKey: "profiles/u2/p3.cgp" },
               steamLogin: null,
+              display: { width: 1920, height: 1080 },
             },
           },
         ]);

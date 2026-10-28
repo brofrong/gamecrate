@@ -9,9 +9,15 @@ import {
   type SessionState,
   sessions,
   settings,
+  userStreamSettings,
 } from "@cg/db";
 import {
+  allowedDisplaySize,
+  decodeStreamSettings,
+  defaultDisplaySize,
   defaultSessionSettings,
+  type DisplaySize,
+  displaySizeOf,
   isSessionStreamUrl,
   type ProfileCommit,
   type ProfileRef,
@@ -449,6 +455,27 @@ export const activeOnWorker = (workerId: string) =>
       })
       .from(sessions)
       .where(and(eq(sessions.workerId, workerId), isActive));
+  });
+
+/**
+ * Размер экрана стрима для `StartSession` («меню сессии», спека §4.1):
+ * настройки стрима пользователя → `decodeStreamSettings` (битая запись —
+ * умолчания по полю) → `displaySizeOf` → `allowedDisplaySize` (белый список,
+ * проверяется и здесь, и в агенте). Записи нет — размер по умолчанию
+ * (1920×1080) без обращения к `decodeStreamSettings`.
+ */
+export const displaySizeFor = (
+  userId: string,
+): Effect.Effect<DisplaySize, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ value: userStreamSettings.value })
+      .from(userStreamSettings)
+      .where(eq(userStreamSettings.userId, userId))
+      .pipe(Effect.orDie);
+    if (row === undefined) return defaultDisplaySize;
+    return allowedDisplaySize(displaySizeOf(decodeStreamSettings(row.value)));
   });
 
 /** Текущая версия профиля пользователя для агента; профиля ещё нет — `null`. */

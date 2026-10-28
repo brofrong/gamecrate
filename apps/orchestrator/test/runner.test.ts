@@ -8,6 +8,7 @@ import {
   sessions,
   settings,
   user,
+  userStreamSettings,
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
@@ -290,6 +291,7 @@ describe("scheduler", () => {
               udpPort: 59001,
               profile: null,
               steamLogin: null,
+              display: { width: 1920, height: 1080 },
             },
           },
           {
@@ -303,6 +305,7 @@ describe("scheduler", () => {
               udpPort: 59000,
               profile: null,
               steamLogin: null,
+              display: { width: 1920, height: 1080 },
             },
           },
         ]);
@@ -420,6 +423,7 @@ describe("scheduler", () => {
             udpPort: 59000,
             profile: null,
             steamLogin: seed,
+            display: { width: 1920, height: 1080 },
           },
           {
             _tag: "StartSession",
@@ -430,6 +434,7 @@ describe("scheduler", () => {
             udpPort: 59001,
             profile: null,
             steamLogin: null,
+            display: { width: 1920, height: 1080 },
           },
         ]);
       }),
@@ -498,6 +503,74 @@ describe("scheduler", () => {
           installJobId: job?.id ?? "",
         });
         expect(fake.sent).toEqual([]);
+      }),
+    ));
+
+  it("StartSession carries the stored display size", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2", "u3");
+        yield* connectWorker(fake, "w1", 10);
+        const displayOf = (sessionId: string) => {
+          const command = fake.sent.find(
+            (s) =>
+              s.command._tag === "StartSession" &&
+              s.command.sessionId === sessionId,
+          )?.command;
+          return command?._tag === "StartSession" ? command.display : undefined;
+        };
+
+        // Ручной режим, 720p — размер этого разрешения.
+        yield* db.insert(userStreamSettings).values({
+          userId: "u1",
+          value: {
+            quality: "manual",
+            bitrateMbps: 10,
+            resolution: "720p",
+            debug: "off",
+            menuSeen: true,
+          },
+        });
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -40) });
+        yield* Scheduler.tick(t0);
+        expect(displayOf("s1")).toEqual({ width: 1280, height: 720 });
+
+        // Авто — `resolution` не используется, размер по умолчанию (`s1` уже
+        // кончилась — у пользователя не может быть двух активных сессий).
+        yield* db
+          .update(sessions)
+          .set({ state: "ended" })
+          .where(eq(sessions.id, "s1"));
+        yield* db
+          .update(userStreamSettings)
+          .set({
+            value: {
+              quality: "auto",
+              bitrateMbps: 20,
+              resolution: "1440p",
+              debug: "off",
+              menuSeen: true,
+            },
+          })
+          .where(eq(userStreamSettings.userId, "u1"));
+        yield* insertSession({ id: "s2", userId: "u1", createdAt: at(t0, -30) });
+        yield* Scheduler.tick(at(t0, 2));
+        expect(displayOf("s2")).toEqual({ width: 1920, height: 1080 });
+
+        // Строки настроек нет — размер по умолчанию.
+        yield* insertSession({ id: "s3", userId: "u2", createdAt: at(t0, -20) });
+        yield* Scheduler.tick(at(t0, 4));
+        expect(displayOf("s3")).toEqual({ width: 1920, height: 1080 });
+
+        // Битое значение (не объект) — размер по умолчанию.
+        yield* db
+          .insert(userStreamSettings)
+          .values({ userId: "u3", value: "garbage" });
+        yield* insertSession({ id: "s4", userId: "u3", createdAt: at(t0, -10) });
+        yield* Scheduler.tick(at(t0, 6));
+        expect(displayOf("s4")).toEqual({ width: 1920, height: 1080 });
       }),
     ));
 });

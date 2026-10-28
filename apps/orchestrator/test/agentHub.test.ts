@@ -224,6 +224,7 @@ describe("agent hub", () => {
           udpPort: 59000,
           profile: null,
           steamLogin: null,
+          display: { width: 1920, height: 1080 },
         };
         expect(yield* hub.send("w-connect", command)).toBe(true);
         const received = yield* Queue.take(commands).pipe(

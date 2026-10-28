@@ -223,6 +223,11 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * в журнале подключения, отсчёт — с этой попытки, а не с первых строк
  * журнала: клиенту может потребоваться время, чтобы начать её) до
  * `InstallFailed` «Войдите в Steam» (из текущих `SessionSettings`).
+ * `StartSession.display` — размер экрана стрима (белый список спеки
+ * «меню сессии»: 1280×720/1920×1080/2560×1440), оркестратор берёт его из
+ * настроек стрима пользователя (`displaySizeOf`/`allowedDisplaySize`); нет
+ * поля (старый оркестратор) — агент использует 1920×1080. Разрешение идущей
+ * сессии не меняется — поле читается только при старте контейнера.
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -233,6 +238,9 @@ export const AgentCommand = Schema.Union([
     udpPort: Schema.Int,
     profile: Schema.NullOr(ProfileRef),
     steamLogin: Schema.NullOr(SteamLoginSeed),
+    display: Schema.optional(
+      Schema.Struct({ width: Schema.Int, height: Schema.Int }),
+    ),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
   Schema.TaggedStruct("InstallGame", {

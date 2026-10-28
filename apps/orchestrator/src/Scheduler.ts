@@ -276,6 +276,7 @@ export const tick = (now: Date) =>
       }
       const { session, workerId, slot, udpPort, profile } = placement;
       const steamLogin = yield* seeds.get(session.userId);
+      const display = yield* SessionRepo.displaySizeFor(session.userId);
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
         sessionId: session.id,
@@ -285,6 +286,7 @@ export const tick = (now: Date) =>
         udpPort,
         profile,
         steamLogin,
+        display,
       });
       if (sent) {
         placed++;

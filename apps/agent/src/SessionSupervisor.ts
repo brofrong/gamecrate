@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   type AgentCommand,
   type AgentReport,
+  allowedDisplaySize,
   type ProfileRef,
   type RunningSession,
   SessionStage,
@@ -196,19 +197,28 @@ export const desktopSpec = (
 /**
  * Контейнер сессии для `StartSession`: дом — слой контейнера, клиент Steam и
  * библиотека — overlay-тома сессии (`sessionLayers`), профиль кладётся до старта.
+ * Размер экрана — `command.display` против белого списка (`allowedDisplaySize`,
+ * проверяется и здесь, и в оркестраторе); нет поля или размер не из списка —
+ * 1920×1080. Разрешение идущей сессии не меняется — эти переменные читаются
+ * entrypoint'ом только при старте контейнера.
  */
 export const sessionSpec = (
   config: AgentConfigValues,
   command: StartSession,
   password: string,
-): ContainerSpec =>
-  desktopSpec(config, {
+): ContainerSpec => {
+  const { width, height } = allowedDisplaySize(command.display);
+  return desktopSpec(config, {
     name: containerName(command.sessionId),
     env: {
       CG_APP_ID: String(command.appId),
       SELKIES_WEBRTC_UDP_MUX_PORT: String(command.udpPort),
       SELKIES_WEBRTC_PUBLIC_IP: config.publicIp,
       PASSWD: password,
+      SELKIES_MANUAL_WIDTH: String(width),
+      SELKIES_MANUAL_HEIGHT: String(height),
+      DISPLAY_SIZEW: String(width),
+      DISPLAY_SIZEH: String(height),
     },
     labels: {
       "cg.session": command.sessionId,
@@ -220,6 +230,7 @@ export const sessionSpec = (
     udpPorts: [command.udpPort],
     mounts: mountsFor(sessionLayers(config, command.sessionId)),
   });
+};
 
 /**
  * Шаблон процесса игры для `pgrep -f`/`pkill -f` (procps: расширенные регулярные

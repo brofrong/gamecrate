@@ -573,6 +573,10 @@ describe("SessionSupervisor", () => {
             SELKIES_WEBRTC_UDP_MUX_PORT: "59001",
             SELKIES_WEBRTC_PUBLIC_IP: "203.0.113.7",
             PASSWD: expect.any(String),
+            SELKIES_MANUAL_WIDTH: "1920",
+            SELKIES_MANUAL_HEIGHT: "1080",
+            DISPLAY_SIZEW: "1920",
+            DISPLAY_SIZEH: "1080",
           },
           labels: {
             "cg.session": "s1",
@@ -605,6 +609,60 @@ describe("SessionSupervisor", () => {
           securityOpt: ["no-new-privileges:true"],
           // Каталог для интерпозера геймпадов: без sudo entrypoint его не создаст.
           tmpfs: { "/dev/input": "mode=1777,size=64k,nosuid,nodev,noexec" },
+        });
+      }),
+    ));
+
+  it("session env gets the commanded display size", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const envOf = (sessionId: string) =>
+          sessionSpecs(h.fake).find((spec) => spec.name === `cg-session-${sessionId}`)
+            ?.env;
+
+        // Разрешение из белого списка — ровно оно.
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s-1440p",
+          display: { width: 2560, height: 1440 },
+        });
+        yield* h.tick("0 seconds");
+        expect(envOf("s-1440p")).toMatchObject({
+          SELKIES_MANUAL_WIDTH: "2560",
+          SELKIES_MANUAL_HEIGHT: "1440",
+          DISPLAY_SIZEW: "2560",
+          DISPLAY_SIZEH: "1440",
+        });
+
+        // Размер не из белого списка — умолчание 1920×1080.
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s-bad",
+          slot: 0,
+          udpPort: 59000,
+          display: { width: 1000, height: 700 },
+        });
+        yield* h.tick("0 seconds");
+        expect(envOf("s-bad")).toMatchObject({
+          SELKIES_MANUAL_WIDTH: "1920",
+          SELKIES_MANUAL_HEIGHT: "1080",
+          DISPLAY_SIZEW: "1920",
+          DISPLAY_SIZEH: "1080",
+        });
+
+        // Поля нет вовсе (старый оркестратор) — тоже умолчание.
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s-none",
+          slot: 1,
+          udpPort: 59001,
+        });
+        yield* h.tick("0 seconds");
+        expect(envOf("s-none")).toMatchObject({
+          SELKIES_MANUAL_WIDTH: "1920",
+          SELKIES_MANUAL_HEIGHT: "1080",
+          DISPLAY_SIZEW: "1920",
+          DISPLAY_SIZEH: "1080",
         });
       }),
     ));
