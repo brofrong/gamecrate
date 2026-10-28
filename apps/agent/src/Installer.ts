@@ -354,8 +354,8 @@ export const applyPromotion = (plan: PromotionPlan, lower: string) => {
 type InstallGame = Extract<AgentCommand, { _tag: "InstallGame" }>;
 
 /**
- * Контейнер установщика: как у сессии (рабочий стол Plasma нужен клиенту
- * Steam), но без UDP-порта и без запуска игры; слои — `installLayers`.
+ * Контейнер установщика: как у сессии (графическая сессия нужна клиенту Steam),
+ * но без UDP-порта и без запуска игры; слои — `installLayers`.
  */
 export const installSpec = (
   config: AgentConfigValues,

@@ -11,7 +11,10 @@
 #      /proc/<pid>/environ WAYLAND_DISPLAY — сокет внешнего композитора захвата Selkies
 #      (wayland-1): свой сокет сессии (wayland-0) labwc выставляет себе через setenv, а /proc
 #      показывает только начальный блок. Поэтому для labwc WAYLAND_DISPLAY=wayland-0 — тот же,
-#      что у клиента Steam в этой сессии (проба киоска, план 4, Task 2);
+#      что у клиента Steam в этой сессии (проба киоска, план 4, Task 2). Сессионной шины в его
+#      окружении тоже нет: её поднимает автостарт labwc (/etc/xdg/labwc/autostart) по
+#      фиксированному адресу unix:path=${XDG_RUNTIME_DIR}/bus — он и ставится (XDG_RUNTIME_DIR —
+#      из окружения labwc);
 #   3. plasmashell — старый образ KDE: откат на него и сборка шаблона со старым образом
 #      продолжают работать без доработок.
 # Нет ни одного — стдерр `[cg-session-exec] no session process` и код 1.
@@ -66,20 +69,29 @@ if [ -z "${pid}" ] || [ ! -r "${environ}" ]; then
 fi
 
 args=(env -i "PATH=${PATH}")
-# Вложенная сессия labwc, а не внешний композитор Selkies (см. выше).
-if [ "${src}" = "labwc" ]; then
-  args+=("WAYLAND_DISPLAY=wayland-0")
-fi
+runtime_dir=""
 while IFS= read -r -d '' var; do
   case "${var}" in
-    WAYLAND_DISPLAY=*)
+    WAYLAND_DISPLAY=* | DBUS_SESSION_BUS_ADDRESS=*)
+      # У labwc — свои значения ниже (см. выше).
       [ "${src}" = "labwc" ] || args+=("${var}")
       ;;
-    DISPLAY=* | XDG_RUNTIME_DIR=* | DBUS_SESSION_BUS_ADDRESS=* | HOME=* | \
-      USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
+    XDG_RUNTIME_DIR=*)
+      runtime_dir="${var#XDG_RUNTIME_DIR=}"
+      args+=("${var}")
+      ;;
+    DISPLAY=* | HOME=* | USER=* | LD_PRELOAD=* | XAUTHORITY=* | XDG_SESSION_TYPE=*)
       args+=("${var}")
       ;;
   esac
 done <"${environ}"
+
+# Вложенная сессия labwc, а не внешний композитор Selkies, и шина автостарта labwc (см. выше).
+if [ "${src}" = "labwc" ]; then
+  args+=("WAYLAND_DISPLAY=wayland-0")
+  if [ -n "${runtime_dir}" ]; then
+    args+=("DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime_dir}/bus")
+  fi
+fi
 
 exec "${args[@]}" "$@"

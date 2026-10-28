@@ -7,8 +7,9 @@
 композитора (Alt+F4, Alt+Tab, меню фона) выключены; буфер обмена, передача файлов и печать Selkies
 выключены. Игра запускается сама при старте сессии (автостарт labwc).
 
-Прежний образ — KDE Plasma на `selkies-egl-desktop:26.04` (в истории git до плана 4); на воркере он
-остаётся как `cg-session:550.163.01-kde` для отката, `cg-session-exec` его поддерживает. Проба,
+Прежний образ — KDE Plasma на `selkies-egl-desktop:26.04` (в истории git до плана 4); пока он —
+рабочий `cg-session:550.163.01`. Когда киоск заменит рабочий тег (Task 9, по слову владельца), прежний
+сохранится как `cg-session:550.163.01-kde` для отката; `cg-session-exec` его поддерживает. Проба,
 из которой взят рецепт, — `spike/kiosk/` и спека плана 4, «Результаты» → «Проба киоска».
 
 ## Файлы
@@ -25,14 +26,20 @@
   `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`; `CG_LAUNCH_LOCK` —
   другой путь, для тестов); если композитор перезапустится и автостарт сработает снова —
   `[cg-launch] already launched …, skipping`.
-- `labwc/autostart` → `/etc/xdg/labwc/autostart`: поднимает сессионную шину D-Bus (`dbus-launch`;
-  в базе её никто не поднимает, а Steam и `cg-steam-shutdown` её ищут) и запускает `cg-launch` в
+- `labwc/autostart` → `/etc/xdg/labwc/autostart`: поднимает сессионную шину D-Bus по фиксированному
+  адресу `unix:path=${XDG_RUNTIME_DIR}/bus` (`dbus-daemon --session --fork`; в базе её никто не
+  поднимает, а Steam и `cg-steam-shutdown` её ищут; если шина уже отвечает — например, labwc
+  перезапустился, — берёт её) и запускает `cg-launch` в
   окружении сессии labwc — там `LD_PRELOAD` интерпозера ввода Selkies (иначе Steam не видит
   геймпад, спека §7.3), `DISPLAY=:0` (Xwayland), `WAYLAND_DISPLAY=wayland-0`. Служба
   `/etc/service/wayland` базы запускает labwc напрямую, без systemd user, поэтому
   `/etc/xdg/autostart/*.desktop` здесь не работает.
-- `labwc/rc.xml` → `/etc/xdg/labwc/rc.xml` (заменяет штатный): без рамок, зазора и панели задач,
-  окна во весь экран (`fullscreenForced`, `ignoreConfigureRequest`); одна безвредная привязка
+- `labwc/rc.xml` → `/etc/xdg/labwc/rc.xml` (заменяет штатный): без рамок, зазора и панели задач;
+  правило окна при первом показе — `Maximize` (1920x1080 в 0,0) для всех окон, кроме служебных
+  типов `_NET_WM_WINDOW_TYPE` (диалоги, utility, меню, подсказки… — через `If`/`else`); окна без
+  типа считаются обычными. Свойства «во весь экран» у labwc 0.9.7 нет (`fullscreenForced` он молча
+  пропускал), `ignoreConfigureRequest` убран: развёрнутому окну labwc геометрию менять не даёт сам,
+  а у плавающих X-координаты теперь совпадают с местом в кадре. Одна безвредная привязка
   клавиши и фокус по клику — пустые `<keyboard>`/`<mouse>` labwc 0.9.7 отвергает и грузит
   встроенные Alt+F4/Alt+Tab/меню. Оба файла — в `/etc/xdg`, не в `~/.config` (тот — профиль игрока).
 - `vendor/` — то, чего нет в `base`, взято из `ghcr.io/selkies-project/selkies-egl-desktop@sha256:92c80f75c0a6bdfabd1cbac650690e0260a1726ef0b3164d7be8ff60f55a30fa`
@@ -67,7 +74,8 @@
   найденного: клиент Steam (`ubuntu12_32/steam`), композитор `labwc`, `plasmashell` (образ KDE).
   Для labwc `WAYLAND_DISPLAY=wayland-0`: в его `/proc/environ` — `wayland-1`, сокет внешнего
   композитора захвата Selkies (сокет `wayland-0` слушает labwc, `wayland-1` — `selkies`; проверено
-  смоуком). Нет ни одного — exit 1.
+  смоуком), и `DBUS_SESSION_BUS_ADDRESS=unix:path=<XDG_RUNTIME_DIR labwc>/bus` — шина автостарта
+  (в окружении labwc её нет). Нет ни одного — exit 1.
 - `cg-steam-shutdown` — `steam -shutdown` через `cg-session-exec` (без `DISPLAY` и т.п. —
   «Unable to open X11 display»), ждёт выхода `ubuntu12_32/steam` до 30 с. Клиент не запущен — 0;
   не вышел — 1.
@@ -189,11 +197,11 @@ Survivors (Unity, X11 через XWayland) на такой смене падае
 | Окно входа Steam | 170,2 с (пустой дом — почти всё время скачивание клиента); `cg-session-exec xdotool search --onlyvisible --class steam` → одно окно «Sign in to Steam», 700x440 |
 | `cg-session-stage 1966900` | `steam` до окна входа, `login` на нём |
 | NetworkManager `State` | `uint32 70` |
-| Окружение Steam | `LD_PRELOAD` с `selkies_input_interposer.so`, `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`, `DBUS_SESSION_BUS_ADDRESS` (от `dbus-launch` автостарта), `BWRAP=/usr/local/bin/proot-bwrap`; `XAUTHORITY` нет (не нужен) |
+| Окружение Steam | `LD_PRELOAD` с `selkies_input_interposer.so`, `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`, `DBUS_SESSION_BUS_ADDRESS` (тогда — от `dbus-launch`; после правки — `unix:path=/tmp/runtime-ubuntu/bus`, см. ниже), `BWRAP=/usr/local/bin/proot-bwrap`; `XAUTHORITY` нет (не нужен) |
 | Сокеты Wayland | `wayland-0` слушает `labwc` (сессия), `wayland-1` — `selkies` (захват); в `/proc/<labwc>/environ` — `wayland-1`. Selkies: `Wayland app compositor 'wayland-0' … capture stays on 'wayland-1'` |
 | Трансляция | только окно Steam на чёрном фоне: нет рабочего стола, панели, рамки; процессов `plasma`/`kwin`/`lxqt`/панелей/терминалов нет |
 | Пакеты (`dpkg -l`) | ни терминала (`xterm` удалён, `x-terminal-emulator` нет), ни файлового менеджера, ни браузера |
-| Окно во весь экран, нажимается | окно входа фиксированного размера (min = max 700x440) labwc не растягивает — стоит в левом верхнем углу кадра (X сообщает 610,320, как в пробе). Клик в трансляции по «Remember me» снял галку; указатель X — 661,577 = 610+51, 320+257, совпадает с точкой клика |
+| Окно во весь экран, нажимается | с правилом `fullscreenForced` (не существует в labwc) — нет: окно входа 700x440 в левом верхнем углу кадра, X сообщает 610,320. Исправлено, см. «Правка 1» ниже |
 | Буфер обмена | `Rejecting clipboard read: outbound clipboard disabled` |
 | `cg-steam-shutdown` | 0 за 3,1 с, клиента `ubuntu12_32/steam` нет |
 | `cg-session-exec` без Steam (labwc) | `WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:0`; `xdotool` работает |
@@ -202,6 +210,23 @@ Survivors (Unity, X11 через XWayland) на такой смене падае
 
 Не проверено этим смоуком: вход в аккаунт и запуск игры (нужен аккаунт игрока), геймпад, звук,
 клавиатура в настоящем браузере (на пробе подтвердил владелец), окна игр во весь экран — Task 9.
+
+### Правка 1 (2026-10-28): шина по фиксированному адресу, окна во весь экран
+
+Тот же запуск (`cg-kiosk-smoke`, пустой дом, `CG_MODE=install`); `rc.xml` сначала проверен в живом
+контейнере (`~/.config/labwc/rc.xml` + `SIGHUP` labwc), затем — образ с ним в `/etc/xdg`
+(результаты ниже совпали).
+
+| Что | Результат |
+| --- | --- |
+| Шина у Steam | `DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/runtime-ubuntu/bus` (`dbus-daemon --session --fork --address=…` от автостарта) |
+| После `cg-steam-shutdown` (0) | `cg-session-exec env` (источник labwc): `DISPLAY=:0`, `WAYLAND_DISPLAY=wayland-0`, та же шина; `dbus-send --session … ListNames` отвечает |
+| `cg-session-exec bash -c 'steam -silent'` | клиент поднялся за 2 с, у него та же шина, `wayland-0`, `:0` |
+| `xev` (окно без типа, изменяемое) | X: 1920x1080 в 0,0, `_NET_WM_STATE_MAXIMIZED_VERT/HORZ`; в кадре — на весь экран |
+| Окно входа Steam (тип NORMAL, min = max 700x440) | X: 1920x1080 в 0,0, развёрнуто; Steam растягивает разметку на весь экран. Клик в трансляции по «Remember me» переключил галку, указатель X — 51,281 = точка клика |
+| Окна типов dialog/utility (тестовое X-окно 300x200) | не развёрнуты: 810,440 / 842,472; в кадре — на 810,440, совпадает с X |
+| Override-redirect окно (как выпадающие меню Steam) в X 400,300 | в кадре на 400,300 |
+| zenity (GTK, тип NORMAL без родителя) | развёрнуто — ожидаемо по правилу |
 
 ## Ручная проверка на brofrong (2026-10-17, риск №3 спеки, прежний образ KDE)
 

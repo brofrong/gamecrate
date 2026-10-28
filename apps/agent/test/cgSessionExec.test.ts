@@ -198,6 +198,39 @@ describe("cg-session-exec", () => {
     expect(output).toContain(`DISPLAY=${SESSION_VARS.DISPLAY}\n`);
   });
 
+  it("cg-session-exec uses the fixed session bus when falling back to labwc", () => {
+    // Сессионную шину поднимает автостарт labwc по фиксированному адресу
+    // ${XDG_RUNTIME_DIR}/bus — в /proc/<labwc>/environ её нет.
+    addProcess(LABWC_PID, "labwc", "/usr/bin/labwc");
+    const { DBUS_SESSION_BUS_ADDRESS: _, ...labwcVars } = SESSION_VARS;
+    setEnviron(LABWC_PID, {
+      ...labwcVars,
+      XDG_RUNTIME_DIR: "/tmp/runtime-ubuntu",
+    });
+
+    const result = run(["probe"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(probeEnv()).toContain(
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/runtime-ubuntu/bus\n",
+    );
+  });
+
+  it("keeps the Steam client's own session bus", () => {
+    addProcess(
+      STEAM_PID,
+      "steam",
+      "/home/ubuntu/.local/share/Steam/ubuntu12_32/steam -silent",
+    );
+    setEnviron(STEAM_PID, SESSION_VARS);
+
+    run(["probe"]);
+
+    expect(probeEnv()).toContain(
+      `DBUS_SESSION_BUS_ADDRESS=${SESSION_VARS.DBUS_SESSION_BUS_ADDRESS}\n`,
+    );
+  });
+
   it("keeps the Steam client's own Wayland socket", () => {
     addProcess(
       STEAM_PID,

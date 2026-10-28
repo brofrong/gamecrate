@@ -7,10 +7,18 @@
 # Xwayland и WAYLAND_DISPLAY вложенной сессии (wayland-0).
 #
 # Сессионную шину D-Bus в этой базе никто не поднимает (служба dbus — только системная, её видит
-# cg-nm-stub), а Steam и cg-steam-shutdown её ищут — поднимаем dbus-launch (dbus-x11 есть в базе).
-if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
-  eval "$(dbus-launch --sh-syntax --exit-with-session)"
-  export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
+# cg-nm-stub), а Steam и cg-steam-shutdown её ищут. Поднимаем её по фиксированному адресу
+# ${XDG_RUNTIME_DIR}/bus: в /proc/<labwc>/environ её не будет (экспорт отсюда видят только дети
+# автостарта), и cg-session-exec, взяв окружение у labwc (Steam не запущен — например, второй цикл
+# build-steam-client.sh), ставит этот же адрес. Если labwc перезапустился и шина жива — та же.
+runtime_dir="${XDG_RUNTIME_DIR:-/tmp/runtime-ubuntu}"
+bus_address="unix:path=${runtime_dir}/bus"
+if ! dbus-send --bus="${bus_address}" --dest=org.freedesktop.DBus --print-reply \
+  /org/freedesktop/DBus org.freedesktop.DBus.GetId >/dev/null 2>&1; then
+  rm -f "${runtime_dir}/bus"
+  dbus-daemon --session --fork --address="${bus_address}"
 fi
+DBUS_SESSION_BUS_ADDRESS="${bus_address}"
+export DBUS_SESSION_BUS_ADDRESS
 
 /usr/local/bin/cg-launch &

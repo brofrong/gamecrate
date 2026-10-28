@@ -144,8 +144,9 @@ const GBM_TARGETS = [
 export const sessionPassword = () => randomBytes(24).toString("base64url");
 
 /**
- * Контейнер рабочего стола Plasma со Steam (сессия, установщик): образ сессии,
- * сеть сессий, GPU NVIDIA и GBM-бэкенд, права и `/dev/input` — одинаково у всех.
+ * Графический контейнер со Steam (сессия, установщик; образ-киоск — композитор
+ * labwc без рабочего стола): образ сессии, сеть сессий, GPU NVIDIA и GBM-бэкенд,
+ * права и `/dev/input` — одинаково у всех.
  */
 export const desktopSpec = (
   config: AgentConfigValues,

@@ -4,7 +4,8 @@
 # вложенный композитор labwc + Steam; игра стартует сама (cg-launch из автостарта labwc).
 # Собирается на воркере под версию драйвера хоста: deploy/build-session-image.sh [хост] [суффикс] →
 # cg-session:<NV_VER>[-<суффикс>]. Прежний образ на KDE Plasma (selkies-egl-desktop:26.04) — в
-# истории git; на воркере он хранится как cg-session:<NV_VER>-kde для отката.
+# истории git; при замене рабочего тега этим образом (Task 9) прежний сохраняется на воркере как
+# cg-session:<NV_VER>-kde для отката.
 # Контекст сборки: этот каталог + nv/x — распакованный NVIDIA-Linux-x86_64-<NV_VER>.run (--extract-only).
 #
 # Контракт окружения контейнера (задаёт агент):
@@ -42,7 +43,7 @@ COPY --chmod=0755 vendor/proot vendor/proot-bwrap /usr/local/bin/
 # python3-gi + gir1.2-glib-2.0 — для cg-nm-stub (без них `No module named 'gi'`); libfakechroot
 # (обе архитектуры) — запасной режим proot-bwrap (им идёт steamwebhelper); libtalloc2 — для proot.
 # Всё остальное, что нужно скриптам, в базе уже есть: i386, python3-dbus, системная шина (служба
-# s6 dbus), dbus-x11 (dbus-launch), xdotool, x11-utils, curl, procps.
+# s6 dbus; dbus-daemon/dbus-send — и для сессионной шины), xdotool, x11-utils, curl, procps.
 # /usr/bin/steam и /usr/bin/steamdeps уводятся dpkg-divert (как в selkies-egl-desktop:26.04) и
 # заменяются обёртками из vendor/: steam — с BWRAP=/usr/local/bin/proot-bwrap, steamdeps — exit 0
 # (зависимости уже стоят, ставить их некому и нечем).
@@ -84,8 +85,9 @@ RUN ldconfig && ls -l /usr/lib/i386-linux-gnu/libGLX_nvidia.so.0
 
 # Автозапуск игры — автостарт сессии labwc (/etc/xdg/labwc/autostart): только там есть
 # LD_PRELOAD интерпозера ввода Selkies (без него Steam не видит геймпад) и DISPLAY Xwayland;
-# он же поднимает сессионную шину D-Bus. Конфиг labwc — без рамок, меню и горячих клавиш
-# композитора, окна во весь экран. Оба в /etc/xdg/labwc, не в ~/.config (там профиль игрока).
+# он же поднимает сессионную шину D-Bus по фиксированному адресу ${XDG_RUNTIME_DIR}/bus
+# (его же ставит cg-session-exec, когда источник — labwc). Конфиг labwc — без рамок, меню и
+# горячих клавиш композитора, обычные окна разворачиваются на весь экран. Оба в /etc/xdg/labwc, не в ~/.config (там профиль игрока).
 COPY --chmod=0755 cg-launch /usr/local/bin/cg-launch
 COPY --chmod=0755 labwc/autostart /etc/xdg/labwc/autostart
 COPY --chmod=0644 labwc/rc.xml /etc/xdg/labwc/rc.xml

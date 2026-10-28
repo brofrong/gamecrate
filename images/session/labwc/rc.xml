@@ -41,16 +41,39 @@
     </context>
   </mouse>
 
-  <!-- Каждое окно — без декораций, во весь экран, не в «панели задач» (её и так нет).
-       ignoreConfigureRequest — приложение не может само выйти из полноэкранного режима сменой
-       геометрии. Окно фиксированного размера (вход в Steam, 700x440, min = max) labwc во весь
-       экран не растягивает: оно стоит без рамки на чёрном фоне. -->
+  <!-- Свойства (labwc 0.9.7, labwc-config(5) «WINDOW RULES»): у каждого окна — без декораций
+       композитора, не в «панели задач» (её и так нет). Свойства «во весь экран» у labwc нет
+       (атрибут fullscreenForced он молча пропускает), а ignoreConfigureRequest не нужен:
+       развёрнутому окну labwc сам не даёт менять геометрию (на запрос отвечает своей).
+
+       Действие при первом показе окна: развернуть на весь экран 1920x1080 (gap 0, рамок нет).
+       Maximize, а не ToggleFullscreen: окно, которое уже само попросилось во весь экран (игры),
+       labwc не трогает, а Toggle вернул бы его обратно. Не разворачиваются окна служебных типов
+       (_NET_WM_WINDOW_TYPE: диалоги, меню, подсказки…) — это If ниже; окна без типа (xev,
+       многие игры) считаются обычными. Override-redirect окна (выпадающие меню Steam) labwc не
+       управляет вовсе. Окно входа Steam (NORMAL, min = max 700x440) тоже разворачивается — Steam
+       растягивает его разметку (проверено на brofrong). -->
   <windowRules>
-    <windowRule identifier="*"
-                serverDecoration="no"
-                skipTaskbar="yes"
-                fullscreenForced="yes"
-                ignoreConfigureRequest="yes">
+    <windowRule identifier="*" serverDecoration="no" skipTaskbar="yes" />
+    <windowRule identifier="*">
+      <action name="If">
+        <query type="dialog" />
+        <query type="utility" />
+        <query type="splash" />
+        <query type="toolbar" />
+        <query type="menu" />
+        <query type="dropdown_menu" />
+        <query type="popup_menu" />
+        <query type="tooltip" />
+        <query type="notification" />
+        <query type="combo" />
+        <query type="dnd" />
+        <query type="dock" />
+        <query type="desktop" />
+        <else>
+          <action name="Maximize" />
+        </else>
+      </action>
     </windowRule>
   </windowRules>
 </labwc_config>
