@@ -6,6 +6,7 @@ import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 import { AgentHub } from "./AgentHub";
 import { OrchestratorConfig } from "./config";
+import { GameDeleter } from "./GameDeleter";
 import { HttpApp } from "./http";
 import { InstallDispatcher } from "./InstallDispatcher";
 import * as Scheduler from "./Scheduler";
@@ -20,18 +21,20 @@ const BunServer = Layer.unwrap(
 );
 
 /**
- * Фоновая работа: подписки на хаб, таймеры сессий, планировщик, установки,
- * входы в Steam по QR.
+ * Фоновая работа: подписки на хаб, таймеры сессий, планировщик, установки и
+ * удаление игр, входы в Steam по QR.
  */
 const Sessions = Layer.mergeAll(
   SessionRunner.layer,
   Scheduler.layer,
   InstallDispatcher.layer,
+  GameDeleter.layer,
   SteamLoginRunner.layer.pipe(Layer.provide(SteamQr.live)),
 );
 
-// `Layer.provide(Sessions)` строит ведение сессий раньше HTTP-сервера: раннер и
-// диспетчер установок подписаны на хаб до того, как подключится первый агент.
+// `Layer.provide(Sessions)` строит ведение сессий раньше HTTP-сервера: раннер,
+// диспетчер установок и удаление игр подписаны на хаб до того, как подключится
+// первый агент.
 // Один AgentHub и один SteamLoginSeeds на всех: вход, полученный по QR
 // (SteamLoginRunner), приложенный к запуску сессии/установки
 // (Scheduler/InstallDispatcher) и очищенный принятым посеянным коммитом

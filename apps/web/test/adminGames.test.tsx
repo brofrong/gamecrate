@@ -1,0 +1,215 @@
+// Вкладка «Игры» (`/admin?tab=games`, Task 4): таблица игр общей библиотеки с
+// размером/датами/запусками и кнопкой «Удалить»; строка «Служебные: …» без кнопки.
+// `../src/rpc` подменяется целиком (приём как в `adminSessions.test.tsx`).
+import { describe, expect, it, mock } from "bun:test";
+import type { AdminGame, AdminGames, CurrentUserShape } from "@cg/rpc";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
+import { Effect } from "effect";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { RegistryProvider } from "@effect/atom-react";
+
+/** Элемент `initialValues` у `RegistryProvider` — без своего `any` в этом файле. */
+type InitialValue =
+  NonNullable<
+    Parameters<typeof RegistryProvider>[0]["initialValues"]
+  > extends Iterable<infer T>
+    ? T
+    : never;
+
+const meAtom = Atom.make(
+  AsyncResult.initial<CurrentUserShape, { readonly _tag: string }>(),
+);
+const adminPingAtom = Atom.make(
+  AsyncResult.success<"pong", { readonly _tag: string }>("pong"),
+);
+const adminGamesAtom = Atom.make(
+  AsyncResult.initial<AdminGames, { readonly _tag: string }>(),
+);
+
+const deleteCalls: unknown[] = [];
+const adminDeleteGameAtom = Atom.fn((arg: unknown) => {
+  deleteCalls.push(arg);
+  return Effect.succeed("started" as const);
+});
+const adminDeleteGameArgs = (appId: number) => ({
+  payload: { appId },
+  reactivityKeys: ["admin"],
+});
+
+// `routes/admin.tsx` импортирует и другие атомы часть 1 — им здесь хватает заглушек,
+// эта вкладка их не трогает.
+const adminSessionsAtom = Atom.family((_failedOnly: boolean) =>
+  Atom.make(AsyncResult.initial()),
+);
+const adminWorkersAtom = Atom.make(AsyncResult.initial());
+const sessionSettingsAtom = Atom.make(AsyncResult.initial());
+const adminStopSessionAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
+const adminSetDrainingAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
+const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed(undefined),
+);
+
+mock.module("../src/rpc", () => ({
+  meAtom,
+  adminPingAtom,
+  adminGamesAtom,
+  adminDeleteGameAtom,
+  adminDeleteGameArgs,
+  adminSessionsAtom,
+  adminStopSessionAtom,
+  adminStopSessionArgs: (sessionId: string) => ({
+    payload: { sessionId },
+    reactivityKeys: ["admin"],
+  }),
+  adminWorkersAtom,
+  adminSetDrainingAtom,
+  adminSetDrainingArgs: (workerId: string, draining: boolean) => ({
+    payload: { workerId, draining },
+    reactivityKeys: ["admin"],
+  }),
+  sessionSettingsAtom,
+  updateSessionSettingsAtom,
+  updateSessionSettingsArgs: (payload: unknown) => ({
+    payload,
+    reactivityKeys: ["settings"],
+  }),
+  errorTag: () => undefined,
+  resultErrorTag: () => undefined,
+}));
+
+const { adminRoute } = await import("../src/routes/admin");
+const { rootRoute } = await import("../src/routes/__root");
+
+const admin: CurrentUserShape = {
+  id: "u1",
+  name: "Админ",
+  image: null,
+  role: "admin",
+  steamId: null,
+  email: "admin@example.com",
+  emailVerified: true,
+};
+
+const game = (
+  patch: Partial<AdminGame> & { appId: number; name: string },
+): AdminGame => ({
+  sizeBytes: 100 * 1024 * 1024,
+  installedAt: new Date("2026-10-27T10:00:00Z").toISOString(),
+  lastLaunchAt: new Date("2026-10-27T12:00:00Z").toISOString(),
+  launches: 1,
+  activeSessions: 0,
+  installing: false,
+  deleting: false,
+  ...patch,
+});
+
+const routeTree = rootRoute.addChildren([adminRoute]);
+
+function renderGames(games: AdminGames) {
+  const router = createRouter({
+    routeTree,
+    history: createMemoryHistory({ initialEntries: ["/admin?tab=games"] }),
+  });
+  const initialValues: Array<InitialValue> = [
+    [meAtom, AsyncResult.success(admin)],
+    [adminGamesAtom, AsyncResult.success(games)],
+  ];
+  return render(
+    <RegistryProvider initialValues={initialValues}>
+      <RouterProvider router={router} />
+    </RegistryProvider>,
+  );
+}
+
+describe("GamesTab", () => {
+  const vampire = game({
+    appId: 1794680,
+    name: "Vampire Survivors",
+    sizeBytes: 2000 * 1024 * 1024,
+    activeSessions: 1,
+  });
+  const peglin = game({
+    appId: 1296610,
+    name: "Peglin",
+    sizeBytes: 317 * 1024 * 1024,
+  });
+  const katana = game({
+    appId: 1091500,
+    name: "Katana ZERO",
+    deleting: true,
+  });
+  const balatro = game({
+    appId: 2379780,
+    name: "Balatro",
+    sizeBytes: 64 * 1024 * 1024,
+  });
+
+  it("shows games with sizes, play status and the deleting state; service row has no button", async () => {
+    renderGames({
+      games: [vampire, peglin, katana, balatro],
+      service: {
+        count: 1,
+        sizeBytes: 500 * 1024 * 1024,
+        names: ["Proton Experimental"],
+      },
+    });
+
+    expect(await screen.findByText("Balatro")).toBeTruthy();
+    expect(screen.getByText("317 МБ")).toBeTruthy();
+    expect(screen.getByText("играют сейчас")).toBeTruthy();
+
+    const vampireRow = screen.getByText("Vampire Survivors").closest("tr");
+    if (vampireRow === null) throw new Error("row not found");
+    const deleteButton = within(vampireRow).getByRole("button", {
+      name: "Удалить",
+    });
+    expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
+
+    const katanaRow = screen.getByText("Katana ZERO").closest("tr");
+    if (katanaRow === null) throw new Error("row not found");
+    expect(within(katanaRow).getByText("Удаляется…")).toBeTruthy();
+    expect(within(katanaRow).queryByRole("button")).toBeNull();
+
+    expect(
+      screen.getByText("Служебные: Proton Experimental"),
+    ).toBeTruthy();
+  });
+
+  it("opens the confirm dialog on click and sends the appId on confirm", async () => {
+    renderGames({
+      games: [vampire, peglin, katana, balatro],
+      service: null,
+    });
+
+    const peglinRow = await screen.findByText("Peglin");
+    const row = peglinRow.closest("tr");
+    if (row === null) throw new Error("row not found");
+    const deleteButton = within(row).getByRole("button", { name: "Удалить" });
+    fireEvent.click(deleteButton);
+
+    expect(await screen.findByText("Удалить Peglin?")).toBeTruthy();
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/317 МБ/)).toBeTruthy();
+
+    const confirm = within(dialog).getByRole("button", { name: "Удалить" });
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect(deleteCalls.at(-1)).toEqual({
+        payload: { appId: 1296610 },
+        reactivityKeys: ["admin"],
+      });
+    });
+  });
+});

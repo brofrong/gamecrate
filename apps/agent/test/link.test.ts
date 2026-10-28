@@ -237,6 +237,10 @@ describe("OrchestratorLink", () => {
       OrchestratorLink.isTerminal({ _tag: tag } as AgentReport);
     expect(report("InstallFinished")).toBe(true);
     expect(report("InstallFailed")).toBe(true);
+    // Итог удаления игры: без него оркестратор ждал бы его вечно.
+    expect(report("GameDeleted")).toBe(true);
+    expect(report("GameDeleteFailed")).toBe(true);
+    expect(report("WorkerStats")).toBe(false);
     expect(report("Stopped")).toBe(true);
     expect(report("Failed")).toBe(true);
     expect(report("InstallProgress")).toBe(false);
@@ -279,6 +283,10 @@ describe("OrchestratorLink", () => {
           cancel: (jobId) =>
             Effect.sync(
               () => void installed.push({ _tag: "CancelInstall", jobId }),
+            ),
+          deleteGame: (appId) =>
+            Effect.sync(
+              () => void installed.push({ _tag: "DeleteGame", appId }),
             ),
           running: () => ["j0"],
           reports: installReports,
@@ -361,11 +369,13 @@ describe("OrchestratorLink", () => {
         yield* Queue.offerAll(server.streams[0]!, [
           installGame,
           { _tag: "CancelInstall", jobId: "j1" },
+          { _tag: "DeleteGame", appId: 2379780 },
         ]);
-        yield* waitUntil(() => installed.length === 2);
+        yield* waitUntil(() => installed.length === 3);
         expect(installed).toEqual([
           installGame,
           { _tag: "CancelInstall", jobId: "j1" },
+          { _tag: "DeleteGame", appId: 2379780 },
         ]);
         expect(handled).toEqual([start]);
 
@@ -474,6 +484,7 @@ describe("OrchestratorLink", () => {
       const installer: InstallerShape = {
         install: (command) => Effect.sync(() => void installed.push(command)),
         cancel: () => Effect.void,
+        deleteGame: () => Effect.void,
         running: () => [],
         reports: installReports,
       };

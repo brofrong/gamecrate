@@ -140,6 +140,26 @@ export const adminSetDrainingAtom = Api.mutation("admin.workers.setDraining");
 export const adminSetDrainingArgs = (workerId: string, draining: boolean) =>
   ({ payload: { workerId, draining }, reactivityKeys: adminKeys }) as const;
 
+/** Игры общей библиотеки + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
+export const adminGamesAtom = Api.query("admin.games.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Пометить игру к удалению («Удалить» на вкладке «Игры»). */
+export const adminDeleteGameAtom = Api.mutation("admin.games.delete");
+export const adminDeleteGameArgs = (appId: number) =>
+  ({ payload: { appId }, reactivityKeys: adminKeys }) as const;
+
+/** Активные и недавние задачи установки (вкладка «Установки»). */
+export const adminInstallsAtom = Api.query("admin.installs.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Попросить отменить активную задачу установки («Отменить» на вкладке «Установки»). */
+export const adminCancelInstallAtom = Api.mutation("admin.installs.cancel");
+export const adminCancelInstallArgs = (jobId: string) =>
+  ({ payload: { jobId }, reactivityKeys: adminKeys }) as const;
+
 /** `_tag` типизированной ошибки RPC (`Unauthorized`, `Forbidden`, `SteamUnavailable`, `RpcClientError`…). */
 export const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>
   Option.getOrUndefined(

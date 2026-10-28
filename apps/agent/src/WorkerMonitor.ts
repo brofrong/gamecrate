@@ -4,7 +4,9 @@
 // `WorkerStats`. Агент работает в контейнере, но `/proc/{stat,meminfo,cpuinfo,
 // uptime}` и `/sys/block` там показывают хост; каталоги SCRATCH_DIR,
 // STEAM_CLIENT_DIR и LIBRARY_DIR смонтированы по тем же путям, что на хосте.
+// С ролью gamestore снимок несёт и список игр общей библиотеки (`library`).
 import { readdir, readFile, stat, statfs } from "node:fs/promises";
+import { join } from "node:path";
 import {
   type AgentReport,
   WorkerHardware,
@@ -13,6 +15,7 @@ import {
 } from "@cg/rpc";
 import { Context, Duration, Effect, Layer, Queue, Schema } from "effect";
 import { AgentConfig } from "./config";
+import { scanLibrary } from "./GameRemoval";
 import {
   classifyBlockDevice,
   NVIDIA_SMI_ARGS,
@@ -262,6 +265,15 @@ const make = Effect.gen(function* () {
       uptimeSeconds: Math.floor(
         firstNumber(yield* probe.readText("/proc/uptime")),
       ),
+      // Библиотека — только у gamestore (её манифесты читаются с диска, а не
+      // через HostProbe: тот же разборщик, что у удаления игр).
+      ...(config.roles.includes("gamestore")
+        ? {
+            library: yield* Effect.sync(() =>
+              scanLibrary(join(config.libraryDir, "steamapps")),
+            ),
+          }
+        : {}),
     };
     return stats;
   });

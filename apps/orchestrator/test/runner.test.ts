@@ -3,6 +3,7 @@ import {
   Db,
   gamestoreApps,
   games,
+  installJobs,
   playSegments,
   sessions,
   settings,
@@ -461,6 +462,42 @@ describe("scheduler", () => {
           workerId: "w-a",
           slot: 0,
         });
+      }),
+    ));
+
+  it("queued session of a deleting game is neither placed nor sent to install; after the row is deleted it starts an install", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w-a", 1);
+        // Админ удаляет игру: строка библиотеки остаётся до итога агента.
+        yield* db
+          .update(gamestoreApps)
+          .set({ deletingAt: t0 })
+          .where(eq(gamestoreApps.appId, 570));
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+        like(yield* sessionRow("s1"), {
+          state: "queued",
+          workerId: null,
+          installJobId: null,
+        });
+        expect(fake.sent).toEqual([]);
+        expect(yield* db.select().from(installJobs)).toEqual([]);
+
+        // Агент удалил игру — сессия ставит её заново обычной установкой.
+        yield* db.delete(gamestoreApps).where(eq(gamestoreApps.appId, 570));
+        yield* Scheduler.tick(at(t0, 2));
+        const [job] = yield* db.select().from(installJobs);
+        like(job, { appId: 570, userId: "u1", state: "queued" });
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: job?.id ?? "",
+        });
+        expect(fake.sent).toEqual([]);
       }),
     ));
 });

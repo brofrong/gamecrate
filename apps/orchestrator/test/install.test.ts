@@ -41,6 +41,7 @@ import {
   type InstallDispatcherOptions,
   installErrors,
 } from "../src/InstallDispatcher";
+import * as InstallRepo from "../src/InstallRepo";
 import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
@@ -219,6 +220,16 @@ const connected = (
   running: [],
   installs,
 });
+
+/** Админ запросил отмену задачи (как пишет api). */
+const requestCancel = (jobId: string, when: Date) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .update(installJobs)
+      .set({ cancelRequestedAt: when })
+      .where(eq(installJobs.id, jobId));
+  });
 
 /** Отправленные команды установки (без StartSession). */
 const installCommands = (fake: FakeHub) =>
@@ -1027,6 +1038,170 @@ describe("install jobs", () => {
           state: "installing",
           installJobId: fresh?.id ?? "",
         });
+      }),
+    ));
+});
+
+describe("admin cancel", () => {
+  it("admin cancel of a queued job fails it with the admin reason and fails waiters", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
+        // Агента gamestore нет — задача ждёт в очереди.
+        yield* Scheduler.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "queued" });
+
+        yield* requestCancel(job.id, at(t0, 1));
+        // Агент появился, но отменённую задачу ему не выдают.
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        const cancelledAt = at(t0, 2);
+        yield* dispatcher.tick(cancelledAt);
+
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: installErrors.cancelledByAdmin,
+        });
+        for (const id of ["s1", "s2"])
+          like(yield* sessionRow(id), {
+            state: "failed",
+            failReason: installErrors.cancelledByAdmin,
+            endedAt: cancelledAt,
+          });
+        expect(installCommands(fake)).toEqual([]);
+      }),
+    ));
+
+  it("admin cancel of a running job sends CancelInstall, agent's InstallFailed → failed with the admin reason, waiters failed (not requeued)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running", workerId: "gs" });
+        yield* requestCancel(job.id, at(t0, 5));
+        const cancelInstall = {
+          workerId: "gs",
+          command: { _tag: "CancelInstall", jobId: job.id } as AgentCommand,
+        };
+
+        // Не доставлена — повтор на следующем проходе; доставлена — один раз.
+        fake.state.refuse = (_workerId, command) =>
+          command._tag === "CancelInstall";
+        yield* dispatcher.tick(at(t0, 6));
+        expect(installCommands(fake)).toHaveLength(1);
+        fake.state.refuse = () => false;
+        yield* dispatcher.tick(at(t0, 8));
+        yield* dispatcher.tick(at(t0, 10));
+        expect(installCommands(fake).slice(1)).toEqual([cancelInstall]);
+        like(yield* onlyJob(), { state: "running" });
+
+        // Агент переподключился — команда прежнего соединения могла потеряться.
+        yield* dispatcher.handle(connected("gs", [job.id]), at(t0, 11));
+        yield* dispatcher.tick(at(t0, 12));
+        expect(installCommands(fake).slice(1)).toEqual([
+          cancelInstall,
+          cancelInstall,
+        ]);
+
+        const failedAt = at(t0, 13);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "Установка отменена",
+          }),
+          failedAt,
+        );
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: installErrors.cancelledByAdmin,
+        });
+        for (const id of ["s1", "s2"])
+          like(yield* sessionRow(id), {
+            state: "failed",
+            failReason: installErrors.cancelledByAdmin,
+            endedAt: failedAt,
+          });
+      }),
+    ));
+
+  it("admin cancel then InstallFinished → done, game installed", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1" });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        yield* requestCancel(job.id, at(t0, 5));
+        yield* dispatcher.tick(at(t0, 6));
+        expect(installCommands(fake).at(-1)?.command).toEqual({
+          _tag: "CancelInstall",
+          jobId: job.id,
+        });
+
+        // Агент уже переносил игру — отмена опоздала, игра установлена.
+        const finishedAt = at(t0, 7);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFinished",
+            jobId: job.id,
+            sizeBytes: 42,
+            buildId: "5",
+          }),
+          finishedAt,
+        );
+        like(yield* onlyJob(), { state: "done", error: null });
+        const [app] = yield* db
+          .select()
+          .from(gamestoreApps)
+          .where(eq(gamestoreApps.appId, DOTA));
+        like(app, { sizeBytes: 42, buildId: "5" });
+        like(yield* sessionRow("s1"), {
+          state: "queued",
+          stateSince: finishedAt,
+        });
+      }),
+    ));
+
+  it("claimNext skips a cancel-requested job", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seed("u1", "u2");
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+        yield* Scheduler.tick(t0);
+        const [dota, portal] = yield* jobs();
+        if (dota === undefined || portal === undefined)
+          return yield* Effect.die("expected two jobs");
+        like(dota, { appId: DOTA, state: "queued" });
+        yield* requestCancel(dota.id, at(t0, 1));
+
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        const claim = yield* InstallRepo.claimNext(["gs"]);
+        expect(claim?.job.id).toBe(portal.id);
+        like((yield* jobs())[0], { state: "queued", workerId: null });
       }),
     ));
 });

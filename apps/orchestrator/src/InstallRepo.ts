@@ -18,7 +18,15 @@ import {
   workers,
 } from "@cg/db";
 import { type ProfileRef, steamLoginRequiredReason } from "@cg/rpc";
-import { and, asc, eq, inArray, notExists } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  notExists,
+} from "drizzle-orm";
 import { Effect } from "effect";
 import type { LifecycleEvent } from "./lifecycle";
 import * as SessionRepo from "./SessionRepo";
@@ -86,10 +94,17 @@ export interface Claim {
 }
 
 /**
- * Одна транзакция: самая старая `queued`-задача (`FOR UPDATE SKIP LOCKED`) →
- * первый по id агент из `candidates` со строкой в `workers`, не в
- * обслуживании (`draining = false`) и без `running`-задачи → `state =
- * 'running'`, `workerId`. `undefined` — очередь пуста или свободных агентов нет.
+ * Причина задачи, отменённой админом (`install_jobs.error` и причина ждущим
+ * сессиям); `InstallDispatcher.installErrors.cancelledByAdmin`.
+ */
+export const cancelledByAdminError = "Установка отменена администратором";
+
+/**
+ * Одна транзакция: самая старая `queued`-задача без запроса отмены админом
+ * (`FOR UPDATE SKIP LOCKED`) → первый по id агент из `candidates` со строкой в
+ * `workers`, не в обслуживании (`draining = false`) и без `running`-задачи →
+ * `state = 'running'`, `workerId`. `undefined` — очередь пуста или свободных
+ * агентов нет.
  */
 export const claimNext = (candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -104,7 +119,12 @@ export const claimNext = (candidates: ReadonlyArray<string>) =>
             userId: installJobs.userId,
           })
           .from(installJobs)
-          .where(eq(installJobs.state, "queued"))
+          .where(
+            and(
+              eq(installJobs.state, "queued"),
+              isNull(installJobs.cancelRequestedAt),
+            ),
+          )
           .orderBy(asc(installJobs.createdAt))
           .limit(1)
           .for("update", { skipLocked: true });
@@ -292,7 +312,9 @@ export const finish = (
 /**
  * Задача провалилась (`InstallFailed` агента или агент её потерял): `failed` +
  * `error`, ждущие сессии — `failed` (или `queued`, см. `requeueWaiters`);
- * `steamLoginRequiredReason` владелец задачи видит как есть.
+ * `steamLoginRequiredReason` владелец задачи видит как есть. Задача, которую
+ * отменил админ (`cancelRequestedAt`), проваливается с `cancelledByAdminError`
+ * при любом `error`: ждущие видят эту причину и не возвращаются в очередь.
  * Только активная задача (и, если задан `workerId`, только на этом агенте);
  * иначе `undefined`. Иначе — id сессий, которым отправлено событие.
  */
@@ -317,10 +339,24 @@ export const fail = (
       Effect.gen(function* () {
         const job = yield* lockJob(jobId, options.workerId);
         if (job === undefined) return undefined;
+        const byAdmin = job.cancelRequestedAt !== null;
         yield* db
           .update(installJobs)
-          .set({ state: "failed", error })
+          .set({
+            state: "failed",
+            error: byAdmin ? cancelledByAdminError : error,
+          })
           .where(eq(installJobs.id, jobId));
+        if (byAdmin)
+          return yield* notifyWaiters(
+            jobId,
+            {
+              _tag: "InstallFailed",
+              reason: cancelledByAdminError,
+              userReason: cancelledByAdminError,
+            },
+            now,
+          );
         // Нужен вход в Steam — это про профиль владельца задачи: ему причина
         // как есть, остальным ждущим — общая (их профиль ни при чём).
         return yield* notifyWaiters(
@@ -356,6 +392,26 @@ export const runningJobs = (workerId?: string) =>
       );
     return rows.flatMap((r) =>
       r.workerId === null ? [] : [{ id: r.id, workerId: r.workerId }],
+    );
+  });
+
+/** Активные задачи, которые админ попросил отменить (`cancelRequestedAt`). */
+export const cancelRequestedJobs = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const rows = yield* db
+      .select({
+        id: installJobs.id,
+        state: installJobs.state,
+        workerId: installJobs.workerId,
+      })
+      .from(installJobs)
+      .where(and(isActiveJob, isNotNull(installJobs.cancelRequestedAt)))
+      .orderBy(asc(installJobs.createdAt));
+    return rows.flatMap(({ id, state, workerId }) =>
+      state === "queued" || state === "running"
+        ? [{ id, state, workerId }]
+        : [],
     );
   });
 

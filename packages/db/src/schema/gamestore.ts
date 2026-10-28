@@ -19,6 +19,9 @@ const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
  * Установленная сборка игры в общей библиотеке (`LIBRARY_DIR/steamapps`).
  * Строка есть ⇔ игра в библиотеке. `buildId` — установленный Steam buildid,
  * `sizeBytes` — размер на диске (из манифеста после установки).
+ * `deletingAt` — админ удаляет игру: строка живёт до итога агента
+ * (`GameDeleted` удаляет её, `GameDeleteFailed` снимает пометку); пока пометка
+ * есть, игра не запускается и не ставится — сессии ждут в очереди.
  */
 export const gamestoreApps = pgTable("gamestore_apps", {
   appId: integer("app_id")
@@ -27,6 +30,7 @@ export const gamestoreApps = pgTable("gamestore_apps", {
   sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
   buildId: text("build_id").notNull(),
   installedAt: timestamptz("installed_at").notNull().defaultNow(),
+  deletingAt: timestamptz("deleting_at"),
 });
 
 /** Состояния задачи установки. */
@@ -74,6 +78,9 @@ export const installJobs = pgTable(
     bytesDownloaded: bigint("bytes_downloaded", { mode: "number" }),
     bytesTotal: bigint("bytes_total", { mode: "number" }),
     error: text("error"),
+    // Админ отменил задачу: `queued` проваливается сразу, `running` — по
+    // итогу агента после CancelInstall (`InstallFinished` всё равно — `done`).
+    cancelRequestedAt: timestamptz("cancel_requested_at"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     updatedAt: timestamptz("updated_at")
       .notNull()

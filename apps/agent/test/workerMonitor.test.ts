@@ -1,11 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentReport } from "@cg/rpc";
 import { Context, Duration, Effect, Layer, Queue, References } from "effect";
 import { TestClock } from "effect/testing";
-import { AgentConfig } from "../src/config";
+import { AgentConfig, type AgentConfigValues } from "../src/config";
 import {
   defaultHostProbe,
   HostProbe,
@@ -176,6 +176,7 @@ const run = (
     readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
   }) => Effect.Effect<void, unknown>,
   setup: (host: Host) => void = () => {},
+  config: Partial<AgentConfigValues> = {},
 ) => {
   const { host, probe } = makeHost();
   setup(host);
@@ -183,7 +184,10 @@ const run = (
     const context = yield* Layer.build(
       WorkerMonitor.layer.pipe(
         Layer.provide(
-          Layer.succeed(AgentConfig, testConfig({ agentCommit: "abc1234" })),
+          Layer.succeed(
+            AgentConfig,
+            testConfig({ agentCommit: "abc1234", ...config }),
+          ),
         ),
       ),
     );
@@ -421,6 +425,43 @@ describe("WorkerMonitor", () => {
         // Третий замер: cpu  250 0 250 900 → cpu  250 0 250 1100 — простой.
         expect(all[0]?.cpuPercent).toBe(0);
         expect(all[0]?.uptimeSeconds).toBe(1015);
+      }),
+    ));
+});
+
+describe("WorkerMonitor library", () => {
+  it("роль gamestore — в снимке список игр библиотеки", async () => {
+    const library = await mkdtemp(join(tmpdir(), "cg-monitor-library-"));
+    try {
+      await mkdir(join(library, "steamapps"));
+      await Bun.write(
+        join(library, "steamapps", "appmanifest_2379780.acf"),
+        '"AppState"\n{\n\t"appid"\t\t"2379780"\n\t"name"\t\t"Balatro"\n\t"SizeOnDisk"\t\t"67108864"\n}\n',
+      );
+      await run(
+        ({ monitor, tick }) =>
+          Effect.gen(function* () {
+            yield* tick(STATS_INTERVAL);
+            const [stats] = statsOf(yield* Queue.clear(monitor.reports));
+            expect(stats?.library).toEqual([
+              { appId: 2379780, name: "Balatro", sizeBytes: 67108864 },
+            ]);
+          }),
+        () => {},
+        { roles: ["gamestore"], libraryDir: library },
+      );
+    } finally {
+      await rm(library, { recursive: true, force: true });
+    }
+  });
+
+  it("без роли gamestore поля library нет", () =>
+    run(({ monitor, tick }) =>
+      Effect.gen(function* () {
+        yield* tick(STATS_INTERVAL);
+        const [stats] = statsOf(yield* Queue.clear(monitor.reports));
+        expect(stats).toBeDefined();
+        expect(stats !== undefined && "library" in stats).toBe(false);
       }),
     ));
 });

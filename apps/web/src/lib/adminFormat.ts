@@ -1,14 +1,16 @@
-// Подписи админки (`/admin`, вкладки «Воркеры» и «Сессии»): объёмы, «сколько назад»,
-// длительности, диски, назначения ФС, роли воркера и этап сессии. Чистая логика,
-// без React и без обращений к сети.
+// Подписи админки (`/admin`, вкладки «Воркеры», «Сессии» и «Установки»): объёмы,
+// «сколько назад», длительности, диски, назначения ФС, роли воркера, этап сессии и
+// этап/прогресс установки. Чистая логика, без React и без обращений к сети.
 import type {
+  AdminInstall,
   AgentRoles,
+  InstallStage,
   SessionStage,
   SessionState,
   WorkerHardware,
   WorkerStats,
 } from "@cg/rpc";
-import { launchSteps } from "@/lib/loadingSteps";
+import { installSteps, launchSteps } from "@/lib/loadingSteps";
 
 type Disk = WorkerHardware["disks"][number];
 type Purposes = WorkerStats["filesystems"][number]["purposes"];
@@ -157,4 +159,29 @@ export function sessionStageLabel(
     case "failed":
       return "сбой";
   }
+}
+
+/**
+ * Столбец «Этап» вкладки «Установки»: `queued` — «В очереди», иначе подпись этапа
+ * установки с экрана загрузки («Готовим установщик», «Скачиваем игру»…); этап ещё
+ * не пришёл от агента — «—».
+ */
+export function installStageLabel(
+  state: AdminInstall["state"],
+  stage: InstallStage | null,
+): string {
+  if (state === "queued") return "В очереди";
+  return installSteps.find(([key]) => key === stage)?.[1] ?? "—";
+}
+
+/** «45 % · 1,2 из 2,0 ГБ» — прогресс закачки; размеры ещё не пришли от Steam — «—». */
+export function installProgressLabel(
+  bytesDownloaded: number | null,
+  bytesTotal: number | null,
+): string {
+  if (bytesDownloaded === null || bytesTotal === null || bytesTotal <= 0) {
+    return "—";
+  }
+  const percent = Math.round((bytesDownloaded / bytesTotal) * 100);
+  return `${percent} % · ${formatUsage(bytesDownloaded, bytesTotal)}`;
 }

@@ -1,6 +1,7 @@
 // Планировщик: раз в 2 с раздаёт сессии из очереди по свободным слотам
 // подключённых воркеров и отправляет агенту StartSession; сессии неустановленных
-// игр отправляет ждать установку (`installing`).
+// игр отправляет ждать установку (`installing`); сессии удаляемых игр ждут в
+// очереди.
 import { Db, gamestoreApps, installJobs, sessions, workers } from "@cg/db";
 import type { ProfileRef } from "@cg/rpc";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
@@ -41,8 +42,8 @@ interface Placement {
 
 /**
  * Итог `placeOne`: `Placed` — назначена на воркер; `Installing` — ждёт задачу
- * установки; `Retry` — игру только что установили, сессию разместит следующий
- * `placeOne`; `undefined` — делать нечего.
+ * установки; `Retry` — игру только что установили (или только что пометили к
+ * удалению), сессию разберёт следующий `placeOne`; `undefined` — делать нечего.
  */
 type Outcome =
   | Placement
@@ -53,8 +54,14 @@ type Outcome =
     }
   | { readonly _tag: "Retry" };
 
-/** Игра сессии есть в общей библиотеке (подзапрос по внешней `sessions`). */
-const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId})`;
+/**
+ * Строка игры сессии есть в `gamestore_apps` (подзапрос по внешней `sessions`),
+ * в том числе у удаляемой: её не ставим, пока агент не удалит игру.
+ */
+const appInLibrary: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId})`;
+
+/** Игра сессии в общей библиотеке и не удаляется (`deleting_at is null`). */
+const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId} and ${gamestoreApps.deletingAt} is null)`;
 
 /**
  * У пользователя сессии нет активной (`queued`/`running`) задачи установки,
@@ -132,10 +139,12 @@ const startInstall = (
  * Сначала самая старая `queued`-сессия неустановленной
  * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
  * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
- * установленной игры: первый по `id` воркер из `candidates` со строкой в
- * `workers`, не в обслуживании (`draining = false`) и со свободным слотом,
- * слот — наименьший свободный. Запись `workerId`, `slot`, `state = 'starting'`,
- * `stateSince = agentSeenAt = now` и коммит.
+ * установленной и не удаляемой игры (строка игры под `FOR SHARE`: api
+ * помечает удаление под `FOR UPDATE` и проверяет активные сессии — либо мы
+ * видим пометку, либо api видит нашу сессию): первый по `id` воркер из
+ * `candidates` со строкой в `workers`, не в обслуживании (`draining = false`)
+ * и со свободным слотом, слот — наименьший свободный. Запись `workerId`,
+ * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит.
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -143,13 +152,20 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     const hub = yield* AgentHub;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const uninstalled = yield* lockOldestQueued(sql`not ${appInstalled}`);
+        const uninstalled = yield* lockOldestQueued(sql`not ${appInLibrary}`);
         if (uninstalled !== undefined)
           return (yield* startInstall(now, uninstalled)) as Outcome;
 
         if (candidates.length === 0) return undefined;
         const session = yield* lockOldestQueued(appInstalled);
         if (session === undefined) return undefined;
+        const [app] = yield* db
+          .select({ deletingAt: gamestoreApps.deletingAt })
+          .from(gamestoreApps)
+          .where(eq(gamestoreApps.appId, session.appId))
+          .for("share");
+        if (app === undefined || app.deletingAt !== null)
+          return { _tag: "Retry" } as const;
 
         // Только воркеры, чья строка уже записана хабом (на неё ссылается FK)
         // и которые не в обслуживании (`draining` — новых сессий не берут).
