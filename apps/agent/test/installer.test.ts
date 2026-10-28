@@ -1685,6 +1685,27 @@ describe("Installer", () => {
       }),
     ));
 
+  it("reset with no new seed aborts at once instead of waiting for a login that cannot come", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const steamLoginResetAt = "2026-10-28T10:00:00.000Z";
+        // Дом не пуст (профиль из фикстуры), но вход этим запуском стёрт, и
+        // посева нет: Steam без учётных данных никогда не дойдёт до
+        // STEAM_LOGON_ATTEMPT, и установщик держал бы слот до
+        // STEAM_CLIENT_START_TIMEOUT. Ждём немедленного Abort.
+        yield* h.installer.install({ ...install, steamLoginResetAt });
+        yield* h.tick("0 seconds");
+        expect(yield* h.drain).toEqual([failed(installReasons.steamLogin)]);
+        // Контейнер не стартует вовсе — дальше ждать нечего.
+        expect(h.fake.state.calls).not.toContain("start cg-install-j1");
+        expect(callsFrom(h.fake, "remove cg-install-j1")).toEqual(
+          removedWithScratch,
+        );
+        expect(h.fake.state.calls).not.toContain("store.put u1");
+        expect(h.installer.running()).toEqual([]);
+      }),
+    ));
+
   it("target that Steam reports installed but did not unpack fails without touching the library", () =>
     run((h) =>
       Effect.gen(function* () {

@@ -700,9 +700,16 @@ const make = Effect.gen(function* () {
             );
             job.loginResetAt = job.steamLoginResetAt;
           }
-          // Пустой дом и нечем войти — установщик без входа ждал бы QR, которого
-          // никто не видит, и упал бы через STALL_TIMEOUT.
-          if (from === "empty" && job.steamLogin === null)
+          // Пустой дом и нечем войти, или этот запуск сам стёр вход и нового
+          // посева нет, — установщик без входа ждал бы QR, которого никто не
+          // видит. Без этой проверки он держал бы единственный слот установки
+          // gamestore-воркера до STEAM_CLIENT_START_TIMEOUT. Коммита профиля
+          // при Abort не происходит (`fail` его не делает), так что стирание
+          // и его эхо в этой ветке ни на что не влияют — том просто уберут.
+          if (
+            job.steamLogin === null &&
+            (from === "empty" || job.loginResetAt !== undefined)
+          )
             return yield* new Abort({ reason: installReasons.steamLogin });
           if (job.steamLogin !== null) {
             yield* seedSteamLogin({
