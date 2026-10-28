@@ -1,5 +1,6 @@
-// `/admin`: админка — вкладки «Воркеры» (карточки воркеров и «Последние сбои»), «Сессии»
-// и «Настройки» («Настройки сессий»). Без сессии — вход через Pocket ID, игрок — «Нет доступа».
+// `/admin`: админка — вкладки «Воркеры» (карточки воркеров и «Последние сбои»), «Сессии»,
+// «Игры» (общая библиотека хранилища), «Установки» (заглушка — таблицу строит Task 5) и
+// «Настройки» («Настройки сессий»). Без сессии — вход через Pocket ID, игрок — «Нет доступа».
 import type { AdminWorker, SessionSettings } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
@@ -13,6 +14,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
 import { FailuresCard } from "@/components/admin/FailuresCard";
+import { GamesTab } from "@/components/admin/GamesTab";
 import { Polled } from "@/components/admin/Polled";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { SessionsTab } from "@/components/admin/SessionsTab";
@@ -155,10 +157,12 @@ function SessionSettingsCard() {
   );
 }
 
-/** Вкладки админки (часть 1): «Игры», «Установки», «Пользователи» — во второй части. */
+/** Вкладки админки: «Пользователи» — в следующей части. */
 const ADMIN_TABS = [
   ["workers", "Воркеры"],
   ["sessions", "Сессии"],
+  ["games", "Игры"],
+  ["installs", "Установки"],
   ["settings", "Настройки"],
 ] as const;
 type AdminTab = (typeof ADMIN_TABS)[number][0];
@@ -302,6 +306,11 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   );
 }
 
+/** Заглушка вкладки «Установки» — таблицу задач установки строит Task 5. */
+function InstallsTab() {
+  return <p className="text-sm text-muted-foreground">Скоро</p>;
+}
+
 function AdminHome() {
   const me = useAtomValue(meAtom);
   const ping = useAtomValue(adminPingAtom);
@@ -318,6 +327,8 @@ function AdminHome() {
         <Tabs tab={tab} />
         {tab === "workers" && <WorkersTab onStop={setStopId} />}
         {tab === "sessions" && <SessionsTab onStop={setStopId} />}
+        {tab === "games" && <GamesTab />}
+        {tab === "installs" && <InstallsTab />}
         {tab === "settings" && <SessionSettingsCard />}
         <StopSessionDialog sessionId={stopId} onClose={() => setStopId(null)} />
       </main>
