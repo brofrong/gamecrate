@@ -41,6 +41,7 @@ import {
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
+import { PrefixTemplates } from "../src/PrefixTemplate";
 import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
@@ -372,10 +373,15 @@ interface Harness {
   readonly tick: (duration: Duration.Input) => Effect.Effect<void>;
 }
 
-/** Супервизор на фейках и TestClock; `setup` готовит фейк до старта. */
+/**
+ * Супервизор на фейках и TestClock; `setup` готовит фейк до старта.
+ * `templates` — фейк `PrefixTemplates`: `ensure` пишет `templates.ensure
+ * <appId>` в журнал вызовов (нет — сервис по умолчанию, без записи).
+ */
 const run = (
   body: (h: Harness) => Effect.Effect<void, unknown>,
   setup: (fake: Fake) => void = () => {},
+  options: { readonly templates?: boolean } = {},
 ) => {
   const fake = makeFake();
   setup(fake);
@@ -420,6 +426,16 @@ const run = (
             : Effect.succeed(fake.disk.freeBytes);
         }),
       ),
+      (effect) =>
+        options.templates === true
+          ? Effect.provideService(effect, PrefixTemplates, {
+              ensure: (appId) =>
+                Effect.sync(() => {
+                  fake.state.calls.push(`templates.ensure ${appId}`);
+                  return "built" as const;
+                }),
+            })
+          : effect,
       Effect.provide(
         Logger.layer([
           Logger.make(({ logLevel, message }) => {
@@ -1517,6 +1533,88 @@ describe("SessionSupervisor", () => {
           },
         ]);
       }),
+    ));
+
+  it("session that had a prefix asks for a template after its container is removed", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          // Proton создал префикс игры в upper слоя apps сессии.
+          mkdirSync(
+            join(
+              h.fake.state.scratch,
+              "s1",
+              "apps",
+              "upper",
+              "compatdata",
+              "1794680",
+            ),
+            { recursive: true },
+          );
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            ...removedWithLayers("s1"),
+            "templates.ensure 1794680",
+          ]);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+        }),
+      () => {},
+      { templates: true },
+    ));
+
+  it("session without a prefix in its upper does not ask for a template", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual(
+            removedWithLayers("s1"),
+          );
+          expect(h.fake.state.calls).not.toContain("templates.ensure 1794680");
+        }),
+      () => {},
+      { templates: true },
+    ));
+
+  it("profile-unsaved session does not ask for a template", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          mkdirSync(
+            join(
+              h.fake.state.scratch,
+              "s1",
+              "apps",
+              "upper",
+              "compatdata",
+              "1794680",
+            ),
+            { recursive: true },
+          );
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(callsFrom(h.fake, "stop cg-session-s1 15")).toEqual([
+            "stop cg-session-s1 15",
+            ...unmarked("s1"),
+          ]);
+          expect(h.fake.state.calls).not.toContain("templates.ensure 1794680");
+        }),
+      (fake) => {
+        fake.state.commit = "reject";
+      },
+      { templates: true },
     ));
 
   it("rejected commit deletes uploaded object and keeps the container like profile-unsaved", () =>

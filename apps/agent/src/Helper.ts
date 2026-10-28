@@ -16,7 +16,7 @@ export const helperSpec = (
     readonly kind: string;
     readonly user: string;
     readonly entrypoint: ReadonlyArray<string>;
-  } & Partial<Pick<ContainerSpec, "env" | "binds" | "mounts">>,
+  } & Partial<Pick<ContainerSpec, "env" | "binds" | "mounts" | "tmpfs">>,
 ): ContainerSpec => ({
   name: fields.name,
   image: config.sessionImage,
@@ -30,19 +30,21 @@ export const helperSpec = (
   gpus: false,
   shmSizeBytes: HELPER_SHM_BYTES,
   securityOpt: ["no-new-privileges:true"],
-  tmpfs: {},
+  tmpfs: fields.tmpfs ?? {},
   user: fields.user,
   entrypoint: fields.entrypoint,
 });
 
 /**
- * Запускает помощника до выхода; код выхода 0 — `afterExit` (контейнер ещё есть:
- * можно `getArchive`), иначе `DockerError`. Одноимённый остаток прошлого запуска
- * удаляется до создания, сам помощник — всегда после.
+ * Запускает помощника до выхода; код выхода из `okExit` (по умолчанию только 0)
+ * — `afterExit` (контейнер ещё есть: можно `getArchive`), иначе `DockerError`.
+ * Одноимённый остаток прошлого запуска удаляется до создания, сам помощник —
+ * всегда после.
  */
 export const runHelper = <A, E, R>(
   spec: ContainerSpec,
   afterExit: Effect.Effect<A, E, R>,
+  okExit: ReadonlyArray<number> = [0],
 ): Effect.Effect<A, E | DockerError, R | DockerClient> =>
   Effect.gen(function* () {
     const docker = yield* DockerClient;
@@ -52,7 +54,7 @@ export const runHelper = <A, E, R>(
         Effect.gen(function* () {
           yield* docker.start(spec.name);
           const exitCode = yield* docker.wait(spec.name);
-          if (exitCode !== 0)
+          if (!okExit.includes(exitCode))
             return yield* new DockerError({
               operation: "helper",
               message: `${spec.name} exited with ${exitCode}`,

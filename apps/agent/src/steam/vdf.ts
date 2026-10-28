@@ -1,5 +1,5 @@
 // Разбор и запись VDF (KeyValues Steam): лексер общий для манифестов
-// (`Installer.parseAppManifest`) и файлов входа (`loginSeed.ts`, спека §4).
+// (`parseAppManifest`) и файлов входа (`loginSeed.ts`, спека §4).
 // Steam пишет ключи в разном регистре (`valve`/`Valve`) — поиск по пути
 // регистронезависимый, но при записи существующее написание ключа сохраняется.
 
@@ -174,3 +174,50 @@ export const setPath = (
   copy[index] = newNode;
   return copy;
 };
+
+/**
+ * Поля верхнего уровня блока `"AppState" { … }` манифеста Steam (вложенные
+ * блоки — `InstalledDepots`, `UserConfig` — пропускаются). Не манифест —
+ * `undefined`.
+ */
+export const parseAppManifest = (
+  text: string,
+): Record<string, string> | undefined => {
+  const tokens = tokenize(text);
+  const head = tokens?.[0];
+  if (
+    tokens === undefined ||
+    head?.kind !== "string" ||
+    head.value.toLowerCase() !== "appstate" ||
+    tokens[1]?.kind !== "open"
+  )
+    return undefined;
+  const fields: Record<string, string> = {};
+  let depth = 1;
+  let index = 2;
+  while (depth > 0) {
+    const token = tokens[index];
+    if (token === undefined || token.kind === "open") return undefined;
+    if (token.kind === "close") {
+      depth--;
+      index++;
+      continue;
+    }
+    const value = tokens[index + 1];
+    if (value === undefined || value.kind === "close") return undefined;
+    if (value.kind === "open") depth++;
+    else if (depth === 1) fields[token.value] = value.value;
+    index += 2;
+  }
+  return fields;
+};
+
+/** Имя каталога игры в `common/`: один компонент пути. */
+export const isInstallDir = (name: string | undefined): name is string =>
+  name !== undefined &&
+  name !== "" &&
+  name !== "." &&
+  name !== ".." &&
+  !name.includes("/") &&
+  !name.includes("\0") &&
+  Buffer.byteLength(name) <= 255;

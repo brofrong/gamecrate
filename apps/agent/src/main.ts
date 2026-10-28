@@ -8,6 +8,7 @@ import { AgentConfig } from "./config";
 import { DockerClient } from "./DockerClient";
 import { Installer } from "./Installer";
 import * as OrchestratorLink from "./OrchestratorLink";
+import { prefixTemplatesLayer } from "./PrefixTemplate";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { ProfileStore } from "./profile/ProfileStore";
 import { SessionSupervisor } from "./SessionSupervisor";
@@ -18,6 +19,8 @@ const Agent = OrchestratorLink.layer.pipe(
   Layer.provide(SessionSupervisor.layer),
   // Роль gamestore — установки; без неё Installer только отказывает.
   Layer.provide(Installer.layer),
+  // Шаблоны префикса Proton — и супервизору (после сессии), и установщику.
+  Layer.provide(prefixTemplatesLayer),
   // Один ProfileCommitter на супервизор, установщик и соединение с оркестратором.
   Layer.provideMerge(ProfileCommitter.layer),
   Layer.provide(ProfileStore.layer),

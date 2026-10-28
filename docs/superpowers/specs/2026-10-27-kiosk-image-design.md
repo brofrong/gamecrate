@@ -401,3 +401,66 @@ system.reg.old, userdef.reg, .update-timestamp, creation_sync_guard, dosdevices,
 даже вчера на прогретом хосте было 34–51 с (сегодня 53–78 с). Нужно ещё срезать ~30 с до
 reaper: старт KDE/киоска, запуск Steam до входа (сегодня 37–62 с от строки), ожидание библиотеки
 (9–12 с). К владельцу с этими числами.
+
+### Шаблон префикса: проба сборки (2026-10-28, Task 8.1)
+
+`brofrong`, слот свободен (ни `cg.session`, ни `cg.install`), хост свободный (`Dirty` < 7 МБ, load
+1–4). Временный контейнер `cg-pfx-probe` (метка `cg.probe=prefix-template`, `--network none`,
+`--user 1000`, `no-new-privileges`, явный `--entrypoint`, образ `cg-session:550.163.01`, без GPU).
+Библиотека — только lower: в неё ничего не записано (после проб в `steamapps` нет `compatdata`).
+
+В библиотеке: Proton Experimental `version` — `1791989105 experimental-11.0-20261014-x86_64`
+(суффикс `-x86_64` — часть первой строки), `CURRENT_PREFIX_VERSION="11.0-100"`;
+`toolmanifest.vdf` → `require_tool_appid` **4183110** (Steam Linux Runtime 4.0, `installdir`
+`SteamLinuxRuntime_4`); у 1966900 `installdir` — `1966900`. В скрипте `proton` `copy_pfx`,
+`MachineGuid` и оба `os.sync()` `setup_prefix` — только под `if not file_exists(creation_sync_guard)`
+(ещё два `sync()` — в `upgrade_pfx`, только для префиксов Proton < 10 и с битой версией).
+
+Что понадобилось сверх запуска из плана (три правки):
+
+| Попытка | Итог |
+| --- | --- |
+| библиотека `:ro` bind, как в плане | `bwrap: No permissions to create a new namespace` — в контейнере нет user namespaces |
+| + `BWRAP=/usr/local/bin/proot-bwrap` (как обёртка `/usr/bin/steam` образа) | `openat(…/SteamLinuxRuntime_4/steamrt4_platform_…/files/.ref): Read-only file system` — pressure-vessel берёт блокировку в каталоге рантайма |
+| + слои overlay как у агента (`client` — lower клиент Steam, `apps` — lower библиотека, upper в своём каталоге, `NoCopy`, как `createBody`) | `proot-bwrap: Can't find source path /tmp/runtime-ubuntu/dbus-system-bus` — `DBUS_SYSTEM_BUS_ADDRESS` из образа, системной шины в помощнике нет |
+| + `DBUS_SYSTEM_BUS_ADDRESS=` (пусто: pressure-vessel не пробрасывает шину) и `mkdir compatdata/1966900` (каталог создаёт Steam до запуска Proton) | префикс создан, **код выхода 3** |
+
+Код 3 — не сбой префикса: `setup_prefix` (оба `sync()`, `creation_sync_guard`) отрабатывает до
+запуска команды, а команду Proton запускает через `steam.exe`, который без клиента Steam падает
+(`PROTON_LOG`: `steamclient_init unable to load native steamclient library`, `_wassert` →
+`abort()` = 3). Глагол без `steam.exe` (`runinprefix`) префикс не создаёт (`init_session(False)`),
+`run`/`wineboot.exe` идут через тот же `steam.exe` — их не пробовал. Агент принимает 0 и 3 и
+проверяет префикс по файлам (`version`, `pfx/creation_sync_guard`).
+
+Итоговый запуск (= `templateBuildSpec`): тома как у агента, префикс — bind
+`<build>:…/steamapps/compatdata/1966900` поверх тома `apps` (Docker сам создаёт точку
+монтирования в upper; так в помощнике не просвечивает старый шаблон из lower при пересборке
+`stale`), `--tmpfs /tmp/cg-pv:exec,size=1g` (`exec` нужен: оттуда запускается `pv-adverb`),
+entrypoint `…/SteamLinuxRuntime_4/_v2-entry-point --verb=waitforexitandrun -- …/Proton -
+Experimental/proton waitforexitandrun C:\windows\system32\cmd.exe /c exit 0`, env из плана плюс
+`BWRAP` и пустой `DBUS_SYSTEM_BUS_ADDRESS`.
+
+| Вариант | Время от `docker run` | Пик `Dirty` (раз в 2 с) |
+| --- | --- | --- |
+| копия рантайма в слой контейнера (`/tmp/cg-pv` без tmpfs) | 59–63 с (из них ~45 с — копия: hard link на другую ФС не выходит, «Falling back to copying») | — |
+| копия рантайма в tmpfs, префикс в upper `apps` | 52 с (копия ~20 с) | 286 МБ |
+| итог: tmpfs + префикс в bind `build` | **45 с** | 17 МБ |
+
+Префикс (как у шаблона проб, плюс умолчания): `config_info`, `pfx`, `pfx.lock`, `tracked_files`,
+`version` (`11.0-100`); `pfx/{creation_sync_guard, dosdevices, drive_c, system.reg,
+system.reg.old, .update-timestamp, userdef.reg, user.reg}`; `drive_c/users/{Public, steamuser}`;
+375 МБ; 0 файлов `steam_autocloud.vdf`; владелец uid 1000; `dosdevices`: `c: → ../drive_c`,
+`s: → …/Steam/steamapps`, `z: → /`. Абсолютные ссылки — только в каталог Proton
+(`files/lib/wine/*-windows`, `files/share/fonts`, `files/share/wine/fonts`) и на
+`/home/ubuntu/.local/share/Steam`; пути `compatdata` в префиксе нет (строка есть только в
+`steamclient*.dll`), на `/tmp/cg-pv` ничего не ссылается. `config_info` — пути Proton по путям
+сессии. «Error: unable to use parent for game drive» — как в сессии (`steamapps` — отдельное
+монтирование, `s:` указывает на него).
+
+Попутно: в upper `apps` помощника Proton пишет ~740 МБ в свой каталог
+(`common/Proton - Experimental/files/lib/wine/…`, 1739 файлов, плюс `steampipe_fixups_mtime` и
+`dist.lock`). Судя по записанному `steampipe_fixups_mtime` (в библиотеке его нет), это
+`do_steampipe_fixups`: без отметки он выполняется при каждом запуске Proton и через copy-up
+переписывает каталог Proton в upper. По-видимому, так же — в каждой сессии с Proton (в её upper на
+NVMe); в сессии не проверял. Это не префикс и не трогается Task 8.1, но
+кандидат в следующее ускорение (один раз выполнить fixups в библиотеке без живых сессий).

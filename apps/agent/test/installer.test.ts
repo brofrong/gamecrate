@@ -51,6 +51,7 @@ import { PACK_OUTPUT } from "../src/profile/HomeProfile";
 import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import { ProfileStore, ProfileStoreError } from "../src/profile/ProfileStore";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
+import { PrefixTemplates, type TemplateOutcome } from "../src/PrefixTemplate";
 import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
@@ -415,6 +416,14 @@ const run = (
     readonly config?: Partial<AgentConfigValues>;
     /** Сюда пишется лог установщика (уровень и `Bun.inspect` сообщения); нет — лог выключен. */
     readonly logs?: Array<{ level: string; text: string }>;
+    /**
+     * Фейк `PrefixTemplates.ensure`: вызов пишется в журнал (`templates.ensure
+     * <appId>`); нет — сервис по умолчанию (`skipped`, без записи).
+     */
+    readonly templates?: (
+      appId: number,
+      fake: Fake,
+    ) => Effect.Effect<TemplateOutcome>;
   } = {},
 ) => {
   const fake = makeFake();
@@ -496,6 +505,18 @@ const run = (
           return total;
         }),
       ),
+      (effect) => {
+        const ensure = options.templates;
+        return ensure === undefined
+          ? effect
+          : Effect.provideService(effect, PrefixTemplates, {
+              ensure: (appId) =>
+                Effect.suspend(() => {
+                  fake.state.calls.push(`templates.ensure ${appId}`);
+                  return ensure(appId, fake);
+                }),
+            });
+      },
       (effect) => {
         const logs = options.logs;
         if (logs === undefined)
@@ -1568,6 +1589,104 @@ describe("Installer", () => {
         expect(tree(h.fake.state.lower)).toEqual(["common/"]);
         expect(layerDirsExist(h.fake)).toEqual([false, false]);
       }),
+    ));
+
+  it("finished install asks for the prefix template before InstallFinished", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    let libraryAtEnsure: Array<string> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          steamInstalls(h.fake);
+          yield* h.tick("2 seconds");
+          expect(callsFrom(h.fake, "removeVolume cg-i-j1-client")).toEqual([
+            "removeVolume cg-i-j1-client",
+            "removeVolume cg-i-j1-apps",
+            "templates.ensure 736260",
+            "remove cg-i-j1-cleanup",
+            "create cg-i-j1-cleanup",
+            "start cg-i-j1-cleanup",
+            "wait cg-i-j1-cleanup",
+            "remove cg-i-j1-cleanup",
+          ]);
+          // Манифест цели уже перенесён в библиотеку, когда спрашивают шаблон.
+          expect(libraryAtEnsure).toContain(
+            `appmanifest_736260.acf=${h.fake.state.manifest}`,
+          );
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "InstallFinished",
+              jobId: "j1",
+              sizeBytes: 88382496,
+              buildId: "12345",
+            },
+          ]);
+          const finished = logs.find((line) =>
+            line.text.includes("Install finished"),
+          );
+          expect(finished?.text).toContain('prefixTemplate: "built"');
+        }),
+      {
+        logs,
+        templates: (_appId, fake) =>
+          Effect.sync(() => {
+            libraryAtEnsure = tree(fake.state.lower);
+            return "built" as const;
+          }),
+      },
+    );
+  });
+
+  it("slow template build does not hold InstallFinished longer than 2 minutes", () => {
+    const logs: Array<{ level: string; text: string }> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          steamInstalls(h.fake);
+          yield* h.tick("2 seconds");
+          expect(h.fake.state.calls).toContain("templates.ensure 736260");
+          yield* h.tick("119 seconds");
+          expect(yield* h.drain).toEqual([]);
+          expect(h.installer.running()).toEqual(["j1"]);
+          yield* h.tick("1 second");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "InstallFinished",
+              jobId: "j1",
+              sizeBytes: 88382496,
+              buildId: "12345",
+            },
+          ]);
+          expect(h.installer.running()).toEqual([]);
+          expect(layerDirsExist(h.fake)).toEqual([false, false]);
+          const finished = logs.find((line) =>
+            line.text.includes("Install finished"),
+          );
+          expect(finished?.text).toContain('prefixTemplate: "pending"');
+        }),
+      { logs, templates: () => Effect.never },
+    );
+  });
+
+  it("failed install does not ask for a template", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.install(install);
+          yield* h.tick("0 seconds");
+          steamInstalls(h.fake);
+          rmSync(join(upperOf(h.fake), "common", "Baba Is You"), {
+            recursive: true,
+          });
+          yield* h.tick("2 seconds");
+          expect(yield* h.drain).toEqual([failed(installReasons.promote)]);
+          expect(h.fake.state.calls).not.toContain("templates.ensure 736260");
+        }),
+      { templates: () => Effect.succeed("built") },
     ));
 
   it("invalid command is rejected without touching Docker", () =>

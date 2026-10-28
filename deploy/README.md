@@ -55,7 +55,7 @@
 
   | Каталог                                                  | Что                                                                                       |
   | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-  | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf` и `steamapps/common/<игра>`; lower сессий |
+  | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf`, `steamapps/common/<игра>` и шаблоны префикса Proton `steamapps/compatdata/<appid>` (см. «Шаблоны префикса Proton»); lower сессий |
   | `STEAM_CLIENT_DIR=/raid/cloud-gaming/steam-client`       | шаблон клиента Steam (`build-steam-client.sh`), внутри пустой `steamapps/`; lower сессий  |
   | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
   | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
@@ -65,7 +65,7 @@
   отдельным; оба с `create_host_path: false` (нет каталога — агент не стартует, а не получает
   каталог root). `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming` (его `rsync --delete` и
   контекст сборки не должны задевать слои сессий). В библиотеку пишет только
-  агент (перенос установленных игр); руками туда ничего не класть.
+  агент (перенос установленных игр и шаблонов префикса); руками туда ничего не класть.
 
 - `cg-rustfs` (`rustfs/rustfs:1.0.3`, volume `cg-rustfs-data` → `/data`) — хранилище профилей
   (S3, `:9000`), только сеть `cg`, порты наружу не публикуются, `mem_limit` 512m. Ключи —
@@ -533,6 +533,83 @@ lower overlay `~/.local/share/Steam` каждой сессии и установ
 шаблона помощником от root. Прервался — контейнер `cg-steam-client-build` удаляется сам (если
 остался: `docker rm -f cg-steam-client-build`), рабочий шаблон не меняется до последнего шага.
 
+## Шаблоны префикса Proton
+
+Зачем: Proton при создании префикса игры (`compatdata/<appid>`) дважды зовёт глобальный `sync()` —
+он ждёт запись всех грязных страниц хоста, включая чужие диски. На свободном хосте это ~6 с
+старта (этап `prepare` 20 Minutes Till Dawn: 23,3 → 16,9 с), на занятом — минуты (базы 200 и
+336 с, процесс `proton` в состоянии D 15–35 мин, остановка сессии падала). Раньше префикс
+создавался заново в каждой сессии. Теперь агент держит готовый префикс на игру в библиотеке, и
+Proton в сессии его не создаёт и `sync()` не зовёт (спека плана 4, «Пробы ускорения» и «Шаблон
+префикса: проба сборки»).
+
+Где: `/raid/cloud-gaming/library/steamapps/compatdata/<appid>` (~375 МБ на игру) — lower слоя
+`apps` каждой сессии, сессия пишет только в свой upper. В нём файл `cg-template` — сборка Proton
+(первая строка `common/Proton - Experimental/version`), из которой он сделан. Другая сборка —
+шаблон устарел и пересобирается; до пересборки сессии работают со старым (Proton обновляет его в
+своём upper без создания префикса).
+
+Когда собирается (только агентом, только для игр с `.exe` на глубине до 4 и при Proton
+Experimental и его Steam Linux Runtime в библиотеке):
+
+- после установки, до «готово»: установка ждёт шаблон не дольше 2 мин, дальше он собирается в
+  фоне, а первая сессия идёт без него;
+- после сессии, в которой Proton создавал префикс, если шаблона нет или он устарел (в фоне, после
+  удаления контейнера сессии);
+- вручную — CLI ниже.
+
+Как: помощник `cg-i-pfx-<appid>-build` (метка `cg.helper=prefix-template`) из `SESSION_IMAGE`
+без сети, GPU, входа в Steam и профиля; слои — как у установщика (`<SCRATCH_DIR>/.install/pfx-<appid>`,
+`<INSTALL_SCRATCH_DIR>/pfx-<appid>`), префикс пишется в `<INSTALL_SCRATCH_DIR>/pfx-<appid>/build`
+и переносится в библиотеку `rename`. ~45–60 с на игру (копия рантайма pressure-vessel в tmpfs
+помощника ~20 с, Proton ~25–30 с). Пока в библиотеке есть контейнер этой игры (`cg.app=<appid>`:
+сессия или установка), шаблон не переносится (`deferred`) — повторится при следующем поводе.
+
+Что внутри: префикс, который создал Proton, включая его умолчания `pfx/user.reg` и
+`pfx/drive_c/users/steamuser` (данных игрока там нет — помощник без входа и профиля; файлы игрока
+из профиля ложатся сверху). Если в префиксе найден `steam_autocloud.vdf`, шаблон не переносится.
+`MachineGuid` в `pfx/system.reg` у всех игроков игры общий до пересборки шаблона (с аккаунтом не
+связан). `cg-profile-pack` кладёт в профиль игрока умолчания префикса и для игр, в которые он не
+играл, — килобайты на игру.
+
+Как посмотреть:
+
+```sh
+ssh brofrong 'cd /raid/cloud-gaming/library/steamapps/compatdata && for d in */; do echo "${d%/} $(head -1 "$d/cg-template" 2>/dev/null || echo "-")"; done'
+ssh brofrong 'docker logs cg-agent 2>&1 | grep "Prefix template"'
+ssh brofrong 'docker logs cg-agent 2>&1 | grep "Install finished" | tail -3'   # поле prefixTemplate
+```
+
+Исходы в логе: `Prefix template built` (`appId`, `build`), `Prefix template deferred: app in use`,
+`Prefix template skipped` (`why`: нет Proton/рантайма, нет `.exe`, мало места, нет
+`INSTALL_SCRATCH_DIR`), `Prefix template build failed` (`error`), `Prefix template has player
+data` (пути). У установки в `Install finished` — `prefixTemplate`: `built`/`fresh`/…, `pending` —
+не дождались за 2 мин.
+
+Пересобрать вручную (например, после ручной смены Proton в библиотеке — сам установщик Proton
+не обновляет): только когда нет сессий и установок (`docker ps -a --filter label=cg.session`,
+`docker ps -a --filter label=cg.install` — по отдельности; имена помощника те же, что у агента).
+По очереди, на каждый appid — строка `<appid> <исход>`, код 1 при `failed`:
+
+```sh
+ssh brofrong 'cd /raid/cloud-gaming/library/steamapps && docker exec cg-agent bun apps/agent/src/prefixTemplateCli.ts $(ls appmanifest_*.acf | sed "s/appmanifest_//; s/\.acf//")'
+```
+
+Рантаймы и игры без `.exe` дадут `skipped` — это нормально.
+
+Выбросить битый шаблон (игра в сессиях падает на старте Proton, а без шаблона шла): без живых
+сессий этой игры, на той же ФС, как в «common без манифеста»; следующая сессия создаст префикс
+сама, после неё агент соберёт шаблон заново:
+
+```sh
+ssh brofrong 'mkdir -p /raid/cloud-gaming/orphans && mv /raid/cloud-gaming/library/steamapps/compatdata/<appid> "/raid/cloud-gaming/orphans/compatdata-<appid>-$(date +%F)"'
+```
+
+Помощник завис (Proton в `sync()` на занятом хосте, состояние D): `docker ps -a --filter
+label=cg.helper` покажет `cg-i-pfx-<appid>-build`. Установка ждёт его не дольше 2 мин, сессии он
+не мешает; агент ждёт выхода помощника до 10 мин и тогда считает сборку неудачной. Остатки
+(контейнер, тома `cg-i-pfx-*`, каталоги `pfx-<appid>`) агент убирает при следующем старте.
+
 ## Вход в Steam по QR
 
 Игрок подключает Steam на самом сайте (`/library`, `/profile` или экран сессии): QR-код,
@@ -650,8 +727,9 @@ MVP-3 (магазин игр и профили). До деплоя: `./deploy/bu
    месте.
 5. Вторая вкладка/второй аккаунт на ту же неустановленную игру (если есть второй аккаунт) — одна
    установка, общий процент.
-6. Библиотека: `steamapps` содержит только `appmanifest_*.acf` и `common/<игры и рантаймы>`; нет
-   `compatdata`, `workshop`, `shadercache`, `Steam Controller Configs`.
+6. Библиотека: `steamapps` содержит только `appmanifest_*.acf`, `common/<игры и рантаймы>` и
+   `compatdata/<appid>` игр на Proton — в каждом есть `cg-template` (шаблоны префикса, план 4);
+   нет `workshop`, `shadercache`, `Steam Controller Configs`.
 
 ## Если `https://game.brofrong.ru` отдаёт 502, а `cg-api` healthy
 

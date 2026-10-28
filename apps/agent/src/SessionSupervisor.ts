@@ -4,7 +4,8 @@
 // облака Steam, сохраняет профиль и убирает контейнер со слоями (профиль не
 // сохранён — контейнер со слоями остаётся). Отчёты складывает в очередь `reports`
 // (их по порядку отправляет OrchestratorLink).
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   type AgentCommand,
   type AgentReport,
@@ -46,6 +47,7 @@ import {
   unmarkVolatile,
 } from "./Overlay";
 import { FreeSpace, hasFreeSpace } from "./DiskSpace";
+import { PrefixTemplates } from "./PrefixTemplate";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
 import type { ProfileStore } from "./profile/ProfileStore";
@@ -305,6 +307,7 @@ const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
   const freeSpace = yield* FreeSpace;
+  const templates = yield* PrefixTemplates;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<
     AgentConfig | DockerClient | ProfileStore | ProfileCommitter
@@ -570,11 +573,16 @@ const make = Effect.gen(function* () {
    * `Stopped`. Профиль не сохранён (в том числе коммит отклонён: база устарела)
    * — контейнер только останавливается и вместе со слоями остаётся
    * (`profile-unsaved` в логе), следующая сессия получит предыдущую версию
-   * профиля.
+   * профиля. Proton создавал префикс игры (`compatdata/<appId>` в upper слоя
+   * apps) — после удаления контейнера и слоёв в фоне проверяется шаблон
+   * префикса этой игры (`PrefixTemplates.ensure`: нет или устарел — собрать).
    */
   const finish = (session: Session) =>
     Effect.gen(function* () {
       session.phase = "stopping";
+      const protonUsed = existsSync(
+        join(session.overlays.apps.upper, "compatdata", String(session.appId)),
+      );
       let cloudSynced = false;
       if (session.gameRunning) {
         // StopSession посреди игры: база — прямо перед SIGTERM (всё выгруженное
@@ -624,6 +632,8 @@ const make = Effect.gen(function* () {
           ),
         );
         yield* cleanupLogged(session.overlays);
+        if (protonUsed)
+          yield* Effect.forkIn(templates.ensure(session.appId), scope);
       }
       const profileSaved = Result.isSuccess(saved);
       sessions.delete(session.sessionId);

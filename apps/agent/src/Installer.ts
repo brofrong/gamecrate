@@ -59,6 +59,7 @@ import {
   STEAM_DIR,
   STEAMAPPS_DIR,
 } from "./Overlay";
+import { PrefixTemplates, TEMPLATE_INSTALL_WAIT } from "./PrefixTemplate";
 import { singleFileTar } from "./profile/codec";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
@@ -70,7 +71,7 @@ import {
   USER_LABEL,
 } from "./SessionSupervisor";
 import { seedSteamLogin } from "./steam/seedContainer";
-import { tokenize } from "./steam/vdf";
+import { isInstallDir, parseAppManifest } from "./steam/vdf";
 
 /** Метка контейнеров и томов установки: `cg.install=<jobId>`. */
 export const INSTALL_LABEL = "cg.install";
@@ -212,56 +213,12 @@ export const stubManifest = (appId: number) =>
     "",
   ].join("\n");
 
-/**
- * Поля верхнего уровня блока `"AppState" { … }` манифеста Steam (вложенные
- * блоки — `InstalledDepots`, `UserConfig` — пропускаются). Не манифест —
- * `undefined`.
- */
-export const parseAppManifest = (
-  text: string,
-): Record<string, string> | undefined => {
-  const tokens = tokenize(text);
-  const head = tokens?.[0];
-  if (
-    tokens === undefined ||
-    head?.kind !== "string" ||
-    head.value.toLowerCase() !== "appstate" ||
-    tokens[1]?.kind !== "open"
-  )
-    return undefined;
-  const fields: Record<string, string> = {};
-  let depth = 1;
-  let index = 2;
-  while (depth > 0) {
-    const token = tokens[index];
-    if (token === undefined || token.kind === "open") return undefined;
-    if (token.kind === "close") {
-      depth--;
-      index++;
-      continue;
-    }
-    const value = tokens[index + 1];
-    if (value === undefined || value.kind === "close") return undefined;
-    if (value.kind === "open") depth++;
-    else if (depth === 1) fields[token.value] = value.value;
-    index += 2;
-  }
-  return fields;
-};
+/** Разбор манифеста перенесён в `steam/vdf.ts` (его читает и `PrefixTemplate`). */
+export { parseAppManifest };
 
 /** Неотрицательное целое из поля манифеста (байты); иначе `undefined`. */
 const count = (value: string | undefined) =>
   value !== undefined && /^\d{1,15}$/.test(value) ? Number(value) : undefined;
-
-/** Имя каталога игры в `common/`: один компонент пути. */
-const isInstallDir = (name: string | undefined): name is string =>
-  name !== undefined &&
-  name !== "" &&
-  name !== "." &&
-  name !== ".." &&
-  !name.includes("/") &&
-  !name.includes("\0") &&
-  Buffer.byteLength(name) <= 255;
 
 const MANIFEST_FILE = /^appmanifest_([1-9]\d{0,9})\.acf$/;
 
@@ -417,6 +374,7 @@ const make = Effect.gen(function* () {
   const docker = yield* DockerClient;
   const freeSpace = yield* FreeSpace;
   const measureDownloading = yield* DownloadingBytes;
+  const templates = yield* PrefixTemplates;
   const scope = yield* Effect.scope;
   const services = yield* Effect.context<Services>();
   const withServices = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -745,8 +703,10 @@ const make = Effect.gen(function* () {
 
   /**
    * Игра скачана: профиль → контейнер и тома (overlay размонтирован) → перенос
-   * новых приложений → `InstallFinished` → scratch. Профиль не сохранён — только
-   * лог: следующая сессия возьмёт предыдущую версию, игра в библиотеке нужнее.
+   * новых приложений → шаблон префикса Proton (ждём не дольше
+   * `TEMPLATE_INSTALL_WAIT`, дальше он собирается в фоне) → `InstallFinished` →
+   * scratch. Профиль не сохранён — только лог: следующая сессия возьмёт
+   * предыдущую версию, игра в библиотеке нужнее.
    */
   const finish = (job: Job, manifest: Record<string, string>) =>
     Effect.gen(function* () {
@@ -797,6 +757,13 @@ const make = Effect.gen(function* () {
         try: () => applyPromotion(plan, lower),
         catch: promoteFailed,
       });
+      // Первая сессия игрока — уже с шаблоном (без `sync()` Proton в ней).
+      const prefixTemplate = yield* templates.ensure(job.appId).pipe(
+        Effect.timeoutOrElse({
+          duration: TEMPLATE_INSTALL_WAIT,
+          orElse: () => Effect.succeed("pending" as const),
+        }),
+      );
       yield* Effect.logInfo("Install finished", {
         jobId: job.jobId,
         appId: job.appId,
@@ -805,6 +772,7 @@ const make = Effect.gen(function* () {
         sizeBytes,
         buildId,
         profileSaved: Result.isSuccess(saved),
+        prefixTemplate,
       });
       // Установщик свободен до отчёта: оркестратор может сразу прислать следующую.
       if (current === job) current = undefined;
