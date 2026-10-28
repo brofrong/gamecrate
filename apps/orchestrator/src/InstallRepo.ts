@@ -91,6 +91,8 @@ export interface Claim {
   };
   readonly workerId: string;
   readonly profile: ProfileRef | null;
+  /** Пометка сброса входа Steam пользователя (`SessionRepo.steamLoginResetAt`). */
+  readonly steamLoginResetAt: Date | null;
 }
 
 /**
@@ -103,8 +105,9 @@ export const cancelledByAdminError = "Установка отменена адм
  * Одна транзакция: самая старая `queued`-задача без запроса отмены админом
  * (`FOR UPDATE SKIP LOCKED`) → первый по id агент из `candidates` со строкой в
  * `workers`, не в обслуживании (`draining = false`) и без `running`-задачи →
- * `state = 'running'`, `workerId`. `undefined` — очередь пуста или свободных
- * агентов нет.
+ * `state = 'running'`, `workerId`; профиль и пометка сброса входа Steam
+ * пользователя задачи читаются в той же транзакции (сбой чтения откатывает
+ * выдачу). `undefined` — очередь пуста или свободных агентов нет.
  */
 export const claimNext = (candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -157,7 +160,15 @@ export const claimNext = (candidates: ReadonlyArray<string>) =>
           .set({ state: "running", workerId: free.id })
           .where(eq(installJobs.id, job.id));
         const profile = yield* SessionRepo.profileOf(job.userId);
-        return { job, workerId: free.id, profile } satisfies Claim;
+        const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
+          job.userId,
+        );
+        return {
+          job,
+          workerId: free.id,
+          profile,
+          steamLoginResetAt,
+        } satisfies Claim;
       }),
     );
   });

@@ -18,18 +18,25 @@ export interface SteamLoginSeedsShape {
   readonly get: (userId: string) => Effect.Effect<SteamLoginSeed | null>;
   /** Убрать вход пользователя (принятый посеянный коммит профиля). */
   readonly clear: (userId: string) => Effect.Effect<void>;
+  /**
+   * Убрать вход пользователя, положенный раньше `at` (админ сбросил вход Steam
+   * в момент `at`, `user.steam_login_reset_at`); положенный в `at` или позже —
+   * остаётся: пользователь вошёл заново уже после сброса.
+   */
+  readonly clearOlderThan: (userId: string, at: Date) => Effect.Effect<void>;
 }
 
 const make = Effect.sync(() => {
   const entries = new Map<
     string,
-    { seed: SteamLoginSeed; expiresAt: number }
+    { seed: SteamLoginSeed; putAt: number; expiresAt: number }
   >();
 
   const put: SteamLoginSeedsShape["put"] = (userId, seed) =>
     Effect.map(Clock.currentTimeMillis, (now) => {
       entries.set(userId, {
         seed,
+        putAt: now,
         expiresAt: now + Duration.toMillis(SEED_TTL),
       });
     });
@@ -50,7 +57,14 @@ const make = Effect.sync(() => {
       entries.delete(userId);
     });
 
-  return { put, get, clear } satisfies SteamLoginSeedsShape;
+  const clearOlderThan: SteamLoginSeedsShape["clearOlderThan"] = (userId, at) =>
+    Effect.sync(() => {
+      const entry = entries.get(userId);
+      if (entry !== undefined && entry.putAt < at.getTime())
+        entries.delete(userId);
+    });
+
+  return { put, get, clear, clearOlderThan } satisfies SteamLoginSeedsShape;
 });
 
 export class SteamLoginSeeds extends Context.Service<

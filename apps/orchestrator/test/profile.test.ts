@@ -211,6 +211,85 @@ describe("profile commit", () => {
       }),
     ));
 
+  it("accepted commit with the echo clears the reset", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedUser("u1");
+        const T = new Date("2026-10-28T10:00:00.123Z");
+        const T2 = new Date("2026-10-28T11:00:00.456Z");
+        const setReset = (at: Date | null) =>
+          db
+            .update(user)
+            .set({ steamLoginResetAt: at })
+            .where(eq(user.id, "u1"));
+
+        // Отклонённый коммит с эхом T пометку не снимает.
+        yield* setReset(T);
+        const rejected = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: 5,
+            objectKey: "profiles/u1/x.cgp",
+            sizeBytes: 1,
+            steamLoginSeeded: false,
+            steamLoginResetAt: T.toISOString(),
+          },
+          "w1",
+        );
+        expect(rejected).toEqual({ accepted: false });
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toEqual(T);
+
+        // Принятый коммит без эха (агент не стирал вход) пометку не снимает.
+        const plain = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 1,
+            steamLoginSeeded: false,
+          },
+          "w1",
+        );
+        expect(plain).toEqual({ accepted: true });
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toEqual(T);
+
+        // Принятый коммит с эхом T — снята.
+        const cleared = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: 1,
+            objectKey: "profiles/u1/b.cgp",
+            sizeBytes: 1,
+            steamLoginSeeded: false,
+            steamLoginResetAt: T.toISOString(),
+          },
+          "w1",
+        );
+        expect(cleared).toEqual({ accepted: true });
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toBeNull();
+
+        // Админ сбросил ещё раз (T2 > T), запоздалый коммит с эхом T — остаётся T2.
+        yield* setReset(T2);
+        const stale = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: 2,
+            objectKey: "profiles/u1/c.cgp",
+            sizeBytes: 1,
+            steamLoginSeeded: false,
+            steamLoginResetAt: T.toISOString(),
+          },
+          "w1",
+        );
+        expect(stale).toEqual({ accepted: true });
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toEqual(T2);
+        expect(yield* SessionRepo.clearSteamLoginReset("u1", T)).toBe(false);
+        expect(yield* SessionRepo.clearSteamLoginReset("u1", T2)).toBe(true);
+        expect(yield* SessionRepo.steamLoginResetAt("u1")).toBeNull();
+      }),
+    ));
+
   it("logs whether the commit was seeded and cleared the pending login", async () => {
     const logged: Array<ReadonlyArray<unknown>> = [];
     const capture = Logger.make(({ message }) => {
@@ -243,6 +322,24 @@ describe("profile commit", () => {
           },
           "w1",
         );
+        // Принят с эхом сброса: пометка снята (в логе — только флаг).
+        const resetAt = new Date("2026-10-28T10:00:00.000Z");
+        const db = yield* Db;
+        yield* db
+          .update(user)
+          .set({ steamLoginResetAt: resetAt })
+          .where(eq(user.id, "u1"));
+        yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: 1,
+            objectKey: "profiles/u1/b.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: false,
+            steamLoginResetAt: resetAt.toISOString(),
+          },
+          "w1",
+        );
       }).pipe(
         Effect.provide(DbTest),
         Effect.provide(SteamLoginSeeds.layer),
@@ -260,6 +357,7 @@ describe("profile commit", () => {
         accepted: false,
         steamLoginSeeded: true,
         seedCleared: false,
+        steamLoginResetCleared: false,
         workerId: "w1",
       },
       {
@@ -268,6 +366,16 @@ describe("profile commit", () => {
         accepted: true,
         steamLoginSeeded: true,
         seedCleared: true,
+        steamLoginResetCleared: false,
+        workerId: "w1",
+      },
+      {
+        userId: "u1",
+        baseVersion: 1,
+        accepted: true,
+        steamLoginSeeded: false,
+        seedCleared: false,
+        steamLoginResetCleared: true,
         workerId: "w1",
       },
     ]);

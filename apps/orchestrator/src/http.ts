@@ -64,8 +64,11 @@ const AgentWebsocketProtocol = Layer.effect(
  * приняли и он был посеян (`steamLoginSeeded`) — `SteamLoginSeeds.clear`:
  * профиль пользователя уже хранит вход, сеять его снова незачем. Отклонённый
  * (устаревшая `baseVersion`) или не посеянный коммит вход не трогает — он
- * ждёт следующую попытку или истечёт по `SEED_TTL`. Итог — в лог (только
- * флаги, без самого входа); `workerId` — агент, приславший коммит.
+ * ждёт следующую попытку или истечёт по `SEED_TTL`. Принятый коммит с эхом
+ * `steamLoginResetAt` (агент стёр вход Steam по сбросу админа) снимает пометку
+ * сброса, если она не новее эха (`SessionRepo.clearSteamLoginReset`): новый
+ * сброс, сделанный во время сессии, ждёт следующего запуска. Итог — в лог
+ * (только флаги, без самого входа); `workerId` — агент, приславший коммит.
  */
 export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
   Effect.gen(function* () {
@@ -73,12 +76,24 @@ export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
     const result = yield* SessionRepo.commitProfile(commit);
     const seedCleared = result.accepted && commit.steamLoginSeeded;
     if (seedCleared) yield* seeds.clear(commit.userId);
+    // Эхо — та же ISO-строка, что ушла в команде; нечитаемое не снимает пометку.
+    const resetEcho =
+      commit.steamLoginResetAt === undefined
+        ? undefined
+        : new Date(commit.steamLoginResetAt);
+    const steamLoginResetCleared =
+      result.accepted &&
+      resetEcho !== undefined &&
+      !Number.isNaN(resetEcho.getTime())
+        ? yield* SessionRepo.clearSteamLoginReset(commit.userId, resetEcho)
+        : false;
     yield* Effect.logInfo("Profile commit", {
       userId: commit.userId,
       baseVersion: commit.baseVersion,
       accepted: result.accepted,
       steamLoginSeeded: commit.steamLoginSeeded,
       seedCleared,
+      steamLoginResetCleared,
       workerId,
     });
     return result;
