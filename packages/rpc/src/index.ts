@@ -1,10 +1,11 @@
-// Пакет @cg/rpc: схемы RPC-групп auth/library/admin/session, общие для сервера и SPA,
-// и протокол агента `AgentRpcs` (только оркестратор, не входит в `AppRpcs`).
+// Пакет @cg/rpc: схемы RPC-групп auth/library/admin/session/streamSettings, общие для
+// сервера и SPA, и протокол агента `AgentRpcs` (только оркестратор, не входит в `AppRpcs`).
 import { AdminRpcs } from "./admin";
 import { AuthRpcs, PublicAuthRpcs } from "./auth";
 import { LibraryRpcs } from "./library";
 import { SessionRpcs } from "./session";
 import { SteamLoginRpcs } from "./steamLogin";
+import { StreamSettingsRpcs } from "./streamSettings";
 import { TimeRpcs } from "./time";
 
 export * from "./admin";
@@ -15,6 +16,7 @@ export * from "./loginMethods";
 export * from "./session";
 export * from "./settings";
 export * from "./steamLogin";
+export * from "./streamSettings";
 export * from "./time";
 
 /** Все RPC-группы приложения; сервер обслуживает их на `/rpc`, SPA строит по ней клиента. */
@@ -25,4 +27,5 @@ export const AppRpcs = AuthRpcs.merge(
   SessionRpcs,
   TimeRpcs,
   SteamLoginRpcs,
+  StreamSettingsRpcs,
 );

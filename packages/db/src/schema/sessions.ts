@@ -166,3 +166,19 @@ export const settings = pgTable("settings", {
     .defaultNow()
     .$onUpdate(() => new Date()),
 });
+
+/**
+ * Настройки стрима каждого пользователя (качество, битрейт, разрешение, отладка,
+ * «меню уже открывали» — `StreamSettings` в `@cg/rpc`, спека §4): следующая игра на
+ * любом устройстве открывается с ними. Отдельная таблица, не колонки `user`.
+ */
+export const userStreamSettings = pgTable("user_stream_settings", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamptz("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});

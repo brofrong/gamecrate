@@ -1,5 +1,5 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
-import { AppRpcs } from "@cg/rpc";
+import { AppRpcs, type StreamSettings } from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity";
@@ -154,6 +154,19 @@ export const adminDeleteGameArgs = (appId: number) =>
 export const adminInstallsAtom = Api.query("admin.installs.list", undefined, {
   reactivityKeys: adminKeys,
 });
+
+/** Ключ реактивности настроек стрима: `save` перезапрашивает `get` следующей сессией. */
+const streamSettingsKeys = ["streamSettings"] as const;
+
+/** Настройки стрима из аккаунта (качество, битрейт, разрешение, отладка, спека §4). */
+export const streamSettingsAtom = Api.query("streamSettings.get", undefined, {
+  reactivityKeys: streamSettingsKeys,
+});
+
+/** Сохранить настройки стрима (меню сессии, с debounce — `useStreamSettings`). */
+export const saveStreamSettingsAtom = Api.mutation("streamSettings.save");
+export const saveStreamSettingsArgs = (settings: StreamSettings) =>
+  ({ payload: settings, reactivityKeys: streamSettingsKeys }) as const;
 
 /** Попросить отменить активную задачу установки («Отменить» на вкладке «Установки»). */
 export const adminCancelInstallAtom = Api.mutation("admin.installs.cancel");
