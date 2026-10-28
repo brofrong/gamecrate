@@ -246,6 +246,22 @@ describe("UsersTab", () => {
     expect(within(bobRow).getByText("в игре")).toBeTruthy();
   });
 
+  it("M4: shows a pending Steam login reset even without a linked steamId", async () => {
+    const unlinkedPendingReset = baseUser({
+      id: "u3",
+      name: "Carol",
+      email: "carol@example.test",
+      providers: ["pocket-id"],
+      steamId: null,
+      steamLoginResetPending: true,
+    });
+    renderUsers([selfRow, blockedWithPocketId, plain, unlinkedPendingReset]);
+
+    const carolRow = (await screen.findByText("Carol")).closest("tr");
+    if (carolRow === null) throw new Error("row not found");
+    expect(within(carolRow).getByText("не привязан · вход сброшен")).toBeTruthy();
+  });
+
   it("filters by name/email on the client", async () => {
     renderUsers([selfRow, blockedWithPocketId, plain]);
     await screen.findByText("Alice");

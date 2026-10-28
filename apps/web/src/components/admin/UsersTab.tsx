@@ -69,9 +69,15 @@ function loginLabel(providers: ReadonlyArray<string>): string {
     .join(", ");
 }
 
-/** «76561190000000001 · вход сброшен», «не привязан». */
+/**
+ * «76561190000000001 · вход сброшен», «не привязан». Пометка сброса
+ * (`steamLoginResetPending`) показывается независимо от привязки Steam: вход
+ * в контейнере мог быть не из `steamId` (сид до отвязки), и админу нужно
+ * видеть, что сброс ещё ждёт исполнения (M4).
+ */
 function steamLabel(u: AdminUser): string {
-  if (u.steamId === null) return "не привязан";
+  if (u.steamId === null)
+    return u.steamLoginResetPending ? "не привязан · вход сброшен" : "не привязан";
   return u.steamLoginResetPending ? `${u.steamId} · вход сброшен` : u.steamId;
 }
 
