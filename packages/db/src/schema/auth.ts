@@ -1,7 +1,14 @@
 // Таблицы Better Auth 1.7 (ядро + плагины better-auth-steam и genericOAuth).
 // Имена свойств совпадают с именами полей Better Auth — так их находит drizzle-адаптер;
 // имена колонок в БД — snake_case.
-import { boolean, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -74,7 +81,13 @@ export const account = pgTable(
       .notNull()
       .$onUpdate(() => new Date()),
   },
-  (t) => [index("account_user_id_idx").on(t.userId)],
+  (t) => [
+    index("account_user_id_idx").on(t.userId),
+    // Один внешний аккаунт — не больше одного пользователя сайта
+    // (Task 4: Steam-вход по QR проверяет это сам, но без индекса гонка
+    // между двумя попытками могла привязать один SteamID к двум строкам).
+    uniqueIndex("account_provider_account_idx").on(t.providerId, t.accountId),
+  ],
 );
 
 export const verification = pgTable(

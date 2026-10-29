@@ -88,7 +88,11 @@ export const finish = (
   error: string | null,
 ) => update(id, activeStates, { state, error });
 
-/** Попытку отменили (API вытеснил её новой) — Steam-вход больше не нужен. */
+/**
+ * Попытку отменили (API вытеснил её новой) — Steam-вход больше не нужен.
+ * Строки нет (например, её успела удалить чистка) — считаем попытку
+ * законченной тем же образом: раннер прекращает её, ничего не привязывая.
+ */
 export const isCancelled = (id: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -96,7 +100,7 @@ export const isCancelled = (id: string) =>
       .select({ state: steamLogins.state })
       .from(steamLogins)
       .where(eq(steamLogins.id, id));
-    return row?.state === "cancelled";
+    return row === undefined || row.state === "cancelled";
   });
 
 /**
@@ -143,11 +147,16 @@ export type LinkResult = "linked" | "otherSteamLinked" | "steamTaken";
  * строка `account` (`providerId "steam"`, `accountId` = SteamID64) и
  * `user.steam_id` — одной транзакцией; строка пользователя под `FOR UPDATE`,
  * чтобы две попытки одного пользователя не привязали два аккаунта.
- * - уже привязан этот же Steam — `linked`, ничего не пишем;
- * - привязан другой — `otherSteamLinked`;
- * - этот Steam у другого пользователя — `steamTaken`.
- * Одновременная привязка того же Steam двумя пользователями упирается в
- * уникальность `user.steam_id` — транзакция падает ошибкой, вызывающий
+ * Один Steam-аккаунт — не больше одного пользователя сайта (уникальный
+ * индекс `account_provider_account_idx` на БД — последний рубеж при гонке):
+ * - у пользователя уже стоит этот `steam_id`, но своей строки `account`
+ *   нет (например, после ручной миграции) — дописываем её и возвращаем
+ *   `linked`; если строка уже есть — просто `linked`, ничего не пишем;
+ * - у пользователя стоит другой `steam_id` — `otherSteamLinked`;
+ * - этот Steam уже занят другим пользователем — своим `user.steam_id` или
+ *   чужой строкой `account(provider_id='steam', account_id=X)` — `steamTaken`.
+ * Одновременная привязка того же Steam двумя пользователями всё равно может
+ * упереться в уникальный индекс — транзакция падает ошибкой, вызывающий
  * проваливает попытку.
  */
 export const linkSteam = (userId: string, steamId: string) =>
@@ -162,23 +171,36 @@ export const linkSteam = (userId: string, steamId: string) =>
           .for("update");
         if (current === undefined)
           return yield* Effect.die(`linkSteam: no user ${userId}`);
-        if (current.steamId === steamId) return "linked" as LinkResult;
-        if (current.steamId !== null) return "otherSteamLinked" as LinkResult;
-        const [owner] = yield* db
+        if (current.steamId !== null && current.steamId !== steamId)
+          return "otherSteamLinked" as LinkResult;
+        const [steamIdOwner] = yield* db
           .select({ id: user.id })
           .from(user)
           .where(and(eq(user.steamId, steamId), ne(user.id, userId)));
-        if (owner !== undefined) return "steamTaken" as LinkResult;
+        if (steamIdOwner !== undefined) return "steamTaken" as LinkResult;
+        const [accountRow] = yield* db
+          .select({ userId: account.userId })
+          .from(account)
+          .where(
+            and(
+              eq(account.providerId, "steam"),
+              eq(account.accountId, steamId),
+            ),
+          );
+        if (accountRow !== undefined && accountRow.userId !== userId)
+          return "steamTaken" as LinkResult;
         const now = new Date();
-        yield* db.insert(account).values({
-          id: crypto.randomUUID(),
-          accountId: steamId,
-          providerId: "steam",
-          userId,
-          createdAt: now,
-          updatedAt: now,
-        });
-        yield* db.update(user).set({ steamId }).where(eq(user.id, userId));
+        if (accountRow === undefined)
+          yield* db.insert(account).values({
+            id: crypto.randomUUID(),
+            accountId: steamId,
+            providerId: "steam",
+            userId,
+            createdAt: now,
+            updatedAt: now,
+          });
+        if (current.steamId !== steamId)
+          yield* db.update(user).set({ steamId }).where(eq(user.id, userId));
         return "linked" as LinkResult;
       }),
     );
