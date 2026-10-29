@@ -15,6 +15,7 @@ import {
   SteamQrLoginDialog,
   SteamQrLoginView,
 } from "../src/components/SteamQrLogin";
+import { STEAM_SERVER_LOCATION } from "../src/components/SteamGuardHint";
 
 const view = (patch: Partial<SteamLoginView> = {}): SteamLoginView => ({
   attemptId: "a1",
@@ -61,14 +62,49 @@ describe("SteamQrLogin", () => {
 
     current = viewResult({ status: "scanned", qrUrl: null });
     await waitFor(() =>
-      expect(
-        screen.getByText("Подтвердите вход в приложении Steam"),
-      ).toBeTruthy(),
+      expect(screen.getByText("Продолжайте в приложении Steam")).toBeTruthy(),
     );
 
     current = viewResult({ status: "done", qrUrl: null });
     await waitFor(() => expect(screen.getByText("Готово")).toBeTruthy());
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows what to pick in the Steam app next to the QR and after scanning", async () => {
+    let current = viewResult({ qrUrl: "https://s.team/q/1/aaa" });
+    render(
+      <SteamQrLoginView
+        title="Подключите Steam"
+        onDone={() => {}}
+        start={async () => ({ attemptId: "a1" })}
+        status={async () => current}
+        pollMs={POLL_MS}
+      />,
+    );
+
+    const picked = () =>
+      [...document.querySelectorAll("[data-picked]")].map((el) =>
+        el.textContent?.trim(),
+      );
+    await waitFor(() =>
+      expect(screen.getByText("Что нажать в приложении Steam")).toBeTruthy(),
+    );
+    // Выбранные варианты по порядку шагов: вход, «как», «где», «что», вход.
+    expect(picked()).toEqual([
+      "Войти в Steam",
+      "Через клиент Steam",
+      STEAM_SERVER_LOCATION,
+      "Другое",
+      "Войти в Steam",
+    ]);
+
+    // После сканирования QR пропадает, а подсказка остаётся.
+    current = viewResult({ status: "scanned", qrUrl: null });
+    await waitFor(() =>
+      expect(screen.getByText("Продолжайте в приложении Steam")).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Сканировать QR-код/)).toBeNull();
+    expect(screen.getByText("Что нажать в приложении Steam")).toBeTruthy();
   });
 
   it("expired offers a new code", async () => {

@@ -9,7 +9,9 @@ import { LoaderCircle } from "lucide-react";
 import QRCode from "qrcode";
 import type * as React from "react";
 import { useEffect, useRef, useState } from "react";
+import { SteamGuardHint } from "@/components/SteamGuardHint";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { errorTag, startSteamLoginAtom, steamLoginStatusAtom } from "@/rpc";
 
 /** Между опросами статуса попытки («раз в 1 с», спека §5.5). */
@@ -24,7 +26,7 @@ const MAX_CONSECUTIVE_FAILURES = 10;
 
 const STATUS_TEXT: Record<"waiting" | "scanned" | "done", string> = {
   waiting: "Ждём сканирования",
-  scanned: "Подтвердите вход в приложении Steam",
+  scanned: "Продолжайте в приложении Steam",
   done: "Готово",
 };
 
@@ -169,6 +171,7 @@ export function SteamQrLoginView({
   }, [view]);
 
   const failed = view?.status === "expired" || view?.status === "failed";
+  const scanned = view?.status === "scanned";
 
   return (
     <div className="flex flex-col items-center gap-4 text-center">
@@ -183,17 +186,34 @@ export function SteamQrLoginView({
           <Button onClick={begin}>Показать новый код</Button>
         </>
       ) : (
-        <>
-          {svg !== null && (
-            <div
-              className="size-48 [&_svg]:size-full"
-              // biome-ignore lint: разметка — доверенный SVG от локальной библиотеки `qrcode`.
-              dangerouslySetInnerHTML={{ __html: svg }}
-            />
+        // Пока ждём сканирования — QR слева, шаги справа (на узком экране — под ним);
+        // после сканирования QR не нужен, и шаги занимают всю ширину.
+        <div
+          className={cn(
+            "flex w-full flex-col items-center gap-5",
+            !scanned && "md:flex-row md:items-start",
           )}
-          <p className="text-sm text-muted-foreground">{HINT}</p>
-          <p className="text-sm font-medium">{STATUS_TEXT[view.status]}</p>
-        </>
+        >
+          <div
+            className={cn(
+              "flex flex-col items-center gap-3",
+              !scanned && "md:w-52 md:shrink-0",
+            )}
+          >
+            {svg !== null && (
+              <div
+                className="size-48 [&_svg]:size-full"
+                // biome-ignore lint: разметка — доверенный SVG от локальной библиотеки `qrcode`.
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            )}
+            {!scanned && (
+              <p className="text-sm text-muted-foreground">{HINT}</p>
+            )}
+            <p className="text-sm font-medium">{STATUS_TEXT[view.status]}</p>
+          </div>
+          <SteamGuardHint wide={scanned} />
+        </div>
       )}
     </div>
   );
@@ -261,7 +281,7 @@ export function SteamQrLoginDialog({
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="flex w-full max-w-sm flex-col gap-4 rounded-lg border bg-background p-6 shadow-lg">
+      <div className="flex max-h-full w-full max-w-3xl flex-col gap-4 overflow-y-auto rounded-lg border bg-background p-6 shadow-lg">
         <QrLogin title={title} onDone={onDone} />
         <Button variant="ghost" className="self-center" onClick={onClose}>
           Отмена
