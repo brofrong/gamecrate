@@ -3,14 +3,44 @@
 // перестановка силы, удаление (только если у класса нет воркеров).
 import { Db, workerClasses, workers } from "@cg/db";
 import type { AdminWorkerClass } from "@cg/rpc";
-import { and, asc, desc, eq, gt, lt, ne, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { asc, desc, eq, gt, lt, sql } from "drizzle-orm";
+import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
+import { Cause, Effect, Option } from "effect";
 
 /**
  * Временный ранг для обмена местами двух классов под уникальным индексом
  * `worker_classes.rank` (минимум int32 — заведомо вне диапазона реальных рангов).
  */
 const TEMP_RANK = -2147483648;
+
+/** Имена constraint'ов, по которым различаем Postgres-нарушения ниже. */
+const NAME_UNIQUE_CONSTRAINT = "worker_classes_name_key";
+const WORKERS_CLASS_ID_FK_CONSTRAINT = "workers_class_id_worker_classes_id_fkey";
+
+/**
+ * Имя нарушенного ограничения БД, если `error` — `EffectDrizzleQueryError` с
+ * нарушением уникальности или FK (`UniqueViolation`/`ConstraintError`
+ * Postgres-реасонов `@effect/sql`); иначе `undefined` — вызывающий код сам
+ * решает, что делать (как правило, `Effect.die`, как раньше `Effect.orDie`).
+ *
+ * Нужно для check-then-act гонок: create/rename с одинаковым именем или
+ * delete/setClass на одном классе могут одновременно пройти
+ * предварительную проверку и упереться в constraint на запись — тогда
+ * конкретный Postgres-код надёжнее второй проверки (которую та же гонка
+ * обходит тем же способом).
+ */
+const violatedConstraint = (error: unknown): string | undefined => {
+  if (!(error instanceof EffectDrizzleQueryError)) return undefined;
+  const sqlError = Option.getOrUndefined(
+    Cause.findErrorOption(error.cause as Cause.Cause<unknown>),
+  ) as { reason?: unknown } | undefined;
+  const reason = sqlError?.reason as
+    | { _tag?: string; constraint?: string; cause?: { constraint?: string } }
+    | undefined;
+  if (reason?._tag === "UniqueViolation") return reason.constraint;
+  if (reason?._tag === "ConstraintError") return reason.cause?.constraint;
+  return undefined;
+};
 
 /** Классы по силе (`rank desc`, сильнейший сверху), с числом воркеров у каждого. */
 export const listClasses = (): Effect.Effect<
@@ -37,37 +67,41 @@ export const listClasses = (): Effect.Effect<
 
 /**
  * Новый класс самым слабым: `rank = min(rank) − 1`, пустой список классов →
- * `1`. Занятое имя — `"duplicate"`.
+ * `1`. Занятое имя — `"duplicate"`: ловим нарушение уникального индекса на
+ * `insert` (а не отдельным `select`-check, который два одновременных
+ * `create` одного имени оба проходят и падают дефектом на втором `insert`).
  */
 export const createClass = (
   name: string,
 ): Effect.Effect<"ok" | "duplicate", never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    return yield* db.transaction(() =>
-      Effect.gen(function* () {
-        const [existing] = yield* db
-          .select({ id: workerClasses.id })
-          .from(workerClasses)
-          .where(eq(workerClasses.name, name));
-        if (existing !== undefined) return "duplicate" as const;
+    const [weakest] = yield* db
+      .select({ rank: workerClasses.rank })
+      .from(workerClasses)
+      .orderBy(asc(workerClasses.rank))
+      .limit(1)
+      .pipe(Effect.orDie);
+    const rank = weakest === undefined ? 1 : weakest.rank - 1;
 
-        const [weakest] = yield* db
-          .select({ rank: workerClasses.rank })
-          .from(workerClasses)
-          .orderBy(asc(workerClasses.rank))
-          .limit(1);
-        const rank = weakest === undefined ? 1 : weakest.rank - 1;
-
-        yield* db.insert(workerClasses).values({ name, rank });
-        return "ok" as const;
-      }),
-    );
-  }).pipe(Effect.orDie);
+    return yield* db
+      .insert(workerClasses)
+      .values({ name, rank })
+      .pipe(
+        Effect.as("ok" as const),
+        Effect.catch((error) =>
+          violatedConstraint(error) === NAME_UNIQUE_CONSTRAINT
+            ? Effect.succeed("duplicate" as const)
+            : Effect.die(error),
+        ),
+      );
+  });
 
 /**
- * Переименовать класс. Нет такого класса — `"notFound"`, занятое другим
- * классом имя — `"duplicate"`, иначе `"ok"`.
+ * Переименовать класс. Нет такого класса — `"notFound"` (0 обновлённых
+ * строк); занятое другим классом имя — `"duplicate"`, пойманное нарушением
+ * уникального индекса на самом `update` (не отдельным `select`-check — та же
+ * гонка, что в `createClass`).
  */
 export const renameClass = (
   id: string,
@@ -75,29 +109,22 @@ export const renameClass = (
 ): Effect.Effect<"ok" | "duplicate" | "notFound", never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    return yield* db.transaction(() =>
-      Effect.gen(function* () {
-        const [found] = yield* db
-          .select({ id: workerClasses.id })
-          .from(workerClasses)
-          .where(eq(workerClasses.id, id))
-          .for("update");
-        if (found === undefined) return "notFound" as const;
-
-        const [duplicate] = yield* db
-          .select({ id: workerClasses.id })
-          .from(workerClasses)
-          .where(and(eq(workerClasses.name, name), ne(workerClasses.id, id)));
-        if (duplicate !== undefined) return "duplicate" as const;
-
-        yield* db
-          .update(workerClasses)
-          .set({ name })
-          .where(eq(workerClasses.id, id));
-        return "ok" as const;
-      }),
-    );
-  }).pipe(Effect.orDie);
+    return yield* db
+      .update(workerClasses)
+      .set({ name })
+      .where(eq(workerClasses.id, id))
+      .returning({ id: workerClasses.id })
+      .pipe(
+        Effect.map((rows) =>
+          rows.length > 0 ? ("ok" as const) : ("notFound" as const),
+        ),
+        Effect.catch((error) =>
+          violatedConstraint(error) === NAME_UNIQUE_CONSTRAINT
+            ? Effect.succeed("duplicate" as const)
+            : Effect.die(error),
+        ),
+      );
+  });
 
 /**
  * Поднять/опустить класс: обменять `rank` с соседом в эту сторону
@@ -156,33 +183,29 @@ export const moveClass = (
   }).pipe(Effect.orDie);
 
 /**
- * Удалить класс. У класса есть воркеры — `"inUse"` (кнопка на этот случай,
- * `workers.class_id` всё равно `on delete restrict`); нет класса —
- * `"notFound"`, иначе `"ok"`.
+ * Удалить класс. У класса есть воркеры — `"inUse"`: ловим нарушение `on
+ * delete restrict` на самом `delete` (а не отдельным `select`-check на
+ * `workers`, который гонка с конкурентным `admin.workers.setClass` —
+ * назначением этого класса воркеру между проверкой и `delete` — обходит,
+ * роняя запрос дефектом). Нет класса — `"notFound"` (0 удалённых строк).
  */
 export const deleteClass = (
   id: string,
 ): Effect.Effect<"ok" | "inUse" | "notFound", never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
-    return yield* db.transaction(() =>
-      Effect.gen(function* () {
-        const [found] = yield* db
-          .select({ id: workerClasses.id })
-          .from(workerClasses)
-          .where(eq(workerClasses.id, id))
-          .for("update");
-        if (found === undefined) return "notFound" as const;
-
-        const [inUse] = yield* db
-          .select({ id: workers.id })
-          .from(workers)
-          .where(eq(workers.classId, id))
-          .limit(1);
-        if (inUse !== undefined) return "inUse" as const;
-
-        yield* db.delete(workerClasses).where(eq(workerClasses.id, id));
-        return "ok" as const;
-      }),
-    );
-  }).pipe(Effect.orDie);
+    return yield* db
+      .delete(workerClasses)
+      .where(eq(workerClasses.id, id))
+      .returning({ id: workerClasses.id })
+      .pipe(
+        Effect.map((rows) =>
+          rows.length > 0 ? ("ok" as const) : ("notFound" as const),
+        ),
+        Effect.catch((error) =>
+          violatedConstraint(error) === WORKERS_CLASS_ID_FK_CONSTRAINT
+            ? Effect.succeed("inUse" as const)
+            : Effect.die(error),
+        ),
+      );
+  });

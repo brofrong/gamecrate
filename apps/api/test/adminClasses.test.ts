@@ -269,3 +269,76 @@ describe("admin.workers.setClass", () => {
     expect(result.unknown).toBe(false);
   });
 });
+
+// Гонки round 1 code review: create/rename с тем же именем и delete занятого
+// класса раньше проверяли через отдельный `select`, который конкурентный
+// второй запрос проходил тоже — и падал дефектом (500) на уникальном индексе
+// или FK `on delete restrict` вместо документированного `"duplicate"`/`"inUse"`.
+// Теперь ответ строится по самому Postgres-нарушению (`violatedConstraint` в
+// `classes.ts`) — ниже тесты бьют именно по этому: два одновременных запроса
+// на один ресурс никогда не должны дать дефект, а должны дать ровно одно
+// `"ok"` и одно `"duplicate"`/`"inUse"`.
+describe("admin.classes races (round 1 review)", () => {
+  it("concurrent create with the same name: no defect, exactly one ok and one duplicate", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* clearSeededClass(db);
+        const rpc = yield* client;
+        return yield* Effect.all(
+          [
+            rpc["admin.classes.create"]({ name: "Гонка" }),
+            rpc["admin.classes.create"]({ name: "Гонка" }),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+    expect([...result].sort()).toEqual(["duplicate", "ok"]);
+  });
+
+  it("concurrent rename of two different classes to the same name: no defect, one ok and one duplicate", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* clearSeededClass(db);
+        const id1 = yield* insertClass(db, { name: "Класс А", rank: 1 });
+        const id2 = yield* insertClass(db, { name: "Класс Б", rank: 2 });
+        const rpc = yield* client;
+        return yield* Effect.all(
+          [
+            rpc["admin.classes.rename"]({ id: id1, name: "Общее имя" }),
+            rpc["admin.classes.rename"]({ id: id2, name: "Общее имя" }),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+    expect([...result].sort()).toEqual(["duplicate", "ok"]);
+  });
+
+  it("setClass assigns a worker, then delete of that class returns inUse (not a defect) end to end over RPC", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* clearSeededClass(db);
+        const classId = yield* insertClass(db, { name: "Класс", rank: 1 });
+        yield* insertWorker(db, { id: "w1" });
+        const rpc = yield* client;
+
+        // Воспроизводит порядок из ревью: `admin.workers.setClass` назначает
+        // воркера классу до того, как админ успевает его удалить.
+        const setOk = yield* rpc["admin.workers.setClass"]({
+          workerId: "w1",
+          classId,
+        });
+        const deleteResult = yield* rpc["admin.classes.delete"]({
+          id: classId,
+        });
+        return { setOk, deleteResult };
+      }),
+    );
+    expect(result.setOk).toBe(true);
+    expect(result.deleteResult).toBe("inUse");
+  });
+});
