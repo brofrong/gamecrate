@@ -292,12 +292,22 @@ export const promoteTemplate = (
 export interface PrefixTemplatesShape {
   /** Шаблон игры `appId` на месте и свежий; никогда не падает (сбой — `failed` и лог). */
   readonly ensure: (appId: number) => Effect.Effect<TemplateOutcome>;
+  /**
+   * Для `appId` сейчас идёт `ensure` (сборка или ожидание чужой сборки —
+   * запись в `inFlight`): удалять шаблон, в который пишет Proton, нельзя.
+   */
+  readonly building: (appId: number) => boolean;
 }
 
 /** Шаблоны префикса (по умолчанию — ничего не делает: тесты и агент без слоя). */
 export const PrefixTemplates = Context.Reference<PrefixTemplatesShape>(
   "@cg/agent/PrefixTemplates",
-  { defaultValue: () => ({ ensure: () => Effect.succeed("skipped") }) },
+  {
+    defaultValue: () => ({
+      ensure: () => Effect.succeed("skipped"),
+      building: () => false,
+    }),
+  },
 );
 
 /** Сборка не удалась: причина для лога. */
@@ -507,7 +517,9 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.andThen(Deferred.await(deferred)));
     });
 
-  return { ensure } satisfies PrefixTemplatesShape;
+  const building = (appId: number) => inFlight.has(appId);
+
+  return { ensure, building } satisfies PrefixTemplatesShape;
 });
 
 /**

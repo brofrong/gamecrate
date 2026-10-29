@@ -126,6 +126,8 @@ export const deleteReasons = {
   notGamestore: "Нет роли gamestore",
   installing: "Игра сейчас устанавливается",
   running: "Игра запущена",
+  /** Идёт `PrefixTemplates.ensure`: удалять шаблон, в который пишет Proton, нельзя. */
+  templateBuilding: "Собирается шаблон префикса",
   invalidCommand: "Некорректная команда удаления",
 } as const;
 
@@ -1072,11 +1074,14 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Манифест и каталоги игры — `rename` в корзину (игра сразу пропадает из
-   * библиотеки), затем корзина очищается. Установка той же игры — отказ: её
-   * перенос в библиотеку столкнулся бы с удалением; живой контейнер с
+   * Манифест и каталоги игры (включая шаблон префикса `compatdata/<appId>`,
+   * см. `GameRemoval.planRemoval`) — `rename` в корзину (игра сразу пропадает
+   * из библиотеки), затем корзина очищается. Установка той же игры — отказ:
+   * её перенос в библиотеку столкнулся бы с удалением; живой контейнер с
    * `cg.app=<appId>` (сессия или установщик) — тоже отказ (защита от гонки
-   * с устаревшей проверкой api/оркестратора).
+   * с устаревшей проверкой api/оркестратора); сборка шаблона префикса для
+   * этой игры (`PrefixTemplates.building`) — тоже отказ, до переноса в
+   * корзину.
    *
    * Оркестратор по `GameDeleted` убирает игру, по `GameDeleteFailed` считает
    * её установленной — поэтому итог отражает, видит ли Steam игру: перенос
@@ -1121,6 +1126,16 @@ const make = Effect.gen(function* () {
           { appId },
         );
         return yield* deleteFailed(appId, deleteReasons.running);
+      }
+      // Сборка шаблона префикса (`PrefixTemplate.ts`) пишет в
+      // `compatdata/<appId>` до самого переноса — убирать его в это время
+      // нельзя (собьёт сборку или унесёт в корзину то, что Proton ещё пишет).
+      if (templates.building(appId)) {
+        yield* Effect.logWarning(
+          "DeleteGame while the prefix template is building",
+          { appId },
+        );
+        return yield* deleteFailed(appId, deleteReasons.templateBuilding);
       }
       const stamp = String(yield* Clock.currentTimeMillis);
       const moved = yield* Effect.try({
