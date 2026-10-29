@@ -21,15 +21,10 @@ import {
   type LoadingStep,
   loadingProgress,
   loadingSteps,
+  loadingTotal,
+  stageOverdue,
 } from "@/lib/loadingSteps";
 import { cn } from "@/lib/utils";
-
-/**
- * Сколько ждать окна игры после запуска её процесса (`playing`, этап «Готовим игру»
- * или «Загружаем игру»), прежде чем подсказать «Показать экран»: нативная игра,
- * лаунчер или нераспознанное окно до `visible` не дойдут.
- */
-export const LOADING_HINT_MS = 3 * 60_000;
 
 /** «Отменить» с подтверждением: случайный клик не должен обрывать долгую установку. */
 function CancelButton({
@@ -94,29 +89,35 @@ function StepDot({ status }: { status: LoadingStep["status"] }) {
 export function LoadingScreen({
   view,
   msInStage,
-  msPlaying,
+  nowServerMs,
   onCancel,
   onReveal,
 }: {
   view: SessionView;
   /** Сколько мс клиент видит текущий этап — для полоски. */
   msInStage: number;
-  /** Сколько мс клиент видит сессию в `playing` (не в нём — 0) — для подсказки. */
-  msPlaying: number;
+  /** «Сейчас» сервера, мс (часы браузера с поправкой по `timing.serverNow`) — для таймеров. */
+  nowServerMs: number;
   /** «Отменить» (после подтверждения) — тот же `session.stop`, что и выход из игры. */
   onCancel: () => void;
-  /** «Показать экран»; нет — трансляции ещё нет, и кнопки тоже. */
+  /**
+   * «Показать экран»; нет — трансляции ещё нет или её пока рано предлагать
+   * (`revealDue`), и кнопки тоже.
+   */
   onReveal: (() => void) | undefined;
 }) {
   // Картинки нет (или CDN не ответил) — остаётся тёмный фон бренда, без значка битой картинки.
   const [backdropOk, setBackdropOk] = useState(true);
   const [coverOk, setCoverOk] = useState(true);
-  const steps = loadingSteps(view);
+  const steps = loadingSteps(view, nowServerMs);
+  const total = loadingTotal(view, nowServerMs);
   const progress = loadingProgress(view, msInStage);
-  const waitHint =
-    view.state === "playing" && msPlaying >= LOADING_HINT_MS
-      ? "Похоже, игра ждёт вас на экране"
-      : null;
+  // На «Входим в аккаунт» — подсказка про QR (без `timing` — как раньше, весь
+  // `starting`); на остальных — если этап идёт дольше 2× нормы.
+  const qrHint =
+    view.state === "starting" &&
+    (view.stage === "login" || view.timing === null);
+  const slowHint = view.stage !== "login" && stageOverdue(view, nowServerMs);
 
   return (
     <section
@@ -152,12 +153,12 @@ export function LoadingScreen({
                 <Monitor />
                 Показать экран
               </Button>
-              {waitHint && (
+              {slowHint && (
                 <p className="text-sm font-medium text-brand-cyan">
-                  {waitHint}
+                  Дольше обычного — загляните на экран
                 </p>
               )}
-              {view.state === "starting" && (
+              {qrHint && (
                 <p className="text-xs text-brand-text/60">
                   Если появилось окно входа Steam — отсканируйте QR-код в
                   мобильном приложении Steam
@@ -179,6 +180,9 @@ export function LoadingScreen({
           )}
           <div className="flex w-full max-w-md flex-col gap-5">
             <h1 className="text-2xl font-bold sm:text-3xl">{view.gameName}</h1>
+            {total && (
+              <p className="text-sm text-brand-text/60 tabular-nums">{total}</p>
+            )}
             <ol className="flex flex-col gap-3">
               {steps.map((step) => (
                 <li

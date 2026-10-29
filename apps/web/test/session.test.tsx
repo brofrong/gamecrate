@@ -1,4 +1,4 @@
-import { describe, expect, it, jest, mock, spyOn } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import {
   accessDeniedReason,
   type SessionState,
@@ -6,7 +6,6 @@ import {
   steamLoginRequiredReason,
 } from "@cg/rpc";
 import {
-  act,
   fireEvent,
   render,
   renderHook,
@@ -517,46 +516,6 @@ describe("session", () => {
       const { unmount } = renderPlayer(view("playing", { stage }));
       expect(loadingShown()).toBe(true);
       unmount();
-    }
-  });
-
-  const hint = "Похоже, игра ждёт вас на экране";
-
-  it("hint after 3 minutes in playing", () => {
-    jest.useFakeTimers();
-    try {
-      const { rerender } = renderPlayer(view("starting", { stage: "login" }));
-      // Время до `playing` (процесса игры ещё нет) не считается.
-      act(() => jest.advanceTimersByTime(200_000));
-      expect(screen.queryByText(hint)).toBeNull();
-
-      rerenderPlayer(rerender, view("playing", { stage: "prepare" }));
-      act(() => jest.advanceTimersByTime(100_000));
-      // Смена этапа внутри `playing` отсчёт не сбрасывает.
-      rerenderPlayer(rerender, view("playing", { stage: "loading" }));
-      act(() => jest.advanceTimersByTime(70_000));
-      expect(screen.queryByText(hint)).toBeNull();
-      act(() => jest.advanceTimersByTime(11_000));
-      expect(screen.getByText(hint)).toBeTruthy();
-      expect(
-        screen.getByRole("button", { name: "Показать экран" }),
-      ).toBeTruthy();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it("hint after 3 minutes in playing even when the stage stays at prepare", () => {
-    jest.useFakeTimers();
-    try {
-      // Нативная игра, сначала лаунчер или окно не распознаётся: `loading` не придёт.
-      renderPlayer(view("playing", { stage: "prepare" }));
-      act(() => jest.advanceTimersByTime(170_000));
-      expect(screen.queryByText(hint)).toBeNull();
-      act(() => jest.advanceTimersByTime(11_000));
-      expect(screen.getByText(hint)).toBeTruthy();
-    } finally {
-      jest.useRealTimers();
     }
   });
 
