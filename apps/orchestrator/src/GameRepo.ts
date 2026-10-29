@@ -36,12 +36,16 @@ export const markDeleted = (appId: number) =>
     return deleted.length > 0;
   });
 
-/** `GameDeleteFailed`: игра осталась и запускается — пометка снимается. */
-export const clearDeleting = (appId: number) =>
+/**
+ * `GameDeleteFailed`: игра осталась и запускается — пометка снимается,
+ * `reason` (текст агента, см. `deleteReasons`) сохраняется — её увидит админ
+ * на вкладке «Игры», пока новый запрос удаления не очистит её снова.
+ */
+export const clearDeleting = (appId: number, reason: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db
       .update(gamestoreApps)
-      .set({ deletingAt: null })
+      .set({ deletingAt: null, deleteError: reason })
       .where(eq(gamestoreApps.appId, appId));
   });

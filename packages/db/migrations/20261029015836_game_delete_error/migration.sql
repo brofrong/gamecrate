@@ -1,0 +1,1 @@
+ALTER TABLE "gamestore_apps" ADD COLUMN "delete_error" text;

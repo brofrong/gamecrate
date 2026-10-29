@@ -111,6 +111,7 @@ const game = (
   activeSessions: 0,
   installing: false,
   deleting: false,
+  deleteError: null,
   ...patch,
 });
 
@@ -184,6 +185,28 @@ describe("GamesTab", () => {
     expect(
       screen.getByText("Служебные: Proton Experimental"),
     ).toBeTruthy();
+  });
+
+  it("shows the delete error reason under the name, and nothing for games without one", async () => {
+    const failed = game({
+      appId: 1091501,
+      name: "Celeste",
+      deleteError: "Игра запущена",
+    });
+    renderGames({
+      games: [failed, peglin],
+      service: null,
+    });
+
+    const failedRow = (await screen.findByText("Celeste")).closest("tr");
+    if (failedRow === null) throw new Error("row not found");
+    expect(
+      within(failedRow).getByText("Не удалось удалить: Игра запущена"),
+    ).toBeTruthy();
+
+    const peglinRow = screen.getByText("Peglin").closest("tr");
+    if (peglinRow === null) throw new Error("row not found");
+    expect(within(peglinRow).queryByText(/Не удалось удалить/)).toBeNull();
   });
 
   it("opens the confirm dialog on click and sends the appId on confirm", async () => {

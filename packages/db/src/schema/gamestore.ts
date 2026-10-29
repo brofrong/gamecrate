@@ -22,6 +22,10 @@ const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
  * `deletingAt` — админ удаляет игру: строка живёт до итога агента
  * (`GameDeleted` удаляет её, `GameDeleteFailed` снимает пометку); пока пометка
  * есть, игра не запускается и не ставится — сессии ждут в очереди.
+ * `deleteError` — причина последнего `GameDeleteFailed` (русский текст
+ * агента, см. `deleteReasons` в `apps/agent/src/Installer.ts`), которую видит
+ * админ; новый запрос удаления (`deleting_at`) сразу очищает его в том же
+ * `update`, итог `GameDeleted` убирает строку целиком.
  */
 export const gamestoreApps = pgTable("gamestore_apps", {
   appId: integer("app_id")
@@ -31,6 +35,7 @@ export const gamestoreApps = pgTable("gamestore_apps", {
   buildId: text("build_id").notNull(),
   installedAt: timestamptz("installed_at").notNull().defaultNow(),
   deletingAt: timestamptz("deleting_at"),
+  deleteError: text("delete_error"),
 });
 
 /** Состояния задачи установки. */
