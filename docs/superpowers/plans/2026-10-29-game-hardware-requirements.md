@@ -312,7 +312,18 @@ git commit -m "docs(plan): итоги проверки источника VRAM �
 
 ## Итоги Task 1
 
-_(заполняется в Task 1)_
+Проверено 2026-10-29 на brofrong (во время настоящей сессии игрока, The Witness через Proton).
 
-- Источник VRAM `process`:
-- `LaunchOptions` у Steam-игр:
+- **Источник VRAM `process` работает.** `nvidia-smi` в контейнере `cg-agent` отдаёт host PID (те же,
+  что на хосте), и они совпадают с PID из `docker top` контейнера сессии (`witness64_d3d11` —
+  1885732 в обоих). Но `--query-compute-apps` показывает только процессы `C`/`C+G`; чисто
+  графические (`G`: Xwayland, labwc, часть игр) видны только в `nvidia-smi -q -x -d PIDS`.
+  **Поправка к Task 6:** VRAM сессии = сумма `used_memory` всех процессов (`C`, `G`, `C+G`) из
+  XML `nvidia-smi -q -x -d PIDS`, чьи PID есть в `docker top` контейнера (сюда входит и
+  кодировщик Selkies — это след сессии целиком, для допуска так и нужно). `gpu_total` — запасной
+  путь, если ни один PID не совпал. Разбор — `parseGpuProcesses(xml)` в `hostProbe.ts` вместо
+  `parseComputeApps`.
+- **`LaunchOptions` вживую не проверены:** проверка требует второго контейнера Steam на той же
+  карте, а на ней в это время играл игрок. Делаем по плану (запись в `localconfig.vdf` до старта
+  Steam, снятие перед сохранением профиля) с запасным `unknown`; живую проверку — на брофронге
+  после деплоя ветки, до мержа.
