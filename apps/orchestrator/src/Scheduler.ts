@@ -4,11 +4,11 @@
 // очереди.
 import {
   Db,
+  eligibleWorkers,
   gamestoreApps,
   installJobs,
   sessions,
   user,
-  workers,
 } from "@cg/db";
 import { type ProfileRef, accessDeniedReason } from "@cg/rpc";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
@@ -51,8 +51,9 @@ interface Placement {
 
 /**
  * Итог `placeOne`: `Placed` — назначена на воркер; `Installing` — ждёт задачу
- * установки; `Retry` — игру только что установили (или только что пометили к
- * удалению), сессию разберёт следующий `placeOne`; `undefined` — делать нечего.
+ * установки; `Retry` — игру только что установили, или сессию заблокированного
+ * пользователя завалили, сессию разберёт следующий `placeOne`; `undefined` —
+ * делать нечего (ничего не нашлось, или просмотренные сессии не разместились).
  */
 type Outcome =
   | Placement
@@ -87,15 +88,21 @@ const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${inst
  */
 const userBlocked: SQL<boolean> = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${sessions.userId} and ${user.blockedAt} is not null)`;
 
+/** Не больше стольких `queued`-сессий установленной игры за один проход `placeOne`. */
+export const PLACE_SCAN = 50;
+
 /**
- * Самая старая `queued`-сессия без запроса остановки, чей пользователь не
- * владеет активной задачей установки (`ownerFree`), под условием `where`;
- * `userBlocked` — заблокирован ли её пользователь.
+ * До `limit` самых старых `queued`-сессий (`created_at asc`) без запроса
+ * остановки, чей пользователь не владеет активной задачей установки
+ * (`ownerFree`), под условием `where`; `userBlocked` — заблокирован ли
+ * пользователь каждой из них. `FOR UPDATE SKIP LOCKED` — параллельный
+ * `placeOne` их не увидит и возьмёт следующие; блокировка держится до конца
+ * транзакции, так что непомещённые сессии освобождаются сразу после коммита.
  */
-const lockOldestQueued = (where: SQL) =>
+const lockOldestQueued = (where: SQL, limit = 1) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const [session] = yield* db
+    return yield* db
       .select({
         id: sessions.id,
         userId: sessions.userId,
@@ -114,9 +121,8 @@ const lockOldestQueued = (where: SQL) =>
         ),
       )
       .orderBy(asc(sessions.createdAt))
-      .limit(1)
+      .limit(limit)
       .for("update", { skipLocked: true });
-    return session;
   });
 
 /**
@@ -170,20 +176,25 @@ const startInstall = (
   });
 
 /**
- * Одна транзакция на одну сессию (`FOR UPDATE SKIP LOCKED`, `LIMIT 1`, без
- * запроса остановки, пользователь не владеет активной задачей установки).
- * Сессия заблокированного пользователя (в любой из веток ниже) не ставится и
- * не размещается, а валится с `accessDeniedReason` (`blockedFailure`).
- * Сначала самая старая `queued`-сессия неустановленной
- * игры (её игры нет в `gamestore_apps`) уходит в установку (`startInstall`) —
- * слот ей не нужен, поэтому она не ждёт воркеров. Иначе самая старая сессия
- * установленной и не удаляемой игры (строка игры под `FOR SHARE`: api
+ * Одна транзакция на один проход. Сессия заблокированного пользователя (в
+ * любой из веток ниже) не ставится и не размещается, а валится с
+ * `accessDeniedReason` (`blockedFailure`). Сначала самая старая `queued`-
+ * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`)
+ * уходит в установку (`startInstall`) — слот ей не нужен, поэтому она не
+ * ждёт воркеров. Иначе — очередь без затора (спека §2.5): до `PLACE_SCAN`
+ * самых старых `queued`-сессий установленных и не удаляемых игр
+ * (`created_at asc`, `FOR UPDATE SKIP LOCKED`) просматриваются по очереди, для
+ * каждой — `eligibleWorkers(userId, appId, { workerIds: candidates })`
+ * (классы воркеров и железо, спека §2.1–§2.3), первый из них со свободным
+ * слотом (слот — наименьший свободный) размещает сессию; не нашёлся —
+ * переходим к следующей сессии. Строка игры читается под `FOR SHARE` (api
  * помечает удаление под `FOR UPDATE` и проверяет активные сессии — либо мы
- * видим пометку, либо api видит нашу сессию): первый по `id` воркер из
- * `candidates` со строкой в `workers`, не в обслуживании (`draining = false`)
- * и со свободным слотом, слот — наименьший свободный. Запись `workerId`,
- * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит.
- * Профиль и пометка сброса входа Steam читаются в той же транзакции: сбой
+ * видим пометку, либо api видит нашу сессию); удаляемая или пропавшая игра —
+ * сессия пропускается, как и при отсутствии свободного воркера. Просмотренные,
+ * но не размещённые сессии остаются заблокированными только до конца
+ * транзакции — следующий проход их не пропустит. Размещение — `workerId`,
+ * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит;
+ * профиль и пометка сброса входа Steam читаются в той же транзакции: сбой
  * чтения откатывает размещение, а не оставляет его без команды.
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
@@ -192,74 +203,74 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     const hub = yield* AgentHub;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const uninstalled = yield* lockOldestQueued(sql`not ${appInLibrary}`);
+        const [uninstalled] = yield* lockOldestQueued(
+          sql`not ${appInLibrary}`,
+        );
         if (uninstalled !== undefined)
           return uninstalled.userBlocked
             ? yield* blockedFailure(now, uninstalled.id)
             : ((yield* startInstall(now, uninstalled)) as Outcome);
 
         if (candidates.length === 0) return undefined;
-        const session = yield* lockOldestQueued(appInstalled);
-        if (session === undefined) return undefined;
-        if (session.userBlocked) return yield* blockedFailure(now, session.id);
-        const [app] = yield* db
-          .select({ deletingAt: gamestoreApps.deletingAt })
-          .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, session.appId))
-          .for("share");
-        if (app === undefined || app.deletingAt !== null)
-          return { _tag: "Retry" } as const;
+        const queued = yield* lockOldestQueued(appInstalled, PLACE_SCAN);
+        if (queued.length === 0) return undefined;
 
-        // Только воркеры, чья строка уже записана хабом (на неё ссылается FK)
-        // и которые не в обслуживании (`draining` — новых сессий не берут).
-        const known = yield* db
-          .select({ id: workers.id })
-          .from(workers)
-          .where(
-            and(
-              inArray(workers.id, [...candidates]),
-              eq(workers.draining, false),
-            ),
-          )
-          .orderBy(asc(workers.id));
         const taken = yield* db
           .select({ workerId: sessions.workerId, slot: sessions.slot })
           .from(sessions)
           .where(and(inArray(sessions.workerId, [...candidates]), holdsSlot));
-
-        for (const { id: workerId } of known) {
-          const info = hub.info(workerId);
-          if (info === undefined) continue;
-          const busy = new Set(
+        const busyOf = (workerId: string) =>
+          new Set(
             taken.flatMap((t) =>
               t.workerId === workerId && t.slot !== null ? [t.slot] : [],
             ),
           );
-          const slot = lowestFreeSlot(info.slots, busy);
-          if (slot === undefined) continue;
-          yield* db
-            .update(sessions)
-            .set({
-              state: "starting",
-              stateSince: now,
+
+        for (const session of queued) {
+          if (session.userBlocked)
+            return yield* blockedFailure(now, session.id);
+
+          const [app] = yield* db
+            .select({ deletingAt: gamestoreApps.deletingAt })
+            .from(gamestoreApps)
+            .where(eq(gamestoreApps.appId, session.appId))
+            .for("share");
+          if (app === undefined || app.deletingAt !== null) continue;
+
+          const eligible = yield* eligibleWorkers(
+            session.userId,
+            session.appId,
+            { workerIds: candidates },
+          );
+          for (const { id: workerId } of eligible) {
+            const info = hub.info(workerId);
+            if (info === undefined) continue;
+            const slot = lowestFreeSlot(info.slots, busyOf(workerId));
+            if (slot === undefined) continue;
+            yield* db
+              .update(sessions)
+              .set({
+                state: "starting",
+                stateSince: now,
+                workerId,
+                slot,
+                agentSeenAt: now,
+              })
+              .where(eq(sessions.id, session.id));
+            const profile = yield* SessionRepo.profileOf(session.userId);
+            const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
+              session.userId,
+            );
+            return {
+              _tag: "Placed",
+              session,
               workerId,
               slot,
-              agentSeenAt: now,
-            })
-            .where(eq(sessions.id, session.id));
-          const profile = yield* SessionRepo.profileOf(session.userId);
-          const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
-            session.userId,
-          );
-          return {
-            _tag: "Placed",
-            session,
-            workerId,
-            slot,
-            udpPort: info.udpPortBase + slot,
-            profile,
-            steamLoginResetAt,
-          } satisfies Placement;
+              udpPort: info.udpPortBase + slot,
+              profile,
+              steamLoginResetAt,
+            } satisfies Placement;
+          }
         }
         return undefined;
       }),
