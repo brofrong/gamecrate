@@ -3,7 +3,10 @@
 //   (`/steam/link` → `/steam/callback`) к уже вошедшему пользователю;
 // — правило последнего способа входа при `/unlink-account`;
 // — роль Pocket ID пишется при привязке (`/callback/:id`) и сбрасывается на
-//   `player` при отвязке; `steam_id` сбрасывается при отвязке Steam.
+//   `player` при отвязке; `steam_id` сбрасывается при отвязке Steam, и той же
+//   записью ставится `steam_login_reset_at = now` (тот же механизм, что
+//   «Сбросить вход Steam» в админке): оркестратор выбросит посев, сделанный
+//   до отвязки, агент при следующем старте сотрёт вход из профиля.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
 import { account, user } from "@cg/db";
 import { canUnlink } from "@cg/rpc";
@@ -163,6 +166,9 @@ export const authHooks = (deps: {
               .where(eq(user.id, userId)),
         );
       } else if (providerId === STEAM_PROVIDER_ID) {
+        // Тем же обновлением помечаем сброс входа (`steam_login_reset_at`),
+        // как «Сбросить вход Steam» в админке (Task 3) — отдельного запроса
+        // не нужно, оба поля летят одной мутацией.
         await runAfterHookWrite(
           "Failed to reset steamId after steam unlink",
           userId,
@@ -170,7 +176,7 @@ export const authHooks = (deps: {
           () =>
             deps.db
               .update(user)
-              .set({ steamId: null })
+              .set({ steamId: null, steamLoginResetAt: new Date() })
               .where(eq(user.id, userId)),
         );
       }

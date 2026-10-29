@@ -6,7 +6,9 @@
 //
 // Токен и имя аккаунта живут только в памяти (`Redacted`); в БД, логи и тексты
 // ошибок не попадают. Текст ошибок Steam игроку не показывается — только
-// `steamLoginReasons.steamError`.
+// `steamLoginReasons.steamError` (конец без итога до сканирования QR) или
+// `.notConfirmed` (конец без итога после сканирования — спека §4). Старые
+// завершённые попытки чистит `pruneFinished` (спека §3, `PRUNE_INTERVAL`).
 import type { Db } from "@cg/db";
 import { type SteamLoginSeed, steamLoginReasons } from "@cg/rpc";
 import {
@@ -187,9 +189,17 @@ type RunnerEvent =
   /** Поток Steam кончился без итога. */
   | { readonly _tag: "Ended" };
 
+/** Раз в сколько чистятся старые завершённые попытки (спека §3). */
+export const PRUNE_INTERVAL = Duration.hours(24);
+
+/** Завершённые попытки старше этого возраста чистка удаляет (спека §3: 30 дней — решение исполнителя). */
+export const PRUNE_RETENTION = Duration.days(30);
+
 export interface SteamLoginRunnerOptions {
   /** Период подхвата и проверки отмены (по умолчанию `STEAM_LOGIN_INTERVAL`). */
   readonly interval?: Duration.Input;
+  /** Период чистки старых попыток (по умолчанию `PRUNE_INTERVAL`; тесты — короче). */
+  readonly pruneInterval?: Duration.Input;
 }
 
 const make = (options: SteamLoginRunnerOptions) =>
@@ -206,6 +216,22 @@ const make = (options: SteamLoginRunnerOptions) =>
       yield* Effect.logWarning("Interrupted Steam logins failed on start", {
         attempts: stale,
       });
+
+    /** Чистка старых завершённых попыток: `before = now − PRUNE_RETENTION`. */
+    const prune = Effect.gen(function* () {
+      const before = new Date(
+        Date.now() - Duration.toMillis(PRUNE_RETENTION),
+      );
+      const removed = yield* SteamLoginRepo.pruneFinished(before);
+      if (removed > 0)
+        yield* Effect.logInfo("Pruned old Steam logins", { removed });
+    }).pipe(logFailure("Pruning old Steam logins failed"));
+
+    yield* prune;
+    yield* prune.pipe(
+      Effect.repeat(Schedule.spaced(options.pruneInterval ?? PRUNE_INTERVAL)),
+      Effect.forkIn(scope),
+    );
 
     /** Подтверждённый вход: привязка, затем вход — в память для следующего старта. */
     const authenticated = (
@@ -239,51 +265,60 @@ const make = (options: SteamLoginRunnerOptions) =>
         yield* Effect.logInfo("Steam login linked", { steamId: event.steamId });
       });
 
-    /** Обработать событие; `false` — попытка закончена. */
-    const handle = (
-      attempt: SteamLoginRepo.PendingAttempt,
-      login: QrLogin,
-      event: RunnerEvent,
-    ) => {
-      switch (event._tag) {
-        case "QrUrl":
-          return SteamLoginRepo.setQrUrl(attempt.id, event.url).pipe(
-            Effect.as(true),
-          );
-        case "Scanned":
-          return SteamLoginRepo.setScanned(attempt.id).pipe(Effect.as(true));
-        case "Authenticated":
-          return authenticated(attempt, event).pipe(Effect.as(false));
-        case "Timeout":
-          return SteamLoginRepo.finish(attempt.id, "expired", null).pipe(
-            Effect.as(false),
-          );
-        case "Ended":
-          return SteamLoginRepo.finish(
-            attempt.id,
-            "failed",
-            steamLoginReasons.steamError,
-          ).pipe(
-            Effect.tap(() =>
-              Effect.logWarning("Steam login ended without a result"),
-            ),
-            Effect.as(false),
-          );
-        case "Cancelled":
-          return login.cancel.pipe(
-            Effect.tap(() => Effect.logInfo("Steam login cancelled")),
-            Effect.as(false),
-          );
-      }
-    };
-
     /**
      * Одна попытка: QR → `waiting`, затем события Steam вперемешку с проверкой
      * отмены раз в `interval` — по одному, так что отмена не обрывает привязку
      * на середине транзакции.
+     *
+     * `scanned` — отсканировал ли игрок код в этой попытке (событие
+     * `Scanned`): если да, то конец без итога (`Ended`/`SteamQrError`) значит
+     * «не подтвердил в приложении» (`notConfirmed`), а не «Steam не ответил»
+     * (`steamError`) — спека §4.
      */
-    const runAttempt = (attempt: SteamLoginRepo.PendingAttempt) =>
-      Effect.gen(function* () {
+    const runAttempt = (attempt: SteamLoginRepo.PendingAttempt) => {
+      let scanned = false;
+
+      const endReason = () =>
+        scanned ? steamLoginReasons.notConfirmed : steamLoginReasons.steamError;
+
+      /** Обработать событие; `false` — попытка закончена. */
+      const handle = (login: QrLogin, event: RunnerEvent) => {
+        switch (event._tag) {
+          case "QrUrl":
+            return SteamLoginRepo.setQrUrl(attempt.id, event.url).pipe(
+              Effect.as(true),
+            );
+          case "Scanned":
+            return SteamLoginRepo.setScanned(attempt.id).pipe(
+              Effect.tap(() => Effect.sync(() => (scanned = true))),
+              Effect.as(true),
+            );
+          case "Authenticated":
+            return authenticated(attempt, event).pipe(Effect.as(false));
+          case "Timeout":
+            return SteamLoginRepo.finish(attempt.id, "expired", null).pipe(
+              Effect.as(false),
+            );
+          case "Ended":
+            return SteamLoginRepo.finish(
+              attempt.id,
+              "failed",
+              endReason(),
+            ).pipe(
+              Effect.tap(() =>
+                Effect.logWarning("Steam login ended without a result"),
+              ),
+              Effect.as(false),
+            );
+          case "Cancelled":
+            return login.cancel.pipe(
+              Effect.tap(() => Effect.logInfo("Steam login cancelled")),
+              Effect.as(false),
+            );
+        }
+      };
+
+      return Effect.gen(function* () {
         const login = yield* qr.begin;
         const { qrUrl } = yield* login.start;
         if (!(yield* SteamLoginRepo.setWaiting(attempt.id, qrUrl))) {
@@ -302,16 +337,12 @@ const make = (options: SteamLoginRunnerOptions) =>
           Stream.succeed<RunnerEvent>({ _tag: "Ended" }),
         );
         yield* Stream.merge(steam, cancelled).pipe(
-          Stream.runForEachWhile((event) => handle(attempt, login, event)),
+          Stream.runForEachWhile((event) => handle(login, event)),
         );
       }).pipe(
         Effect.scoped,
         Effect.catchTag("SteamQrError", (error) =>
-          SteamLoginRepo.finish(
-            attempt.id,
-            "failed",
-            steamLoginReasons.steamError,
-          ).pipe(
+          SteamLoginRepo.finish(attempt.id, "failed", endReason()).pipe(
             Effect.tap(() =>
               Effect.logWarning("Steam login failed", { detail: error.detail }),
             ),
@@ -326,11 +357,7 @@ const make = (options: SteamLoginRunnerOptions) =>
                 Cause.pretty(cause),
               ).pipe(
                 Effect.andThen(
-                  SteamLoginRepo.finish(
-                    attempt.id,
-                    "failed",
-                    steamLoginReasons.steamError,
-                  ),
+                  SteamLoginRepo.finish(attempt.id, "failed", endReason()),
                 ),
               ),
         ),
@@ -338,6 +365,7 @@ const make = (options: SteamLoginRunnerOptions) =>
         Effect.ensuring(Effect.sync(() => active.delete(attempt.id))),
         Effect.annotateLogs({ attemptId: attempt.id, userId: attempt.userId }),
       );
+    };
 
     /** Подхватить новые `pending`-попытки, не больше `MAX_ACTIVE` всего. */
     const pickUp = Effect.gen(function* () {

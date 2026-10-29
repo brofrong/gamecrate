@@ -335,7 +335,8 @@ describe("account linking", () => {
     expect(body.code).toBe("LAST_LOGIN_METHOD");
   });
 
-  it("unlinking steam is allowed even when it is the only other account", async () => {
+  it("unlinking Steam is allowed even when it is the only other account, and marks the login reset", async () => {
+    const beforeUnlink = new Date();
     const response = await auth.handler(
       new Request(`${origin}/api/auth/unlink-account`, {
         method: "POST",
@@ -360,10 +361,17 @@ describe("account linking", () => {
     expect(removed).toBeUndefined();
 
     const [mailUser] = await orm
-      .select({ steamId: user.steamId })
+      .select({ steamId: user.steamId, steamLoginResetAt: user.steamLoginResetAt })
       .from(user)
       .where(eq(user.id, "u-mail"));
     expect(mailUser?.steamId).toBeNull();
+    // Тот же механизм, что «Сбросить вход Steam» из админки (Task 3):
+    // оркестратор выбросит посев до этого момента, агент сотрёт вход из
+    // профиля при следующем старте.
+    expect(mailUser?.steamLoginResetAt).not.toBeNull();
+    expect(
+      mailUser?.steamLoginResetAt && mailUser.steamLoginResetAt.getTime(),
+    ).toBeGreaterThanOrEqual(beforeUnlink.getTime());
   });
 
   it("verified email keeps google unlinkable", async () => {

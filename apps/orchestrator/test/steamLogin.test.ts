@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { account, Db, steamLogins, user } from "@cg/db";
+import { account, Db, type SteamLoginState, steamLogins, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { steamLoginReasons } from "@cg/rpc";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   type Cause,
   Effect,
@@ -14,6 +14,7 @@ import {
   type Scope,
   Stream,
 } from "effect";
+import * as SteamLoginRepo from "../src/SteamLoginRepo";
 import {
   type QrEvent,
   SteamLoginRunner,
@@ -121,7 +122,7 @@ const seedUser = (id: string, steamId: string | null = null) =>
 const insertAttempt = (
   id: string,
   userId: string,
-  state: "pending" | "waiting" | "scanned" | "done" = "pending",
+  state: SteamLoginState = "pending",
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -339,6 +340,113 @@ describe("SteamLoginRunner", () => {
         expect(failedStart.error).toBe(steamLoginReasons.steamError);
         expect(failedStart.qrUrl).toBeNull();
         expect(JSON.stringify(failedStart)).not.toContain("RateLimit");
+      }),
+    ));
+
+  it("Ended before Scanned keeps steamError", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        // Поток Steam кончается без Authenticated/Timeout и без ошибки —
+        // QR так и не был отсканирован.
+        yield* Queue.end(login.events);
+        const failed = yield* waitState("a1", "failed");
+        expect(failed.error).toBe(steamLoginReasons.steamError);
+      }),
+    ));
+
+  it("Ended after Scanned fails with notConfirmed", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        yield* Queue.offer(login.events, { _tag: "Scanned" });
+        yield* waitState("a1", "scanned");
+        // Отсканировали, но вход не подтвердили в приложении — поток Steam
+        // кончается без итога.
+        yield* Queue.end(login.events);
+        const failed = yield* waitState("a1", "failed");
+        expect(failed.error).toBe(steamLoginReasons.notConfirmed);
+      }),
+    ));
+
+  it("SteamQrError before Scanned keeps steamError", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        yield* Queue.fail(
+          login.events,
+          new SteamQrError({ detail: "unknown" }),
+        );
+        const failed = yield* waitState("a1", "failed");
+        expect(failed.error).toBe(steamLoginReasons.steamError);
+      }),
+    ));
+
+  it("SteamQrError after Scanned fails with notConfirmed", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        yield* Queue.offer(login.events, { _tag: "Scanned" });
+        yield* waitState("a1", "scanned");
+        yield* Queue.fail(
+          login.events,
+          new SteamQrError({ detail: "unknown" }),
+        );
+        const failed = yield* waitState("a1", "failed");
+        expect(failed.error).toBe(steamLoginReasons.notConfirmed);
+      }),
+    ));
+
+  it("pruneFinished removes only old finished attempts", () =>
+    run(() =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedUser("u1");
+        yield* seedUser("u2");
+        yield* seedUser("u3");
+        yield* insertAttempt("old-done", "u1", "done");
+        yield* insertAttempt("old-waiting", "u2", "waiting");
+        yield* insertAttempt("fresh-failed", "u3", "failed");
+
+        // `$onUpdate` ставит `updated_at` на момент записи — состаряем строки
+        // напрямую, как если бы итог случился давно.
+        const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+        yield* db
+          .update(steamLogins)
+          .set({ updatedAt: old })
+          .where(inArray(steamLogins.id, ["old-done", "old-waiting"]));
+
+        const before = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const removed = yield* SteamLoginRepo.pruneFinished(before);
+        expect(removed).toBe(1);
+
+        const remaining = yield* db
+          .select({ id: steamLogins.id })
+          .from(steamLogins);
+        expect(remaining.map((row) => row.id).sort()).toEqual([
+          "fresh-failed",
+          "old-waiting",
+        ]);
       }),
     ));
 

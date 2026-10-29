@@ -8,12 +8,20 @@
 // Steam сюда не попадают никогда.
 import { account, Db, type SteamLoginState, steamLogins, user } from "@cg/db";
 import { steamLoginReasons } from "@cg/rpc";
-import { and, asc, eq, inArray, ne, notInArray } from "drizzle-orm";
+import { and, asc, eq, inArray, lt, ne, notInArray } from "drizzle-orm";
 import { Effect } from "effect";
 
 /** Активные состояния — те же, что в частичном индексе `steam_logins_active_user_idx`. */
 const activeStates: Array<SteamLoginState> = ["pending", "waiting", "scanned"];
 const isActive = inArray(steamLogins.state, activeStates);
+
+/** Конечные состояния попытки (спека §3) — кандидаты на удаление по возрасту. */
+const finishedStates: Array<SteamLoginState> = [
+  "done",
+  "expired",
+  "failed",
+  "cancelled",
+];
 
 /** Попытка, которую раннеру предстоит начать. */
 export interface PendingAttempt {
@@ -105,6 +113,27 @@ export const failStale = () =>
       .where(isActive)
       .returning({ id: steamLogins.id });
     return rows.map((row) => row.id);
+  });
+
+/**
+ * Чистка (спека §3): строки в конечных состояниях (`done`/`expired`/`failed`/
+ * `cancelled`), обновлённые раньше `before`, удаляются. Раннер зовёт это при
+ * старте и раз в сутки с `before = now − 30 дней`. Возвращает число удалённых
+ * строк (для лога).
+ */
+export const pruneFinished = (before: Date) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const rows = yield* db
+      .delete(steamLogins)
+      .where(
+        and(
+          inArray(steamLogins.state, finishedStates),
+          lt(steamLogins.updatedAt, before),
+        ),
+      )
+      .returning({ id: steamLogins.id });
+    return rows.length;
   });
 
 export type LinkResult = "linked" | "otherSteamLinked" | "steamTaken";
