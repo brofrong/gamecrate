@@ -184,6 +184,12 @@ const stageTimings = <S extends string>(
  * нормы не читаются. Отметки установки — только в `installing` (как
  * `installStageOf`: `installJobId` после установки остаётся для истории).
  * Нормы — `StageNorms.normsFor` (кэш по `appId`), у `downloading` нормы нет.
+ *
+ * `serverNow` ниже — часы процесса api, а отметки этапов (`session_stage_marks`/
+ * `install_stage_marks`) пишет оркестратор своими часами (`SessionRunner`):
+ * корректно, пока api и оркестратор — один хост с одним системным клоком. При
+ * переходе на несколько хостов `serverNow` надо брать из БД (`now()`), а не из
+ * часов процесса api.
  */
 const timingOf = (row: SessionWithGame, now: Date) =>
   Effect.gen(function* () {

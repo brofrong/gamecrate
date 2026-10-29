@@ -1,7 +1,7 @@
 # Боевой деплой на brofrong. Запуск: см. deploy/deploy.sh и deploy/README.md.
 # Переменные читаются из ~/cloud-gaming/.env (docker compose --env-file .env),
 # который деплой не создаёт и не перезаписывает (дописывает только строки AGENT_TOKEN,
-# RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY, PROFILE_KEY, если их нет) — см. README.
+# RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY, PROFILE_KEY, SEED_KEY, если их нет) — см. README.
 name: cloud-gaming
 
 # Ротация логов docker: без неё json-file растёт без ограничений.
