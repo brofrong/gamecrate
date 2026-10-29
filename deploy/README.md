@@ -11,8 +11,8 @@
   `cg-orchestrator`, `cg-agent`, `cg-rustfs`; одноразовый `cg-rustfs-bucket` (профиль `tools`,
   запускает `deploy.sh`).
 - `deploy.sh` — отказ при живых сессиях/установках, rsync репозитория на `brofrong:~/cloud-gaming`,
-  `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY` в серверный `.env` (если
-  их там нет), каталоги хоста, сеть `cg-sessions` (если нет), бакет профилей,
+  `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`, `SEED_KEY` в серверный
+  `.env` (если их там нет), каталоги хоста, сеть `cg-sessions` (если нет), бакет профилей,
   `docker compose up -d --build`.
 - `build-session-image.sh` — сборка образа сессии `cg-session:<версия драйвера>` на воркере
   (см. `images/session/README.md` и раздел «Обновление драйвера NVIDIA» ниже).
@@ -34,7 +34,10 @@
 - `cg-orchestrator` — только сеть `cg`, порт `3001` (`ORCHESTRATOR_PORT`) наружу не публикуется.
   Планировщик сессий, таймеры, WebSocket `/agent` (агенты с `Authorization: Bearer <AGENT_TOKEN>`).
   Healthcheck: `GET /healthz`. `mem_limit` 256m. Стартует после `cg-api` (healthy): оба применяют
-  миграции, так они не идут одновременно.
+  миграции, так они не идут одновременно. Посеянные входы Steam (вход по QR, ждущий следующего
+  запуска) хранит в таблице `steam_login_seeds`: имя аккаунта и refresh-токен — только
+  зашифрованными (AES-256-GCM, ключ `SEED_KEY`), в открытом виде — `user_id`, `steam_id` и время;
+  строка живёт до 24 ч, удаляется при использовании и при сбросе входа.
 - `cg-agent` — агент воркера `brofrong`, только сеть `cg`, подключается к
   `ws://cg-orchestrator:3001/agent`. Смонтирован `/var/run/docker.sock`; процесс — пользователь
   `1000` (bun) с дополнительной группой владельца сокета (`DOCKER_GID`, `deploy.sh` берёт её из
@@ -266,13 +269,15 @@ Steam»; своя строка — действия неактивны. Подр
      Если на сервере уже есть `.env` без `AGENT_TOKEN`, `deploy.sh` сам допишет туда эту строку из
      `.env.production` (одну строку, остальные значения не читает и не меняет).
    - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — ключи хранилища профилей `cg-rustfs`, каждый не
-     короче 16 символов, и `PROFILE_KEY` — ключ шифрования профилей, base64 ровно 32 байт (без
-     вывода на экран):
+     короче 16 символов, `PROFILE_KEY` — ключ шифрования профилей и `SEED_KEY` — ключ шифрования
+     посеянных входов Steam в БД (`steam_login_seeds`), оба base64 ровно 32 байт (без вывода на
+     экран):
 
      ```sh
      grep -q '^RUSTFS_ACCESS_KEY=' .env.production || printf 'RUSTFS_ACCESS_KEY=%s\n' "$(openssl rand -hex 24)" >> .env.production
      grep -q '^RUSTFS_SECRET_KEY=' .env.production || printf 'RUSTFS_SECRET_KEY=%s\n' "$(openssl rand -hex 24)" >> .env.production
      grep -q '^PROFILE_KEY=' .env.production || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base64 32)" >> .env.production
+     grep -q '^SEED_KEY=' .env.production || printf 'SEED_KEY=%s\n' "$(openssl rand -base64 32)" >> .env.production
      ```
 
      Как и `AGENT_TOKEN`, `deploy.sh` допишет в серверный `.env` недостающие из этих строк (и
@@ -280,7 +285,9 @@ Steam»; своя строка — действия неактивны. Подр
      **`PROFILE_KEY` не менять и не терять:** им зашифрованы все профили в RustFS; с другим ключом
      агент их не расшифрует (вход Steam и сохранения пользователей пропадут). Хранить копию
      `.env.production` в надёжном месте. Ключи RustFS менять только вместе (RustFS берёт корневые
-     ключи из окружения при каждом старте, данные тома сохраняются).
+     ключи из окружения при каждом старте, данные тома сохраняются). `SEED_KEY` сменить можно:
+     оркестратор не расшифрует уже посеянные входы, удалит их (предупреждение `Steam login seed
+     cannot be decrypted, dropped` с `userId`) — эти пользователи один раз снова войдут по QR.
 
    - Необязательно (не секреты): `CG_DATA_DIR` (по умолчанию `/raid/cloud-gaming`), `SCRATCH_DIR`
      (по умолчанию `/home/brofrong/cloud-gaming-scratch`), `STEAM_CLIENT_DIR` (по умолчанию
@@ -290,7 +297,8 @@ Steam»; своя строка — действия неактивны. Подр
 
    Каждый сервис получает только перечисленные для него в `deploy/compose.yaml` переменные (не весь
    `.env`): `POSTGRES_PASSWORD` видит лишь `cg-postgres`, `AGENT_TOKEN` — оркестратор и агент,
-   `RUSTFS_*` — `cg-rustfs`, агент и одноразовый `cg-rustfs-bucket`, `PROFILE_KEY` — только агент.
+   `RUSTFS_*` — `cg-rustfs`, агент и одноразовый `cg-rustfs-bucket`, `PROFILE_KEY` — только агент,
+   `SEED_KEY` — только оркестратор.
    Новая переменная сервера — добавить её туда же.
 
 2. `chmod 600 .env.production`.
@@ -377,9 +385,9 @@ port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк ос
    `images/session/nv`, `.superpowers`, `docs`, `.env*` кроме `.env.example`).
 3. Проверяет, что `~/cloud-gaming/.env` существует на сервере (падает с понятной ошибкой, если нет
    — см. шаг 1).
-4. Для каждого из `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`: если в
-   серверном `.env` нет такого ключа — дописывает строку из локального `.env.production` (значение
-   проверяется локально и идёт через stdin ssh, на экран не выводится).
+4. Для каждого из `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`,
+   `SEED_KEY`: если в серверном `.env` нет такого ключа — дописывает строку из локального
+   `.env.production` (значение проверяется локально и идёт через stdin ssh, на экран не выводится).
 5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,install-scratch}`, `SCRATCH_DIR`,
    `STEAM_CLIENT_PARENT` и `STEAM_CLIENT_DIR/steamapps` — `mkdir -p` от `brofrong`, проверка
    владельца uid 1000 (пути — из серверного `.env`, если там заданы

@@ -47,6 +47,7 @@ import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest, sentToken } from "./seedKey";
 
 /** Фейковый хаб: подключённые агенты и отправленные команды — в памяти. */
 const makeFakeHub = () => {
@@ -98,7 +99,7 @@ const run = <A, E>(
           SessionRunner.layerWithoutLoops(),
         ).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
-          Layer.provideMerge(SteamLoginSeeds.layer),
+          Layer.provideMerge(SteamLoginSeedsTest),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),
@@ -469,6 +470,7 @@ describe("install jobs", () => {
             },
           },
         ]);
+        expect(sentToken(installCommands(fake)[0]?.command)).toBe("refresh-a");
       }),
     ));
 
@@ -568,6 +570,11 @@ describe("install jobs", () => {
         ]);
         // Без пометки ключа нет вовсе (а не `undefined`).
         expect("steamLoginResetAt" in (commands[2]?.command ?? {})).toBe(false);
+        expect(commands.map((c) => sentToken(c.command))).toEqual([
+          null,
+          "fresh",
+          "none",
+        ]);
         expect(yield* seeds.get("u-old")).toBeNull();
       }),
     ));

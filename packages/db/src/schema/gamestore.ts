@@ -164,3 +164,22 @@ export const steamLogins = pgTable(
       .where(sql`${t.state} in ('pending', 'waiting', 'scanned')`),
   ],
 );
+
+/**
+ * Посеянный вход Steam пользователя (`SteamLoginSeeds` оркестратора): ждёт
+ * следующего запуска сессии или установки, переживает перезапуск оркестратора.
+ * Одна строка на пользователя. Имя аккаунта и refresh-токен — только в
+ * `sealed`: base64 `iv(12) ‖ tag(16) ‖ AES-256-GCM(JSON {accountName,
+ * refreshToken})` ключом `SEED_KEY`; в открытом виде — `steamId` (не секрет,
+ * он же в `user.steam_id`) и время. `putAt` — момент посева (сравнивается со
+ * сбросом входа админом), `expiresAt` — `putAt + SEED_TTL`.
+ */
+export const steamLoginSeeds = pgTable("steam_login_seeds", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  steamId: text("steam_id").notNull(),
+  sealed: text("sealed").notNull(),
+  putAt: timestamptz("put_at").notNull(),
+  expiresAt: timestamptz("expires_at").notNull(),
+});

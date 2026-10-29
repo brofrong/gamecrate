@@ -48,6 +48,7 @@ import {
   lostOnRestartReason,
 } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest, sentToken } from "./seedKey";
 
 /** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
 const makeFakeHub = () => {
@@ -95,7 +96,7 @@ const run = <A, E>(
       Effect.provide(
         SessionRunner.layerWithoutLoops(options).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
-          Layer.provideMerge(SteamLoginSeeds.layer),
+          Layer.provideMerge(SteamLoginSeedsTest),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),
@@ -403,8 +404,8 @@ describe("scheduler", () => {
           steamId: "76561198000000000",
           refreshToken: Redacted.make("refresh-token"),
         };
-        yield* seeds.put("u1", seed);
         yield* seedUsers("u1", "u2");
+        yield* seeds.put("u1", seed);
         yield* connectWorker(fake, "w1", 2);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -4) });
@@ -438,6 +439,7 @@ describe("scheduler", () => {
             display: { width: 1920, height: 1080 },
           },
         ]);
+        expect(sentToken(starts[0]?.command)).toBe("refresh-token");
       }),
     ));
 
@@ -577,6 +579,11 @@ describe("scheduler", () => {
         expect("steamLoginResetAt" in (fake.sent[2]?.command ?? {})).toBe(
           false,
         );
+        expect(fake.sent.map((s) => sentToken(s.command))).toEqual([
+          null,
+          "fresh",
+          "none",
+        ]);
         // Устаревший вход убран из памяти, а не просто не отправлен.
         expect(yield* seeds.get("u-old")).toBeNull();
       }),

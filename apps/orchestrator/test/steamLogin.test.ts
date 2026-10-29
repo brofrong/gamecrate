@@ -22,6 +22,7 @@ import {
   type SteamQrShape,
 } from "../src/SteamLoginRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest } from "./seedKey";
 
 /** Одна попытка входа у фейкового Steam: события подаёт тест. */
 interface FakeLogin {
@@ -65,7 +66,7 @@ const run = <A, E>(body: (fake: FakeQr) => Effect.Effect<A, E, Env>) => {
   return Effect.runPromise(
     Effect.scoped(body(fake)).pipe(
       Effect.provideService(References.MinimumLogLevel, "Error"),
-      Effect.provide(Layer.mergeAll(SteamLoginSeeds.layer, DbTest)),
+      Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
     ),
   );
 };

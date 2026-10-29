@@ -81,6 +81,8 @@ services:
       ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-3001}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       AGENT_TOKEN: ${AGENT_TOKEN:?AGENT_TOKEN is required}
+      # Ключ шифрования посеянных входов Steam в БД (steam_login_seeds), base64 ровно 32 байт.
+      SEED_KEY: ${SEED_KEY:?SEED_KEY is required}
     mem_limit: 256m
     logging: *logging
     networks:

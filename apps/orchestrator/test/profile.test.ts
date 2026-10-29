@@ -3,19 +3,22 @@ import { Db, profiles, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import type { SteamLoginSeed } from "@cg/rpc";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Logger, Redacted, References } from "effect";
+import { Effect, Layer, Logger, Redacted, References } from "effect";
 import { applyProfileCommit } from "../src/http";
 import * as SessionRepo from "../src/SessionRepo";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest } from "./seedKey";
 
 const run = <A, E>(body: Effect.Effect<A, E, Db | SteamLoginSeeds>) =>
   Effect.runPromise(
     body.pipe(
-      Effect.provide(DbTest),
-      Effect.provide(SteamLoginSeeds.layer),
+      Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
       Effect.provideService(References.MinimumLogLevel, "Error"),
     ),
   );
+
+const tokenOf = (seed: SteamLoginSeed | null) =>
+  seed === null ? null : Redacted.value(seed.refreshToken);
 
 const makeSeed = (refreshToken: string): SteamLoginSeed => ({
   accountName: Redacted.make("steamuser"),
@@ -193,7 +196,7 @@ describe("profile commit", () => {
           "w1",
         );
         expect(rejected).toEqual({ accepted: false });
-        expect(yield* seeds.get("u1")).toBe(seed);
+        expect(tokenOf(yield* seeds.get("u1"))).toBe("t1");
 
         // Принятый, но не посеянный коммит — тоже не трогает.
         const unseeded = yield* applyProfileCommit(
@@ -207,7 +210,7 @@ describe("profile commit", () => {
           "w1",
         );
         expect(unseeded).toEqual({ accepted: true });
-        expect(yield* seeds.get("u1")).toBe(seed);
+        expect(tokenOf(yield* seeds.get("u1"))).toBe("t1");
       }),
     ));
 
@@ -358,8 +361,7 @@ describe("profile commit", () => {
           "w1",
         );
       }).pipe(
-        Effect.provide(DbTest),
-        Effect.provide(SteamLoginSeeds.layer),
+        Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
         Effect.provide(Logger.layer([capture])),
         Effect.provideService(References.MinimumLogLevel, "Info"),
       ),
@@ -451,8 +453,7 @@ describe("profile commit", () => {
         const resetAfter = yield* SessionRepo.steamLoginResetAt("u1");
         return { result, resetAfter };
       }).pipe(
-        Effect.provide(DbTest),
-        Effect.provide(SteamLoginSeeds.layer),
+        Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
         Effect.provide(Logger.layer([capture])),
         Effect.provideService(References.MinimumLogLevel, "All"),
       ),
