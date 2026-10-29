@@ -203,7 +203,11 @@ export interface DockerClientShape {
     name: string,
     path: string,
   ) => Effect.Effect<number, DockerError>;
-  /** `GET /containers/{id}/stats?stream=false`: память и счётчики CPU (см. `ContainerStats`). */
+  /**
+   * `GET /containers/{id}/stats?stream=false&one-shot=true`: память и счётчики
+   * CPU (см. `ContainerStats`); `one-shot` — без ожидания второго цикла сбора
+   * dockerd (~1–2 с): дельту CPU считает вызывающий по двум снимкам.
+   */
   readonly stats: (name: string) => Effect.Effect<ContainerStats, DockerError>;
   /** `GET /containers/{id}/top`: PID процессов контейнера в пространстве хоста. */
   readonly top: (
@@ -647,9 +651,9 @@ export const make = (socketPath: string): DockerClientShape => {
       ),
 
     stats: (name) =>
-      request("stats", "GET", `${containerPath(name)}/stats?stream=false`, {
-        ok: [200],
-      }).pipe(
+      request("stats", "GET", `${containerPath(name)}/stats?stream=false&one-shot=true`,
+        { ok: [200] },
+      ).pipe(
         Effect.flatMap(json("stats", StatsResponse)),
         Effect.flatMap(({ memory_stats: memory, cpu_stats: cpu }) => {
           // Остановленный контейнер отдаёт пустые поля — замера нет.

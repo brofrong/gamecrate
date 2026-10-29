@@ -174,6 +174,8 @@ const makeFake = () => {
       onlineCpus: 12,
       statsCalls: 0,
       statsFail: false,
+      /** Сколько «идёт» каждый `docker stats` (по TestClock): медленный замер. */
+      statsDelay: undefined as Duration.Input | undefined,
       topPids: [] as number[],
       topFail: false,
       smi: smiLine(300, 0) as string | undefined,
@@ -325,7 +327,9 @@ const makeFake = () => {
             new DockerError({ operation: "stats", message: "timeout" }),
           );
         m.statsCalls++;
-        return Effect.succeed({
+        const delay =
+          m.statsDelay === undefined ? Effect.void : Effect.sleep(m.statsDelay);
+        return Effect.as(delay, {
           memoryBytes: m.memoryBytes,
           cpuNanos: m.statsCalls * m.cpuStep,
           systemNanos: m.statsCalls * m.systemStep,
@@ -3074,6 +3078,37 @@ describe("session metrics", () => {
           expect(
             (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
           ).toEqual([]);
+        }),
+      playing,
+    ));
+
+  it("slow samples keep the 10 s grid and the report at 60 s of play", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          // Каждый замер «идёт» 3 с: сетка замеров и отчёт от него не сдвигаются.
+          h.fake.state.metrics.statsDelay = "3 seconds";
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drainAll;
+          // Замеры начинаются в 10, 20, … 60 с игры и кончаются через 3 с.
+          for (let i = 0; i < 62; i++) yield* h.tick("1 second");
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([]);
+          const callsBeforeReport = h.fake.state.metrics.statsCalls;
+          yield* h.tick("1 second");
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([expect.objectContaining({ gameSeconds: 63 })]);
+          // Начальный снимок CPU + 6 замеров.
+          expect(callsBeforeReport).toBe(7);
+          // Следующий отчёт — через 60 с после первого, а не через 6 замеров по 13 с.
+          for (let i = 0; i < 60; i++) yield* h.tick("1 second");
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([expect.objectContaining({ gameSeconds: 123 })]);
         }),
       playing,
     ));

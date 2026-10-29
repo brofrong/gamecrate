@@ -572,28 +572,36 @@ const make = Effect.gen(function* () {
 
   /**
    * Замеры, пока игра идёт: база `gpu_total` (занятая на карте память) — на
-   * старте игры, затем замер раз в METRICS_SAMPLE и отчёт раз в METRICS_REPORT.
-   * Прерывается вместе с `watchGame` (scope `lifecycle`).
+   * старте игры, затем замер по сетке METRICS_SAMPLE от старта игры (время
+   * самого замера — docker и два nvidia-smi — не сдвигает сетку; замер дольше
+   * периода — следующий сразу) и отчёт, как только с прошлого прошло
+   * METRICS_REPORT (по часам, а не по числу замеров). Прерывается вместе с
+   * `watchGame` (scope `lifecycle`).
    */
   const sampleGame = (session: Session, metrics: GameMetrics) =>
     Effect.gen(function* () {
+      const samplePeriod = Duration.toMillis(METRICS_SAMPLE);
+      const reportPeriod = Duration.toMillis(METRICS_REPORT);
+      const startedAt = metrics.lastAt;
+      let nextSampleAt = startedAt + samplePeriod;
+      let nextReportAt = startedAt + reportPeriod;
       const baseline = (yield* gpuNow).usedBytes;
       const cpu = { prev: yield* statsOf(session, []) };
-      const reportEvery = Math.max(
-        1,
-        Math.round(
-          Duration.toMillis(METRICS_REPORT) / Duration.toMillis(METRICS_SAMPLE),
-        ),
-      );
-      for (let samples = 1; ; samples++) {
-        yield* Effect.sleep(METRICS_SAMPLE);
+      while (true) {
+        const wait = nextSampleAt - (yield* Clock.currentTimeMillis);
+        if (wait > 0) yield* Effect.sleep(Duration.millis(wait));
         const sample = yield* takeSample(session, baseline, cpu);
         // Итог уже отправлен (игра закрылась) — дальше не считаем.
         if (session.metrics !== metrics) return;
         const now = yield* Clock.currentTimeMillis;
         metrics.acc.add(sample, (now - metrics.lastAt) / 1000);
         metrics.lastAt = now;
-        if (samples % reportEvery === 0) yield* emitMetrics(session, metrics);
+        nextSampleAt = Math.max(nextSampleAt + samplePeriod, now);
+        if (now >= nextReportAt) {
+          yield* emitMetrics(session, metrics);
+          nextReportAt += reportPeriod;
+          if (nextReportAt <= now) nextReportAt = now + reportPeriod;
+        }
       }
     });
 

@@ -530,7 +530,7 @@ describe("DockerClient", () => {
       onlineCpus: 12,
     });
     expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
-      "GET /v1.47/containers/cg-session-s1/stats?stream=false",
+      "GET /v1.47/containers/cg-session-s1/stats?stream=false&one-shot=true",
     ]);
 
     // cgroup v1 и dockerd без `online_cpus`.
