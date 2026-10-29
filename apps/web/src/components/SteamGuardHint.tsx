@@ -99,12 +99,7 @@ export function SteamGuardHint({ wide = false }: { wide?: boolean }) {
   return (
     <section className="flex flex-col gap-2.5 text-left">
       <h3 className="text-sm font-semibold">Что нажать в приложении Steam</h3>
-      <ol
-        className={cn(
-          "grid grid-cols-2 gap-3",
-          wide && "sm:grid-cols-4",
-        )}
-      >
+      <ol className={cn("grid grid-cols-2 gap-3", wide && "sm:grid-cols-4")}>
         <Step
           n={1}
           caption={
