@@ -154,8 +154,19 @@ const blockedFailure = (now: Date, sessionId: string) =>
  * новая `queued` с `userId` сессии; `installJobId` и `InstallStarted`
  * (→ `installing`). Задача блокируется до проверки библиотеки: если её как раз
  * завершают, видим уже установленную игру (`Retry`), а не завершённую задачу.
+ *
+ * `appInstallCancelling` в `lockOldestQueued` и блокировка задачи тут — два
+ * разных запроса в одной транзакции: между ними админская отмена (отдельная
+ * транзакция `cancelInstall`) могла успеть закоммититься — тогда первый запрос
+ * ещё не видел отмену, а `lockActiveJob` на блокировке уже её видит
+ * (`cancelRequestedAt` не пуст). Присоединять сессию к такой задаче нельзя —
+ * её немедленно провалит админская отмена; вместо этого `Retry` без всякой
+ * записи в БД. Спина нет: к следующему вызову `placeOne` (в том же проходе
+ * или следующем тике) отмена уже закоммичена и видна и первому запросу —
+ * `appInstallCancelling` вернёт эту сессию в ветку "отменяемая игра, ждать в
+ * очереди", а не сюда (экспортируется для теста этой гонки, M1).
  */
-const startInstall = (
+export const startInstall = (
   now: Date,
   session: {
     readonly id: string;
@@ -168,8 +179,11 @@ const startInstall = (
     const locked = yield* InstallRepo.lockActiveJob(session.appId);
     if (yield* InstallRepo.isInstalled(session.appId))
       return { _tag: "Retry" } as const;
+    if (locked !== undefined && locked.cancelRequestedAt !== null)
+      return { _tag: "Retry" } as const;
     const jobId =
-      locked ?? (yield* InstallRepo.createJob(session.appId, session.userId));
+      locked?.id ??
+      (yield* InstallRepo.createJob(session.appId, session.userId));
     yield* db
       .update(sessions)
       .set({ installJobId: jobId })
