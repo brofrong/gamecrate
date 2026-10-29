@@ -38,7 +38,6 @@ import {
   type DockerClientShape,
 } from "../src/DockerClient";
 import {
-  CONNECTION_LOG,
   deleteReasons,
   downloadingBytes,
   DownloadingBytes,
@@ -54,6 +53,7 @@ import { PACK_OUTPUT } from "../src/profile/HomeProfile";
 import { ProfileCommitter } from "../src/profile/ProfileCommitter";
 import { ProfileStore, ProfileStoreError } from "../src/profile/ProfileStore";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
+import { CONNECTION_LOG } from "../src/steam/connectionLog";
 import { PrefixTemplates, type TemplateOutcome } from "../src/PrefixTemplate";
 import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";

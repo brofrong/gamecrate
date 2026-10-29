@@ -15,6 +15,7 @@ import {
   type AgentReport,
   allowedDisplaySize,
   containerGoneReason,
+  defaultSessionSettings,
   type GameEnd,
   type ProfileRef,
   type RunningSession,
@@ -69,6 +70,11 @@ import {
   sessionVram,
 } from "./SessionMetrics";
 import {
+  awaitSteamLogon,
+  CONNECTION_LOG,
+  connectionLogTail,
+} from "./steam/connectionLog";
+import {
   clearLaunchOptions,
   clearSteamLogin,
   seedSteamLogin,
@@ -109,6 +115,20 @@ export const STAGE_SLOW_AFTER = Duration.minutes(3);
 export const STAGE_SLOW_POLL = Duration.seconds(10);
 /** Сколько ждать `cg-session-stage`: зависший X11 не должен останавливать опрос. */
 export const STAGE_CHECK_TIMEOUT = Duration.seconds(10);
+/** Опрос журнала подключения Steam в сессии с посевом (`watchSeededLogin`). */
+export const LOGIN_LOG_POLL = Duration.seconds(2);
+/**
+ * Журнал подключения так и не пошёл (клиент не дошёл до подключения — это не
+ * отказ во входе) — наблюдение за посевом молча кончается.
+ */
+export const LOGIN_LOG_TIMEOUT = Duration.minutes(10);
+/**
+ * Ожидание ответа Steam на попытку входа с посевом: в `StartSession` своего
+ * поля нет — дефолт `steamLoginTimeoutSeconds` установщика.
+ */
+export const SEEDED_LOGIN_TIMEOUT = Duration.seconds(
+  defaultSessionSettings.steamLoginTimeoutSeconds,
+);
 export const HEARTBEAT_INTERVAL = Duration.seconds(30);
 export const STOP_TIMEOUT_SEC = 15;
 /** Пауза между попытками убрать контейнер, чья остановка не удалась. */
@@ -360,6 +380,12 @@ interface Session {
   seeded: boolean;
   /** Метка вписанного входа (`SteamLoginSeed.putAt`, для `ProfileCommit.steamLoginPutAt`). */
   seedPutAt: string | undefined;
+  /**
+   * Размер журнала подключения Steam перед стартом контейнера с посевом —
+   * отсюда `watchSeededLogin` читает ответ на посеянный вход; `undefined` —
+   * посева не было или размер узнать не удалось (наблюдения нет).
+   */
+  loginLogOffset: number | undefined;
   /**
    * Момент сброса входа Steam, эхом которого агент стёр вход перед стартом
    * (для `ProfileCommit.steamLoginResetAt`); `undefined` — стирания в этом
@@ -782,6 +808,40 @@ const make = Effect.gen(function* () {
     });
 
   /**
+   * Посеянный вход: Steam не принял его (`awaitSteamLogon` — `notAccepted`) —
+   * то же предупреждение, что у установщика (по нему ищут в логах), без имени
+   * аккаунта и токена. Сессию не трогает. Сбой чтения журнала — предупреждение,
+   * опрос продолжается; контейнера нет — наблюдение молча кончается.
+   */
+  const watchSeededLogin = (session: Session, offset: number) =>
+    awaitSteamLogon({
+      read: docker.exec(session.name, connectionLogTail(offset)).pipe(
+        Effect.map(({ stdout }) => stdout),
+        Effect.catchTag("DockerError", (error) =>
+          isGone(error)
+            ? Effect.fail(error)
+            : Effect.logWarning("Reading the Steam connection log failed", {
+                sessionId: session.sessionId,
+                error: error.message,
+              }).pipe(Effect.as("")),
+        ),
+      ),
+      poll: LOGIN_LOG_POLL,
+      logTimeout: LOGIN_LOG_TIMEOUT,
+      loginTimeout: SEEDED_LOGIN_TIMEOUT,
+    }).pipe(
+      Effect.flatMap((outcome) =>
+        outcome === "notAccepted"
+          ? Effect.logWarning("Seeded Steam login was not accepted", {
+              sessionId: session.sessionId,
+              appId: session.appId,
+            })
+          : Effect.void,
+      ),
+      Effect.catchTag("DockerError", () => Effect.void),
+    );
+
+  /**
    * Маркер облака вырос относительно базы (ждём до CLOUD_TIMEOUT). База неизвестна —
    * сравнивать не с чем: ждём всё время (Steam успеет выгрузить) и сообщаем `false`.
    */
@@ -1154,6 +1214,25 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
+          // Журнал дописывается и в шаблоне клиента уже есть строки: ответ на
+          // посев — только после этого смещения. Не узнали — сессия идёт без
+          // наблюдения за посевом.
+          if (session.seeded)
+            session.loginLogOffset = yield* docker
+              .archiveSize(session.name, CONNECTION_LOG)
+              .pipe(
+                Effect.catchTag("DockerError", (error) =>
+                  isGone(error)
+                    ? Effect.succeed(0)
+                    : Effect.logWarning(
+                        "Reading the Steam connection log size failed",
+                        {
+                          sessionId: session.sessionId,
+                          error: error.message,
+                        },
+                      ).pipe(Effect.as(undefined)),
+                ),
+              );
           yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
           yield* reportStage(session, "steam");
           return from;
@@ -1189,13 +1268,18 @@ const make = Effect.gen(function* () {
           launchWith.steamLogin,
           launchWith.steamLoginResetAt,
         );
-      // Опрос этапов идёт параллельно готовности и игре; scope закрывается
-      // (fiber прерван) до finish/fail — после Stopped/Failed этапов нет.
+      // Опрос этапов и наблюдение за посеянным входом идут параллельно
+      // готовности и игре; scope закрывается (fiber прерван) до finish/fail —
+      // после Stopped/Failed этапов нет.
       yield* Effect.scoped(
         Effect.gen(function* () {
           // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
           if (yield* Deferred.isDone(session.stopRequested)) return;
           yield* Effect.forkScoped(watchStage(session));
+          if (session.loginLogOffset !== undefined)
+            yield* Effect.forkScoped(
+              watchSeededLogin(session, session.loginLogOffset),
+            );
           const ready = yield* untilStop(session, waitReady(session));
           if (ready.stopped) return;
           session.phase = "ready";
@@ -1228,6 +1312,7 @@ const make = Effect.gen(function* () {
         phase: fields.phase ?? "starting",
         seeded: false,
         seedPutAt: undefined,
+        loginLogOffset: undefined,
         loginResetAt: undefined,
         gameRunning: fields.gameRunning ?? false,
         stage: undefined,
