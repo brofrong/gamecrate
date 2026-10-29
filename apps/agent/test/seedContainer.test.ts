@@ -89,7 +89,9 @@ const entry = (tar: Uint8Array, name: string) => {
  * Выполняет `clearSteamLogin` на фейковом контейнере, где лежат `files`;
  * возвращает положенные архивы и строки лога.
  */
-const clearWith = (files: Partial<Record<keyof typeof LOGIN_FILES, string>>) => {
+const clearWith = (
+  files: Partial<Record<keyof typeof LOGIN_FILES, string>>,
+) => {
   const put: Array<Uint8Array> = [];
   const logged: Array<{ level: string; text: string }> = [];
   const byPath = new Map(
@@ -421,7 +423,9 @@ describe("launch options", () => {
       ".local/share/Steam/userdata/22202/",
       ".local/share/Steam/userdata/22202/config/",
     ])
-      expect(tarEntryInfo(c.put[0]!, dir)).toMatch(/^drwx------.*\b1000\s+1000\b/);
+      expect(tarEntryInfo(c.put[0]!, dir)).toMatch(
+        /^drwx------.*\b1000\s+1000\b/,
+      );
 
     await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
     expect(c.launchOptions("570")).toBe("");
@@ -457,7 +461,28 @@ describe("launch options", () => {
     );
     await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
     expect(c.put).toEqual([]);
-    expect(c.read).toEqual([]);
+    expect(c.launchOptions("570")).toBe("-novid");
+    expect(c.logged.map((line) => line.text).join("\n")).toContain(
+      "Session image has no cg-game-exit",
+    );
+  });
+
+  it("an image without cg-game-exit strips a leftover wrapper, the player's options stay", async () => {
+    const c = homeContainer(
+      {
+        [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF,
+        [LOCALCONFIG]: localConfig({
+          "570": `${WRAPPED} -novid`,
+          "10": `${WRAPPED} -console`,
+        }),
+      },
+      false,
+    );
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toHaveLength(1);
+    expect(c.launchOptions("570")).toBe("-novid");
+    // Другие игры не трогаются: их обёртку снимет их собственный запуск.
+    expect(c.launchOptions("10")).toBe(`${WRAPPED} -console`);
     expect(c.logged.map((line) => line.text).join("\n")).toContain(
       "Session image has no cg-game-exit",
     );

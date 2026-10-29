@@ -326,7 +326,9 @@ const updateLaunchOptions = (
  * `localconfig.vdf` каждого аккаунта из `loginusers.vdf` (нет файла —
  * создаётся). Параметры игрока остаются после обёртки; снимает их
  * `clearLaunchOptions` перед сохранением профиля. В образе нет обёртки —
- * предупреждение, параметры не меняются.
+ * предупреждение, а обёртка, оставшаяся в параметрах от прошлых сессий,
+ * снимается (как `clearLaunchOptions`): откат образа безопасно выключает
+ * обёртку, иначе Steam не запустил бы игру вовсе.
  */
 export const setLaunchOptions = (options: {
   readonly container: string;
@@ -347,7 +349,12 @@ export const setLaunchOptions = (options: {
       yield* Effect.logWarning("Session image has no cg-game-exit", {
         container: options.container,
       });
-      return;
+      return yield* updateLaunchOptions(
+        options.container,
+        options.appId,
+        (current) =>
+          current === undefined ? undefined : unwrapLaunchOptions(current),
+      );
     }
     yield* updateLaunchOptions(options.container, options.appId, (current) => {
       const wrapped = wrapLaunchOptions(current);
