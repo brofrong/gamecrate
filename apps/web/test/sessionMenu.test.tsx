@@ -323,6 +323,14 @@ describe("session menu", () => {
     expect(screen.getByText("21 Мбит/с")).toBeTruthy();
   });
 
+  it("menu tells how to capture the mouse", async () => {
+    renderPlayer({ streamSettings: control({ menuSeen: true }) });
+    await clickMenu();
+    const hint = screen.getByText(/захватит мышь/);
+    expect(hint.textContent).toContain("Ctrl+Shift+клик");
+    expect(hint.textContent).toContain("Esc");
+  });
+
   it("debug mode switch", async () => {
     const update = mock<Update>(() => {});
     renderPlayer({ streamSettings: control({}, true, update) });

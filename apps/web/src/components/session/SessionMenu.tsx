@@ -1,5 +1,5 @@
-// Содержимое меню сессии (спека §2.3): шапка с игрой и игровым временем, «Качество» (Авто / битрейт / разрешение), «Отладка» и
-// «Закончить игру». Правки применяются сразу через `onChange`; ползунок — по отпусканию;
+// Содержимое меню сессии (спека §2.3): шапка с игрой и игровым временем, «Качество» (Авто / битрейт / разрешение), «Отладка»,
+// подсказка про захват мыши (§2.5) и «Закончить игру». Правки применяются сразу через `onChange`; ползунок — по отпусканию;
 // разрешение только сохраняется — применится со следующего запуска (§4.1).
 import {
   type DebugMode,
@@ -63,6 +63,8 @@ function PlayedTime({ played }: { played: PlayedClock }) {
 const sectionTitle =
   "text-xs font-medium tracking-wide text-muted-foreground uppercase";
 const note = "text-xs text-muted-foreground";
+const key =
+  "rounded border border-border px-1 font-mono text-[11px] text-foreground";
 
 export function SessionMenu({
   gameName,
@@ -177,6 +179,19 @@ export function SessionMenu({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+      </section>
+
+      {/* Захват мыши (спека §2.5): в окне — только сочетанием Selkies, в полном экране — кликом. */}
+      <section className="grid gap-2" aria-labelledby={`${ids}-mouse`}>
+        <h3 id={`${ids}-mouse`} className={sectionTitle}>
+          Мышь
+        </h3>
+        <p className={note}>
+          Камера в игре не крутится? <kbd className={key}>Ctrl+Shift+клик</kbd>{" "}
+          по игре захватит мышь, <kbd className={key}>Esc</kbd> отпустит. В
+          полном экране хватит клика, выйти — удержать{" "}
+          <kbd className={key}>Esc</kbd>.
+        </p>
       </section>
 
       <Button variant="secondary" className="w-full" onClick={onEndGame}>
