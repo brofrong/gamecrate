@@ -710,8 +710,9 @@ describe("SessionSupervisor", () => {
     run((h) =>
       Effect.gen(function* () {
         const envOf = (sessionId: string) =>
-          sessionSpecs(h.fake).find((spec) => spec.name === `cg-session-${sessionId}`)
-            ?.env;
+          sessionSpecs(h.fake).find(
+            (spec) => spec.name === `cg-session-${sessionId}`,
+          )?.env;
 
         // Разрешение из белого списка — ровно оно.
         yield* h.supervisor.handle({
@@ -938,7 +939,12 @@ describe("SessionSupervisor", () => {
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+          {
+            _tag: "GameState",
+            sessionId: "s1",
+            running: false,
+            end: "unknown",
+          },
         ]);
         yield* h.tick("10 seconds");
         expect(yield* h.drain).toEqual([]);
@@ -1307,7 +1313,12 @@ describe("SessionSupervisor", () => {
         h.fake.state.pgrepExit = 1;
         yield* h.tick("5 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
-          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+          {
+            _tag: "GameState",
+            sessionId: "s1",
+            running: false,
+            end: "unknown",
+          },
         ]);
       }),
     ));
@@ -1353,7 +1364,12 @@ describe("SessionSupervisor", () => {
           yield* h.tick("5 seconds");
           yield* h.tick("2 seconds");
           expect(yield* h.drain).toEqual([
-            { _tag: "GameState", sessionId: "a", running: false, end: "unknown" },
+            {
+              _tag: "GameState",
+              sessionId: "a",
+              running: false,
+              end: "unknown",
+            },
             {
               _tag: "Stopped",
               sessionId: "a",
@@ -1422,7 +1438,12 @@ describe("SessionSupervisor", () => {
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+          {
+            _tag: "GameState",
+            sessionId: "s1",
+            running: false,
+            end: "unknown",
+          },
         ]);
         yield* h.tick("10 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual(
@@ -3104,7 +3125,12 @@ describe("session metrics", () => {
           yield* h.tick("5 seconds");
           expect(metricsAndGame(yield* h.drainAll)).toEqual([
             { ...minute, gameSeconds: 65 },
-            { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+            {
+              _tag: "GameState",
+              sessionId: "s1",
+              running: false,
+              end: "unknown",
+            },
           ]);
           // Игра закрылась — замеры кончились.
           const calls = h.fake.state.metrics.statsCalls;
@@ -3253,6 +3279,11 @@ describe("game end", () => {
     // bash отдаёт смерть от сигнала n как 128+n.
     expect(parseGameExit("code 139\n")).toBe("crash");
     expect(parseGameExit("code 134")).toBe("crash");
+    expect(parseGameExit("code 129\n")).toBe("crash");
+    expect(parseGameExit("code 192\n")).toBe("crash");
+    // Выше 128+64 — не сигнал, а обычный код (`exit 255`, `exit -1`).
+    expect(parseGameExit("code 193\n")).toBe("error");
+    expect(parseGameExit("code 255\n")).toBe("error");
     expect(parseGameExit("signal 11\n")).toBe("crash");
     expect(parseGameExit("")).toBe("unknown");
     expect(parseGameExit("code\n")).toBe("unknown");
@@ -3286,7 +3317,12 @@ describe("game end", () => {
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+          {
+            _tag: "GameState",
+            sessionId: "s1",
+            running: false,
+            end: "unknown",
+          },
         ]);
       }),
     ));
@@ -3311,7 +3347,10 @@ describe("game end", () => {
             "start cg-session-s1",
             "remove cg-s-s1-hold",
           ]);
-          const wrapped = findTarEntry(h.fake.state.put[0]!.tar, "localconfig.vdf");
+          const wrapped = findTarEntry(
+            h.fake.state.put[0]!.tar,
+            "localconfig.vdf",
+          );
           expect(new TextDecoder().decode(wrapped)).toContain(
             '"LaunchOptions"\t\t"/usr/local/bin/cg-game-exit %command% -novid"',
           );
@@ -3328,7 +3367,10 @@ describe("game end", () => {
             "putArchive cg-session-s1 /home/ubuntu",
             "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
           ]);
-          const restored = findTarEntry(h.fake.state.put[1]!.tar, "localconfig.vdf");
+          const restored = findTarEntry(
+            h.fake.state.put[1]!.tar,
+            "localconfig.vdf",
+          );
           expect(new TextDecoder().decode(restored)).toContain(
             '"LaunchOptions"\t\t"-novid"',
           );

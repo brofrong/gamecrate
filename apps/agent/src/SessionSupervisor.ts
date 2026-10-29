@@ -292,7 +292,8 @@ export const commands = {
 
 /**
  * Строка `cg-game-exit` → чем закончилась игра: `code 0` — `quit`, `code n`
- * — `error`, но `code 128+n` (так bash отдаёт смерть от сигнала n) и
+ * — `error`, но `code 128+n` при сигнале n в 1..64 (так bash отдаёт смерть
+ * от сигнала; `code 255` и прочие выше 192 — обычный код ошибки) и
  * `signal n` — `crash`; иначе `unknown`.
  */
 export const parseGameExit = (
@@ -302,7 +303,8 @@ export const parseGameExit = (
   if (match === null) return "unknown";
   const n = Number(match[2]);
   if (match[1] === "signal") return "crash";
-  return n === 0 ? "quit" : n > 128 ? "crash" : "error";
+  if (n === 0) return "quit";
+  return n >= 129 && n <= 192 ? "crash" : "error";
 };
 
 /** Порядок этапов: отчёт только о более позднем, чем уже отправленный. */
@@ -549,7 +551,8 @@ const make = Effect.gen(function* () {
       const xml = yield* probe.nvidiaSmiProcesses;
       if (xml === undefined) failed.push("nvidia-smi processes");
       const gpu = yield* gpuNow;
-      if (gpu.usedBytes === null && gpu.util === null) failed.push("nvidia-smi");
+      if (gpu.usedBytes === null && gpu.util === null)
+        failed.push("nvidia-smi");
       let cpuCores: number | null = null;
       if (stats !== undefined && cpu.prev !== undefined) {
         const system = stats.systemNanos - cpu.prev.systemNanos;
