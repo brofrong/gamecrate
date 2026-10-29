@@ -579,19 +579,23 @@ describe("session", () => {
     });
 
     // Нет активной сессии: у каждой игры «Играть»/«Установить» (запрос один и тот же).
-    const free = cardAction({ appId: 400 }, play(null));
+    const free = cardAction({ appId: 400, available: true }, play(null));
     expect(free.kind).toBe("play");
     if (free.kind === "play") free.onPlay();
     expect(onPlay).toHaveBeenCalledWith(400);
 
     // Активная сессия у Portal 2 (620): у неё «Вернуться в игру», Portal (400) заблокирован.
-    const resume = cardAction({ appId: 620 }, play(view("playing")));
+    const resume = cardAction(
+      { appId: 620, available: true },
+      play(view("playing")),
+    );
     expect(resume.kind).toBe("resume");
     if (resume.kind === "resume") resume.onResume();
     expect(onResume).toHaveBeenCalledTimes(1);
-    expect(cardAction({ appId: 400 }, play(view("playing"))).kind).toBe(
-      "blocked",
-    );
+    expect(
+      cardAction({ appId: 400, available: true }, play(view("playing")))
+        .kind,
+    ).toBe("blocked");
   });
 
   it("gamepad noise inside the dead zone is not input", () => {

@@ -2,6 +2,7 @@
 // представление `SessionView`, heartbeat и запрос остановки.
 import {
   Db,
+  gameAvailable,
   games,
   type InstallStage as DbInstallStage,
   installJobs,
@@ -248,14 +249,21 @@ const ownsGame = (userId: string, appId: number) =>
  * Активная сессия пользователя: существующая (любой игры) или новая `queued`
  * для `appId`. Пользователь заблокирован (`user.blocked_at`) — `"Blocked"`
  * (проверяется до владения игрой — блокировка важнее отсутствия игры). Игры
- * нет в библиотеке — `"NotOwned"`. Гонка двух вызовов решается частичным
- * уникальным индексом: вставка без конфликта не проходит (`ON CONFLICT DO
- * NOTHING`), и проигравший читает сессию победителя.
+ * нет в библиотеке — `"NotOwned"`. Игра недоступна — нет сейчас ни одного
+ * подходящего воркера (`gameAvailable`, спека §3) — `"NoServer"`; уже
+ * активная сессия (любой игры) возвращается как есть, без этой проверки —
+ * игра могла стать недоступной уже после запуска. Гонка двух вызовов решается
+ * частичным уникальным индексом: вставка без конфликта не проходит (`ON
+ * CONFLICT DO NOTHING`), и проигравший читает сессию победителя.
  */
 export const startSession = (
   userId: string,
   appId: number,
-): Effect.Effect<SessionView | "NotOwned" | "Blocked", never, Db> =>
+): Effect.Effect<
+  SessionView | "NotOwned" | "Blocked" | "NoServer",
+  never,
+  Db
+> =>
   Effect.gen(function* () {
     if (yield* isBlocked(userId)) return "Blocked" as const;
     if (!(yield* ownsGame(userId, appId))) return "NotOwned" as const;
@@ -264,6 +272,9 @@ export const startSession = (
     for (let attempt = 0; attempt < 3; attempt++) {
       const existing = yield* activeRow(userId);
       if (existing !== undefined) return yield* toView(existing);
+      const now = yield* DateTime.nowAsDate;
+      if (!(yield* gameAvailable(userId, appId, now)))
+        return "NoServer" as const;
       const inserted = yield* db
         .insert(sessions)
         .values({ id: crypto.randomUUID(), userId, appId, state: "queued" })

@@ -6,6 +6,7 @@ import {
   GameNotOwned,
   isTerminalSessionState,
   maxInputAgeMs,
+  NoServer,
   SessionNotFound,
   SessionRpcs,
   type SessionView,
@@ -68,6 +69,7 @@ export const SessionRpcHandlers = SessionRpcs.toLayer(
           const result = yield* SessionRepo.startSession(current.id, appId);
           if (result === "Blocked") return yield* new AccessDenied();
           if (result === "NotOwned") return yield* new GameNotOwned({ appId });
+          if (result === "NoServer") return yield* new NoServer();
           return result;
         }),
       "session.active": () =>

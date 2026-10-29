@@ -13,6 +13,8 @@ import {
   sessions,
   user,
   userGames,
+  workerClasses,
+  workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type CurrentUserShape, LibraryRpcs } from "@cg/rpc";
@@ -515,6 +517,30 @@ describe("library.game", () => {
     );
     expect(exit._tag).toBe("Failure");
     expect(JSON.stringify(exit)).toContain("GameNotFound");
+  });
+
+  it("game view says unavailable without a fitting worker", async () => {
+    reset();
+    const { withoutWorker, withWorker } = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGame(db);
+        const withoutWorker = yield* game();
+        // Миграция уже завела класс «Стандарт» (rank 1) — переиспользуем его.
+        const [cls] = yield* db.select().from(workerClasses);
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: cls!.id,
+          lastSeenAt: new Date(),
+        });
+        const withWorker = yield* game();
+        return { withoutWorker, withWorker };
+      }),
+    );
+    expect(withoutWorker.available).toBe(false);
+    expect(withWorker.available).toBe(true);
   });
 
   it("inLibrary false for a game not owned: playtime 0", async () => {

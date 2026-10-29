@@ -5,6 +5,7 @@
 // достижения запрашиваются параллельно; ни один из них не роняет ответ.
 import {
   Db,
+  gameAvailable,
   games,
   gamestoreApps,
   playSegments,
@@ -200,24 +201,28 @@ export const gameView = (
       .pipe(Effect.orDie);
     if (gameRow === undefined) return yield* new GameNotFound({ appId });
 
-    const [owned, installed, cloud, sessionList, cached] = yield* Effect.all(
-      [
-        db
-          .select({ playtimeMinutes: userGames.playtimeMinutes })
-          .from(userGames)
-          .where(and(eq(userGames.userId, userId), eq(userGames.appId, appId)))
-          .pipe(Effect.orDie),
-        db
-          .select({ sizeBytes: gamestoreApps.sizeBytes })
-          .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, appId))
-          .pipe(Effect.orDie),
-        CloudRepo.cloudStatuses([appId]),
-        userSessions(userId, appId, now),
-        resolveDetails(appId, now),
-      ],
-      { concurrency: "unbounded" },
-    );
+    const [owned, installed, cloud, sessionList, cached, available] =
+      yield* Effect.all(
+        [
+          db
+            .select({ playtimeMinutes: userGames.playtimeMinutes })
+            .from(userGames)
+            .where(
+              and(eq(userGames.userId, userId), eq(userGames.appId, appId)),
+            )
+            .pipe(Effect.orDie),
+          db
+            .select({ sizeBytes: gamestoreApps.sizeBytes })
+            .from(gamestoreApps)
+            .where(eq(gamestoreApps.appId, appId))
+            .pipe(Effect.orDie),
+          CloudRepo.cloudStatuses([appId]),
+          userSessions(userId, appId, now),
+          resolveDetails(appId, now),
+          gameAvailable(userId, appId, now),
+        ],
+        { concurrency: "unbounded" },
+      );
     const details = cached?.details ?? null;
     const achievements = yield* resolveAchievements(
       appId,
@@ -242,5 +247,6 @@ export const gameView = (
       sessions: sessionList,
       details,
       achievements,
+      available,
     };
   });

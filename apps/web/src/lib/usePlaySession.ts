@@ -3,7 +3,7 @@
 // новой («Играть») и переход к активной («Вернуться в игру»), с теми же текстами
 // ошибок (`GameNotOwned`/`AccessDenied`/`Unauthorized`/остальное), что были
 // продублированы в обоих компонентах до вынесения сюда.
-import { accessDeniedReason } from "@cg/rpc";
+import { accessDeniedReason, noServerReason } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Exit } from "effect";
@@ -43,6 +43,8 @@ export function usePlaySession() {
       toast.error("Эта игра не найдена в вашей библиотеке Steam");
     } else if (tag === "AccessDenied") {
       toast.error(accessDeniedReason);
+    } else if (tag === "NoServer") {
+      toast.error(noServerReason);
     } else if (tag === "Unauthorized") {
       window.location.assign("/");
     } else {

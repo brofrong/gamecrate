@@ -9,6 +9,8 @@ import {
   settings,
   user,
   userGames,
+  workerClasses,
+  workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import {
@@ -67,7 +69,12 @@ const run = <A, E>(
 
 const client = RpcTest.makeClient(SessionRpcs);
 
-/** alice владеет Hades (10); Celeste (20) есть в каталоге, но не у неё; у bob — Hades. */
+/**
+ * alice владеет Hades (10); Celeste (20) есть в каталоге, но не у неё; у bob —
+ * Hades. Воркер `w1` недавно на связи и с классом — у Hades и Celeste нет
+ * строки в `game_requirements`, так что ей годится любой подключённый
+ * воркер с классом (§2.3); без него `session.start` вернул бы `NoServer`.
+ */
 const seed = Effect.gen(function* () {
   const db = yield* Db;
   yield* db.insert(user).values(
@@ -85,6 +92,15 @@ const seed = Effect.gen(function* () {
     { userId: alice.id, appId: 10 },
     { userId: bob.id, appId: 10 },
   ]);
+  // Миграция уже завела класс «Стандарт» (rank 1) — переиспользуем его.
+  const [cls] = yield* db.select().from(workerClasses);
+  yield* db.insert(workers).values({
+    id: "w1",
+    publicIp: "203.0.113.1",
+    slots: 1,
+    classId: cls!.id,
+    lastSeenAt: new Date(),
+  });
 });
 
 const sessionRow = (id: string) =>
@@ -183,6 +199,47 @@ describe("session rpc", () => {
     expect(result.denied._tag).toBe("AccessDenied");
     expect(result.active).toBeNull();
     expect(result.rows).toHaveLength(0);
+  });
+
+  it("session.start fails with NoServer and inserts nothing", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        // Единственный воркер уходит на обслуживание — Hades больше никому не годится.
+        yield* db
+          .update(workers)
+          .set({ draining: true })
+          .where(eq(workers.id, "w1"));
+        const rpc = yield* client;
+        const noServer = yield* Effect.flip(
+          rpc["session.start"]({ appId: 10 }),
+        );
+        const rows = yield* db.select().from(sessions);
+        return { noServer, rows };
+      }),
+    );
+    expect(result.noServer._tag).toBe("NoServer");
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("active session is returned even if game became unavailable", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        const rpc = yield* client;
+        const first = yield* rpc["session.start"]({ appId: 10 });
+        // Воркер, на котором держалась Hades, уходит на обслуживание уже после запуска.
+        yield* db
+          .update(workers)
+          .set({ draining: true })
+          .where(eq(workers.id, "w1"));
+        const second = yield* rpc["session.start"]({ appId: 10 });
+        return { first, second };
+      }),
+    );
+    expect(result.second.id).toBe(result.first.id);
   });
 
   it("start after the previous session ended creates a new one", async () => {

@@ -2,7 +2,7 @@
 // название, ряд чипов (облако, ProtonDB, часы, последний запуск) и кнопка
 // «Играть»/«Установить»/«Вернуться в игру» (`cardAction`) — единственное место запуска.
 // `library_hero.jpg` не загрузилась → `header.jpg` размытой подложкой.
-import type { GameView } from "@cg/rpc";
+import { type GameView, noServerReason } from "@cg/rpc";
 import { Download, LoaderCircle, Play } from "lucide-react";
 import { useState } from "react";
 import { headerUrl } from "@/components/app/GameCover";
@@ -97,6 +97,23 @@ export function HeroButton({
       );
     case "blocked":
       return null;
+    case "unavailable": {
+      const label = playLabel(game.cloud);
+      return (
+        <div className={cn("flex flex-col items-start gap-1.5", className)}>
+          <Button
+            size="lg"
+            className="w-full"
+            aria-label={`${label}: ${game.name}`}
+            disabled
+          >
+            {label === "Играть" ? <Play /> : <Download />}
+            {label}
+          </Button>
+          <span className="text-xs text-[#ffd166]">{noServerReason}</span>
+        </div>
+      );
+    }
   }
 }
 

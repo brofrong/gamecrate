@@ -29,7 +29,7 @@ const basePlay: LibraryPlay = {
 describe("cardAction", () => {
   it("resume: active session for the same appId", () => {
     const play: LibraryPlay = { ...basePlay, active: session };
-    expect(cardAction({ appId: 620 }, play)).toEqual({
+    expect(cardAction({ appId: 620, available: true }, play)).toEqual({
       kind: "resume",
       onResume: play.onResume,
     });
@@ -37,12 +37,14 @@ describe("cardAction", () => {
 
   it("blocked: active session for another appId", () => {
     const play: LibraryPlay = { ...basePlay, active: session };
-    expect(cardAction({ appId: 10 }, play)).toEqual({ kind: "blocked" });
+    expect(cardAction({ appId: 10, available: true }, play)).toEqual({
+      kind: "blocked",
+    });
   });
 
   it("play with disabled=true while active is undefined (not yet loaded)", () => {
     const play: LibraryPlay = { ...basePlay, active: undefined };
-    const action = cardAction({ appId: 620 }, play);
+    const action = cardAction({ appId: 620, available: true }, play);
     expect(action.kind).toBe("play");
     if (action.kind === "play") {
       expect(action.disabled).toBe(true);
@@ -52,7 +54,7 @@ describe("cardAction", () => {
 
   it("play: no active session, not disabled, not pending", () => {
     const play: LibraryPlay = { ...basePlay, active: null };
-    const action = cardAction({ appId: 620 }, play);
+    const action = cardAction({ appId: 620, available: true }, play);
     expect(action.kind).toBe("play");
     if (action.kind === "play") {
       expect(action.disabled).toBe(false);
@@ -66,11 +68,26 @@ describe("cardAction", () => {
       active: null,
       startingAppId: 620,
     };
-    const action = cardAction({ appId: 620 }, play);
+    const action = cardAction({ appId: 620, available: true }, play);
     expect(action.kind).toBe("play");
     if (action.kind === "play") {
       expect(action.pending).toBe(true);
       expect(action.disabled).toBe(true);
     }
+  });
+
+  it("unavailable game gives unavailable", () => {
+    const play: LibraryPlay = { ...basePlay, active: null };
+    expect(cardAction({ appId: 620, available: false }, play)).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  it("resume wins over unavailable", () => {
+    const play: LibraryPlay = { ...basePlay, active: session };
+    expect(cardAction({ appId: 620, available: false }, play)).toEqual({
+      kind: "resume",
+      onResume: play.onResume,
+    });
   });
 });

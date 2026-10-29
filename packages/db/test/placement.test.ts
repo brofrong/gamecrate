@@ -13,6 +13,8 @@ import {
   allowedClasses,
   eligibleWorkers,
   fitsRequirements,
+  gameAvailable,
+  WORKER_RECENT_MS,
 } from "../src/placement";
 import { DbTest } from "./testDb";
 
@@ -259,6 +261,73 @@ describe("allowedClasses", () => {
         const { weak, strong } = yield* setupClasses(db);
         const classes = yield* allowedClasses("u1");
         expect(classes.map((c) => c.id)).toEqual([strong.id, weak.id]);
+      }),
+    ));
+});
+
+describe("gameAvailable", () => {
+  const now = new Date("2026-10-29T12:00:00.000Z");
+  const minutesAgo = (minutes: number) =>
+    new Date(now.getTime() - minutes * 60 * 1000);
+
+  it("worker seen 11 minutes ago does not make game available", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          lastSeenAt: minutesAgo(11),
+        });
+        expect(yield* gameAvailable("u1", 1, now)).toBe(false);
+      }),
+    ));
+
+  it("stats_at 1 minute ago does", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          lastSeenAt: minutesAgo(11),
+          statsAt: minutesAgo(1),
+        });
+        expect(yield* gameAvailable("u1", 1, now)).toBe(true);
+      }),
+    ));
+
+  it("no workers at all: unavailable", () =>
+    run(
+      Effect.gen(function* () {
+        yield* setupClasses(yield* Db);
+        yield* (yield* Db).insert(games).values({ appId: 1, name: "G1" });
+        expect(yield* gameAvailable("u1", 1, now)).toBe(false);
+      }),
+    ));
+
+  it("recent worker right at the WORKER_RECENT_MS boundary counts as available", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          lastSeenAt: new Date(now.getTime() - WORKER_RECENT_MS),
+        });
+        expect(yield* gameAvailable("u1", 1, now)).toBe(true);
       }),
     ));
 });

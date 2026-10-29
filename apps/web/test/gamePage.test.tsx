@@ -173,6 +173,7 @@ const view = (patch: Partial<GameView> = {}): GameView => ({
   ],
   details,
   achievements: { _tag: "None" },
+  available: true,
   ...patch,
 });
 
@@ -228,6 +229,17 @@ describe("GamePage", () => {
       startSessionFailure = null;
       toastError.mockRestore();
     }
+  });
+
+  it("unavailable game: «Играть» disabled with the no-server reason", async () => {
+    renderGame(AsyncResult.success(view({ available: false })));
+    const play = await screen.findByRole("button", {
+      name: "Играть: Baldur's Gate 3",
+    });
+    expect(play.hasAttribute("disabled")).toBe(true);
+    expect(
+      screen.getAllByText("Сейчас нет подходящего сервера").length,
+    ).toBeGreaterThan(0);
   });
 
   it("«Установить» for a missing game", async () => {

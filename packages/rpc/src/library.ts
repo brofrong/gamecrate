@@ -206,6 +206,8 @@ export const GameView = Schema.Struct({
   sessions: Schema.Array(GameSessionEntry),
   details: Schema.NullOr(GameDetails),
   achievements: GameAchievements,
+  /** Есть ли сейчас подходящий игре воркер для пользователя (спека §3). */
+  available: Schema.Boolean,
 });
 export type GameView = typeof GameView.Type;
 

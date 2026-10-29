@@ -1,7 +1,7 @@
 // Допуск игры на воркер: классы воркеров, подходит ли железо, какие воркеры
 // годятся игре для пользователя (спека §2.1–§2.3).
 import type { WorkerHardware } from "@cg/rpc";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { Db } from "./Db";
 import { gameRequirements, workerClasses, workers } from "./schema";
@@ -127,6 +127,43 @@ export const eligibleWorkers = (
     return fitting
       .map((w) => ({ id: w.id, rank: w.rank, slots: w.slots }))
       .sort((a, b) => b.rank - a.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }).pipe(Effect.orDie);
+
+/**
+ * «Недавно был на связи» — порог давности `last_seen_at`/`stats_at` воркера
+ * для расчёта «недоступна» (спека §3): перезапуск агента при деплое не должен
+ * на несколько секунд пометить игру недоступной.
+ */
+export const WORKER_RECENT_MS = 10 * 60 * 1000;
+
+/**
+ * Доступна ли игра пользователю прямо сейчас (спека §3): среди воркеров,
+ * которые подключены или были на связи за последние `WORKER_RECENT_MS`
+ * (`last_seen_at` хаба или `stats_at` монитора — хватает любого из двух; по
+ * этим полям, не зная о текущей сетевой подключённости), есть хотя бы один,
+ * который годится игре для пользователя (`eligibleWorkers`, §2.1–§2.3, без
+ * проверки свободного слота — «все подходящие заняты» не значит «недоступна»,
+ * это забота планировщика).
+ */
+export const gameAvailable = (
+  userId: string,
+  appId: number,
+  now: Date,
+): Effect.Effect<boolean, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const threshold = new Date(now.getTime() - WORKER_RECENT_MS);
+    const recent = yield* db
+      .select({ id: workers.id })
+      .from(workers)
+      .where(
+        or(gte(workers.lastSeenAt, threshold), gte(workers.statsAt, threshold)),
+      );
+    if (recent.length === 0) return false;
+    const eligible = yield* eligibleWorkers(userId, appId, {
+      workerIds: recent.map((w) => w.id),
+    });
+    return eligible.length > 0;
   }).pipe(Effect.orDie);
 
 /**

@@ -12,7 +12,9 @@ export function playLabel(cloud: CloudStatus): "Играть" | "Установ�
  * - `play` — «Играть» (`pending` — эта игра уже запускается, `disabled` — запускается
  *   другая или активная сессия ещё не известна);
  * - `resume` — у этой игры активная сессия: «Вернуться в игру»;
- * - `blocked` — активна сессия другой игры: «Играть» неактивна с подсказкой.
+ * - `blocked` — активна сессия другой игры: «Играть» неактивна с подсказкой;
+ * - `unavailable` — сейчас нет подходящего воркера (спека §3): «Играть»
+ *   неактивна с подписью `noServerReason`.
  */
 export type CardAction =
   | {
@@ -22,7 +24,8 @@ export type CardAction =
       readonly onPlay: () => void;
     }
   | { readonly kind: "resume"; readonly onResume: () => void }
-  | { readonly kind: "blocked" };
+  | { readonly kind: "blocked" }
+  | { readonly kind: "unavailable" };
 
 /** Запуск игр из библиотеки. */
 export type LibraryPlay = {
@@ -35,9 +38,14 @@ export type LibraryPlay = {
   readonly onResume: () => void;
 };
 
-/** Одна активная сессия на пользователя: у её игры — «Вернуться в игру», у остальных «Играть» неактивна. */
+/**
+ * Одна активная сессия на пользователя: у её игры — «Вернуться в игру», у
+ * остальных «Играть» неактивна (`blocked`). Иначе, если у игры сейчас нет
+ * подходящего воркера (`available: false`, спека §3) — `unavailable`;
+ * `resume`/`blocked` важнее `unavailable` (активная сессия уже где-то идёт).
+ */
 export function cardAction(
-  game: { appId: number },
+  game: { appId: number; available: boolean },
   play: LibraryPlay,
 ): CardAction {
   const { active, startingAppId } = play;
@@ -45,6 +53,7 @@ export function cardAction(
     return { kind: "resume", onResume: play.onResume };
   }
   if (active) return { kind: "blocked" };
+  if (!game.available) return { kind: "unavailable" };
   return {
     kind: "play",
     pending: startingAppId === game.appId,
