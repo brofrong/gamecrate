@@ -52,12 +52,8 @@ const adminSessionsAtom = Atom.family((_failedOnly: boolean) =>
 );
 const adminWorkersAtom = Atom.make(AsyncResult.initial());
 const sessionSettingsAtom = Atom.make(AsyncResult.initial());
-const adminStopSessionAtom = Atom.fn((_arg: unknown) =>
-  Effect.succeed(true),
-);
-const adminSetDrainingAtom = Atom.fn((_arg: unknown) =>
-  Effect.succeed(true),
-);
+const adminStopSessionAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
+const adminSetDrainingAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
 const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed(undefined),
 );
@@ -90,6 +86,73 @@ mock.module("../src/rpc", () => ({
   updateSessionSettingsArgs: (payload: unknown) => ({
     payload,
     reactivityKeys: ["settings"],
+  }),
+  // Атомы других вкладок и блоков `/admin` (классы воркеров, требования игр…):
+  // `routes/admin.tsx` тянет их статически — без них запуск файла одного падает
+  // с «export not found». Этому тесту хватает заглушек.
+  adminClassesAtom: Atom.make(AsyncResult.initial()),
+  adminCreateClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminCreateClassArgs: (name: string) => ({
+    payload: { name },
+    reactivityKeys: ["admin"],
+  }),
+  adminRenameClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminRenameClassArgs: (id: string, name: string) => ({
+    payload: { id, name },
+    reactivityKeys: ["admin"],
+  }),
+  adminMoveClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminMoveClassArgs: (id: string, direction: "up" | "down") => ({
+    payload: { id, direction },
+    reactivityKeys: ["admin"],
+  }),
+  adminDeleteClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminDeleteClassArgs: (id: string) => ({
+    payload: { id },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetWorkerClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminSetWorkerClassArgs: (workerId: string, classId: string | null) => ({
+    payload: { workerId, classId },
+    reactivityKeys: ["admin"],
+  }),
+  adminGameRequirementsAtom: Atom.family((_appId: number) =>
+    Atom.make(AsyncResult.initial()),
+  ),
+  adminSetGameRequirementsAtom: Atom.fn((_arg: unknown) =>
+    Effect.succeed(true),
+  ),
+  adminSetGameRequirementsArgs: (appId: number, requirements: unknown) => ({
+    payload: { appId, requirements },
+    reactivityKeys: ["admin"],
+  }),
+  adminGamesAtom: Atom.make(AsyncResult.initial()),
+  adminDeleteGameAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminDeleteGameArgs: (appId: number) => ({
+    payload: { appId },
+    reactivityKeys: ["admin"],
+  }),
+  adminInstallsAtom: Atom.make(AsyncResult.initial()),
+  adminCancelInstallAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminCancelInstallArgs: (jobId: string) => ({
+    payload: { jobId },
+    reactivityKeys: ["admin"],
+  }),
+  adminUsersAtom: Atom.make(AsyncResult.initial()),
+  adminSetRoleAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminSetRoleArgs: (userId: string, role: "player" | "admin") => ({
+    payload: { userId, role },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetBlockedAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminSetBlockedArgs: (userId: string, blocked: boolean) => ({
+    payload: { userId, blocked },
+    reactivityKeys: ["admin"],
+  }),
+  adminResetSteamLoginAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminResetSteamLoginArgs: (userId: string) => ({
+    payload: { userId },
+    reactivityKeys: ["admin"],
   }),
   errorTag,
   resultErrorTag,
@@ -173,16 +236,12 @@ describe("SessionsTab", () => {
 
   it("shows the empty state when no one is playing", async () => {
     renderSessions({ unfiltered: { active: [], recent: [] } });
-    expect(
-      await screen.findByText("Сейчас никто не играет"),
-    ).toBeTruthy();
+    expect(await screen.findByText("Сейчас никто не играет")).toBeTruthy();
   });
 
   it("shows the unfiltered empty-history message", async () => {
     renderSessions({ unfiltered: { active: [], recent: [] } });
-    expect(
-      await screen.findByText("За 7 дней сессий не было"),
-    ).toBeTruthy();
+    expect(await screen.findByText("За 7 дней сессий не было")).toBeTruthy();
   });
 
   it("filters history to only failed sessions and back, with the reason as a red badge", async () => {

@@ -93,9 +93,7 @@ const adminSetDrainingAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
 const adminDeleteGameAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed("started" as const),
 );
-const adminCancelInstallAtom = Atom.fn((_arg: unknown) =>
-  Effect.succeed(true),
-);
+const adminCancelInstallAtom = Atom.fn((_arg: unknown) => Effect.succeed(true));
 const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed(undefined),
 );
@@ -147,6 +145,45 @@ mock.module("../src/rpc", () => ({
   updateSessionSettingsArgs: (payload: unknown) => ({
     payload,
     reactivityKeys: ["settings"],
+  }),
+  // Атомы других вкладок и блоков `/admin` (классы воркеров, требования игр…):
+  // `routes/admin.tsx` тянет их статически — без них запуск файла одного падает
+  // с «export not found». Этому тесту хватает заглушек.
+  adminClassesAtom: Atom.make(AsyncResult.initial()),
+  adminCreateClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminCreateClassArgs: (name: string) => ({
+    payload: { name },
+    reactivityKeys: ["admin"],
+  }),
+  adminRenameClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminRenameClassArgs: (id: string, name: string) => ({
+    payload: { id, name },
+    reactivityKeys: ["admin"],
+  }),
+  adminMoveClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminMoveClassArgs: (id: string, direction: "up" | "down") => ({
+    payload: { id, direction },
+    reactivityKeys: ["admin"],
+  }),
+  adminDeleteClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminDeleteClassArgs: (id: string) => ({
+    payload: { id },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetWorkerClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminSetWorkerClassArgs: (workerId: string, classId: string | null) => ({
+    payload: { workerId, classId },
+    reactivityKeys: ["admin"],
+  }),
+  adminGameRequirementsAtom: Atom.family((_appId: number) =>
+    Atom.make(AsyncResult.initial()),
+  ),
+  adminSetGameRequirementsAtom: Atom.fn((_arg: unknown) =>
+    Effect.succeed(true),
+  ),
+  adminSetGameRequirementsArgs: (appId: number, requirements: unknown) => ({
+    payload: { appId, requirements },
+    reactivityKeys: ["admin"],
   }),
   errorTag,
   resultErrorTag,
@@ -265,7 +302,9 @@ describe("UsersTab", () => {
 
     const carolRow = (await screen.findByText("Carol")).closest("tr");
     if (carolRow === null) throw new Error("row not found");
-    expect(within(carolRow).getByText("не привязан · вход сброшен")).toBeTruthy();
+    expect(
+      within(carolRow).getByText("не привязан · вход сброшен"),
+    ).toBeTruthy();
   });
 
   it("filters by name/email on the client", async () => {
@@ -302,7 +341,9 @@ describe("UsersTab", () => {
     const bobRow = (await screen.findByText("Bob")).closest("tr");
     if (bobRow === null) throw new Error("row not found");
 
-    fireEvent.click(within(bobRow).getByRole("button", { name: "Заблокировать" }));
+    fireEvent.click(
+      within(bobRow).getByRole("button", { name: "Заблокировать" }),
+    );
 
     expect(await screen.findByText("Заблокировать Bob?")).toBeTruthy();
     const dialog = screen.getByRole("alertdialog");
@@ -310,7 +351,9 @@ describe("UsersTab", () => {
       within(dialog).getByText(/Новые игры запустить не получится/),
     ).toBeTruthy();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Заблокировать" }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Заблокировать" }),
+    );
 
     await waitFor(() => {
       expect(setBlockedCalls.at(-1)).toEqual({
@@ -329,7 +372,9 @@ describe("UsersTab", () => {
       within(aliceRow).getByRole("button", { name: "Сбросить вход Steam" }),
     );
 
-    expect(await screen.findByText("Сбросить вход Steam у Alice?")).toBeTruthy();
+    expect(
+      await screen.findByText("Сбросить вход Steam у Alice?"),
+    ).toBeTruthy();
     const dialog = screen.getByRole("alertdialog");
     expect(
       within(dialog).getByText(/Steam попросит войти заново/),

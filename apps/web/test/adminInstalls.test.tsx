@@ -63,7 +63,9 @@ const adminDeleteGameAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed("started" as const),
 );
 const adminUsersAtom = Atom.make(AsyncResult.initial());
-const adminSetRoleAtom = Atom.fn((_arg: unknown) => Effect.succeed("ok" as const));
+const adminSetRoleAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed("ok" as const),
+);
 const adminSetBlockedAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed("ok" as const),
 );
@@ -134,6 +136,45 @@ mock.module("../src/rpc", () => ({
   updateSessionSettingsArgs: (payload: unknown) => ({
     payload,
     reactivityKeys: ["settings"],
+  }),
+  // Атомы других вкладок и блоков `/admin` (классы воркеров, требования игр…):
+  // `routes/admin.tsx` тянет их статически — без них запуск файла одного падает
+  // с «export not found». Этому тесту хватает заглушек.
+  adminClassesAtom: Atom.make(AsyncResult.initial()),
+  adminCreateClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminCreateClassArgs: (name: string) => ({
+    payload: { name },
+    reactivityKeys: ["admin"],
+  }),
+  adminRenameClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminRenameClassArgs: (id: string, name: string) => ({
+    payload: { id, name },
+    reactivityKeys: ["admin"],
+  }),
+  adminMoveClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminMoveClassArgs: (id: string, direction: "up" | "down") => ({
+    payload: { id, direction },
+    reactivityKeys: ["admin"],
+  }),
+  adminDeleteClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminDeleteClassArgs: (id: string) => ({
+    payload: { id },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetWorkerClassAtom: Atom.fn((_arg: unknown) => Effect.succeed(true)),
+  adminSetWorkerClassArgs: (workerId: string, classId: string | null) => ({
+    payload: { workerId, classId },
+    reactivityKeys: ["admin"],
+  }),
+  adminGameRequirementsAtom: Atom.family((_appId: number) =>
+    Atom.make(AsyncResult.initial()),
+  ),
+  adminSetGameRequirementsAtom: Atom.fn((_arg: unknown) =>
+    Effect.succeed(true),
+  ),
+  adminSetGameRequirementsArgs: (appId: number, requirements: unknown) => ({
+    payload: { appId, requirements },
+    reactivityKeys: ["admin"],
   }),
   errorTag,
   resultErrorTag,
