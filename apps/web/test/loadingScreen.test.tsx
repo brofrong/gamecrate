@@ -411,6 +411,63 @@ describe("loading screen timers", () => {
     });
   });
 
+  it("bar inside a marked stage follows the server time, not the client's msInStage", () => {
+    const steam = atSteam(12_300);
+    // Клиент видит этап 0 мс (перезагрузил страницу) или минуту — полоска та же:
+    // от `startedAt` отметки до «сейчас» сервера.
+    expect(loadingProgress(steam, 0, T)).toBe(
+      loadingProgress(steam, 60_000, T),
+    );
+    expect(loadingProgress(steam, 0, T)).toBeGreaterThan(
+      loadingProgress(steam, 0),
+    );
+    // Этап идёт дольше — полоска дальше, при том же `msInStage`.
+    expect(loadingProgress(atSteam(25_000), 0, T)).toBeGreaterThan(
+      loadingProgress(steam, 0, T),
+    );
+    // Норма этапа с сервера: при норме вдвое больше — доля меньше.
+    const slowNorm = view("starting", {
+      stage: "steam",
+      timing: timing({ launch: [mark("steam", -12_300, null, 60_000)] }),
+    });
+    expect(loadingProgress(slowNorm, 0, T)).toBeLessThan(
+      loadingProgress(steam, 0, T),
+    );
+    // Установка — тоже по отметке, по норме установки.
+    const library = view("installing", {
+      installStage: "library",
+      timing: timing({ install: [mark("library", -30_000, null)] }),
+    });
+    expect(loadingProgress(library, 0, T)).toBe(
+      loadingProgress(library, 30_000),
+    );
+  });
+
+  it("bar without the stage's mark creeps by msInStage as before", () => {
+    const unmarked = view("starting", {
+      stage: "steam",
+      timing: timing({ launch: [mark("computer", -20_000, -10_000)] }),
+    });
+    expect(loadingProgress(unmarked, 12_300, T)).toBe(
+      loadingProgress(unmarked, 12_300),
+    );
+    expect(loadingProgress(unmarked, 30_000, T)).toBeGreaterThan(
+      loadingProgress(unmarked, 0, T),
+    );
+    // Без `timing` вовсе — так же.
+    const old = view("starting", { stage: "steam" });
+    expect(loadingProgress(old, 12_300, T)).toBe(loadingProgress(old, 12_300));
+    // Скачивание — по проценту, отметка его не меняет.
+    const downloading = view("installing", {
+      installStage: "downloading",
+      installPercent: 40,
+      timing: timing({ install: [mark("downloading", -90_000, null)] }),
+    });
+    expect(loadingProgress(downloading, 0, T)).toBe(
+      loadingProgress(downloading, 0),
+    );
+  });
+
   it("header: launch total with its norm, install total without one", () =>
     withClock(0, () => {
       const launchView = view("starting", {

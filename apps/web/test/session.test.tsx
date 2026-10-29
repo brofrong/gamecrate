@@ -1,6 +1,7 @@
 import { describe, expect, it, mock, spyOn } from "bun:test";
 import {
   accessDeniedReason,
+  noServerReason,
   type SessionState,
   type SessionView,
   steamLoginRequiredReason,
@@ -330,6 +331,38 @@ describe("session", () => {
 
       expect(navigate).not.toHaveBeenCalled();
       expect(toastError).toHaveBeenCalledWith(accessDeniedReason);
+      toastError.mockRestore();
+    });
+
+    it("says the game is not in the Steam library and does not navigate on GameNotOwned", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () =>
+        Exit.fail({ _tag: "GameNotOwned" } as const),
+      );
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        "Эта игра не найдена в вашей библиотеке Steam",
+      );
+      toastError.mockRestore();
+    });
+
+    it("says there is no suitable server and does not navigate on NoServer", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () => Exit.fail({ _tag: "NoServer" } as const));
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(noServerReason);
       toastError.mockRestore();
     });
   });

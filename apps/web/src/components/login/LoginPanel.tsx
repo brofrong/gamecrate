@@ -99,7 +99,7 @@ export function LoginPanel({
     const codeLength = step.kind === "code" ? step.otp.length : 0;
     onLevel(assemblyLevel({ email: step.email, codeLength, submitted }));
     // onLevel стабильна по контракту пропа — в зависимости не включаем.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react/exhaustive-deps
   }, [step, submitted]);
 
   // Автоподтверждение по 6-й цифре — ровно один раз на каждый введённый код.
@@ -108,7 +108,7 @@ export function LoginPanel({
     if (autoSubmitted.current === step.otp) return;
     autoSubmitted.current = step.otp;
     void submitCode(step.email, step.otp);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react/exhaustive-deps
   }, [step]);
 
   if (providers === undefined) {

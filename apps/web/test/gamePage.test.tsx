@@ -24,6 +24,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
 import { toast } from "sonner";
 import { testRouter } from "./router";
+import { rpcStub } from "./moduleStubs";
 
 const meAtom = Atom.make(
   AsyncResult.initial<CurrentUserShape, { readonly _tag: string }>(),
@@ -93,6 +94,7 @@ const resultErrorTag = <A, E extends { readonly _tag: string }>(
 ) => (AsyncResult.isFailure(result) ? errorTag(result.cause) : undefined);
 
 mock.module("../src/rpc", () => ({
+  ...rpcStub(),
   meAtom,
   providersAtom,
   libraryAtom,

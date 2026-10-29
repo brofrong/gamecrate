@@ -1,11 +1,7 @@
 // `/session/$id`: экран игры. Состояние — поток `session.watch`; пока страница открыта и
 // сессия активна — heartbeat каждые 5 с с `inputAgeMs` (мс с последнего ввода).
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import {
-  accessDeniedReason,
-  isTerminalSessionState,
-  maxInputAgeMs,
-} from "@cg/rpc";
+import { isTerminalSessionState, maxInputAgeMs } from "@cg/rpc";
 import { createRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -17,6 +13,7 @@ import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
 import { useInputActivity } from "@/lib/inputActivity";
+import { reportStartError } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import { useStreamSettings } from "@/lib/useStreamSettings";
 import {
@@ -57,16 +54,8 @@ export const playAgain = async (
     deps.navigate({ to: "/session/$id", params: { id: exit.value.id } });
     return;
   }
-  const tag = errorTag(exit.cause);
-  if (tag === "Unauthorized") {
-    window.location.assign("/");
-    return;
-  }
-  if (tag === "AccessDenied") {
-    toast.error(accessDeniedReason);
-    return;
-  }
-  toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+  // Те же тексты, что у «Играть» в библиотеке.
+  reportStartError(errorTag(exit.cause));
 };
 
 /** Пауза перед переподпиской на `session.watch` после обрыва сокета. */

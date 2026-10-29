@@ -81,8 +81,9 @@ const evenBounds = (n: number, from: number, to: number) =>
   Array.from({ length: n + 1 }, (_, i) => from + ((to - from) * i) / n);
 
 /**
- * Строки списка, индекс текущей, доля внутри текущей — `fraction(ms)` — и
- * `bounds`: где на общей полоске начинается и кончается каждая строка.
+ * Строки списка, индекс текущей, доля внутри текущей — `fraction(msInStage,
+ * nowServerMs)` — и `bounds`: где на общей полоске начинается и кончается каждая
+ * строка.
  * - `queued` — «Ждём свободный сервер», дальше этапы запуска (после установки
  *   перед ними «Игра установлена»);
  * - `installing` — только этапы установки (с этапами запуска список вышел бы
@@ -95,11 +96,28 @@ function plan(view: SessionView): {
   /** Этап каждой строки (у «Ждём свободный сервер» и «Игра установлена» — null). */
   stages: ReadonlyArray<Timed | null>;
   current: number;
-  fraction: (msInStage: number) => number;
+  fraction: (msInStage: number, nowServerMs?: number) => number;
   bounds: ReadonlyArray<number>;
 } {
-  const timed = (stageMs: number) => (ms: number) =>
+  const creep = (ms: number, stageMs: number) =>
     1 - Math.exp(-Math.max(0, ms) / stageMs);
+  // Есть отметка этапа и «сейчас» сервера — по ним и норме этапа (как у таймера
+  // этапа: перезагрузка страницы полоску не обнуляет); нет — сколько этап видит
+  // клиент, по `STAGE_MS`.
+  const timed =
+    (stage: Timed, stageMs: number) =>
+    (msInStage: number, nowServerMs?: number) => {
+      const timing = view.timing;
+      if (timing === null || nowServerMs === undefined) {
+        return creep(msInStage, stageMs);
+      }
+      const mark = markOf(timing, stage);
+      if (!mark) return creep(msInStage, stageMs);
+      return creep(
+        msIn(mark, nowServerMs),
+        stageNormMs(timing, stage.kind, stage.stage) ?? stageMs,
+      );
+    };
   const launchLabels = launchSteps.map(([, label]) => label);
   const launchStages = launchSteps.map(([stage]): Timed => ({
     kind: "launch",
@@ -145,7 +163,7 @@ function plan(view: SessionView): {
       fraction:
         stage === "downloading"
           ? () => percent / 100
-          : timed(STAGE_MS.install[stage]),
+          : timed({ kind: "install", stage }, STAGE_MS.install[stage]),
       bounds: evenBounds(installSteps.length, 0, INSTALL_SHARE),
     };
   }
@@ -165,7 +183,7 @@ function plan(view: SessionView): {
     labels: [...prefix, ...launchLabels],
     stages: [...prefixStages, ...launchStages],
     current: prefix.length + launchSteps.findIndex(([key]) => key === stage),
-    fraction: timed(STAGE_MS.launch[stage]),
+    fraction: timed({ kind: "launch", stage }, STAGE_MS.launch[stage]),
     bounds,
   };
 }
@@ -324,16 +342,24 @@ export function revealDue(view: SessionView, nowServerMs: number): boolean {
 }
 
 /**
- * Общая полоска, 0..1: начало текущей строки плюс доля её отрезка. Внутри этапа
- * по времени — `1 − exp(−msInStage / STAGE_MS)`, не больше `STAGE_CAP`;
- * скачивание — по `installPercent`.
+ * Общая полоска, 0..1: начало текущей строки плюс доля её отрезка, не больше
+ * `STAGE_CAP`. Внутри этапа по времени: есть отметка этапа в `view.timing` и
+ * `nowServerMs` — `1 − exp(−(nowServerMs − startedAt) / stageNormMs)`, без
+ * отметки — `1 − exp(−msInStage / STAGE_MS)`; скачивание — по `installPercent`.
  */
-export function loadingProgress(view: SessionView, msInStage: number): number {
+export function loadingProgress(
+  view: SessionView,
+  msInStage: number,
+  nowServerMs?: number,
+): number {
   const { labels, current, fraction, bounds } = plan(view);
   if (current >= labels.length) return 1;
   const from = bounds[current] ?? 0;
   const to = bounds[current + 1] ?? 1;
-  const inStage = Math.min(STAGE_CAP, Math.max(0, fraction(msInStage)));
+  const inStage = Math.min(
+    STAGE_CAP,
+    Math.max(0, fraction(msInStage, nowServerMs)),
+  );
   return from + (to - from) * inStage;
 }
 
