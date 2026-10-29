@@ -4,6 +4,7 @@ import {
   gamestoreApps,
   games,
   installJobs,
+  installStageMarks,
   profiles,
   sessions,
   settings,
@@ -47,6 +48,7 @@ import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest, sentToken } from "./seedKey";
 
 /** Фейковый хаб: подключённые агенты и отправленные команды — в памяти. */
 const makeFakeHub = () => {
@@ -98,7 +100,7 @@ const run = <A, E>(
           SessionRunner.layerWithoutLoops(),
         ).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
-          Layer.provideMerge(SteamLoginSeeds.layer),
+          Layer.provideMerge(SteamLoginSeedsTest),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),
@@ -200,6 +202,16 @@ const onlyJob = () =>
     const [job] = all;
     if (job === undefined) return yield* Effect.die("no job");
     return job;
+  });
+
+/** Отметки этапов установки (`install_stage_marks`) задачи. */
+const stageMarksOf = (jobId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db
+      .select()
+      .from(installStageMarks)
+      .where(eq(installStageMarks.jobId, jobId));
   });
 
 const report = (workerId: string, agentReport: AgentReport): AgentHubEvent => ({
@@ -469,6 +481,7 @@ describe("install jobs", () => {
             },
           },
         ]);
+        expect(sentToken(installCommands(fake)[0]?.command)).toBe("refresh-a");
       }),
     ));
 
@@ -568,6 +581,11 @@ describe("install jobs", () => {
         ]);
         // Без пометки ключа нет вовсе (а не `undefined`).
         expect("steamLoginResetAt" in (commands[2]?.command ?? {})).toBe(false);
+        expect(commands.map((c) => sentToken(c.command))).toEqual([
+          null,
+          "fresh",
+          "none",
+        ]);
         expect(yield* seeds.get("u-old")).toBeNull();
       }),
     ));
@@ -1612,6 +1630,81 @@ describe("install stage", () => {
           at(t0, 5),
         );
         expect((yield* onlyJob()).stage).toBe("downloading");
+      }),
+    ));
+
+  it("recordStage records a mark once per stage, at the orchestrator's now", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const dispatcher = yield* InstallDispatcher;
+        const t0 = new Date();
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1" });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "downloading",
+          }),
+          at(t0, 1),
+        );
+        // Тот же этап повторно — отчёт не меняет строку (`forwardOnly`), вторая
+        // отметка не пишется.
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "downloading",
+          }),
+          at(t0, 2),
+        );
+        like(yield* stageMarksOf(job.id), [
+          { stage: "downloading", at: at(t0, 1) },
+        ]);
+
+        // Более ранний этап после уже записанного позднего — отметки нет.
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "login",
+          }),
+          at(t0, 3),
+        );
+        like(yield* stageMarksOf(job.id), [
+          { stage: "downloading", at: at(t0, 1) },
+        ]);
+      }),
+    ));
+
+  it("recordStage marks the last stage (moving) too", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const dispatcher = yield* InstallDispatcher;
+        const t0 = new Date();
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1" });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallStage",
+            jobId: job.id,
+            stage: "moving",
+          }),
+          at(t0, 1),
+        );
+        like(yield* stageMarksOf(job.id), [
+          { stage: "moving", at: at(t0, 1) },
+        ]);
       }),
     ));
 });

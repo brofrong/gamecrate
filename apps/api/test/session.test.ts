@@ -4,7 +4,9 @@ import {
   Db,
   games,
   installJobs,
+  installStageMarks,
   playSegments,
+  sessionStageMarks,
   sessions,
   settings,
   user,
@@ -31,7 +33,8 @@ import { RpcTest } from "effect/rpc";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
 import { SessionEvents } from "../src/session/SessionEvents";
-import { SessionRpcHandlers } from "../src/session/rpc";
+import { SessionRpcHandlers, sameView } from "../src/session/rpc";
+import * as StageNorms from "../src/session/StageNorms";
 
 const player = (id: string): CurrentUserShape => ({
   id,
@@ -62,6 +65,8 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, Layer.Success<typeof env> | Scope.Scope>,
 ) => {
   auth.current = alice;
+  // Нормы этапов кэшируются в памяти по appId, а БД у каждого теста своя.
+  StageNorms.clearCache();
   return Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(env)));
 };
 
@@ -172,9 +177,7 @@ describe("session rpc", () => {
           .set({ blockedAt: new Date() })
           .where(eq(user.id, alice.id));
         const rpc = yield* client;
-        const denied = yield* Effect.flip(
-          rpc["session.start"]({ appId: 10 }),
-        );
+        const denied = yield* Effect.flip(rpc["session.start"]({ appId: 10 }));
         const active = yield* rpc["session.active"]();
         const rows = yield* db.select().from(sessions);
         return { denied, active, rows };
@@ -574,6 +577,200 @@ describe("session rpc", () => {
       installStage: null,
       hadInstall: true,
     });
+  });
+
+  it("watch view carries timing with server marks", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        // 5 прошлых запусков Hades: `computer` 8 с, `steam` 20 с, всего 90 с.
+        const past = Date.parse("2026-10-20T10:00:00.000Z");
+        for (let i = 0; i < 5; i++) {
+          const pastId = crypto.randomUUID();
+          const start = past + i * 3_600_000;
+          yield* db.insert(sessions).values({
+            id: pastId,
+            userId: bob.id,
+            appId: 10,
+            state: "ended",
+          });
+          yield* db.insert(sessionStageMarks).values(
+            (
+              [
+                ["computer", 0],
+                ["steam", 8],
+                ["login", 28],
+                ["visible", 90],
+              ] as const
+            ).map(([stage, seconds]) => ({
+              sessionId: pastId,
+              stage,
+              at: new Date(start + seconds * 1000),
+            })),
+          );
+        }
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const t0 = new Date("2026-10-29T10:00:00.000Z");
+        const t1 = new Date("2026-10-29T10:00:07.000Z");
+        yield* db.insert(sessionStageMarks).values([
+          { sessionId: id, stage: "computer", at: t0 },
+          { sessionId: id, stage: "steam", at: t1 },
+        ]);
+        yield* setSession(id, { state: "starting", stage: "steam" });
+        const before = Date.now();
+        const view = yield* rpc["session.watch"]({ sessionId: id }).pipe(
+          Stream.runHead,
+        );
+        const after = Date.now();
+
+        // Установка: отметки задачи видны только пока сессия в `installing`.
+        const { id: otherId } = yield* Effect.gen(function* () {
+          auth.current = bob;
+          const started = yield* rpc["session.start"]({ appId: 10 });
+          auth.current = alice;
+          return started;
+        });
+        const jobId = crypto.randomUUID();
+        yield* db.insert(installJobs).values({
+          id: jobId,
+          appId: 10,
+          userId: bob.id,
+          state: "running",
+          stage: "downloading",
+        });
+        yield* db.insert(installStageMarks).values([
+          { jobId, stage: "preparing", at: t0 },
+          { jobId, stage: "downloading", at: t1 },
+        ]);
+        yield* setSession(otherId, {
+          state: "installing",
+          installJobId: jobId,
+        });
+        auth.current = bob;
+        const installing = yield* rpc["session.active"]();
+        yield* setSession(otherId, { state: "starting" });
+        const afterInstall = yield* rpc["session.active"]();
+        return {
+          view: Option.getOrThrow(view),
+          before,
+          after,
+          installing,
+          afterInstall,
+        };
+      }),
+    );
+    const timing = result.view.timing;
+    if (timing === null) throw new Error("timing is null");
+    const serverNow = Date.parse(timing.serverNow);
+    expect(serverNow).toBeGreaterThanOrEqual(result.before - 50);
+    expect(serverNow).toBeLessThanOrEqual(result.after + 50);
+    expect(timing.launch).toEqual([
+      {
+        stage: "computer",
+        startedAt: "2026-10-29T10:00:00.000Z",
+        endedAt: "2026-10-29T10:00:07.000Z",
+        normMs: 8_000,
+      },
+      {
+        stage: "steam",
+        startedAt: "2026-10-29T10:00:07.000Z",
+        endedAt: null,
+        normMs: 20_000,
+      },
+    ]);
+    expect(timing.install).toEqual([]);
+    expect(timing.launchNormMs).toBe(90_000);
+
+    expect(result.installing?.timing?.install).toEqual([
+      {
+        stage: "preparing",
+        startedAt: "2026-10-29T10:00:00.000Z",
+        endedAt: "2026-10-29T10:00:07.000Z",
+        normMs: null,
+      },
+      {
+        stage: "downloading",
+        startedAt: "2026-10-29T10:00:07.000Z",
+        endedAt: null,
+        normMs: null,
+      },
+    ]);
+    expect(result.installing?.timing?.launch).toEqual([]);
+    expect(result.afterInstall?.timing?.install).toEqual([]);
+  });
+
+  it("timing is null after visible", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const queued = yield* rpc["session.active"]();
+        yield* db.insert(sessionStageMarks).values([
+          { sessionId: id, stage: "computer", at: new Date(Date.now() - 9000) },
+          { sessionId: id, stage: "visible", at: new Date() },
+        ]);
+        yield* setSession(id, { state: "playing", stage: "visible" });
+        const visible = yield* rpc["session.active"]();
+        yield* setSession(id, { stage: "loading" });
+        yield* setSession(id, { state: "failed", endedAt: new Date() });
+        const failed = yield* rpc["session.watch"]({ sessionId: id }).pipe(
+          Stream.runHead,
+        );
+        return { queued, visible, failed: Option.getOrThrow(failed) };
+      }),
+    );
+    // В очереди — экран загрузки, но отметок ещё нет.
+    expect(result.queued?.timing).toMatchObject({
+      launch: [],
+      install: [],
+      launchNormMs: null,
+    });
+    expect(result.visible?.timing).toBeNull();
+    expect(result.failed.timing).toBeNull();
+  });
+
+  it("sameView ignores serverNow", async () => {
+    const view = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* db.insert(sessionStageMarks).values({
+          sessionId: id,
+          stage: "computer",
+          at: new Date(),
+        });
+        yield* setSession(id, { state: "starting", stage: "computer" });
+        return yield* rpc["session.active"]();
+      }),
+    );
+    if (view === null || view.timing === null) throw new Error("no timing");
+    const later = {
+      ...view,
+      timing: { ...view.timing, serverNow: new Date().toISOString() + "x" },
+    };
+    expect(sameView(view, later)).toBe(true);
+    // Остальное в timing по-прежнему считается изменением.
+    const ended = {
+      ...view,
+      timing: {
+        ...view.timing,
+        launch: view.timing.launch.map((mark) => ({
+          ...mark,
+          endedAt: view.timing?.serverNow ?? null,
+        })),
+      },
+    };
+    expect(sameView(view, ended)).toBe(false);
+    expect(sameView({ ...view, timing: null }, { ...view, timing: null })).toBe(
+      true,
+    );
+    expect(sameView(view, { ...view, timing: null })).toBe(false);
   });
 
   it("malformed session ids are SessionNotFound without touching the db", async () => {

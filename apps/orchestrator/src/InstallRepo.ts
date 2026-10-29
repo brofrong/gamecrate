@@ -12,6 +12,7 @@ import {
   gamestoreApps,
   type InstallJobState,
   installJobs,
+  installStageMarks,
   installStages,
   type InstallStage,
   sessions,
@@ -254,26 +255,41 @@ export const recordProgress = (
 
 /**
  * Этап установки (экран загрузки) — только у `running`-задачи этого агента,
- * вперёд-только (`SessionRepo.forwardOnly`, как `setStage`).
+ * вперёд-только (`SessionRepo.forwardOnly`, как `setStage`). Строка реально
+ * сменилась (`returning`) — в той же транзакции пишется отметка начала этапа
+ * (`install_stage_marks`, `at = now` оркестратора); повтор того же этапа не
+ * меняет строку, значит и отметку не трогает (`onConflictDoNothing` — на
+ * случай гонки, не основной путь).
  */
 export const recordStage = (
   workerId: string,
   jobId: string,
   stage: InstallStage,
+  now: Date,
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* db
-      .update(installJobs)
-      .set({ stage })
-      .where(
-        and(
-          eq(installJobs.id, jobId),
-          eq(installJobs.state, "running"),
-          eq(installJobs.workerId, workerId),
-          SessionRepo.forwardOnly(installStages, installJobs.stage, stage),
-        ),
-      );
+    yield* db.transaction(() =>
+      Effect.gen(function* () {
+        const updated = yield* db
+          .update(installJobs)
+          .set({ stage })
+          .where(
+            and(
+              eq(installJobs.id, jobId),
+              eq(installJobs.state, "running"),
+              eq(installJobs.workerId, workerId),
+              SessionRepo.forwardOnly(installStages, installJobs.stage, stage),
+            ),
+          )
+          .returning({ id: installJobs.id });
+        if (updated.length === 0) return;
+        yield* db
+          .insert(installStageMarks)
+          .values({ jobId, stage, at: now })
+          .onConflictDoNothing();
+      }),
+    );
   });
 
 /** Задача под `FOR UPDATE`, если она активна (и, когда задан, на этом агенте). */

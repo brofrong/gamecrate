@@ -3,8 +3,10 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  index,
   integer,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -100,6 +102,28 @@ export const installJobs = pgTable(
 );
 
 /**
+ * Отметка начала каждого этапа установки (`install_jobs.stage`,
+ * `InstallRepo.recordStage`) — для статистики «сколько обычно занимает этап»
+ * на экране загрузки (Task 4), как `sessionStageMarks`. Одна отметка на
+ * задачу и этап (PK); пишется в той же транзакции, что и переход `stage`, и
+ * только когда тот реально сменился.
+ */
+export const installStageMarks = pgTable(
+  "install_stage_marks",
+  {
+    jobId: text("job_id")
+      .notNull()
+      .references(() => installJobs.id, { onDelete: "cascade" }),
+    stage: text("stage", { enum: installStages }).notNull(),
+    at: timestamptz("at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.jobId, t.stage] }),
+    index("install_stage_marks_stage_at_idx").on(t.stage, t.at.desc()),
+  ],
+);
+
+/**
  * Облачный профиль пользователя (сохранения и настройки Steam) — ровно один
  * объект на пользователя в бакете `S3_BUCKET`; `version` растёт на каждую
  * принятую выгрузку (`agent.profileCommit`), выгрузка с устаревшей базовой
@@ -164,3 +188,22 @@ export const steamLogins = pgTable(
       .where(sql`${t.state} in ('pending', 'waiting', 'scanned')`),
   ],
 );
+
+/**
+ * Посеянный вход Steam пользователя (`SteamLoginSeeds` оркестратора): ждёт
+ * следующего запуска сессии или установки, переживает перезапуск оркестратора.
+ * Одна строка на пользователя. Имя аккаунта и refresh-токен — только в
+ * `sealed`: base64 `iv(12) ‖ tag(16) ‖ AES-256-GCM(JSON {accountName,
+ * refreshToken})` ключом `SEED_KEY`; в открытом виде — `steamId` (не секрет,
+ * он же в `user.steam_id`) и время. `putAt` — момент посева (сравнивается со
+ * сбросом входа админом), `expiresAt` — `putAt + SEED_TTL`.
+ */
+export const steamLoginSeeds = pgTable("steam_login_seeds", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  steamId: text("steam_id").notNull(),
+  sealed: text("sealed").notNull(),
+  putAt: timestamptz("put_at").notNull(),
+  expiresAt: timestamptz("expires_at").notNull(),
+});

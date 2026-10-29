@@ -11,7 +11,7 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 import { createSelkiesBridge, type SelkiesBridge } from "@/lib/selkiesBridge";
 import { useStreamStats } from "@/lib/useStreamStats";
 import type { StreamSettingsControl } from "@/lib/useStreamSettings";
-import { showsLoading } from "@/lib/loadingSteps";
+import { revealDue, showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
 import { LoadingScreen } from "./LoadingScreen";
 import { SessionControls } from "./session/SessionControls";
@@ -36,10 +36,10 @@ const clockStates: ReadonlySet<SessionState> = new Set([
 export const showsStream = (view: SessionView) =>
   view.streamReady && streamStates.has(view.state);
 
-/** Как часто обновлять полоску и подсказку экрана загрузки. */
+/** Как часто обновлять полоску, таймеры и подсказку экрана загрузки. */
 const LOADING_TICK_MS = 1_000;
 
-/** Пока `active` — перерисовка раз в `LOADING_TICK_MS` (полоска и подсказка). */
+/** Пока `active` — перерисовка раз в `LOADING_TICK_MS` (полоска, таймеры и подсказка). */
 function useLoadingTick(active: boolean) {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -59,6 +59,20 @@ function useChangedAt(key: string): number {
 /** Сколько мс клиент видит `key` неизменным: отсчёт с его последней смены. */
 function useMsSince(key: string): number {
   return Date.now() - useChangedAt(key);
+}
+
+/**
+ * «Сейчас» сервера, мс: часы браузера с поправкой `serverNow − момент, когда
+ * клиент получил это представление`. Таймеры экрана загрузки не врут из-за
+ * расхождения часов и не обнуляются при перезагрузке страницы. Без `timing` —
+ * часы браузера (таймеров тогда нет).
+ */
+function useServerNow(view: SessionView): number {
+  const serverNow = view.timing?.serverNow ?? null;
+  const receivedAt = useChangedAt(`${view.id}/${serverNow}`);
+  return serverNow === null
+    ? Date.now()
+    : Date.now() + (Date.parse(serverNow) - receivedAt);
 }
 
 /** Через сколько перезагрузить iframe, если прокси ответил 5xx (Selkies ещё не поднялся). */
@@ -206,12 +220,18 @@ export function Player({
   // Открыть можно только готовую трансляцию — без неё снова экран загрузки.
   const loading = showsLoading(view, revealedId === view.id && stream);
   useLoadingTick(loading);
-  // В текущем этапе — с последней смены `state`/`stage`/`installStage`; в
-  // состоянии — смена этапа внутри `playing` отсчёт не сбрасывает.
+  // В текущем этапе — с последней смены `state`/`stage`/`installStage`.
   const msInStage = useMsSince(
     `${view.id}/${view.state}/${view.stage}/${view.installStage}`,
   );
-  const msInState = useMsSince(`${view.id}/${view.state}`);
+  const nowServerMs = useServerNow(view);
+  // «Показать экран» предлагается по `revealDue` и, раз предложена, остаётся до
+  // конца экрана загрузки этой сессии — даже если новый этап ещё в норме.
+  const offeredId = useRef<string | null>(null);
+  if (stream && loading && revealDue(view, nowServerMs)) {
+    offeredId.current = view.id;
+  }
+  const offered = stream && offeredId.current === view.id;
   // Игровое время приходит с сервера раз в несколько секунд — меню досчитывает от момента прихода.
   const playedAt = useChangedAt(`${view.id}/${view.playedSeconds}`);
   // Статистика — только над показанным стримом: под экраном загрузки и без стрима сбор выключен.
@@ -245,9 +265,9 @@ export function Player({
         <LoadingScreen
           view={view}
           msInStage={msInStage}
-          msPlaying={view.state === "playing" ? msInState : 0}
+          nowServerMs={nowServerMs}
           onCancel={onExit}
-          onReveal={stream ? () => setRevealedId(view.id) : undefined}
+          onReveal={offered ? () => setRevealedId(view.id) : undefined}
         />
       )}
       {!loading &&

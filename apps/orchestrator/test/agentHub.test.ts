@@ -26,6 +26,7 @@ import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
 import { OrchestratorConfig, orchestratorConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { testSeedKey } from "./seedKey";
 
 const token = "test-agent-token-0123456789abcdef";
 
@@ -33,6 +34,7 @@ const TestConfig = Layer.succeed(OrchestratorConfig, {
   port: 0,
   databaseUrl: Redacted.make("postgres://unused"),
   agentToken: Redacted.make(token),
+  seedKey: testSeedKey,
 });
 
 /** Настоящий Bun-сервер на свободном порту + AgentHub на временной БД. */
@@ -676,6 +678,7 @@ describe("config AGENT_TOKEN", () => {
         .parse(
           ConfigProvider.fromUnknown({
             DATABASE_URL: "postgres://unused",
+            SEED_KEY: Redacted.value(testSeedKey),
             ...env,
           }),
         )
@@ -705,5 +708,49 @@ describe("config AGENT_TOKEN", () => {
       expect(Redacted.value(result.success.agentToken)).toBe("a".repeat(64));
       expect(result.success.port).toBe(3001);
     }
+  });
+});
+
+describe("config SEED_KEY", () => {
+  const parse = (env: Record<string, string>) =>
+    Effect.runPromise(
+      orchestratorConfig
+        .parse(
+          ConfigProvider.fromUnknown({
+            DATABASE_URL: "postgres://unused",
+            AGENT_TOKEN: "a".repeat(64),
+            ...env,
+          }),
+        )
+        .pipe(Effect.result),
+    );
+
+  it("rejects a missing, empty or non-32-byte key without echoing it", async () => {
+    const short = Buffer.alloc(31, 7).toString("base64");
+    const long = Buffer.alloc(33, 7).toString("base64");
+    const notBase64 = `${"!".repeat(43)}=`;
+    for (const env of [
+      {},
+      { SEED_KEY: "" },
+      { SEED_KEY: short },
+      { SEED_KEY: long },
+      { SEED_KEY: notBase64 },
+    ]) {
+      const result = await parse(env);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure._tag).toBe("ConfigError");
+        if ("SEED_KEY" in env && env.SEED_KEY !== "")
+          expect(String(result.failure)).not.toContain(env.SEED_KEY);
+      }
+    }
+  });
+
+  it("accepts base64 of exactly 32 bytes", async () => {
+    const key = Buffer.alloc(32, 9).toString("base64");
+    const result = await parse({ SEED_KEY: key });
+    expect(result._tag).toBe("Success");
+    if (result._tag === "Success")
+      expect(Redacted.value(result.success.seedKey)).toBe(key);
   });
 });

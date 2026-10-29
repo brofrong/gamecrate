@@ -1,13 +1,18 @@
 // Экран загрузки до появления игры (спека 2026-10-27-loading-screen §2, §4.4): список
 // этапов, общая полоска и когда экран показывать. Этапы приходят от агента
 // (`SessionView.stage`/`installStage`), сайт их не угадывает — по времени только
-// ползёт полоска внутри текущего этапа.
+// ползёт полоска внутри текущего этапа. Время этапов, их нормы и когда предложить
+// «Показать экран» — по серверным отметкам `SessionView.timing` (спека
+// 2026-10-29-launch-timers, часть 2).
 import type {
   InstallStage,
   SessionStage,
   SessionState,
+  SessionTiming,
   SessionView,
+  StageTiming,
 } from "@cg/rpc";
+import { formatClock } from "./formatTime";
 
 export type StepStatus = "done" | "now" | "next";
 
@@ -24,8 +29,9 @@ type TimedInstallStage = Exclude<InstallStage, "downloading">;
 
 /**
  * Ориентировочные длительности этапов, мс (замеры 2026-10-27: запуск — 20 Minutes
- * Till Dawn, установка — Peglin и Balatro). Только для полоски внутри этапа: она
- * ползёт к концу этапа, но не доходит до следующего.
+ * Till Dawn, установка — Peglin и Balatro). Для полоски внутри этапа (она ползёт к
+ * концу этапа, но не доходит до следующего) и норма этапа, пока сервер своей не
+ * набрал (`stageNormMs`).
  */
 export const STAGE_MS: {
   readonly launch: Readonly<Record<LaunchStage, number>>;
@@ -86,6 +92,8 @@ const evenBounds = (n: number, from: number, to: number) =>
  */
 function plan(view: SessionView): {
   labels: ReadonlyArray<string>;
+  /** Этап каждой строки (у «Ждём свободный сервер» и «Игра установлена» — null). */
+  stages: ReadonlyArray<Timed | null>;
   current: number;
   fraction: (msInStage: number) => number;
   bounds: ReadonlyArray<number>;
@@ -93,8 +101,13 @@ function plan(view: SessionView): {
   const timed = (stageMs: number) => (ms: number) =>
     1 - Math.exp(-Math.max(0, ms) / stageMs);
   const launchLabels = launchSteps.map(([, label]) => label);
+  const launchStages = launchSteps.map(([stage]): Timed => ({
+    kind: "launch",
+    stage,
+  }));
   // После установки — строка «Игра установлена» на её отрезке полоски.
   const prefix = view.hadInstall ? ["Игра установлена"] : [];
+  const prefixStages = view.hadInstall ? [null] : [];
   const from = view.hadInstall ? INSTALL_SHARE : 0;
   const prefixBounds = view.hadInstall ? [0] : [];
 
@@ -103,6 +116,8 @@ function plan(view: SessionView): {
     // строки (после установки сессия ждёт сервер ещё раз — на `INSTALL_SHARE`).
     return {
       labels: [...prefix, "Ждём свободный сервер", ...launchLabels],
+      // В очереди времени этапов не показываем.
+      stages: [],
       current: prefix.length,
       fraction: () => 0,
       bounds: [
@@ -122,6 +137,10 @@ function plan(view: SessionView): {
           ? `${label} · ${percent} %`
           : label,
       ),
+      stages: installSteps.map(([stage]): Timed => ({
+        kind: "install",
+        stage,
+      })),
       current: installSteps.findIndex(([key]) => key === stage),
       fraction:
         stage === "downloading"
@@ -136,6 +155,7 @@ function plan(view: SessionView): {
   if (stage === "visible") {
     return {
       labels: [...prefix, ...launchLabels],
+      stages: [...prefixStages, ...launchStages],
       current: prefix.length + launchLabels.length,
       fraction: () => 0,
       bounds,
@@ -143,19 +163,164 @@ function plan(view: SessionView): {
   }
   return {
     labels: [...prefix, ...launchLabels],
+    stages: [...prefixStages, ...launchStages],
     current: prefix.length + launchSteps.findIndex(([key]) => key === stage),
     fraction: timed(STAGE_MS.launch[stage]),
     bounds,
   };
 }
 
-/** Строки экрана загрузки: сделанные, текущая, будущие. */
-export function loadingSteps(view: SessionView): ReadonlyArray<LoadingStep> {
-  const { labels, current } = plan(view);
-  return labels.map((label, i) => ({
-    label,
-    status: i < current ? "done" : i === current ? "now" : "next",
-  }));
+/**
+ * Строки экрана загрузки: сделанные, текущая, будущие. С `nowServerMs` («сейчас»
+ * сервера) и `view.timing` — со временем: у сделанной — сколько заняла
+ * («Готовим компьютер · 0:08»), у текущей — норма и сколько идёт («Запускаем
+ * Steam · обычно ~30 с · 0:12»; у скачивания вместо нормы процент). Этап без
+ * отметки (агент его пропустил, ещё не пришёл) — без времени.
+ */
+export function loadingSteps(
+  view: SessionView,
+  nowServerMs?: number,
+): ReadonlyArray<LoadingStep> {
+  const { labels, stages, current } = plan(view);
+  const timing = nowServerMs === undefined ? null : view.timing;
+  return labels.map((label, i) => {
+    const status = i < current ? "done" : i === current ? "now" : "next";
+    const stage = stages[i];
+    if (timing === null || nowServerMs === undefined || !stage) {
+      return { label, status };
+    }
+    const mark = markOf(timing, stage);
+    if (status === "done") {
+      return mark?.endedAt
+        ? {
+            label: `${label} · ${formatElapsed(Date.parse(mark.endedAt) - Date.parse(mark.startedAt))}`,
+            status,
+          }
+        : { label, status };
+    }
+    if (status === "next") return { label, status };
+    const norm = stageNormMs(timing, stage.kind, stage.stage);
+    const parts = [
+      label,
+      ...(norm === null ? [] : [`обычно ${formatNorm(norm)}`]),
+      ...(mark ? [formatElapsed(msIn(mark, nowServerMs))] : []),
+    ];
+    return { label: parts.join(" · "), status };
+  });
+}
+
+/**
+ * Общий таймер над списком: «Запуск идёт 1:05 · обычно ~1:40» — от первой отметки
+ * запуска; норма — `launchNormMs`, без неё — сумма норм этапов. В установке —
+ * «Установка идёт 2:10» без нормы. В очереди, без `timing` или без отметок — null.
+ */
+export function loadingTotal(
+  view: SessionView,
+  nowServerMs: number,
+): string | null {
+  const timing = view.timing;
+  if (timing === null || view.state === "queued") return null;
+  if (view.state === "installing") {
+    const first = timing.install[0];
+    return first
+      ? `Установка идёт ${formatElapsed(nowServerMs - Date.parse(first.startedAt))}`
+      : null;
+  }
+  const first = timing.launch[0];
+  if (!first) return null;
+  const norm =
+    timing.launchNormMs ??
+    launchSteps.reduce(
+      (sum, [stage]) => sum + (stageNormMs(timing, "launch", stage) ?? 0),
+      0,
+    );
+  return `Запуск идёт ${formatElapsed(nowServerMs - Date.parse(first.startedAt))} · обычно ${formatNorm(norm)}`;
+}
+
+/** Этап запуска или установки (у них есть общий `login`, но нормы у каждого свои). */
+type Timed =
+  | { readonly kind: "launch"; readonly stage: LaunchStage }
+  | { readonly kind: "install"; readonly stage: InstallStage };
+
+/** Отметка этапа в `timing` (последняя, если этап отмечен не раз). */
+const markOf = (
+  timing: SessionTiming,
+  { kind, stage }: Timed,
+): StageTiming | undefined =>
+  timing[kind].findLast((mark) => mark.stage === stage);
+
+/** Сколько мс этап шёл (законченный) или идёт к `nowServerMs`. */
+const msIn = (mark: StageTiming, nowServerMs: number) =>
+  (mark.endedAt === null ? nowServerMs : Date.parse(mark.endedAt)) -
+  Date.parse(mark.startedAt);
+
+/**
+ * Норма этапа, мс: с сервера (`normMs`), иначе ориентировочная `STAGE_MS`; у
+ * скачивания нормы нет (там процент) — null.
+ */
+export function stageNormMs(
+  timing: SessionTiming,
+  kind: "launch" | "install",
+  stage: LaunchStage | InstallStage,
+): number | null {
+  const server = timing[kind].findLast((mark) => mark.stage === stage)?.normMs;
+  if (server !== null && server !== undefined) return server;
+  if (kind === "launch") {
+    return STAGE_MS.launch[stage as LaunchStage] ?? null;
+  }
+  return stage === "downloading"
+    ? null
+    : (STAGE_MS.install[stage as TimedInstallStage] ?? null);
+}
+
+/** Норма: «~30 с» до минуты, дальше «~1:40»; округление до 5 с, не меньше 5 с. */
+export function formatNorm(ms: number): string {
+  const seconds = Math.max(5, Math.round(ms / 5_000) * 5);
+  return seconds < 60 ? `~${seconds} с` : `~${formatClock(seconds)}`;
+}
+
+/** Прошедшее время: «0:12», «1:05» (отрицательное — «0:00»). */
+export function formatElapsed(ms: number): string {
+  return formatClock(Math.max(0, ms) / 1000);
+}
+
+/** Сколько норм текущего этапа нужно пройти, чтобы предложить «Показать экран». */
+const REVEAL_FACTOR = 2;
+
+/**
+ * Текущий этап запуска идёт дольше `REVEAL_FACTOR` своих норм (по серверным
+ * отметкам). Без `timing`, без этапа или без его отметки — нет.
+ */
+export function stageOverdue(view: SessionView, nowServerMs: number): boolean {
+  const timing = view.timing;
+  const stage = view.stage;
+  if (timing === null || stage === null || stage === "visible") return false;
+  const mark = markOf(timing, { kind: "launch", stage });
+  const norm = stageNormMs(timing, "launch", stage);
+  return (
+    mark !== undefined &&
+    mark.endedAt === null &&
+    norm !== null &&
+    msIn(mark, nowServerMs) > REVEAL_FACTOR * norm
+  );
+}
+
+/**
+ * Пора ли предложить «Показать экран» (без «залипания» — его держит `Player`):
+ * только при готовом стриме; на «Входим в аккаунт» — сразу (окно входа Steam с
+ * QR); иначе — когда текущий этап идёт дольше 2× нормы. Без `timing` (старый
+ * api) или без отметки текущего этапа мерить нечем — сразу, как было до норм:
+ * игрок не должен застрять без выхода к окну на сервере.
+ */
+export function revealDue(view: SessionView, nowServerMs: number): boolean {
+  if (!view.streamReady) return false;
+  if (view.stage === "login") return true;
+  const timing = view.timing;
+  if (timing === null || view.stage === null || view.stage === "visible") {
+    return true;
+  }
+  if (!markOf(timing, { kind: "launch", stage: view.stage })) return true;
+  return stageOverdue(view, nowServerMs);
 }
 
 /**

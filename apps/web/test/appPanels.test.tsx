@@ -54,6 +54,7 @@ const session = (patch: Partial<SessionView> = {}): SessionView => ({
   stage: null,
   installStage: null,
   hadInstall: false,
+  timing: null,
   playedSeconds: 3600,
   createdAt: "2026-10-23T10:00:00.000Z",
   ...patch,
