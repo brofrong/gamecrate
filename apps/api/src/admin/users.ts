@@ -12,7 +12,7 @@ import {
 import { type AdminUser, isSyntheticEmail } from "@cg/rpc";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { isActive } from "../session/SessionRepo";
+import { isActive, requestStopAt } from "../session/SessionRepo";
 
 /** Алфавитный список способов входа (`account.provider_id`, без дублей). */
 const providersSql = sql<
@@ -125,9 +125,9 @@ export const setRole = (
  * `AccessDenied`, проверка в `SessionRepo.startSession`). Блокировка — одна
  * транзакция: строка `user` под `FOR UPDATE` (нет — `notFound`), `blocked_at
  * = coalesce(blocked_at, now)` (первый запрос не перезаписывается) и
- * `stop_requested_at = coalesce(..., now)` для всех активных сессий
- * пользователя (как `stopSession` в `SessionRepo`). Разблокировка просто
- * очищает `blocked_at`. Себе — `"self"`.
+ * `stop_requested_at = coalesce(..., now)` (`requestStopAt` из `SessionRepo`,
+ * как `stopSession`) для всех активных сессий пользователя. Разблокировка
+ * просто очищает `blocked_at`. Себе — `"self"`.
  */
 export const setBlocked = (
   actorId: string,
@@ -156,9 +156,7 @@ export const setBlocked = (
             .where(eq(user.id, userId));
           yield* db
             .update(sessions)
-            .set({
-              stopRequestedAt: sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`,
-            })
+            .set({ stopRequestedAt: requestStopAt(now) })
             .where(and(eq(sessions.userId, userId), isActive));
         } else {
           yield* db

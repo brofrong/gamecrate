@@ -312,6 +312,15 @@ export const heartbeat = (
   }).pipe(Effect.orDie);
 
 /**
+ * Выражение `stop_requested_at = coalesce(stop_requested_at, now)` (первый
+ * запрос не перезаписывается) — общее для `stopSession` здесь и `setBlocked`
+ * в `apps/api/src/admin/users.ts` (там блокировка останавливает активные
+ * сессии той же логикой).
+ */
+export const requestStopAt = (now: Date): SQL =>
+  sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`;
+
+/**
  * Общая логика остановки: сессия найдена под `extraCondition` (например,
  * владелец) — активной выставляется `stopRequestedAt = coalesce(..., now)`
  * (первый запрос не перезаписывается), завершённой — ничего; формат id
@@ -339,9 +348,7 @@ const stopSession = (
     if (found === undefined) return false;
     yield* db
       .update(sessions)
-      .set({
-        stopRequestedAt: sql`coalesce(${sessions.stopRequestedAt}, ${now.toISOString()}::timestamptz)`,
-      })
+      .set({ stopRequestedAt: requestStopAt(now) })
       .where(and(idCondition, isActive));
     return true;
   }).pipe(Effect.orDie);
