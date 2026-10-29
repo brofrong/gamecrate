@@ -5,6 +5,7 @@ import {
   games,
   installJobs,
   playSegments,
+  sessionStageMarks,
   sessions,
   settings,
   user,
@@ -31,6 +32,7 @@ import {
   lostOnRestartReason,
 } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { sentToken } from "./seedKey";
 import {
   at,
   connectWorker,
@@ -72,6 +74,16 @@ const sessionRow = (id: string) =>
     const [row] = yield* db.select().from(sessions).where(eq(sessions.id, id));
     if (row === undefined) return yield* Effect.die(`no session ${id}`);
     return row;
+  });
+
+/** Отметки этапов запуска сессии (`session_stage_marks`), по этапу. */
+const stageMarksOf = (sessionId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db
+      .select()
+      .from(sessionStageMarks)
+      .where(eq(sessionStageMarks.sessionId, sessionId));
   });
 
 const segmentsOf = (id: string) =>
@@ -272,8 +284,8 @@ describe("scheduler", () => {
           steamId: "76561198000000000",
           refreshToken: Redacted.make("refresh-token"),
         };
-        yield* seeds.put("u1", seed);
         yield* seedUsers("u1", "u2");
+        yield* seeds.put("u1", seed);
         yield* connectWorker(fake, "w1", 2);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -4) });
@@ -307,6 +319,7 @@ describe("scheduler", () => {
             display: { width: 1920, height: 1080 },
           },
         ]);
+        expect(sentToken(starts[0]?.command)).toBe("refresh-token");
       }),
     ));
 
@@ -446,6 +459,11 @@ describe("scheduler", () => {
         expect("steamLoginResetAt" in (fake.sent[2]?.command ?? {})).toBe(
           false,
         );
+        expect(fake.sent.map((s) => sentToken(s.command))).toEqual([
+          null,
+          "fresh",
+          "none",
+        ]);
         // Устаревший вход убран из памяти, а не просто не отправлен.
         expect(yield* seeds.get("u-old")).toBeNull();
       }),
@@ -2041,6 +2059,83 @@ describe("session stage", () => {
           at(t0, 2),
         );
         expect((yield* sessionRow("s1")).stage).toBe("loading");
+      }),
+    ));
+
+  it("setStage records a mark once per stage, at the orchestrator's now", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "login",
+          }),
+          at(t0, 1),
+        );
+        // Тот же этап повторно (например, агент переподключился и шлёт его
+        // заново) — `forwardOnly` не меняет строку, вторая отметка не пишется.
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "login",
+          }),
+          at(t0, 2),
+        );
+        like(yield* stageMarksOf("s1"), [{ stage: "login", at: at(t0, 1) }]);
+
+        // Более ранний этап после уже записанного позднего — отметки нет.
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "computer",
+          }),
+          at(t0, 3),
+        );
+        like(yield* stageMarksOf("s1"), [{ stage: "login", at: at(t0, 1) }]);
+      }),
+    ));
+
+  it("setStage marks the last stage (visible) too", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+          stateSince: t0,
+        });
+
+        yield* runner.handle(
+          report("w1", {
+            _tag: "SessionStage",
+            sessionId: "s1",
+            stage: "visible",
+          }),
+          at(t0, 1),
+        );
+        like(yield* stageMarksOf("s1"), [{ stage: "visible", at: at(t0, 1) }]);
       }),
     ));
 });

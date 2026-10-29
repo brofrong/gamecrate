@@ -21,7 +21,8 @@ import {
   type WorkerInfo,
 } from "../src/AgentHub";
 import { SessionRunner, type SessionRunnerOptions } from "../src/SessionRunner";
-import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import type { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { SteamLoginSeedsTest } from "./seedKey";
 
 /** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
 export const makeFakeHub = () => {
@@ -70,7 +71,7 @@ export const run = <A, E>(
       Effect.provide(
         SessionRunner.layerWithoutLoops(options).pipe(
           Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
-          Layer.provideMerge(SteamLoginSeeds.layer),
+          Layer.provideMerge(SteamLoginSeedsTest),
           Layer.provideMerge(DbTest),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
         ),

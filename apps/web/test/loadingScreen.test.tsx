@@ -1,15 +1,25 @@
 // Экран загрузки до появления игры (спека 2026-10-27-loading-screen §2): этапы
-// списком, общая полоска, «Отменить», запасной фон вместо битой картинки.
-import { describe, expect, it, mock } from "bun:test";
+// списком, общая полоска, «Отменить», запасной фон вместо битой картинки; время
+// этапов и «Показать экран» при 2× нормы (спека 2026-10-29-launch-timers, часть 2).
+import { describe, expect, it, jest, mock, setSystemTime } from "bun:test";
 import type {
   InstallStage,
   SessionStage,
   SessionState,
+  SessionTiming,
   SessionView,
+  StageTiming,
 } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { Player } from "../src/components/Player";
-import { loadingProgress, loadingSteps } from "../src/lib/loadingSteps";
+import {
+  formatElapsed,
+  formatNorm,
+  loadingProgress,
+  loadingSteps,
+  revealDue,
+  stageNormMs,
+} from "../src/lib/loadingSteps";
 
 const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
   ({
@@ -24,6 +34,7 @@ const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
     stage: null,
     installStage: null,
     hadInstall: false,
+    timing: null,
     playedSeconds: 0,
     createdAt: "2026-10-27T10:00:00.000Z",
     ...patch,
@@ -286,4 +297,271 @@ describe("loading screen", () => {
     expect(screen.getByText("20 Minutes Till Dawn")).toBeTruthy();
     expect(screen.getByText("Запускаем Steam")).toBeTruthy();
   });
+});
+
+/** «Сейчас» сервера в тестах времени. */
+const T = Date.parse("2026-10-29T10:00:00.000Z");
+/** ISO момента `ms` от `T` (обычно в прошлом: `at(-12_300)`). */
+const at = (ms: number) => new Date(T + ms).toISOString();
+
+const mark = (
+  stage: string,
+  from: number,
+  to: number | null,
+  normMs: number | null = null,
+): StageTiming => ({
+  stage,
+  startedAt: at(from),
+  endedAt: to === null ? null : at(to),
+  normMs,
+});
+
+const timing = (patch: Partial<SessionTiming> = {}): SessionTiming => ({
+  serverNow: at(0),
+  launch: [],
+  install: [],
+  launchNormMs: null,
+  ...patch,
+});
+
+/** Запуск на «Запускаем Steam»: компьютер готовили 8 с, Steam идёт `steamMs`. */
+const atSteam = (steamMs: number, patch: Partial<SessionView> = {}) =>
+  view("starting", {
+    stage: "steam",
+    timing: timing({
+      launch: [
+        mark("computer", -steamMs - 8_000, -steamMs),
+        mark("steam", -steamMs, null),
+      ],
+    }),
+    ...patch,
+  });
+
+const reveal = () => screen.queryByRole("button", { name: "Показать экран" });
+const slowHint = "Дольше обычного — загляните на экран";
+const qrHint =
+  "Если появилось окно входа Steam — отсканируйте QR-код в мобильном приложении Steam";
+
+/** Рендер на поддельных часах: браузер считает «сейчас» = `T + skewMs`. */
+const withClock = (skewMs: number, run: () => void) => {
+  jest.useFakeTimers();
+  setSystemTime(new Date(T + skewMs));
+  try {
+    run();
+  } finally {
+    jest.useRealTimers();
+    setSystemTime();
+  }
+};
+
+describe("loading screen timers", () => {
+  it("formats norms rounded to 5 s and elapsed as m:ss", () => {
+    expect(formatNorm(29_999)).toBe("~30 с");
+    expect(formatNorm(12_400)).toBe("~10 с");
+    expect(formatNorm(100_000)).toBe("~1:40");
+    expect(formatNorm(57_600)).toBe("~1:00");
+    // Не «~0 с»: норма хотя бы 5 с.
+    expect(formatNorm(0)).toBe("~5 с");
+    expect(formatElapsed(12_300)).toBe("0:12");
+    expect(formatElapsed(65_000)).toBe("1:05");
+    expect(formatElapsed(0)).toBe("0:00");
+    expect(formatElapsed(-3_000)).toBe("0:00");
+  });
+
+  it("stage norm: the server's, else the built-in estimate", () => {
+    const t = timing({
+      launch: [
+        mark("computer", -20_000, -5_000, 12_000),
+        mark("steam", -5_000, null),
+      ],
+      install: [mark("login", -50_000, null, 40_000)],
+    });
+    expect(stageNormMs(t, "launch", "computer")).toBe(12_000);
+    // Нормы с сервера нет — ориентировочная `STAGE_MS`.
+    expect(stageNormMs(t, "launch", "steam")).toBe(30_000);
+    expect(stageNormMs(t, "launch", "login")).toBe(15_000);
+    // `login` есть и у запуска, и у установки — нормы у них свои.
+    expect(stageNormMs(t, "install", "login")).toBe(40_000);
+    expect(stageNormMs(timing(), "install", "login")).toBe(45_000);
+    // У скачивания нормы нет — там процент.
+    expect(stageNormMs(t, "install", "downloading")).toBeNull();
+  });
+
+  it("steps show done durations and the current stage's norm and elapsed", () => {
+    expect(loadingSteps(atSteam(12_300), T)).toEqual([
+      { label: "Готовим компьютер · 0:08", status: "done" },
+      { label: "Запускаем Steam · обычно ~30 с · 0:12", status: "now" },
+      { label: "Входим в аккаунт", status: "next" },
+      { label: "Готовим игру", status: "next" },
+      { label: "Загружаем игру", status: "next" },
+    ]);
+    // Норма с сервера.
+    const prepare = view("playing", {
+      stage: "prepare",
+      timing: timing({ launch: [mark("prepare", -5_000, null, 98_000)] }),
+    });
+    expect(loadingSteps(prepare, T)[3]).toEqual({
+      label: "Готовим игру · обычно ~1:40 · 0:05",
+      status: "now",
+    });
+    // Пропущенный агентом этап — без времени.
+    expect(loadingSteps(prepare, T)[0]).toEqual({
+      label: "Готовим компьютер",
+      status: "done",
+    });
+  });
+
+  it("header: launch total with its norm, install total without one", () =>
+    withClock(0, () => {
+      const launchView = view("starting", {
+        stage: "login",
+        timing: timing({
+          launch: [
+            mark("computer", -65_000, -57_000),
+            mark("steam", -57_000, -3_000),
+            mark("login", -3_000, null),
+          ],
+        }),
+      });
+      // Нормы всего запуска с сервера нет — сумма норм этапов (10+30+15+30+15 с).
+      const r = renderPlayer(launchView);
+      expect(screen.getByText("Запуск идёт 1:05 · обычно ~1:40")).toBeTruthy();
+      expect(screen.getByText("Готовим компьютер · 0:08")).toBeTruthy();
+      expect(screen.getByText("Запускаем Steam · 0:54")).toBeTruthy();
+      expect(
+        screen.getByText("Входим в аккаунт · обычно ~15 с · 0:03"),
+      ).toBeTruthy();
+      r.unmount();
+
+      const withNorm = renderPlayer(
+        view("starting", {
+          stage: "computer",
+          timing: timing({
+            launch: [mark("computer", -4_000, null)],
+            launchNormMs: 93_000,
+          }),
+        }),
+      );
+      expect(screen.getByText("Запуск идёт 0:04 · обычно ~1:35")).toBeTruthy();
+      withNorm.unmount();
+
+      const installing = view("installing", {
+        installStage: "downloading",
+        installPercent: 42,
+        hadInstall: true,
+        timing: timing({
+          install: [
+            mark("preparing", -130_000, -120_000),
+            mark("login", -120_000, -100_000),
+            mark("library", -100_000, -72_000),
+            mark("downloading", -72_000, null),
+          ],
+        }),
+      });
+      renderPlayer(installing);
+      expect(screen.getByText("Установка идёт 2:10")).toBeTruthy();
+      expect(screen.getByText("Скачиваем игру · 42 % · 1:12")).toBeTruthy();
+      expect(screen.getByText("Готовим установщик · 0:10")).toBeTruthy();
+      expect(screen.queryByText(/обычно/)).toBeNull();
+    }));
+
+  it("show screen appears only past twice the stage norm, with a hint", () =>
+    withClock(0, () => {
+      // «Запускаем Steam» (норма 30 с) идёт 57 с — 1,9×: кнопки нет.
+      const { rerender } = renderPlayer(atSteam(57_000, { streamReady: true }));
+      expect(reveal()).toBeNull();
+      expect(screen.queryByText(slowHint)).toBeNull();
+      // Ещё 6 с — 2,1×: кнопка и подсказка.
+      act(() => jest.advanceTimersByTime(6_000));
+      expect(reveal()).toBeTruthy();
+      expect(screen.getByText(slowHint)).toBeTruthy();
+      expect(
+        screen.getByText("Запускаем Steam · обычно ~30 с · 1:03"),
+      ).toBeTruthy();
+
+      // Этап сменился, норма нового ещё не превышена — кнопка остаётся, подсказки нет.
+      rerender(
+        <Player
+          view={view("playing", {
+            stage: "prepare",
+            streamReady: true,
+            timing: timing({
+              serverNow: at(6_000),
+              launch: [
+                mark("steam", -63_000, 6_000),
+                mark("prepare", 6_000, null),
+              ],
+            }),
+          })}
+          onExit={noop}
+          onHere={noop}
+          onLibrary={noop}
+          onPlayAgain={noop}
+        />,
+      );
+      expect(
+        screen.getByText("Готовим игру · обычно ~30 с · 0:00"),
+      ).toBeTruthy();
+      expect(reveal()).toBeTruthy();
+      expect(screen.queryByText(slowHint)).toBeNull();
+    }));
+
+  it("no show screen without a stream, even past twice the norm", () =>
+    withClock(0, () => {
+      renderPlayer(atSteam(90_000));
+      expect(reveal()).toBeNull();
+      expect(revealDue(atSteam(90_000), T)).toBe(false);
+      expect(revealDue(atSteam(90_000, { streamReady: true }), T)).toBe(true);
+      expect(revealDue(atSteam(57_000, { streamReady: true }), T)).toBe(false);
+    }));
+
+  it("login shows the button and the QR hint right away", () =>
+    withClock(0, () => {
+      renderPlayer(
+        view("starting", {
+          stage: "login",
+          streamReady: true,
+          timing: timing({ launch: [mark("login", -1_000, null)] }),
+        }),
+      );
+      expect(reveal()).toBeTruthy();
+      expect(screen.getByText(qrHint)).toBeTruthy();
+      expect(screen.queryByText(slowHint)).toBeNull();
+    }));
+
+  it("the browser clock does not change the times (serverNow)", () =>
+    withClock(120_000, () => {
+      renderPlayer(atSteam(12_300, { streamReady: true }));
+      expect(
+        screen.getByText("Запускаем Steam · обычно ~30 с · 0:12"),
+      ).toBeTruthy();
+      expect(screen.getByText("Запуск идёт 0:20 · обычно ~1:40")).toBeTruthy();
+      // Часы браузера на 2 минуты впереди — но 2× по серверу не превышено.
+      expect(reveal()).toBeNull();
+      act(() => jest.advanceTimersByTime(2_000));
+      expect(
+        screen.getByText("Запускаем Steam · обычно ~30 с · 0:14"),
+      ).toBeTruthy();
+    }));
+
+  it("without timing the screen looks as before: no times, button with a stream", () =>
+    withClock(0, () => {
+      renderPlayer(view("starting", { stage: "steam", streamReady: true }));
+      expect(screen.getByText("Запускаем Steam")).toBeTruthy();
+      expect(screen.queryByText(/Запуск идёт/)).toBeNull();
+      expect(screen.queryByText(/обычно/)).toBeNull();
+      expect(reveal()).toBeTruthy();
+    }));
+
+  it("queued has no timers", () =>
+    withClock(0, () => {
+      renderPlayer(
+        view("queued", {
+          timing: timing({ launch: [] }),
+        }),
+      );
+      expect(screen.getByText("Ждём свободный сервер")).toBeTruthy();
+      expect(screen.queryByText(/идёт/)).toBeNull();
+      expect(screen.queryByText(/обычно/)).toBeNull();
+    }));
 });

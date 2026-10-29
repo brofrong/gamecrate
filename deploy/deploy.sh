@@ -5,7 +5,7 @@
 # .env на сервере (~/cloud-gaming/.env) создаётся и копируется отдельно, один раз,
 # вручную (см. README.md). Этот скрипт его никогда не перезаписывает и не выводит значения;
 # единственное изменение — дописать строки AGENT_TOKEN, RUSTFS_ACCESS_KEY, RUSTFS_SECRET_KEY,
-# PROFILE_KEY из локального .env.production, если таких ключей на сервере ещё нет.
+# PROFILE_KEY, SEED_KEY из локального .env.production, если таких ключей на сервере ещё нет.
 # Из серверного .env читаются только несекретные пути CG_DATA_DIR, SCRATCH_DIR,
 # STEAM_CLIENT_DIR и STEAM_CLIENT_PARENT.
 set -euo pipefail
@@ -103,6 +103,7 @@ append_secret AGENT_TOKEN min32 "не короче 32 символов" "openssl
 append_secret RUSTFS_ACCESS_KEY min16 "не короче 16 символов" "openssl rand -hex 24"
 append_secret RUSTFS_SECRET_KEY min16 "не короче 16 символов" "openssl rand -hex 24"
 append_secret PROFILE_KEY base64_32 "base64 ровно 32 байт" "openssl rand -base64 32"
+append_secret SEED_KEY base64_32 "base64 ровно 32 байт" "openssl rand -base64 32"
 
 echo "==> каталоги библиотеки, клиента Steam и scratch"
 # Владелец — brofrong (uid 1000), без sudo. Пустой <STEAM_CLIENT_DIR>/steamapps нужен до первой

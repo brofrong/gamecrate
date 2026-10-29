@@ -29,14 +29,17 @@ export class SteamLoginNotFound extends Schema.TaggedError<SteamLoginNotFound>()
 /**
  * Причины `reason` в `SteamLoginView` при `status: "failed"` (спека §4):
  * у пользователя уже привязан другой Steam, этот Steam привязан к другому
- * аккаунту, попытка прервалась (переподключение агента) или сам Steam не
- * ответил.
+ * аккаунту, попытка прервалась (переподключение агента), QR не был отсканирован
+ * вовсе, или код отсканирован, но вход не подтверждён (не принят/неверные
+ * ответы в приложении Steam) — `notConfirmed` вместо `steamError` после
+ * события `Scanned` в той же попытке (решение исполнителя спеки §4).
  */
 export const steamLoginReasons = {
   otherSteamLinked: "Сначала отвяжите текущий Steam",
   steamTaken: "Этот Steam уже привязан к другому аккаунту",
   interrupted: "Вход прервался, покажите новый код",
   steamError: "Steam не ответил, попробуйте ещё раз",
+  notConfirmed: "Вход не подтверждён в приложении Steam, попробуйте ещё раз",
 } as const;
 
 /**

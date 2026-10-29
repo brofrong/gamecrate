@@ -3,10 +3,12 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
   real,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -143,6 +145,30 @@ export const sessions = pgTable(
     uniqueIndex("sessions_held_worker_slot_idx")
       .on(t.workerId, t.slot)
       .where(sql`${t.slotReleasedAt} is null`),
+  ],
+);
+
+/**
+ * Отметка начала каждого этапа запуска сессии (`sessions.stage`,
+ * `SessionRepo.setStage`) — для статистики «сколько обычно занимает этап» на
+ * экране загрузки (Task 4). Одна отметка на сессию и этап (PK); пишется
+ * оркестратором в той же транзакции, что и переход `stage`, и только когда
+ * тот реально сменился (`forwardOnly` + `returning` в `setStage`). `at` —
+ * момент оркестратора на момент отчёта (`DateTime.nowAsDate`), а не время
+ * вставки строки.
+ */
+export const sessionStageMarks = pgTable(
+  "session_stage_marks",
+  {
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    stage: text("stage", { enum: sessionStages }).notNull(),
+    at: timestamptz("at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sessionId, t.stage] }),
+    index("session_stage_marks_stage_at_idx").on(t.stage, t.at.desc()),
   ],
 );
 

@@ -62,6 +62,39 @@ export type InstallStage = typeof InstallStage.Type;
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /**
+ * Этап на экране загрузки по серверным отметкам (`session_stage_marks` /
+ * `install_stage_marks`): `startedAt` — момент отметки этапа (ISO 8601),
+ * `endedAt` — момент следующей отметки (у текущего, последнего, — null);
+ * `normMs` — «обычно» этапа: медиана последних замеров этой игры (от 5),
+ * иначе всех игр (от 5), иначе null — сайт подставляет свою ориентировочную.
+ * У `downloading` нормы нет (там процент).
+ */
+export const StageTiming = Schema.Struct({
+  stage: Schema.String,
+  startedAt: Schema.String,
+  endedAt: Schema.NullOr(Schema.String),
+  normMs: Schema.NullOr(NonNegativeInt),
+});
+export type StageTiming = typeof StageTiming.Type;
+
+/**
+ * Время экрана загрузки:
+ * - `serverNow` — «сейчас» сервера на момент ответа (ISO 8601): сайт считает
+ *   прошедшее время по нему с поправкой на свои часы;
+ * - `launch` — этапы запуска по времени (без `visible`);
+ * - `install` — этапы задачи установки, только пока сессия в `installing`;
+ * - `launchNormMs` — «обычно» всего запуска (`computer` → `visible`) тем же
+ *   правилом, что `normMs`.
+ */
+export const SessionTiming = Schema.Struct({
+  serverNow: Schema.String,
+  launch: Schema.Array(StageTiming),
+  install: Schema.Array(StageTiming),
+  launchNormMs: Schema.NullOr(NonNegativeInt),
+});
+export type SessionTiming = typeof SessionTiming.Type;
+
+/**
  * Сессия для экрана игры.
  * - `streamReady` — стрим поднят: его можно открыть по `/stream/<id>/`.
  * - `failReason` — причина `failed` (для показа пользователю).
@@ -71,6 +104,8 @@ const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
  * - `installStage` — этап задачи установки, которую ждёт сессия, иначе null.
  * - `hadInstall` — у сессии была (или есть) задача установки — экран загрузки
  *   может показать её этапы, а не только этапы запуска контейнера.
+ * - `timing` — время этапов экрана загрузки (`SessionTiming`); null — сессия
+ *   уже не на экране загрузки (`stage = visible` или терминальное состояние).
  * - `playedSeconds` — игровое время сессии (сумма billable-отрезков, открытый — до текущего момента).
  * - `createdAt` — ISO 8601.
  */
@@ -88,6 +123,7 @@ export const SessionView = Schema.Struct({
   stage: Schema.NullOr(SessionStage),
   installStage: Schema.NullOr(InstallStage),
   hadInstall: Schema.Boolean,
+  timing: Schema.NullOr(SessionTiming),
   playedSeconds: NonNegativeInt,
   createdAt: Schema.String,
 });

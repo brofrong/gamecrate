@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "dae83bfb-308e-4d69-8d05-3ba6089551f0",
+  "id": "4f0681bf-6fd3-4661-87a6-ce449c72ac6a",
   "prevIds": [
-    "d992b809-de13-4d4a-9a66-916b7eb90a42"
+    "20b45141-5cdd-4978-9a42-34f632080835"
   ],
   "ddl": [
     {
@@ -50,7 +50,19 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "install_stage_marks",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "profiles",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "steam_login_seeds",
       "entityType": "tables",
       "schema": "public"
     },
@@ -93,6 +105,12 @@
     {
       "isRlsEnabled": false,
       "name": "session_metrics",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "session_stage_marks",
       "entityType": "tables",
       "schema": "public"
     },
@@ -966,6 +984,45 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "job_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "stage",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "user_id",
       "entityType": "columns",
       "schema": "public",
@@ -1022,6 +1079,71 @@
       "entityType": "columns",
       "schema": "public",
       "table": "profiles"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "steam_login_seeds"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "steam_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "steam_login_seeds"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sealed",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "steam_login_seeds"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "put_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "steam_login_seeds"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "steam_login_seeds"
     },
     {
       "type": "text",
@@ -1837,6 +1959,45 @@
       "default": null,
       "generated": null,
       "identity": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "session_stage_marks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "stage",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "session_stage_marks"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "session_stage_marks"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
       "name": "id",
       "entityType": "columns",
       "schema": "public",
@@ -2437,6 +2598,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "stage",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "at",
+          "isExpression": false,
+          "asc": false,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "install_stage_marks_stage_at_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "user_id",
           "isExpression": false,
           "asc": true,
@@ -2495,6 +2684,34 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "play_segments"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "stage",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "at",
+          "isExpression": false,
+          "asc": false,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "session_stage_marks_stage_at_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "session_stage_marks"
     },
     {
       "nameExplicit": true,
@@ -2684,6 +2901,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "job_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "install_jobs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "install_stage_marks_job_id_install_jobs_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "user_id"
       ],
       "schemaTo": "public",
@@ -2697,6 +2931,23 @@
       "entityType": "fks",
       "schema": "public",
       "table": "profiles"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "steam_login_seeds_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "steam_login_seeds"
     },
     {
       "nameExplicit": false,
@@ -2854,6 +3105,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "session_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "sessions",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "session_stage_marks_session_id_sessions_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "session_stage_marks"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "user_id"
       ],
       "schemaTo": "public",
@@ -2955,6 +3223,17 @@
     },
     {
       "columns": [
+        "job_id",
+        "stage"
+      ],
+      "nameExplicit": false,
+      "name": "install_stage_marks_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "install_stage_marks"
+    },
+    {
+      "columns": [
         "app_id",
         "api_name"
       ],
@@ -2974,6 +3253,17 @@
       "entityType": "pks",
       "schema": "public",
       "table": "user_games"
+    },
+    {
+      "columns": [
+        "session_id",
+        "stage"
+      ],
+      "nameExplicit": false,
+      "name": "session_stage_marks_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "session_stage_marks"
     },
     {
       "columns": [
@@ -3053,6 +3343,16 @@
       "name": "profiles_pkey",
       "schema": "public",
       "table": "profiles",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "user_id"
+      ],
+      "nameExplicit": false,
+      "name": "steam_login_seeds_pkey",
+      "schema": "public",
+      "table": "steam_login_seeds",
       "entityType": "pks"
     },
     {

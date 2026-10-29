@@ -15,6 +15,7 @@ const session: SessionView = {
   stage: null,
   installStage: null,
   hadInstall: false,
+  timing: null,
   playedSeconds: 10,
   createdAt: "2026-10-23T00:00:00.000Z",
 };

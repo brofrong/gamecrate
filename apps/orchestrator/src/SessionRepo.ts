@@ -4,6 +4,7 @@ import {
   Db,
   playSegments,
   profiles,
+  sessionStageMarks,
   sessionStages,
   type SessionStage,
   type SessionState,
@@ -407,26 +408,41 @@ export const forwardOnly = (
 /**
  * Этап запуска (экран загрузки) активной сессии этого воркера, вперёд-только
  * (`forwardOnly`): более ранний этап от того же агента (например, после
- * переподключения) не откатывает уже записанный.
+ * переподключения) не откатывает уже записанный. Строка реально сменилась
+ * (`returning`) — в той же транзакции пишется отметка начала этапа
+ * (`session_stage_marks`, `at = now` оркестратора); повтор того же этапа не
+ * меняет строку, значит и отметку не трогает (`onConflictDoNothing` — на
+ * случай гонки, не основной путь).
  */
 export const setStage = (
   workerId: string,
   sessionId: string,
   stage: SessionStage,
+  now: Date,
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    yield* db
-      .update(sessions)
-      .set({ stage })
-      .where(
-        and(
-          eq(sessions.id, sessionId),
-          eq(sessions.workerId, workerId),
-          isActive,
-          forwardOnly(sessionStages, sessions.stage, stage),
-        ),
-      );
+    yield* db.transaction(() =>
+      Effect.gen(function* () {
+        const updated = yield* db
+          .update(sessions)
+          .set({ stage })
+          .where(
+            and(
+              eq(sessions.id, sessionId),
+              eq(sessions.workerId, workerId),
+              isActive,
+              forwardOnly(sessionStages, sessions.stage, stage),
+            ),
+          )
+          .returning({ id: sessions.id });
+        if (updated.length === 0) return;
+        yield* db
+          .insert(sessionStageMarks)
+          .values({ sessionId, stage, at: now })
+          .onConflictDoNothing();
+      }),
+    );
   });
 
 /** Активные сессии (включая `queued`) в порядке создания. */

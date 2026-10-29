@@ -38,7 +38,8 @@ const Sessions = Layer.mergeAll(
 // Один AgentHub и один SteamLoginSeeds на всех: вход, полученный по QR
 // (SteamLoginRunner), приложенный к запуску сессии/установки
 // (Scheduler/InstallDispatcher) и очищенный принятым посеянным коммитом
-// профиля (http.ts) — одна и та же память процесса.
+// профиля (http.ts) — одна и та же строка `steam_login_seeds` (ключ `SEED_KEY`
+// из конфига; Db и конфиг подаются ниже).
 const Server = HttpRouter.serve(HttpApp).pipe(
   Layer.provide(Sessions),
   Layer.provide(AgentHub.layer),
