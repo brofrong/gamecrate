@@ -35,7 +35,7 @@ export const handleUnlink = async (
   account: LinkedAccount,
   callbacks: { reloadAccounts: () => void; reloadMe: () => void },
 ): Promise<void> => {
-  const { error } = await unlinkProvider(account.providerId, account.accountId);
+  const { error } = await unlinkProvider(account.id);
   if (error) {
     toast.error(authErrorMessage(error));
     return;

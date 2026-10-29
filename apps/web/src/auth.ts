@@ -54,13 +54,15 @@ export const linkProvider = (provider: SocialProvider) =>
     errorCallbackURL: "/profile",
   });
 
-/** Отвязка способа входа; сервер сам резолвит ряд по `accountId` и проверяет правило последнего способа входа. */
+/**
+ * Отвязка способа входа. `id` — id ряда `account` в нашей БД (Better Auth ищет по
+ * нему, хоть поле тела и зовётся `accountId`), не id у провайдера. Правило
+ * последнего способа входа сервер проверяет сам.
+ */
 export const unlinkProvider = async (
-  providerId: string,
-  accountId: string,
+  id: string,
 ): Promise<{ error: string | null }> => {
-  const body = { providerId, accountId };
-  const { error } = await authClient.unlinkAccount(body);
+  const { error } = await authClient.unlinkAccount({ accountId: id });
   return { error: error ? (error.code ?? "UNKNOWN") : null };
 };
 
@@ -70,7 +72,7 @@ export const linkSteam = (callbackURL: string) =>
 
 /** Привязанные способы входа текущего пользователя — для `/profile`. */
 export const listLinkedAccounts = async (): Promise<
-  ReadonlyArray<{ providerId: string; accountId: string }>
+  ReadonlyArray<{ id: string; providerId: string; accountId: string }>
 > => {
   const { data } = await authClient.listAccounts();
   return data ?? [];

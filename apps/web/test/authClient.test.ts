@@ -51,6 +51,9 @@ describe("authErrorMessage", () => {
     expect(authErrorMessage("MAIL_FAILED")).toBe(
       "Не удалось отправить письмо, попробуй позже",
     );
+    expect(authErrorMessage("SESSION_NOT_FRESH")).toBe(
+      "Для этого войди заново: выйди и зайди снова",
+    );
   });
 
   it("falls back for undefined and oauth-ish codes", () => {

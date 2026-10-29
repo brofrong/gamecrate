@@ -43,8 +43,8 @@ const user: CurrentUserShape = {
 };
 
 const accounts: ReadonlyArray<LinkedAccount> = [
-  { providerId: "google", accountId: "g1" },
-  { providerId: "steam", accountId: "7656" },
+  { id: "acc-google", providerId: "google", accountId: "g1" },
+  { id: "acc-steam", providerId: "steam", accountId: "7656" },
 ];
 
 const noop = () => {};
@@ -140,7 +140,8 @@ describe("LoginMethods", () => {
       .closest("div") as HTMLElement;
     fireEvent.click(within(steamRow).getByRole("button", { name: "Отвязать" }));
     await waitFor(() =>
-      expect(unlinkProvider).toHaveBeenCalledWith("steam", "7656"),
+      // Better Auth `/unlink-account` ищет ряд по `account.id`, не по id у провайдера.
+      expect(unlinkProvider).toHaveBeenCalledWith("acc-steam"),
     );
     expect(reloadAccounts).toHaveBeenCalledTimes(1);
     expect(reloadMe).toHaveBeenCalledTimes(1);

@@ -16,6 +16,8 @@ import {
 import { Button } from "@/components/ui/button";
 
 export interface LinkedAccount {
+  /** id ряда `account` в нашей БД — по нему идёт отвязка. */
+  readonly id: string;
   readonly providerId: string;
   readonly accountId: string;
 }
