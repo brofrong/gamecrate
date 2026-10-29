@@ -126,6 +126,24 @@ describe("planRemoval", () => {
     expect(planRemoval(steamapps, 2379780)).toBeUndefined();
   });
 
+  it("planRemoval includes the prefix template", () => {
+    write({
+      "appmanifest_2379780.acf": balatro,
+      "common/Balatro/Balatro.exe": "game",
+      "compatdata/2379780/pfx/user.reg": "x",
+      "compatdata/999/pfx/user.reg": "x",
+      "shadercache/2379780/cache": "x",
+    });
+    expect(planRemoval(steamapps, 2379780)).toEqual({
+      manifest: join(steamapps, "appmanifest_2379780.acf"),
+      dirs: [
+        join(steamapps, "common", "Balatro"),
+        join(steamapps, "compatdata", "2379780"),
+        join(steamapps, "shadercache", "2379780"),
+      ],
+    });
+  });
+
   it("на installdir ссылается другой манифест (демка/саундтрек) — common не в плане", () => {
     write({
       "appmanifest_2379780.acf": balatro,

@@ -63,7 +63,9 @@ const make = Effect.gen(function* () {
         );
       case "GameDeleteFailed":
         delivered.delete(report.appId);
-        return withDb(GameRepo.clearDeleting(report.appId)).pipe(
+        return withDb(
+          GameRepo.clearDeleting(report.appId, report.reason),
+        ).pipe(
           Effect.andThen(
             Effect.logError("Game delete failed, the game stays installed", {
               appId: report.appId,

@@ -203,6 +203,50 @@ describe("admin.games", () => {
     });
   });
 
+  it("games.list: deleteError surfaces the stored reason, null otherwise", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGames(db);
+        yield* db
+          .update(gamestoreApps)
+          .set({ deleteError: "Игра запущена" })
+          .where(eq(gamestoreApps.appId, 100));
+
+        const rpc = yield* client;
+        return yield* rpc["admin.games.list"]();
+      }),
+    );
+    const balatro = result.games.find((g) => g.appId === 100);
+    expect(balatro?.deleteError).toBe("Игра запущена");
+    const peglin = result.games.find((g) => g.appId === 200);
+    expect(peglin?.deleteError).toBeNull();
+  });
+
+  it("games.delete: a new request clears the previous delete_error immediately", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGames(db);
+        yield* db
+          .update(gamestoreApps)
+          .set({ deleteError: "Игра запущена" })
+          .where(eq(gamestoreApps.appId, 100));
+
+        const started = yield* (yield* client)["admin.games.delete"]({
+          appId: 100,
+        });
+        const [row] = yield* db
+          .select({ deleteError: gamestoreApps.deleteError })
+          .from(gamestoreApps)
+          .where(eq(gamestoreApps.appId, 100));
+        return { started, deleteError: row?.deleteError };
+      }),
+    );
+    expect(result.started).toBe("started");
+    expect(result.deleteError).toBeNull();
+  });
+
   it("games.delete: free app marks deleting_at once, active session/job → inUse, unknown → notFound", async () => {
     const result = await run(
       Effect.gen(function* () {

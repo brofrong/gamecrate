@@ -1,7 +1,15 @@
 // Вкладка «Установки» (`/admin?tab=installs`, Task 5): активные задачи установки — этап,
 // прогресс закачки, сколько сессий ждёт и «Отменить» с подтверждением; «За 7 дней» — итог
-// (готово / причина красным бейджем). `../src/rpc` подменяется целиком (приём как в
-// `adminGames.test.tsx`).
+// (готово / причина красным бейджем).
+//
+// `../src/rpc` подменяется целиком (приём как в `adminUsers.test.tsx`): полный набор
+// экспортов, которые транзитивно тянет `routes/admin.tsx` (все вкладки импортируются
+// в нём статически, не только «Установки») — иначе при запуске этого файла одного
+// (`bun test test/adminInstalls.test.tsx`) загрузка `UsersTab` падает с «export not
+// found». `errorTag`/`resultErrorTag` — настоящая реализация (как в
+// `adminUsers.test.tsx`), не заглушка «всегда `undefined`»: `mock.module` действует на
+// весь прогон `bun test`, и файлы после этого по алфавиту получат именно этот мок —
+// заглушка там тихо ломает ветку `Unauthorized` → «landing».
 import { describe, expect, it, mock } from "bun:test";
 import type { AdminInstall, AdminInstalls, CurrentUserShape } from "@cg/rpc";
 import {
@@ -16,7 +24,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { Effect } from "effect";
+import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
 
@@ -48,11 +56,19 @@ const adminCancelInstallArgs = (jobId: string) => ({
   reactivityKeys: ["admin"],
 });
 
-// `routes/admin.tsx` импортирует и другие атомы частей 1-2 — им здесь хватает заглушек,
+// `routes/admin.tsx` импортирует и другие вкладки — им здесь хватает заглушек,
 // эта вкладка их не трогает.
 const adminGamesAtom = Atom.make(AsyncResult.initial());
 const adminDeleteGameAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed("started" as const),
+);
+const adminUsersAtom = Atom.make(AsyncResult.initial());
+const adminSetRoleAtom = Atom.fn((_arg: unknown) => Effect.succeed("ok" as const));
+const adminSetBlockedAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed("ok" as const),
+);
+const adminResetSteamLoginAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed(true),
 );
 const adminSessionsAtom = Atom.family((_failedOnly: boolean) =>
   Atom.make(AsyncResult.initial()),
@@ -65,6 +81,14 @@ const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed(undefined),
 );
 
+const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>
+  Option.getOrUndefined(
+    Option.map(Cause.findErrorOption(cause), (error) => error._tag),
+  );
+const resultErrorTag = <A, E extends { readonly _tag: string }>(
+  result: AsyncResult.AsyncResult<A, E>,
+) => (AsyncResult.isFailure(result) ? errorTag(result.cause) : undefined);
+
 mock.module("../src/rpc", () => ({
   meAtom,
   adminPingAtom,
@@ -75,6 +99,22 @@ mock.module("../src/rpc", () => ({
   adminDeleteGameAtom,
   adminDeleteGameArgs: (appId: number) => ({
     payload: { appId },
+    reactivityKeys: ["admin"],
+  }),
+  adminUsersAtom,
+  adminSetRoleAtom,
+  adminSetRoleArgs: (userId: string, role: "player" | "admin") => ({
+    payload: { userId, role },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetBlockedAtom,
+  adminSetBlockedArgs: (userId: string, blocked: boolean) => ({
+    payload: { userId, blocked },
+    reactivityKeys: ["admin"],
+  }),
+  adminResetSteamLoginAtom,
+  adminResetSteamLoginArgs: (userId: string) => ({
+    payload: { userId },
     reactivityKeys: ["admin"],
   }),
   adminSessionsAtom,
@@ -95,8 +135,8 @@ mock.module("../src/rpc", () => ({
     payload,
     reactivityKeys: ["settings"],
   }),
-  errorTag: () => undefined,
-  resultErrorTag: () => undefined,
+  errorTag,
+  resultErrorTag,
 }));
 
 const { adminRoute } = await import("../src/routes/admin");

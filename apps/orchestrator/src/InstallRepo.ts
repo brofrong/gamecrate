@@ -56,16 +56,23 @@ export const isInstalled = (appId: number) =>
 /**
  * Активная задача установки `appId` под `FOR UPDATE` (вызывать в транзакции).
  * Если её сейчас завершают, ждёт конца той транзакции и видит уже итог.
+ * `cancelRequestedAt` отдаём и тут же под той же блокировкой: вызывающий
+ * (`Scheduler.startInstall`) мог увидеть задачу как не отменяемую чуть раньше
+ * (отдельным запросом, до коммита отмены) — на блокировке он уже видит отмену
+ * и не присоединяет сессию к задаче, которую немедленно провалит админ.
  */
 export const lockActiveJob = (appId: number) =>
   Effect.gen(function* () {
     const db = yield* Db;
     const [job] = yield* db
-      .select({ id: installJobs.id })
+      .select({
+        id: installJobs.id,
+        cancelRequestedAt: installJobs.cancelRequestedAt,
+      })
       .from(installJobs)
       .where(and(eq(installJobs.appId, appId), isActiveJob))
       .for("update");
-    return job?.id;
+    return job;
   });
 
 /**
@@ -85,7 +92,7 @@ export const createJob = (appId: number, userId: string) =>
     const existing = yield* lockActiveJob(appId);
     if (existing === undefined)
       return yield* Effect.die(`install job for app ${appId} vanished`);
-    return existing;
+    return existing.id;
   });
 
 /** Задача, выданная агенту (уже записана как `running`). */

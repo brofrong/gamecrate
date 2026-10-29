@@ -74,6 +74,18 @@ const appInLibrary: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gam
 const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId} and ${gamestoreApps.deletingAt} is null)`;
 
 /**
+ * У игры сессии есть активная (`queued`/`running`) задача установки, которую
+ * админ попросил отменить (`cancel_requested_at`). Частичный уникальный индекс
+ * `install_jobs_active_app_idx` не даст завести вторую активную задачу этой
+ * игры, пока первая не закончится, — значит `startInstall`
+ * (`InstallRepo.lockActiveJob`) присоединил бы новую сессию к отменяемой
+ * задаче, и она тут же провалилась бы с «Установка отменена администратором».
+ * Такую сессию оставляем в очереди без установки: новая задача появится, как
+ * только отменяемая завершится.
+ */
+const appInstallCancelling: SQL = sql`exists (select 1 from ${installJobs} where ${installJobs.appId} = ${sessions.appId} and ${installJobs.state} in ('queued', 'running') and ${installJobs.cancelRequestedAt} is not null)`;
+
+/**
  * У пользователя сессии нет активной (`queued`/`running`) задачи установки,
  * которую качают его Steam-профилем. Иначе сессия ждёт в очереди её конца:
  * профиль пользователя в каждый момент держит ровно один процесс (спека §6),
@@ -148,8 +160,19 @@ const blockedFailure = (now: Date, sessionId: string) =>
  * новая `queued` с `userId` сессии; `installJobId` и `InstallStarted`
  * (→ `installing`). Задача блокируется до проверки библиотеки: если её как раз
  * завершают, видим уже установленную игру (`Retry`), а не завершённую задачу.
+ *
+ * `appInstallCancelling` в `lockOldestQueued` и блокировка задачи тут — два
+ * разных запроса в одной транзакции: между ними админская отмена (отдельная
+ * транзакция `cancelInstall`) могла успеть закоммититься — тогда первый запрос
+ * ещё не видел отмену, а `lockActiveJob` на блокировке уже её видит
+ * (`cancelRequestedAt` не пуст). Присоединять сессию к такой задаче нельзя —
+ * её немедленно провалит админская отмена; вместо этого `Retry` без всякой
+ * записи в БД. Спина нет: к следующему вызову `placeOne` (в том же проходе
+ * или следующем тике) отмена уже закоммичена и видна и первому запросу —
+ * `appInstallCancelling` вернёт эту сессию в ветку "отменяемая игра, ждать в
+ * очереди", а не сюда (экспортируется для теста этой гонки, M1).
  */
-const startInstall = (
+export const startInstall = (
   now: Date,
   session: {
     readonly id: string;
@@ -162,8 +185,11 @@ const startInstall = (
     const locked = yield* InstallRepo.lockActiveJob(session.appId);
     if (yield* InstallRepo.isInstalled(session.appId))
       return { _tag: "Retry" } as const;
+    if (locked !== undefined && locked.cancelRequestedAt !== null)
+      return { _tag: "Retry" } as const;
     const jobId =
-      locked ?? (yield* InstallRepo.createJob(session.appId, session.userId));
+      locked?.id ??
+      (yield* InstallRepo.createJob(session.appId, session.userId));
     yield* db
       .update(sessions)
       .set({ installJobId: jobId })
@@ -179,9 +205,11 @@ const startInstall = (
  * Одна транзакция на один проход. Сессия заблокированного пользователя (в
  * любой из веток ниже) не ставится и не размещается, а валится с
  * `accessDeniedReason` (`blockedFailure`). Сначала самая старая `queued`-
- * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`)
- * уходит в установку (`startInstall`) — слот ей не нужен, поэтому она не
- * ждёт воркеров. Иначе — очередь без затора (спека §2.5): до `PLACE_SCAN`
+ * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`),
+ * чья задача установки не отменяется админом (`appInstallCancelling`), уходит
+ * в установку (`startInstall`) — слот ей не нужен, поэтому она не ждёт
+ * воркеров; сессия отменяемой игры остаётся в очереди и дождётся новой задачи
+ * после её конца. Иначе — очередь без затора (спека §2.5): до `PLACE_SCAN`
  * самых старых `queued`-сессий установленных и не удаляемых игр
  * (`created_at asc`, `FOR UPDATE SKIP LOCKED`) просматриваются по очереди, для
  * каждой — `eligibleWorkers(userId, appId, { workerIds: candidates })`
@@ -204,7 +232,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     return yield* db.transaction(() =>
       Effect.gen(function* () {
         const [uninstalled] = yield* lockOldestQueued(
-          sql`not ${appInLibrary}`,
+          sql`not ${appInLibrary} and not ${appInstallCancelling}`,
         );
         if (uninstalled !== undefined)
           return uninstalled.userBlocked

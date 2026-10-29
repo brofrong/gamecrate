@@ -36,6 +36,7 @@ const gameColumns = {
   sizeBytes: gamestoreApps.sizeBytes,
   installedAt: gamestoreApps.installedAt,
   deletingAt: gamestoreApps.deletingAt,
+  deleteError: gamestoreApps.deleteError,
   launches: launchesSql,
   lastLaunchAt: lastLaunchAtSql,
   activeSessions: activeSessionsSql,
@@ -49,6 +50,7 @@ type GameRow = {
   readonly sizeBytes: number;
   readonly installedAt: Date;
   readonly deletingAt: Date | null;
+  readonly deleteError: string | null;
   readonly launches: number;
   readonly lastLaunchAt: Date | null;
   readonly activeSessions: number;
@@ -66,6 +68,7 @@ const toAdminGame = (row: GameRow): AdminGame => ({
   activeSessions: row.activeSessions,
   installing: row.installing,
   deleting: row.deletingAt !== null,
+  deleteError: row.deleteError,
 });
 
 /**
@@ -116,7 +119,8 @@ export const listGames = (): Effect.Effect<AdminGames, never, Db> =>
  * активная сессия (или сессия, ещё держащая слот воркера, — контейнер мог
  * пережить `ended`/`failed`, `holdsSlot`), либо активная задача установки
  * этой игры — `inUse`; иначе `deleting_at = coalesce(deleting_at, now)` —
- * `started` (первый запрос не перезаписывается, как `adminStop`).
+ * `started` (первый запрос не перезаписывается, как `adminStop`); тот же
+ * `update` сразу сбрасывает `delete_error`, не дожидаясь итога агента.
  * `Scheduler.placeOne` перечитывает строку под `FOR SHARE` перед размещением
  * сессии — либо он видит эту пометку, либо мы здесь увидим его сессию.
  */
@@ -160,6 +164,9 @@ export const deleteGame = (
           .update(gamestoreApps)
           .set({
             deletingAt: sql`coalesce(${gamestoreApps.deletingAt}, ${now.toISOString()}::timestamptz)`,
+            // Новый запрос (или повтор) сразу прячет прежнюю причину отказа —
+            // не ждём итога агента, чтобы строка не мигала старой ошибкой.
+            deleteError: null,
           })
           .where(eq(gamestoreApps.appId, appId));
         return "started" as const;

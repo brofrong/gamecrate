@@ -323,6 +323,14 @@ describe("session menu", () => {
     expect(screen.getByText("21 Мбит/с")).toBeTruthy();
   });
 
+  it("menu tells how to capture the mouse", async () => {
+    renderPlayer({ streamSettings: control({ menuSeen: true }) });
+    await clickMenu();
+    const hint = screen.getByText(/захватит мышь/);
+    expect(hint.textContent).toContain("Ctrl+Shift+клик");
+    expect(hint.textContent).toContain("Esc");
+  });
+
   it("debug mode switch", async () => {
     const update = mock<Update>(() => {});
     renderPlayer({ streamSettings: control({}, true, update) });
@@ -424,6 +432,37 @@ describe("session menu", () => {
     setFullscreen(null);
     expect(keyboard.unlock).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "На весь экран" })).toBeTruthy();
+  });
+
+  it("in fullscreen a click on the game locks the pointer", () => {
+    const player = renderPlayer({ streamSettings: control() });
+    const frame = player.frame();
+    const frameDoc = document.implementation.createHTMLDocument("stream");
+    const element = frameDoc.createElement("div");
+    const requestPointerLock = mock(async () => {});
+    element.requestPointerLock = requestPointerLock;
+    Object.defineProperty(frame, "contentDocument", { value: frameDoc });
+    Object.defineProperty(frame, "contentWindow", {
+      value: { webrtcInput: { element } },
+    });
+
+    // Документ без своего окна: `fireEvent` его не умеет — событие руками.
+    const click = () =>
+      frameDoc.body.dispatchEvent(
+        new MouseEvent("mousedown", { button: 0, bubbles: true }),
+      );
+
+    // В окне захвата нет — курсор как раньше.
+    click();
+    expect(requestPointerLock).not.toHaveBeenCalled();
+
+    setFullscreen(player.main());
+    click();
+    expect(requestPointerLock).toHaveBeenCalledTimes(1);
+
+    setFullscreen(null);
+    click();
+    expect(requestPointerLock).toHaveBeenCalledTimes(1);
   });
 
   it("frame load attaches the bridge and input", () => {

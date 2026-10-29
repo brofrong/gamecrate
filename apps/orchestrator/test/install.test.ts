@@ -622,7 +622,8 @@ describe("install jobs", () => {
         const newJob = allJobs.find(
           (j) => j.id !== blockedJob.id && j.id !== otherJob.id,
         );
-        if (newJob === undefined) return yield* Effect.die("expected a new job");
+        if (newJob === undefined)
+          return yield* Effect.die("expected a new job");
         expect(newJob.userId).toBe("u-joined");
         expect(newJob.state).toBe("queued");
       }),
@@ -1360,6 +1361,161 @@ describe("admin cancel", () => {
         const claim = yield* InstallRepo.claimNext(["gs"], at(t0, 2));
         expect(claim?.job.id).toBe(portal.id);
         like((yield* jobs())[0], { state: "queued", workerId: null });
+      }),
+    ));
+
+  it("session waits while the game's install is being cancelled", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running", workerId: "gs" });
+
+        yield* requestCancel(job.id, at(t0, 1));
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, 2) });
+        yield* Scheduler.tick(at(t0, 3));
+
+        // Задача отменяется — новая сессия не присоединяется к ней, ждёт в
+        // очереди; сама задача не трогается.
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+        expect((yield* onlyJob()).id).toBe(job.id);
+
+        // Агент подтверждает отмену — задача проваливается с причиной админа,
+        // s1 (которая её ждала) — failed; s2 задачу не ждала, её не касается.
+        const cancelledAt = at(t0, 5);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "Установка отменена",
+          }),
+          cancelledAt,
+        );
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: installErrors.cancelledByAdmin,
+        });
+        like(yield* sessionRow("s1"), {
+          state: "failed",
+          failReason: installErrors.cancelledByAdmin,
+        });
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+
+        // Следующий проход заводит новую задачу и забирает s2 в неё.
+        yield* Scheduler.tick(at(t0, 6));
+        const [, fresh] = yield* jobs();
+        if (fresh === undefined) return yield* Effect.die("expected new job");
+        expect(fresh.id).not.toBe(job.id);
+        like(fresh, { appId: DOTA, userId: "u2", state: "queued" });
+        like(yield* sessionRow("s2"), {
+          state: "installing",
+          installJobId: fresh.id,
+        });
+      }),
+    ));
+
+  it("a queued session of another uninstalled game still goes to install while this game's job is cancelling (M4)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seed("u1", "u2");
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* Scheduler.tick(t0);
+        const dotaJob = yield* onlyJob();
+        like(dotaJob, { appId: DOTA, state: "queued" });
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: dotaJob.id,
+        });
+
+        yield* requestCancel(dotaJob.id, at(t0, 1));
+
+        // Другая игра, сессия создана позже начала отмены DOTA — она не за
+        // DOTA, значит `appInstallCancelling` её не касается: ей заводится
+        // своя задача и она уходит в установку в том же проходе, без блока
+        // "в хвосте очереди за отменяемой игрой" (M4, no head-of-line block).
+        yield* insertSession({
+          id: "s2",
+          userId: "u2",
+          appId: PORTAL,
+          createdAt: at(t0, 2),
+        });
+        yield* Scheduler.tick(at(t0, 3));
+
+        const allJobs = yield* jobs();
+        expect(allJobs).toHaveLength(2);
+        const portalJob = allJobs.find((j) => j.appId === PORTAL);
+        if (portalJob === undefined)
+          return yield* Effect.die("expected a Portal install job");
+        like(portalJob, { state: "queued", userId: "u2" });
+        like(yield* sessionRow("s2"), {
+          state: "installing",
+          installJobId: portalJob.id,
+        });
+
+        // DOTA's own job and its waiting session are untouched by the other
+        // game going through.
+        like(
+          allJobs.find((j) => j.appId === DOTA),
+          { id: dotaJob.id, state: "queued" },
+        );
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: dotaJob.id,
+        });
+      }),
+    ));
+
+  it("startInstall returns Retry without attaching the session when the locked job is already cancel-requested (M1)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seed("u1", "u2");
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* Scheduler.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { appId: DOTA, state: "queued" });
+
+        // The admin's `cancelInstall` UPDATE commits strictly between
+        // `lockOldestQueued`'s `appInstallCancelling` read (not yet seeing
+        // the cancel) and `InstallRepo.lockActiveJob`'s lock in the same
+        // transaction (sees it). We can't force Postgres to interleave two
+        // real transactions mid-statement from a single-threaded test, so we
+        // simulate the second, race-losing half directly: call
+        // `Scheduler.startInstall` as `placeOne` would have, after it had
+        // already picked `s2` up (believing the job wasn't cancelling) —
+        // except the cancel is by then already committed, exactly as
+        // `lockActiveJob` would see it on the real race.
+        yield* requestCancel(job.id, at(t0, 1));
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, 2) });
+
+        const outcome = yield* Scheduler.startInstall(at(t0, 3), {
+          id: "s2",
+          userId: "u2",
+          appId: DOTA,
+        });
+        expect(outcome).toEqual({ _tag: "Retry" });
+
+        // No attachment: s2 is untouched, and the cancelling job got neither
+        // a new session nor a replacement.
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+        expect(yield* jobs()).toHaveLength(1);
+        expect((yield* onlyJob()).id).toBe(job.id);
+
+        // No spin: once the cancel is committed (as it is here), the next
+        // `placeOne`/tick re-reads `appInstallCancelling` fresh and routes
+        // s2 to "wait in queue" instead of back into `startInstall` — so the
+        // race, even though it can recur once per real interleaving, cannot
+        // loop within a tick or across ticks.
+        yield* Scheduler.tick(at(t0, 4));
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+        expect(yield* jobs()).toHaveLength(1);
       }),
     ));
 });

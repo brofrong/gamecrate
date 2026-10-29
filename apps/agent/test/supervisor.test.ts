@@ -570,6 +570,7 @@ const run = (
                   fake.state.calls.push(`templates.ensure ${appId}`);
                   return "built" as const;
                 }),
+              building: () => false,
             })
           : effect,
       Effect.provide(

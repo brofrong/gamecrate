@@ -129,7 +129,16 @@ function GamesTable({
                 aria-expanded={expandedAppId === game.appId}
                 onClick={() => onToggle(game.appId)}
               >
-                <td className={td}>{game.name}</td>
+                <td className={td}>
+                  <div className="flex flex-col gap-0.5">
+                    <span>{game.name}</span>
+                    {!game.deleting && game.deleteError !== null && (
+                      <span className="text-xs text-destructive">
+                        {`Не удалось удалить: ${game.deleteError}`}
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td className={cn(td, "whitespace-nowrap")}>
                   {formatBytes(game.sizeBytes)}
                 </td>

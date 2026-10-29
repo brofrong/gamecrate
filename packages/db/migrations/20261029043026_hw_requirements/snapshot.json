@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "3d2f935c-0a58-4e82-a024-636605e15c62",
+  "id": "dae83bfb-308e-4d69-8d05-3ba6089551f0",
   "prevIds": [
-    "f6fabe6c-5960-4001-be58-c50ff56b3791"
+    "d992b809-de13-4d4a-9a66-916b7eb90a42"
   ],
   "ddl": [
     {
@@ -785,6 +785,19 @@
       "generated": null,
       "identity": null,
       "name": "deleting_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "gamestore_apps"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "delete_error",
       "entityType": "columns",
       "schema": "public",
       "table": "gamestore_apps"
