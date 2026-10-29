@@ -48,6 +48,17 @@ export function formatHM(minutes: number): string {
   return `${hours}:${String(rest).padStart(2, "0")}`;
 }
 
+/** «1:12:05», «12:05», «0:07» — секунды как на часах; часы только от часа (меню сессии). */
+export function formatClock(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  const secs = String(total % 60).padStart(2, "0");
+  return hours === 0
+    ? `${minutes}:${secs}`
+    : `${hours}:${String(minutes).padStart(2, "0")}:${secs}`;
+}
+
 /** «14 ч в игре», «38 мин в игре», «не запускалась». */
 export function formatHoursInGame(min: number): string {
   if (min <= 0) return "не запускалась";

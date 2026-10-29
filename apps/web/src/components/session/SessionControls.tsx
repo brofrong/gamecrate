@@ -28,7 +28,7 @@ import {
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { cn } from "@/lib/utils";
-import { SessionMenu } from "./SessionMenu";
+import { type PlayedClock, SessionMenu } from "./SessionMenu";
 
 /**
  * Полупрозрачная квадратная кнопка поверх игры: ярче при наведении и фокусе. Клики берут
@@ -39,11 +39,15 @@ const overlayButton =
 
 export function SessionControls({
   control,
+  gameName,
+  played,
   onExit,
   rootRef,
   frameRef,
 }: {
   control: StreamSettingsControl;
+  gameName: string;
+  played: PlayedClock;
   /** Игрок подтвердил «Закончить игру». */
   onExit: () => void;
   /** Корень экрана сессии: его разворачиваем на весь экран, в него порталим панель и диалог. */
@@ -150,6 +154,8 @@ export function SessionControls({
           }}
         >
           <SessionMenu
+            gameName={gameName}
+            played={played}
             settings={settings}
             onChange={update}
             onEndGame={() => {

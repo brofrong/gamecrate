@@ -27,6 +27,12 @@ const streamStates: ReadonlySet<SessionState> = new Set([
   "disconnected",
 ]);
 
+/** Состояния с идущим игровым временем: в них часы в меню тикают между обновлениями с сервера. */
+const clockStates: ReadonlySet<SessionState> = new Set([
+  "playing",
+  "idle_warning",
+]);
+
 export const showsStream = (view: SessionView) =>
   view.streamReady && streamStates.has(view.state);
 
@@ -43,11 +49,16 @@ function useLoadingTick(active: boolean) {
   }, [active]);
 }
 
-/** Сколько мс клиент видит `key` неизменным: отсчёт с его последней смены. */
-function useMsSince(key: string): number {
+/** Когда (`Date.now()`) клиент увидел текущее значение `key`. */
+function useChangedAt(key: string): number {
   const since = useRef({ key, at: Date.now() });
   if (since.current.key !== key) since.current = { key, at: Date.now() };
-  return Date.now() - since.current.at;
+  return since.current.at;
+}
+
+/** Сколько мс клиент видит `key` неизменным: отсчёт с его последней смены. */
+function useMsSince(key: string): number {
+  return Date.now() - useChangedAt(key);
 }
 
 /** Через сколько перезагрузить iframe, если прокси ответил 5xx (Selkies ещё не поднялся). */
@@ -201,6 +212,8 @@ export function Player({
     `${view.id}/${view.state}/${view.stage}/${view.installStage}`,
   );
   const msInState = useMsSince(`${view.id}/${view.state}`);
+  // Игровое время приходит с сервера раз в несколько секунд — меню досчитывает от момента прихода.
+  const playedAt = useChangedAt(`${view.id}/${view.playedSeconds}`);
   // Статистика — только над показанным стримом: под экраном загрузки и без стрима сбор выключен.
   const debug = stream && !loading ? settings.debug : "off";
   const stats = useStreamStats(bridge, frameGeneration, debug);
@@ -248,6 +261,12 @@ export function Player({
       {!loading && (
         <SessionControls
           control={streamSettings}
+          gameName={view.gameName}
+          played={{
+            seconds: view.playedSeconds,
+            at: playedAt,
+            running: clockStates.has(view.state),
+          }}
           onExit={onExit}
           rootRef={rootRef}
           frameRef={frameRef}

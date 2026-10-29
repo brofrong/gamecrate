@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   currentMonth,
+  formatClock,
   formatHM,
   formatHoursInGame,
   formatHoursShort,
@@ -27,6 +28,21 @@ describe("formatMinutes", () => {
 
   it("exact hours, no remainder", () => {
     expect(formatMinutes(120)).toBe("2 ч");
+  });
+});
+
+describe("formatClock", () => {
+  it("minutes and seconds under an hour, hours from an hour", () => {
+    expect(formatClock(0)).toBe("0:00");
+    expect(formatClock(7)).toBe("0:07");
+    expect(formatClock(725)).toBe("12:05");
+    expect(formatClock(4325)).toBe("1:12:05");
+    expect(formatClock(36_000)).toBe("10:00:00");
+  });
+
+  it("negative and fractional seconds", () => {
+    expect(formatClock(-5)).toBe("0:00");
+    expect(formatClock(59.9)).toBe("0:59");
   });
 });
 

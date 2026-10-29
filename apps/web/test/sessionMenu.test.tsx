@@ -1,6 +1,14 @@
 // Меню сессии на экране стрима (спека §2): кнопки «Меню» и «На весь экран», подсказка новичку,
 // панель качества/отладки, выход с подтверждением, полный экран с захватом клавиш, мост к Selkies.
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+  mock,
+} from "bun:test";
 import {
   defaultStreamSettings,
   type SessionView,
@@ -155,6 +163,41 @@ describe("session menu", () => {
     });
     expect(screen.queryByRole("button", { name: "Меню" })).toBeNull();
     expect(screen.queryByRole("button", { name: "На весь экран" })).toBeNull();
+  });
+
+  it("menu header shows the game and its play time", async () => {
+    renderPlayer({
+      view: view({ state: "disconnected", playedSeconds: 4325 }),
+      streamSettings: control({ menuSeen: true }),
+    });
+    await clickMenu();
+    expect(screen.getByText("Portal 2")).toBeTruthy();
+    expect(screen.getByTitle("Игровое время").textContent).toBe("1:12:05");
+  });
+
+  it("play time ticks between server updates while playing", async () => {
+    jest.useFakeTimers();
+    try {
+      const shown = renderPlayer({
+        view: view({ playedSeconds: 725 }),
+        streamSettings: control({ menuSeen: true }),
+      });
+      await clickMenu();
+      const clock = () => screen.getByTitle("Игровое время").textContent;
+      expect(clock()).toBe("12:05");
+      act(() => jest.advanceTimersByTime(3_000));
+      expect(clock()).toBe("12:08");
+      // Пришло значение с сервера — отсчёт от него, а не от прежнего.
+      shown.rerenderWith({
+        view: view({ playedSeconds: 730 }),
+        streamSettings: control({ menuSeen: true }),
+      });
+      expect(clock()).toBe("12:10");
+      act(() => jest.advanceTimersByTime(1_000));
+      expect(clock()).toBe("12:11");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("hint waits for loaded settings and goes away on first open", async () => {

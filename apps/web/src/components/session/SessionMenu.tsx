@@ -1,4 +1,4 @@
-// Содержимое меню сессии (спека §2.3): «Качество» (Авто / битрейт / разрешение), «Отладка» и
+// Содержимое меню сессии (спека §2.3): шапка с игрой и игровым временем, «Качество» (Авто / битрейт / разрешение), «Отладка» и
 // «Закончить игру». Правки применяются сразу через `onChange`; ползунок — по отпусканию;
 // разрешение только сохраняется — применится со следующего запуска (§4.1).
 import {
@@ -9,11 +9,12 @@ import {
   type StreamSettings,
 } from "@cg/rpc";
 import { LogOut } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { formatClock } from "@/lib/formatTime";
 
 const resolutions: ReadonlyArray<StreamResolution> = ["720p", "1080p", "1440p"];
 
@@ -29,15 +30,49 @@ const pick = <T extends string>(
   value: string,
 ): T | undefined => options.find((option) => option === value);
 
+/**
+ * Игровое время сессии для шапки меню: `seconds` с сервера (`SessionView.playedSeconds`),
+ * пришедшее в момент `at` (`Date.now()`); `running` — время идёт, между обновлениями
+ * досчитываем сами.
+ */
+export type PlayedClock = { seconds: number; at: number; running: boolean };
+
+const CLOCK_TICK_MS = 1_000;
+
+function PlayedTime({ played }: { played: PlayedClock }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!played.running) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
+    return () => clearInterval(timer);
+  }, [played.running]);
+  const extra = played.running
+    ? Math.max(0, Math.floor((now - played.at) / 1000))
+    : 0;
+  return (
+    <span
+      className="shrink-0 font-mono text-muted-foreground tabular-nums"
+      title="Игровое время"
+    >
+      {formatClock(played.seconds + extra)}
+    </span>
+  );
+}
+
 const sectionTitle =
   "text-xs font-medium tracking-wide text-muted-foreground uppercase";
 const note = "text-xs text-muted-foreground";
 
 export function SessionMenu({
+  gameName,
+  played,
   settings,
   onChange,
   onEndGame,
 }: {
+  gameName: string;
+  played: PlayedClock;
   settings: StreamSettings;
   onChange: (patch: Partial<StreamSettings>) => void;
   /** «Закончить игру» — дальше подтверждение (его показывает вызывающий). */
@@ -51,6 +86,10 @@ export function SessionMenu({
 
   return (
     <div className="grid gap-5 text-sm">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="truncate font-medium">{gameName}</span>
+        <PlayedTime played={played} />
+      </div>
       <section className="grid gap-3" aria-labelledby={`${ids}-quality`}>
         <h3 id={`${ids}-quality`} className={sectionTitle}>
           Качество
