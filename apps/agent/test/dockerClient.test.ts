@@ -509,4 +509,69 @@ describe("DockerClient", () => {
     );
     expect(gone.status).toBe(404);
   });
+
+  it("stats: memory without inactive file cache, cpu counters", async () => {
+    respond = () =>
+      Response.json({
+        memory_stats: {
+          usage: 2_500_000_000,
+          stats: { inactive_file: 400_000_000, active_file: 1 },
+        },
+        cpu_stats: {
+          cpu_usage: { total_usage: 123_000_000_000 },
+          system_cpu_usage: 9_000_000_000_000,
+          online_cpus: 12,
+        },
+      });
+    expect(await run(docker.stats("cg-session-s1"))).toEqual({
+      memoryBytes: 2_100_000_000,
+      cpuNanos: 123_000_000_000,
+      systemNanos: 9_000_000_000_000,
+      onlineCpus: 12,
+    });
+    expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /v1.47/containers/cg-session-s1/stats?stream=false",
+    ]);
+
+    // cgroup v1 и dockerd без `online_cpus`.
+    respond = () =>
+      Response.json({
+        memory_stats: { usage: 1000, stats: { total_inactive_file: 300 } },
+        cpu_stats: {
+          cpu_usage: { total_usage: 5, percpu_usage: [1, 2, 1, 1] },
+          system_cpu_usage: 50,
+        },
+      });
+    expect(await run(docker.stats("cg-session-s1"))).toEqual({
+      memoryBytes: 700,
+      cpuNanos: 5,
+      systemNanos: 50,
+      onlineCpus: 4,
+    });
+
+    // Остановленный контейнер: пустые счётчики — ошибка, а не нули.
+    respond = () =>
+      Response.json({
+        memory_stats: {},
+        cpu_stats: { cpu_usage: { total_usage: 0 } },
+      });
+    expect((await runError(docker.stats("cg-session-s1"))).operation).toBe(
+      "stats",
+    );
+  });
+
+  it("top returns host pids of the container", async () => {
+    respond = () =>
+      Response.json({
+        Titles: ["UID", "PID", "PPID", "C", "STIME", "TTY", "TIME", "CMD"],
+        Processes: [
+          ["1000", "1885610", "1885500", "0", "14:01", "?", "00:00:01", "Xwayland"],
+          ["1000", "1885732", "1885700", "87", "14:01", "?", "00:10:00", "witness64_d3d11.exe"],
+        ],
+      });
+    expect(await run(docker.top("cg-session-s1"))).toEqual([1885610, 1885732]);
+    expect(recorded.map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /v1.47/containers/cg-session-s1/top",
+    ]);
+  });
 });

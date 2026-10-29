@@ -58,6 +58,8 @@ export const unusedDocker: DockerClientShape = {
   putArchive: unused("putArchive"),
   getArchive: unused("getArchive"),
   archiveSize: unused("archiveSize"),
+  stats: unused("stats"),
+  top: unused("top"),
 };
 
 /**

@@ -274,6 +274,14 @@ export type AgentCommand = typeof AgentCommand.Type;
 export const steamLoginRequiredReason = "Войдите в Steam";
 
 /**
+ * Откуда пиковая VRAM сессии (спека §4.1): `process` — сумма памяти процессов
+ * GPU, чьи host PID принадлежат контейнеру сессии; `gpu_total` — занятая на
+ * карте целиком минус занятая до старта игры (запасной путь).
+ */
+export const VramSource = Schema.Literals(["process", "gpu_total"]);
+export type VramSource = typeof VramSource.Type;
+
+/**
  * Отчёт агента: стрим готов (`streamUrl` — внутренний адрес Selkies), состояние
  * процесса игры, heartbeat со списком живых сессий, этап запуска контейнера
  * сессии до появления игрового окна (`SessionStage`) или этап задачи установки
@@ -294,6 +302,21 @@ export const AgentReport = Schema.Union([
   Schema.TaggedStruct("SessionStage", {
     sessionId: Schema.String,
     stage: SessionStage,
+  }),
+  /**
+   * Замеры ресурсов игры (спека §4.1): накопленное с начала игры целиком — раз
+   * в 60 с, пока игра идёт, и при её конце (оркестратор делает upsert строки
+   * `session_metrics`). `gameSeconds` — сколько шла игра; `null` в ресурсах —
+   * замер не удался (ни одного удачного); `vramSource` — источник пика VRAM.
+   */
+  Schema.TaggedStruct("SessionMetrics", {
+    sessionId: Schema.String,
+    gameSeconds: NonNegativeInt,
+    peakVramBytes: Schema.NullOr(Schema.Number),
+    peakRamBytes: Schema.NullOr(Schema.Number),
+    cpuCoresP95: Schema.NullOr(Schema.Number),
+    gpuUtilP95: Schema.NullOr(Schema.Number),
+    vramSource: VramSource,
   }),
   Schema.TaggedStruct("InstallStage", {
     jobId: Schema.String,

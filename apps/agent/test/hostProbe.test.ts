@@ -5,6 +5,7 @@ import {
   parseCpuInfo,
   parseCpuTimes,
   parseMeminfo,
+  parseGpuProcesses,
   parseNvidiaSmi,
 } from "../src/hostProbe";
 
@@ -244,5 +245,69 @@ describe("classifyBlockDevice", () => {
         slaves: [],
       }),
     ).toBeUndefined();
+  });
+});
+
+const MiB = 2 ** 20;
+
+/** `nvidia-smi -q -x -d PIDS` на brofrong во время сессии (сокращено до процессов). */
+const gpuProcessesXml = (processes: string) => `<?xml version="1.0" ?>
+<!DOCTYPE nvidia_smi_log SYSTEM "nvsmi_device_v12.dtd">
+<nvidia_smi_log>
+	<timestamp>Wed Oct 29 14:02:11 2026</timestamp>
+	<driver_version>550.163.01</driver_version>
+	<cuda_version>12.4</cuda_version>
+	<attached_gpus>1</attached_gpus>
+	<gpu id="00000000:07:00.0">
+		<processes>
+${processes}
+		</processes>
+	</gpu>
+</nvidia_smi_log>
+`;
+
+const processInfo = (pid: string, type: string, name: string, used: string) =>
+  `			<process_info>
+				<gpu_instance_id>N/A</gpu_instance_id>
+				<compute_instance_id>N/A</compute_instance_id>
+				<pid>${pid}</pid>
+				<type>${type}</type>
+				<process_name>${name}</process_name>
+				<used_memory>${used}</used_memory>
+			</process_info>`;
+
+describe("parseGpuProcesses", () => {
+  it("процессы C, G и C+G с памятью в МиБ", () => {
+    const xml = gpuProcessesXml(
+      [
+        processInfo("1885610", "G", "/usr/bin/Xwayland", "42 MiB"),
+        processInfo(
+          "1885732",
+          "C+G",
+          "Z:\\games\\The Witness\\witness64_d3d11.exe",
+          "1885 MiB",
+        ),
+        processInfo("1884990", "C", "/usr/bin/python3", "118 MiB"),
+      ].join("\n"),
+    );
+    expect(parseGpuProcesses(xml)).toEqual([
+      { pid: 1885610, usedBytes: 42 * MiB },
+      { pid: 1885732, usedBytes: 1885 * MiB },
+      { pid: 1884990, usedBytes: 118 * MiB },
+    ]);
+  });
+
+  it("used_memory N/A → null", () => {
+    const xml = gpuProcessesXml(
+      processInfo("1885732", "C+G", "witness64_d3d11.exe", "N/A"),
+    );
+    expect(parseGpuProcesses(xml)).toEqual([
+      { pid: 1885732, usedBytes: null },
+    ]);
+  });
+
+  it("пустой список процессов и пустой вывод → []", () => {
+    expect(parseGpuProcesses(gpuProcessesXml(""))).toEqual([]);
+    expect(parseGpuProcesses("")).toEqual([]);
   });
 });

@@ -19,6 +19,7 @@ import { scanLibrary } from "./GameRemoval";
 import {
   classifyBlockDevice,
   NVIDIA_SMI_ARGS,
+  NVIDIA_SMI_PROCESSES_ARGS,
   parseCpuInfo,
   parseCpuTimes,
   parseMeminfo,
@@ -53,6 +54,8 @@ export interface HostProbeShape {
   readonly mtime: (path: string) => Effect.Effect<Date | undefined>;
   /** Вывод `nvidia-smi` с {@link NVIDIA_SMI_ARGS}. */
   readonly nvidiaSmi: Effect.Effect<string | undefined>;
+  /** XML `nvidia-smi` с {@link NVIDIA_SMI_PROCESSES_ARGS} (замеры сессий). */
+  readonly nvidiaSmiProcesses: Effect.Effect<string | undefined>;
 }
 
 /** Промис хоста; отказ — `undefined`. */
@@ -60,6 +63,27 @@ const attempt = <A>(
   promise: (signal: AbortSignal) => PromiseLike<A>,
 ): Effect.Effect<A | undefined> =>
   Effect.tryPromise({ try: promise, catch: () => undefined }).pipe(
+    Effect.orElseSucceed(() => undefined),
+  );
+
+/**
+ * Вывод `nvidia-smi args`; нет бинаря — `Bun.spawn` бросает, ненулевой код —
+ * `undefined`; по таймауту прерывание снимает `signal`, и Bun убивает процесс.
+ */
+const runNvidiaSmi = (args: ReadonlyArray<string>) =>
+  attempt(async (signal) => {
+    const proc = Bun.spawn(["nvidia-smi", ...args], {
+      stdout: "pipe",
+      stderr: "ignore",
+      signal,
+    });
+    const [text, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    return code === 0 ? text : undefined;
+  }).pipe(
+    Effect.timeout(NVIDIA_SMI_TIMEOUT),
     Effect.orElseSucceed(() => undefined),
   );
 
@@ -81,23 +105,8 @@ export const defaultHostProbe: HostProbeShape = {
       };
     }),
   mtime: (path) => attempt(async () => (await stat(path)).mtime),
-  // Нет бинаря — `Bun.spawn` бросает, ненулевой код — `undefined`; по таймауту
-  // прерывание снимает `signal`, и Bun убивает процесс.
-  nvidiaSmi: attempt(async (signal) => {
-    const proc = Bun.spawn(["nvidia-smi", ...NVIDIA_SMI_ARGS], {
-      stdout: "pipe",
-      stderr: "ignore",
-      signal,
-    });
-    const [text, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      proc.exited,
-    ]);
-    return code === 0 ? text : undefined;
-  }).pipe(
-    Effect.timeout(NVIDIA_SMI_TIMEOUT),
-    Effect.orElseSucceed(() => undefined),
-  ),
+  nvidiaSmi: runNvidiaSmi(NVIDIA_SMI_ARGS),
+  nvidiaSmiProcesses: runNvidiaSmi(NVIDIA_SMI_PROCESSES_ARGS),
 };
 
 /** Как смотреть на хост (по умолчанию — реальный; тесты подменяют). */

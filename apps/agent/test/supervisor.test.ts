@@ -48,10 +48,34 @@ import {
 } from "../src/SessionSupervisor";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
 import { PrefixTemplates } from "../src/PrefixTemplate";
+import { defaultHostProbe, HostProbe } from "../src/WorkerMonitor";
 import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
+
+const MiB = 2 ** 20;
+
+/** Строка `nvidia-smi` (`NVIDIA_SMI_ARGS`) с занятой памятью и загрузкой GPU. */
+const smiLine = (usedMib: number, util: number) =>
+  `NVIDIA GeForce GTX 1650 SUPER, 4096, ${usedMib}, ${util}, 0, 40, 550.163.01\n`;
+
+/** `nvidia-smi -q -x -d PIDS` с процессами `[pid, тип, МиБ]`. */
+const gpuProcessesXml = (
+  processes: ReadonlyArray<readonly [number, string, number]>,
+) =>
+  [
+    "<nvidia_smi_log>",
+    '<gpu id="00000000:07:00.0">',
+    "<processes>",
+    ...processes.map(
+      ([pid, type, mib]) =>
+        `<process_info><pid>${pid}</pid><type>${type}</type><process_name>p${pid}</process_name><used_memory>${mib} MiB</used_memory></process_info>`,
+    ),
+    "</processes>",
+    "</gpu>",
+    "</nvidia_smi_log>",
+  ].join("\n");
 
 /** Ошибка dockerd, когда процесс контейнера висит в D-состоянии. */
 const hung = (operation: string) =>
@@ -138,6 +162,23 @@ const makeFake = () => {
     stopFails: 0,
     removeFails: 0,
     removeVolumeFails: 0,
+    /**
+     * Замеры ресурсов игры: `docker stats` (счётчики CPU растут на шаг за
+     * вызов), `docker top` и вывод `nvidia-smi`; `undefined` у `smi`/
+     * `gpuProcesses` — `nvidia-smi` не ответил.
+     */
+    metrics: {
+      memoryBytes: 512 * MiB,
+      cpuStep: 0,
+      systemStep: 120_000_000_000,
+      onlineCpus: 12,
+      statsCalls: 0,
+      statsFail: false,
+      topPids: [] as number[],
+      topFail: false,
+      smi: smiLine(300, 0) as string | undefined,
+      gpuProcesses: gpuProcessesXml([]) as string | undefined,
+    },
   };
   /** Свободно на ФС scratch (`FreeSpace`) и каталоги, которые проверялись. */
   const disk = {
@@ -276,6 +317,25 @@ const makeFake = () => {
             : (state.packedSize ?? state.packed.length),
         );
       }),
+    stats: () =>
+      Effect.suspend(() => {
+        const m = state.metrics;
+        if (m.statsFail)
+          return Effect.fail(
+            new DockerError({ operation: "stats", message: "timeout" }),
+          );
+        m.statsCalls++;
+        return Effect.succeed({
+          memoryBytes: m.memoryBytes,
+          cpuNanos: m.statsCalls * m.cpuStep,
+          systemNanos: m.statsCalls * m.systemStep,
+          onlineCpus: m.onlineCpus,
+        });
+      }),
+    top: () =>
+      state.metrics.topFail
+        ? Effect.fail(new DockerError({ operation: "top", message: "timeout" }))
+        : Effect.sync(() => state.metrics.topPids),
     exec: (name, cmd) =>
       Effect.suspend(() => {
         state.dockerCalls++;
@@ -408,8 +468,8 @@ interface Harness {
   readonly fake: Fake;
   readonly supervisor: SessionSupervisorShape;
   /**
-   * Отчёты, накопившиеся к этому моменту, кроме `SessionStage` (этапы проверяют
-   * свои тесты через `drainAll`).
+   * Отчёты, накопившиеся к этому моменту, кроме `SessionStage` и
+   * `SessionMetrics` (их проверяют свои тесты через `drainAll`).
    */
   readonly drain: Effect.Effect<Array<AgentReport>>;
   /** Все отчёты, накопившиеся к этому моменту. */
@@ -447,7 +507,10 @@ const run = (
     const drainAll = Queue.clear(supervisor.reports);
     const drain = drainAll.pipe(
       Effect.map((reports) =>
-        reports.filter((report) => report._tag !== "SessionStage"),
+        reports.filter(
+          (report) =>
+            report._tag !== "SessionStage" && report._tag !== "SessionMetrics",
+        ),
       ),
     );
     const tick = (duration: Duration.Input) =>
@@ -462,6 +525,11 @@ const run = (
     program.pipe(
       Effect.scoped,
       Effect.provide(TestClock.layer()),
+      Effect.provideService(HostProbe, {
+        ...defaultHostProbe,
+        nvidiaSmi: Effect.sync(() => fake.state.metrics.smi),
+        nvidiaSmiProcesses: Effect.sync(() => fake.state.metrics.gpuProcesses),
+      }),
       Effect.provideService(FreeSpace, (dir) =>
         Effect.suspend(() => {
           fake.disk.checked.push(dir);
@@ -2940,5 +3008,168 @@ describe("stuck container", () => {
           fake.state.inspected["cg-session-s9"] = container;
         fake.state.removeFails = 1;
       },
+    ));
+});
+
+describe("session metrics", () => {
+  /** Отчёты замеров и игры (без этапов и heartbeat'ов). */
+  const metricsAndGame = (reports: ReadonlyArray<AgentReport>) =>
+    reports.filter(
+      (report) =>
+        report._tag === "SessionMetrics" ||
+        report._tag === "GameState" ||
+        report._tag === "Stopped",
+    );
+
+  /** Карта занята на 300 МиБ до игры, контейнер — PID 42 и 43. */
+  const playing = (fake: Fake) => {
+    const m = fake.state.metrics;
+    m.memoryBytes = 2048 * MiB;
+    // 25 с CPU за 120 с системного времени на 12 ядрах — 2,5 ядра.
+    m.cpuStep = 25_000_000_000;
+    m.topPids = [42, 43];
+    m.gpuProcesses = gpuProcessesXml([
+      [42, "C+G", 1885],
+      [43, "G", 15],
+      [7, "G", 40],
+    ]);
+  };
+
+  it("game run sends SessionMetrics every 60 s and on exit", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          expect(metricsAndGame(yield* h.drainAll)).toEqual([
+            { _tag: "GameState", sessionId: "s1", running: true },
+          ]);
+          // База `gpu_total` снята при старте игры (300 МиБ); дальше карта занята сильнее.
+          h.fake.state.metrics.smi = smiLine(2300, 87);
+          yield* h.tick("50 seconds");
+          expect(metricsAndGame(yield* h.drainAll)).toEqual([]);
+          yield* h.tick("10 seconds");
+          const minute: Extract<AgentReport, { _tag: "SessionMetrics" }> = {
+            _tag: "SessionMetrics",
+            sessionId: "s1",
+            gameSeconds: 60,
+            peakVramBytes: 1900 * MiB,
+            peakRamBytes: 2048 * MiB,
+            cpuCoresP95: 2.5,
+            gpuUtilP95: 87,
+            vramSource: "process",
+          };
+          expect(metricsAndGame(yield* h.drainAll)).toEqual([minute]);
+          h.fake.state.game = false;
+          yield* h.tick("5 seconds");
+          expect(metricsAndGame(yield* h.drainAll)).toEqual([
+            { ...minute, gameSeconds: 65 },
+            { _tag: "GameState", sessionId: "s1", running: false },
+          ]);
+          // Игра закрылась — замеры кончились.
+          const calls = h.fake.state.metrics.statsCalls;
+          yield* h.tick("60 seconds");
+          expect(h.fake.state.metrics.statsCalls).toBe(calls);
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([]);
+        }),
+      playing,
+    ));
+
+  it("stop mid-game sends the last SessionMetrics before Stopped", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.tick("20 seconds");
+          yield* h.drainAll;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          h.fake.state.cloud = 1;
+          yield* h.tick("2 seconds");
+          expect(metricsAndGame(yield* h.drainAll)).toEqual([
+            {
+              _tag: "SessionMetrics",
+              sessionId: "s1",
+              gameSeconds: 20,
+              peakVramBytes: 1900 * MiB,
+              peakRamBytes: 2048 * MiB,
+              cpuCoresP95: 2.5,
+              gpuUtilP95: 0,
+              vramSource: "process",
+            },
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: true,
+              profileSaved: true,
+            },
+          ]);
+        }),
+      playing,
+    ));
+
+  it("container pids not on the GPU fall back to gpu_total", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          h.fake.state.metrics.smi = smiLine(2300, 87);
+          h.fake.state.metrics.topPids = [500, 501];
+          yield* h.tick("10 seconds");
+          h.fake.state.game = false;
+          yield* h.tick("5 seconds");
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([
+            expect.objectContaining({
+              peakVramBytes: 2000 * MiB,
+              vramSource: "gpu_total",
+            }),
+          ]);
+        }),
+      playing,
+    ));
+
+  it("failed samples give null fields and keep the session", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          const m = h.fake.state.metrics;
+          m.statsFail = true;
+          m.topFail = true;
+          m.smi = undefined;
+          m.gpuProcesses = undefined;
+          yield* h.tick("60 seconds");
+          expect(
+            (yield* h.drainAll).filter((r) => r._tag === "SessionMetrics"),
+          ).toEqual([
+            {
+              _tag: "SessionMetrics",
+              sessionId: "s1",
+              gameSeconds: 60,
+              peakVramBytes: null,
+              peakRamBytes: null,
+              cpuCoresP95: null,
+              gpuUtilP95: null,
+              vramSource: "gpu_total",
+            },
+          ]);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("Session metrics sample failed"),
+            ).length,
+          ).toBeGreaterThan(0);
+          expect((yield* h.supervisor.snapshot)[0]?.gameRunning).toBe(true);
+        }),
+      playing,
     ));
 });

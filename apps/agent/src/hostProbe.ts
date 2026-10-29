@@ -10,6 +10,13 @@ export const NVIDIA_SMI_ARGS = [
   "--format=csv,noheader,nounits",
 ];
 
+/**
+ * Аргументы `nvidia-smi` для {@link parseGpuProcesses}: процессы на GPU в XML.
+ * В отличие от `--query-compute-apps` (только `C`/`C+G`) здесь видны и чисто
+ * графические (`G`: Xwayland, labwc, часть игр) — «Итоги Task 1» плана.
+ */
+export const NVIDIA_SMI_PROCESSES_ARGS = ["-q", "-x", "-d", "PIDS"];
+
 /** Снимок счётчиков CPU для {@link cpuPercent}: сумма всех полей и «простой» (idle + iowait). */
 export type CpuTimes = { readonly idle: number; readonly total: number };
 
@@ -165,6 +172,37 @@ export const parseNvidiaSmi = (
         driver: smiField(driver),
       };
     });
+
+/** Текст первого `<tag>…</tag>` в `xml` (без вложенных тегов); нет — `undefined`. */
+const xmlField = (xml: string, tag: string): string | undefined =>
+  new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1]?.trim();
+
+/**
+ * Процессы на GPU из вывода `nvidia-smi` с {@link NVIDIA_SMI_PROCESSES_ARGS}:
+ * все `<process_info>` всех карт, любого типа (`C`, `G`, `C+G`). `pid` — PID
+ * в пространстве хоста (так отдаёт NVML и в контейнере агента), `usedBytes` —
+ * `<used_memory>` (`1885 MiB`) в байтах; `N/A` и прочее неразборчивое — `null`.
+ * Запись без числового PID пропускается; пустой вывод или нет процессов — `[]`.
+ */
+export const parseGpuProcesses = (
+  xml: string,
+): ReadonlyArray<{ pid: number; usedBytes: number | null }> => {
+  const result: Array<{ pid: number; usedBytes: number | null }> = [];
+  for (const [, body = ""] of xml.matchAll(
+    /<process_info>([\s\S]*?)<\/process_info>/g,
+  )) {
+    const pid = Number(xmlField(body, "pid"));
+    if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+    const used = /^(\d+(?:\.\d+)?)\s*MiB$/.exec(
+      xmlField(body, "used_memory") ?? "",
+    );
+    result.push({
+      pid,
+      usedBytes: used === null ? null : Number(used[1]) * MiB,
+    });
+  }
+  return result;
+};
 
 /** Атрибуты блочного устройства из `/sys/block/<name>/*`, которые нужны {@link classifyBlockDevice}. */
 export type BlockDeviceInfo = {

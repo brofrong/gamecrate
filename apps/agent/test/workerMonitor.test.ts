@@ -162,6 +162,7 @@ const makeHost = () => {
       host.smiReads++;
       return host.smi;
     }),
+    nvidiaSmiProcesses: Effect.sync(() => undefined),
   };
   return { host, probe };
 };

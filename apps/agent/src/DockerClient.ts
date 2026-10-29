@@ -1,6 +1,7 @@
 // Клиент Docker Engine API (v1.47) поверх unix-сокета: `fetch(url, { unix })` Bun.
 // Только то, что нужно агенту: контейнеры сессий и помощников, exec, логи,
-// список по метке, overlay-тома, архивы файлов контейнера (профиль).
+// список по метке, overlay-тома, архивы файлов контейнера (профиль), статистика
+// и процессы контейнера сессии (замеры ресурсов игры).
 import { Context, Duration, Effect, Layer, Schema } from "effect";
 import { AgentConfig } from "./config";
 
@@ -112,6 +113,19 @@ export interface ExecResult {
   readonly stdout: string;
 }
 
+/**
+ * Снимок `docker stats` контейнера: `memoryBytes` — память без страничного кэша
+ * (`usage − inactive_file`), `cpuNanos` — CPU контейнера с его старта,
+ * `systemNanos` — CPU хоста (все ядра), `onlineCpus` — ядер на хосте. Загрузка
+ * в ядрах — разность двух снимков: `Δcpu / Δsystem × onlineCpus`.
+ */
+export interface ContainerStats {
+  readonly memoryBytes: number;
+  readonly cpuNanos: number;
+  readonly systemNanos: number;
+  readonly onlineCpus: number;
+}
+
 /** Для долгих шагов (упаковка и выгрузка профиля): свой таймаут запроса. */
 export interface RequestOptions {
   readonly timeout?: Duration.Input;
@@ -189,6 +203,12 @@ export interface DockerClientShape {
     name: string,
     path: string,
   ) => Effect.Effect<number, DockerError>;
+  /** `GET /containers/{id}/stats?stream=false`: память и счётчики CPU (см. `ContainerStats`). */
+  readonly stats: (name: string) => Effect.Effect<ContainerStats, DockerError>;
+  /** `GET /containers/{id}/top`: PID процессов контейнера в пространстве хоста. */
+  readonly top: (
+    name: string,
+  ) => Effect.Effect<ReadonlyArray<number>, DockerError>;
 }
 
 /** Тело `POST /containers/create` для спецификации. */
@@ -300,6 +320,25 @@ const VolumeList = Schema.Struct({
       }),
     ),
   ),
+});
+
+const StatsResponse = Schema.Struct({
+  memory_stats: Schema.Struct({
+    usage: Schema.optional(Schema.Number),
+    stats: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
+  }),
+  cpu_stats: Schema.Struct({
+    cpu_usage: Schema.Struct({
+      total_usage: Schema.Number,
+      percpu_usage: Schema.optional(Schema.NullOr(Schema.Array(Schema.Number))),
+    }),
+    system_cpu_usage: Schema.optional(Schema.Number),
+    online_cpus: Schema.optional(Schema.Number),
+  }),
+});
+const TopResponse = Schema.Struct({
+  Titles: Schema.Array(Schema.String),
+  Processes: Schema.NullOr(Schema.Array(Schema.Array(Schema.String))),
 });
 
 /** Сколько ждать выхода контейнера-помощника (`wait`). */
@@ -605,6 +644,51 @@ export const make = (socketPath: string): DockerClientShape => {
               }),
           }),
         ),
+      ),
+
+    stats: (name) =>
+      request("stats", "GET", `${containerPath(name)}/stats?stream=false`, {
+        ok: [200],
+      }).pipe(
+        Effect.flatMap(json("stats", StatsResponse)),
+        Effect.flatMap(({ memory_stats: memory, cpu_stats: cpu }) => {
+          // Остановленный контейнер отдаёт пустые поля — замера нет.
+          if (
+            memory.usage === undefined ||
+            cpu.system_cpu_usage === undefined
+          )
+            return Effect.fail(
+              new DockerError({
+                operation: "stats",
+                message: "no stats (container not running)",
+              }),
+            );
+          // cgroup v2 — `inactive_file`, v1 — `total_inactive_file`.
+          const inactive =
+            memory.stats?.["inactive_file"] ??
+            memory.stats?.["total_inactive_file"] ??
+            0;
+          return Effect.succeed({
+            memoryBytes: Math.max(0, memory.usage - inactive),
+            cpuNanos: cpu.cpu_usage.total_usage,
+            systemNanos: cpu.system_cpu_usage,
+            // Старые dockerd без `online_cpus`: длина `percpu_usage` (так велит API).
+            onlineCpus:
+              cpu.online_cpus ?? cpu.cpu_usage.percpu_usage?.length ?? 1,
+          });
+        }),
+      ),
+
+    top: (name) =>
+      request("top", "GET", `${containerPath(name)}/top`, { ok: [200] }).pipe(
+        Effect.flatMap(json("top", TopResponse)),
+        Effect.map(({ Titles, Processes }) => {
+          const column = Titles.indexOf("PID");
+          if (column === -1) return [];
+          return (Processes ?? [])
+            .map((row) => Number(row[column]))
+            .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+        }),
       ),
   };
 };

@@ -17,6 +17,7 @@ import {
   type LifecycleEvent,
   type Snapshot,
 } from "./lifecycle";
+import * as MetricsRepo from "./MetricsRepo";
 import * as SessionRepo from "./SessionRepo";
 
 /** Период таймеров сессий. */
@@ -392,6 +393,12 @@ const make = (options: SessionRunnerOptions) =>
                       SessionRepo.releaseSlot(workerId, report.sessionId, now),
                     );
                 });
+              case "SessionMetrics":
+                // Замеры пишутся и после конца сессии (последний отчёт агент
+                // шлёт при закрытии игры/остановке), только от её воркера.
+                return withDb(
+                  MetricsRepo.upsertMetrics(workerId, report, now),
+                );
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":

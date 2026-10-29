@@ -6,7 +6,8 @@
 // D-состоянии) повторяет в фоне, пока контейнер не уберётся (после
 // `CLEANUP_GIVE_UP` — реже и с `session-container-stuck`), итог сессии сообщает
 // сразу (`cleanupPending`). Отчёты складывает в очередь `reports` (их по порядку
-// отправляет OrchestratorLink).
+// отправляет OrchestratorLink). Пока игра идёт, снимает замеры её ресурсов
+// (`SessionMetrics`, спека 2026-10-29 §4.1).
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -35,10 +36,12 @@ import { AgentConfig, type AgentConfigValues } from "./config";
 import {
   type ContainerInfo,
   type ContainerSpec,
+  type ContainerStats,
   DockerClient,
   type DockerError,
   isGone,
 } from "./DockerClient";
+import { parseGpuProcesses, parseNvidiaSmi } from "./hostProbe";
 import { HELPER_LABEL } from "./Helper";
 import { isValidId } from "./ids";
 import {
@@ -55,7 +58,16 @@ import { PrefixTemplates } from "./PrefixTemplate";
 import { restoreProfile, saveProfile } from "./profile/HomeProfile";
 import type { ProfileCommitter } from "./profile/ProfileCommitter";
 import type { ProfileStore } from "./profile/ProfileStore";
+import {
+  EMPTY_SAMPLE,
+  METRICS_REPORT,
+  METRICS_SAMPLE,
+  MetricsAccumulator,
+  type MetricsSample,
+  sessionVram,
+} from "./SessionMetrics";
 import { clearSteamLogin, seedSteamLogin } from "./steam/seedContainer";
+import { HostProbe } from "./WorkerMonitor";
 
 /** Журнал облака Steam в доме пользователя (контракт образа). */
 export const CLOUD_LOG = "/home/ubuntu/.local/share/Steam/logs/cloud_log.txt";
@@ -284,6 +296,15 @@ type CleanupMode = "remove" | "stop";
 /** Итог сессии для оркестратора. */
 type Outcome = Extract<AgentReport, { _tag: "Stopped" | "Failed" }>;
 
+/**
+ * Замеры игры сессии (`SessionMetrics`): накопленное и момент, до которого
+ * время игры уже учтено.
+ */
+interface GameMetrics {
+  readonly acc: MetricsAccumulator;
+  lastAt: number;
+}
+
 /** Число маркеров облака; `unknown` — подсчёт не удался (exec упал, grep вернул ошибку). */
 type CloudCount = number | "unknown";
 
@@ -320,6 +341,12 @@ interface Session {
    * (в т.ч. при её запуске) так не принимаются за итоговую.
    */
   cloudBaseline: CloudCount | undefined;
+  /**
+   * Замеры ресурсов с начала игры (`watchGame`); `undefined` — игра не
+   * запускалась при этом агенте (подхваченная с уже идущей игрой сессия не
+   * замеряется: её прежние замеры уже у оркестратора) или итог уже отправлен.
+   */
+  metrics: GameMetrics | undefined;
   /** Пришёл `StopSession`. */
   readonly stopRequested: Deferred.Deferred<void>;
 }
@@ -353,6 +380,7 @@ export interface SessionSupervisorShape {
 const make = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const docker = yield* DockerClient;
+  const probe = yield* HostProbe;
   const freeSpace = yield* FreeSpace;
   const templates = yield* PrefixTemplates;
   const scope = yield* Effect.scope;
@@ -443,7 +471,137 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  /** Следит за процессом игры, пока он не завершится (после запуска). */
+  /** Занятая память и загрузка первой GPU по `nvidia-smi`; не ответил — `null`. */
+  const gpuNow = probe.nvidiaSmi.pipe(
+    Effect.map((csv) => {
+      const gpu = csv === undefined ? undefined : parseNvidiaSmi(csv)[0];
+      return {
+        usedBytes: gpu?.memoryUsedBytes ?? null,
+        util: gpu?.utilPercent ?? null,
+      };
+    }),
+  );
+
+  /** Снимок `docker stats`; сбой — `undefined` и причина в `failed`. */
+  const statsOf = (session: Session, failed: Array<string>) =>
+    docker.stats(session.name).pipe(
+      Effect.map((stats): ContainerStats | undefined => stats),
+      Effect.catchTag("DockerError", (error) =>
+        Effect.sync(() => {
+          failed.push(`stats: ${error.message}`);
+          return undefined;
+        }),
+      ),
+    );
+
+  /**
+   * Один замер контейнера сессии. Сбой любого источника — `null` в его полях
+   * и одно предупреждение на замер; сессию это не трогает. CPU в ядрах —
+   * разность с прошлым снимком `cpu.prev` (`Δcpu / Δsystem × ядер`).
+   */
+  const takeSample = (
+    session: Session,
+    baselineBytes: number | null,
+    cpu: { prev: ContainerStats | undefined },
+  ) =>
+    Effect.gen(function* () {
+      const failed: Array<string> = [];
+      const stats = yield* statsOf(session, failed);
+      const pids = yield* docker.top(session.name).pipe(
+        Effect.map((pids): ReadonlyArray<number> | undefined => pids),
+        Effect.catchTag("DockerError", (error) =>
+          Effect.sync(() => {
+            failed.push(`top: ${error.message}`);
+            return undefined;
+          }),
+        ),
+      );
+      const xml = yield* probe.nvidiaSmiProcesses;
+      if (xml === undefined) failed.push("nvidia-smi processes");
+      const gpu = yield* gpuNow;
+      if (gpu.usedBytes === null && gpu.util === null) failed.push("nvidia-smi");
+      let cpuCores: number | null = null;
+      if (stats !== undefined && cpu.prev !== undefined) {
+        const system = stats.systemNanos - cpu.prev.systemNanos;
+        const used = stats.cpuNanos - cpu.prev.cpuNanos;
+        if (system > 0 && used >= 0)
+          cpuCores = (used / system) * stats.onlineCpus;
+      }
+      if (stats !== undefined) cpu.prev = stats;
+      const vram = sessionVram({
+        processes: xml === undefined ? undefined : parseGpuProcesses(xml),
+        pids,
+        gpuUsedBytes: gpu.usedBytes,
+        baselineBytes,
+      });
+      if (failed.length > 0)
+        yield* Effect.logWarning("Session metrics sample failed", {
+          sessionId: session.sessionId,
+          failed,
+        });
+      return {
+        vramBytes: vram.bytes,
+        vramSource: vram.source,
+        ramBytes: stats?.memoryBytes ?? null,
+        cpuCores,
+        gpuUtil: gpu.util,
+      } satisfies MetricsSample;
+    });
+
+  const emitMetrics = (session: Session, metrics: GameMetrics) =>
+    emit({
+      _tag: "SessionMetrics",
+      sessionId: session.sessionId,
+      ...metrics.acc.snapshot(),
+    });
+
+  /**
+   * Итоговый `SessionMetrics` (игра закрылась или остановка): хвост игры после
+   * последнего замера идёт во время, замеры сессии на этом кончаются.
+   */
+  const finalMetrics = (session: Session) =>
+    Effect.gen(function* () {
+      const metrics = session.metrics;
+      if (metrics === undefined) return;
+      session.metrics = undefined;
+      const now = yield* Clock.currentTimeMillis;
+      metrics.acc.add(EMPTY_SAMPLE, (now - metrics.lastAt) / 1000);
+      metrics.lastAt = now;
+      yield* emitMetrics(session, metrics);
+    });
+
+  /**
+   * Замеры, пока игра идёт: база `gpu_total` (занятая на карте память) — на
+   * старте игры, затем замер раз в METRICS_SAMPLE и отчёт раз в METRICS_REPORT.
+   * Прерывается вместе с `watchGame` (scope `lifecycle`).
+   */
+  const sampleGame = (session: Session, metrics: GameMetrics) =>
+    Effect.gen(function* () {
+      const baseline = (yield* gpuNow).usedBytes;
+      const cpu = { prev: yield* statsOf(session, []) };
+      const reportEvery = Math.max(
+        1,
+        Math.round(
+          Duration.toMillis(METRICS_REPORT) / Duration.toMillis(METRICS_SAMPLE),
+        ),
+      );
+      for (let samples = 1; ; samples++) {
+        yield* Effect.sleep(METRICS_SAMPLE);
+        const sample = yield* takeSample(session, baseline, cpu);
+        // Итог уже отправлен (игра закрылась) — дальше не считаем.
+        if (session.metrics !== metrics) return;
+        const now = yield* Clock.currentTimeMillis;
+        metrics.acc.add(sample, (now - metrics.lastAt) / 1000);
+        metrics.lastAt = now;
+        if (samples % reportEvery === 0) yield* emitMetrics(session, metrics);
+      }
+    });
+
+  /**
+   * Следит за процессом игры, пока он не завершится (после запуска). С
+   * запуском игры начинаются замеры её ресурсов (`sampleGame`), итог замеров
+   * уходит перед `GameState` о выходе.
+   */
   const watchGame = (session: Session) =>
     Effect.gen(function* () {
       while (true) {
@@ -456,15 +614,23 @@ const make = Effect.gen(function* () {
           ),
         );
         if (alive !== session.gameRunning) {
+          const now = yield* Clock.currentTimeMillis;
           // Состояние и отчёт — без точки прерывания между ними: StopSession в этот
           // момент видит уже запущенную игру (и закроет её, и подождёт облако).
           // Игра запущена — этап не раньше `prepare`, даже если скрипт этапов
           // молчит (старый образ): иначе сайт показывал бы «Запускаем Steam» поверх игры.
+          // Итог замеров — до `GameState` о выходе (строка замеров уже есть,
+          // когда оркестратор узнаёт о конце игры).
           yield* Effect.uninterruptible(
             Effect.suspend(() => {
               session.gameRunning = alive;
+              if (alive)
+                session.metrics = {
+                  acc: new MetricsAccumulator(),
+                  lastAt: now,
+                };
               return Effect.andThen(
-                alive ? reportStage(session, "prepare") : Effect.void,
+                alive ? reportStage(session, "prepare") : finalMetrics(session),
                 emit({
                   _tag: "GameState",
                   sessionId: session.sessionId,
@@ -473,6 +639,8 @@ const make = Effect.gen(function* () {
               );
             }),
           );
+          if (session.metrics !== undefined)
+            yield* Effect.forkScoped(sampleGame(session, session.metrics));
           yield* Effect.logInfo(alive ? "Game started" : "Game exited", {
             sessionId: session.sessionId,
           });
@@ -577,7 +745,10 @@ const make = Effect.gen(function* () {
     );
 
   /** Бежит до конца `effect` или до `StopSession`, что раньше. */
-  const untilStop = <A, E>(session: Session, effect: Effect.Effect<A, E>) =>
+  const untilStop = <A, E, R>(
+    session: Session,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
     Effect.raceFirst(
       effect.pipe(Effect.map((value) => ({ stopped: false as const, value }))),
       Deferred.await(session.stopRequested).pipe(
@@ -724,6 +895,9 @@ const make = Effect.gen(function* () {
       session.phase = "stopping";
       let cloudSynced = false;
       if (session.gameRunning) {
+        // Остановка посреди игры — итог замеров (игра закрылась сама — его уже
+        // отправил watchGame).
+        yield* finalMetrics(session);
         // StopSession посреди игры: база — прямо перед SIGTERM (всё выгруженное
         // во время игры уже в ней), затем закрыть игру штатно, тогда Steam выгрузит
         // сохранения («AC Exit»).
@@ -971,6 +1145,7 @@ const make = Effect.gen(function* () {
         gameRunning: fields.gameRunning ?? false,
         stage: undefined,
         cloudBaseline: fields.cloudBaseline,
+        metrics: undefined,
         stopRequested: yield* Deferred.make<void>(),
       };
       sessions.set(session.sessionId, session);
