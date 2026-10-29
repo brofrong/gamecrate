@@ -2,7 +2,12 @@
 // размером/датами/запусками и кнопкой «Удалить»; строка «Служебные: …» без кнопки.
 // `../src/rpc` подменяется целиком (приём как в `adminSessions.test.tsx`).
 import { describe, expect, it, mock } from "bun:test";
-import type { AdminGame, AdminGames, CurrentUserShape } from "@cg/rpc";
+import type {
+  AdminGame,
+  AdminGameRequirements,
+  AdminGames,
+  CurrentUserShape,
+} from "@cg/rpc";
 import {
   fireEvent,
   render,
@@ -47,6 +52,26 @@ const adminDeleteGameArgs = (appId: number) => ({
   reactivityKeys: ["admin"],
 });
 
+/**
+ * Требования и замеры по игре (панель, раскрывающаяся из строки): `Atom.family`
+ * создаёт атом для `appId` лениво, при первом обращении — поэтому каждый новый
+ * тест ниже использует свой `appId` и заполняет этот стор непосредственно перед
+ * рендером (см. `adminGames.test.tsx` → `renderGames`/клик по строке).
+ */
+const requirementsStore: Record<number, AdminGameRequirements> = {};
+const adminGameRequirementsAtom = Atom.family((appId: number) =>
+  Atom.make(AsyncResult.success(requirementsStore[appId]!)),
+);
+const setRequirementsCalls: unknown[] = [];
+const adminSetGameRequirementsAtom = Atom.fn((arg: unknown) => {
+  setRequirementsCalls.push(arg);
+  return Effect.succeed(true);
+});
+const adminSetGameRequirementsArgs = (
+  appId: number,
+  requirements: unknown,
+) => ({ payload: { appId, requirements }, reactivityKeys: ["admin"] });
+
 // `routes/admin.tsx` импортирует и другие атомы часть 1 — им здесь хватает заглушек,
 // эта вкладка их не трогает.
 const adminSessionsAtom = Atom.family((_failedOnly: boolean) =>
@@ -66,6 +91,9 @@ mock.module("../src/rpc", () => ({
   adminGamesAtom,
   adminDeleteGameAtom,
   adminDeleteGameArgs,
+  adminGameRequirementsAtom,
+  adminSetGameRequirementsAtom,
+  adminSetGameRequirementsArgs,
   adminSessionsAtom,
   adminStopSessionAtom,
   adminStopSessionArgs: (sessionId: string) => ({
@@ -211,5 +239,93 @@ describe("GamesTab", () => {
         reactivityKeys: ["admin"],
       });
     });
+  });
+});
+
+// Панель требований (спека §5.2): строка раскрывается в `GameRequirementsPanel`
+// по клику. Каждый тест — свой `appId`, не пересекающийся с `describe("GamesTab")`
+// выше (комментарий у `requirementsStore`).
+describe("GameRequirementsPanel (expand row)", () => {
+  const GiB = 1024 ** 3;
+
+  const emptyRequirements = (
+    patch: Partial<AdminGameRequirements> = {},
+  ): AdminGameRequirements => ({
+    requirements: null,
+    rows: [],
+    overall: { sessions: 0, vramP95: null, ramP95: null, cpuP95: null },
+    ...patch,
+  });
+
+  it("shows 'нет данных' when the game has no stored requirements", async () => {
+    const noDataGame = game({ appId: 9001, name: "No Data Game" });
+    requirementsStore[9001] = emptyRequirements();
+
+    renderGames({ games: [noDataGame], service: null });
+    fireEvent.click(await screen.findByText("No Data Game"));
+
+    expect(
+      await screen.findByText(
+        "нет данных, запускается только на самом сильном классе",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("«Принять» fills in the requirement fields from the suggestion", async () => {
+    const suggestGame = game({ appId: 9002, name: "Suggest Game" });
+    requirementsStore[9002] = emptyRequirements({
+      overall: {
+        sessions: 3,
+        vramP95: 3.3 * GiB,
+        ramP95: 1 * GiB,
+        cpuP95: 2.1,
+      },
+    });
+
+    renderGames({ games: [suggestGame], service: null });
+    fireEvent.click(await screen.findByText("Suggest Game"));
+
+    const accept = await screen.findByRole("button", { name: "Принять" });
+    fireEvent.click(accept);
+
+    expect((screen.getByLabelText("VRAM, GB") as HTMLInputElement).value).toBe(
+      "4",
+    );
+    expect((screen.getByLabelText("RAM, GB") as HTMLInputElement).value).toBe(
+      "2",
+    );
+    expect(
+      (screen.getByLabelText("Потоки CPU") as HTMLInputElement).value,
+    ).toBe("3");
+  });
+
+  it("shows a crash hint line for a GPU with a high crash share", async () => {
+    const crashGame = game({ appId: 9003, name: "Crash Game" });
+    requirementsStore[9003] = emptyRequirements({
+      rows: [
+        {
+          gpuName: "Test GPU",
+          className: null,
+          sessions: 5,
+          vramP95: null,
+          ramP95: null,
+          cpuP95: null,
+          gpuUtilP95: null,
+          crashShare: 0.5,
+          otherShare: 0,
+          vramSources: ["process"],
+          perSlotVramBytes: 4 * GiB,
+        },
+      ],
+    });
+
+    renderGames({ games: [crashGame], service: null });
+    fireEvent.click(await screen.findByText("Crash Game"));
+
+    expect(
+      await screen.findByText(
+        "На Test GPU игра падает в 50% сессий — поднять минимум VRAM выше 4.0 GB?",
+      ),
+    ).toBeTruthy();
   });
 });

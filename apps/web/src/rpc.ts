@@ -1,5 +1,5 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
-import { AppRpcs, type Role, type StreamSettings } from "@cg/rpc";
+import { AppRpcs, type Requirements, type Role, type StreamSettings } from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity";
@@ -181,6 +181,24 @@ export const adminGamesAtom = Api.query("admin.games.list", undefined, {
 export const adminDeleteGameAtom = Api.mutation("admin.games.delete");
 export const adminDeleteGameArgs = (appId: number) =>
   ({ payload: { appId }, reactivityKeys: adminKeys }) as const;
+
+/** Требования и замеры по моделям GPU одной игры (панель на вкладке «Игры», спека §5.2). */
+export const adminGameRequirementsAtom = Atom.family((appId: number) =>
+  Api.query(
+    "admin.games.requirements",
+    { appId },
+    { reactivityKeys: adminKeys },
+  ),
+);
+
+/** Сохранить требования игры или удалить строку (`requirements: null`). */
+export const adminSetGameRequirementsAtom = Api.mutation(
+  "admin.games.setRequirements",
+);
+export const adminSetGameRequirementsArgs = (
+  appId: number,
+  requirements: Requirements | null,
+) => ({ payload: { appId, requirements }, reactivityKeys: adminKeys }) as const;
 
 /** Активные и недавние задачи установки (вкладка «Установки»). */
 export const adminInstallsAtom = Api.query("admin.installs.list", undefined, {

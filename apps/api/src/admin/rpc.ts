@@ -10,6 +10,10 @@ import {
 } from "./classes";
 import { deleteGame, listGames } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
+import {
+  adminGameRequirements,
+  setRequirements,
+} from "./requirements";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
 import { adminStop, listSessions } from "./sessions";
 import {
@@ -42,6 +46,12 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
     Effect.gen(function* () {
       const now = yield* DateTime.nowAsDate;
       return yield* deleteGame(appId, now);
+    }),
+  "admin.games.requirements": ({ appId }) => adminGameRequirements(appId),
+  "admin.games.setRequirements": ({ appId, requirements }) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      return yield* setRequirements(appId, current.id, requirements);
     }),
   "admin.installs.list": () =>
     Effect.gen(function* () {

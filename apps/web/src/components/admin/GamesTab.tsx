@@ -8,6 +8,7 @@ import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
+import { GameRequirementsPanel } from "@/components/admin/GameRequirementsPanel";
 import { Polled } from "@/components/admin/Polled";
 import {
   AlertDialog,
@@ -95,13 +96,18 @@ function GamesTable({
   games,
   service,
   onDelete,
+  expandedAppId,
+  onToggle,
 }: {
   games: ReadonlyArray<AdminGame>;
   service: AdminGames["service"];
   onDelete: (game: AdminGame) => void;
+  expandedAppId: number | null;
+  onToggle: (appId: number) => void;
 }) {
   const th = "px-2 py-1.5 text-left font-medium";
   const td = "px-2 py-2";
+  const columns = 6;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -117,33 +123,49 @@ function GamesTable({
         </thead>
         <tbody>
           {games.map((game) => (
-            <tr key={game.appId} className="border-t">
-              <td className={td}>{game.name}</td>
-              <td className={cn(td, "whitespace-nowrap")}>
-                {formatBytes(game.sizeBytes)}
-              </td>
-              <td className={cn(td, "whitespace-nowrap")}>
-                {formatShortDate(game.installedAt)}
-              </td>
-              <td
-                className={cn(
-                  td,
-                  "whitespace-nowrap",
-                  (game.activeSessions > 0 || game.lastLaunchAt === null) &&
-                    "text-muted-foreground",
-                )}
+            <React.Fragment key={game.appId}>
+              <tr
+                className="cursor-pointer border-t hover:bg-muted/40"
+                aria-expanded={expandedAppId === game.appId}
+                onClick={() => onToggle(game.appId)}
               >
-                {game.activeSessions > 0
-                  ? "играют сейчас"
-                  : game.lastLaunchAt === null
-                    ? "—"
-                    : formatShortDate(game.lastLaunchAt)}
-              </td>
-              <td className={td}>{game.launches}</td>
-              <td className={cn(td, "text-right")}>
-                <DeleteCell game={game} onDelete={onDelete} />
-              </td>
-            </tr>
+                <td className={td}>{game.name}</td>
+                <td className={cn(td, "whitespace-nowrap")}>
+                  {formatBytes(game.sizeBytes)}
+                </td>
+                <td className={cn(td, "whitespace-nowrap")}>
+                  {formatShortDate(game.installedAt)}
+                </td>
+                <td
+                  className={cn(
+                    td,
+                    "whitespace-nowrap",
+                    (game.activeSessions > 0 || game.lastLaunchAt === null) &&
+                      "text-muted-foreground",
+                  )}
+                >
+                  {game.activeSessions > 0
+                    ? "играют сейчас"
+                    : game.lastLaunchAt === null
+                      ? "—"
+                      : formatShortDate(game.lastLaunchAt)}
+                </td>
+                <td className={td}>{game.launches}</td>
+                <td
+                  className={cn(td, "text-right")}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <DeleteCell game={game} onDelete={onDelete} />
+                </td>
+              </tr>
+              {expandedAppId === game.appId && (
+                <tr className="border-t bg-muted/30">
+                  <td className={td} colSpan={columns}>
+                    <GameRequirementsPanel appId={game.appId} />
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
           ))}
           {service !== null && (
             <tr className="border-t">
@@ -179,6 +201,7 @@ export function GamesTab() {
   const games = useAtomValue(adminGamesAtom);
   usePolling(adminGamesAtom);
   const [toDelete, setToDelete] = React.useState<AdminGame | null>(null);
+  const [expandedAppId, setExpandedAppId] = React.useState<number | null>(null);
   const deleteGame = useAtomSet(adminDeleteGameAtom, { mode: "promiseExit" });
 
   const onConfirm = async () => {
@@ -217,6 +240,10 @@ export function GamesTab() {
                   games={value.games}
                   service={value.service}
                   onDelete={setToDelete}
+                  expandedAppId={expandedAppId}
+                  onToggle={(appId) =>
+                    setExpandedAppId((current) => (current === appId ? null : appId))
+                  }
                 />
               )
             }

@@ -190,6 +190,64 @@ export const AdminInstalls = Schema.Struct({
 });
 export type AdminInstalls = typeof AdminInstalls.Type;
 
+/**
+ * Минимумы железа игры на слот (спека §1.2); `0` — «не важно». Зеркало
+ * `Requirements` из `@cg/db` (тот же состав полей) — `rpc` не зависит от
+ * `db`, поэтому схема заводится здесь отдельно, а не импортируется.
+ */
+export const Requirements = Schema.Struct({
+  minVramBytes: Schema.Number,
+  minRamBytes: Schema.Number,
+  minCpuThreads: Schema.Int,
+});
+export type Requirements = typeof Requirements.Type;
+
+/**
+ * Замеры игры на одной модели GPU (вкладка «Игры» → игра, спека §5.2):
+ * сессии дольше `MIN_GAME_SECONDS`, сгруппированные по `gpu_name`.
+ * `className` — класс воркеров с этой картой (`mode()` по сессиям группы);
+ * `*P95` — `percentile_cont(0.95)`, `null` — нет ни одного замера
+ * (ресурс не снялся на всех сессиях группы). `crashShare`/`otherShare` —
+ * доли `game_end = 'crash'` и `game_end in ('error', 'unknown')` от всех
+ * сессий группы (0..1). `vramSources` — какие источники VRAM встретились
+ * (`process`/`gpu_total`, см. §4.1). `perSlotVramBytes` — видеопамять этой
+ * карты на слот (`workers.hardware.gpus[0].memoryBytes / slots`, максимум
+ * по группе, если воркеров несколько); `null` — железо воркера неизвестно.
+ */
+export const AdminGameMetricsRow = Schema.Struct({
+  gpuName: Schema.String,
+  className: Schema.NullOr(Schema.String),
+  sessions: Schema.Int,
+  vramP95: Schema.NullOr(Schema.Number),
+  ramP95: Schema.NullOr(Schema.Number),
+  cpuP95: Schema.NullOr(Schema.Number),
+  gpuUtilP95: Schema.NullOr(Schema.Number),
+  crashShare: Schema.Number,
+  otherShare: Schema.Number,
+  vramSources: Schema.Array(Schema.Literals(["process", "gpu_total"])),
+  perSlotVramBytes: Schema.NullOr(Schema.Number),
+});
+export type AdminGameMetricsRow = typeof AdminGameMetricsRow.Type;
+
+/**
+ * Требования и замеры игры целиком (панель на вкладке «Игры», спека §5.2).
+ * `requirements` — текущая строка `game_requirements`, `null` — нет данных.
+ * `rows` — замеры по моделям GPU. `overall` — те же p95, но по всем
+ * сессиям игры вместе (основа предложения требований, см.
+ * `requirementsSuggest.ts` на фронте).
+ */
+export const AdminGameRequirements = Schema.Struct({
+  requirements: Schema.NullOr(Requirements),
+  rows: Schema.Array(AdminGameMetricsRow),
+  overall: Schema.Struct({
+    sessions: Schema.Int,
+    vramP95: Schema.NullOr(Schema.Number),
+    ramP95: Schema.NullOr(Schema.Number),
+    cpuP95: Schema.NullOr(Schema.Number),
+  }),
+});
+export type AdminGameRequirements = typeof AdminGameRequirements.Type;
+
 // Порядок важен: мидлвар, добавленный последним, выполняется первым —
 // сначала AuthMiddleware кладёт CurrentUser, затем AdminMiddleware проверяет роль.
 //
@@ -209,6 +267,11 @@ export type AdminInstalls = typeof AdminInstalls.Type;
 // пакеты. `admin.games.delete` — пометить игру к удалению (её удалит
 // оркестратор по `deleting_at`): `"started"`, занята активной сессией или
 // установкой — `"inUse"`, нет такой игры в `gamestore_apps` — `"notFound"`.
+// `admin.games.requirements` — требования (`null` — нет строки) и замеры по
+// моделям GPU + их сумма `overall` (сессии игры дольше `MIN_GAME_SECONDS`,
+// спека §5.2). `admin.games.setRequirements` — сохранить или удалить
+// (`requirements: null`) строку `game_requirements`; `updated_by` —
+// текущий админ; всегда `true` (не проверяет, что игра существует).
 // `admin.installs.list` — активные и недавние (7 дней, не больше 50) задачи
 // установки. `admin.installs.cancel` — попросить отменить активную задачу
 // (`"Установка отменена администратором"` — причина ждущим сессиям, ставит
@@ -263,6 +326,17 @@ export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.games.delete", {
     payload: Schema.Struct({ appId: Schema.Int }),
     success: Schema.Literals(["started", "inUse", "notFound"]),
+  }),
+  Rpc.make("admin.games.requirements", {
+    payload: Schema.Struct({ appId: Schema.Int }),
+    success: AdminGameRequirements,
+  }),
+  Rpc.make("admin.games.setRequirements", {
+    payload: Schema.Struct({
+      appId: Schema.Int,
+      requirements: Schema.NullOr(Requirements),
+    }),
+    success: Schema.Boolean,
   }),
   Rpc.make("admin.installs.list", { success: AdminInstalls }),
   Rpc.make("admin.installs.cancel", {
