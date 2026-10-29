@@ -26,8 +26,7 @@ const GiB = 1024 ** 3;
 const NO_DATA_TEXT = "нет данных, запускается только на самом сильном классе";
 
 /** Байты → ГБ с одной цифрой после запятой, строкой для поля ввода. */
-const toGbString = (bytes: number) =>
-  (Math.round((bytes / GiB) * 10) / 10).toString();
+const toGbString = (bytes: number) => (bytes / GiB).toFixed(1);
 
 /** ГБ (строка поля, допускает и «,», и «.») → байты; невалидная/отрицательная строка — `null`. */
 const fromGbString = (text: string): number | null => {

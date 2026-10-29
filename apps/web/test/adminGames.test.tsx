@@ -289,10 +289,10 @@ describe("GameRequirementsPanel (expand row)", () => {
     fireEvent.click(accept);
 
     expect((screen.getByLabelText("VRAM, GB") as HTMLInputElement).value).toBe(
-      "4",
+      "4.0",
     );
     expect((screen.getByLabelText("RAM, GB") as HTMLInputElement).value).toBe(
-      "2",
+      "2.0",
     );
     expect(
       (screen.getByLabelText("Потоки CPU") as HTMLInputElement).value,
