@@ -1,5 +1,6 @@
 // Воркеры для админки: список с онлайном, снимком железа/загрузки и
-// активными сессиями на каждом; включение/выключение обслуживания.
+// активными сессиями на каждом; включение/выключение обслуживания; назначение
+// класса (блок «Классы», спека §5.1).
 import { Db, games, sessions, user, workers } from "@cg/db";
 import { type AdminSession, type AdminWorker, WORKER_ONLINE_MS } from "@cg/rpc";
 import { and, eq } from "drizzle-orm";
@@ -18,6 +19,7 @@ const workerColumns = {
   slots: workers.slots,
   roles: workers.roles,
   draining: workers.draining,
+  classId: workers.classId,
   hardware: workers.hardware,
   versions: workers.versions,
   stats: workers.stats,
@@ -74,6 +76,7 @@ export const listWorkers = (
           online,
           lastSeenAt: (row.statsAt ?? row.lastSeenAt)?.toISOString() ?? null,
           draining: row.draining,
+          classId: row.classId,
           hardware: row.hardware,
           versions: row.versions,
           stats: row.stats,
@@ -116,6 +119,21 @@ export const setDraining = (
     const updated = yield* db
       .update(workers)
       .set({ draining })
+      .where(eq(workers.id, workerId))
+      .returning({ id: workers.id });
+    return updated.length > 0;
+  }).pipe(Effect.orDie);
+
+/** Назначить класс воркеру (`null` — без класса, сессий не берёт); нет воркера — `false`. */
+export const setClass = (
+  workerId: string,
+  classId: string | null,
+): Effect.Effect<boolean, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const updated = yield* db
+      .update(workers)
+      .set({ classId })
       .where(eq(workers.id, workerId))
       .returning({ id: workers.id });
     return updated.length > 0;

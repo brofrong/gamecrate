@@ -1,8 +1,8 @@
-// Карточка воркера на вкладке «Воркеры» (макет `mockup-workers.html`): шапка со статусом
-// и кнопкой обслуживания, слева «Железо» и «Версии», справа «Загрузка сейчас» полосами,
-// снизу слоты с сессиями. Нет снимка или воркер офлайн — вместо полос «нет данных»:
-// старый снимок за текущую загрузку не выдаём.
-import type { AdminWorker, WorkerStats } from "@cg/rpc";
+// Карточка воркера на вкладке «Воркеры» (макет `mockup-workers.html`): шапка со статусом,
+// выбором класса (спека §5.1) и кнопкой обслуживания, слева «Железо» и «Версии», справа
+// «Загрузка сейчас» полосами, снизу слоты с сессиями. Нет снимка или воркер офлайн —
+// вместо полос «нет данных»: старый снимок за текущую загрузку не выдаём.
+import type { AdminWorker, AdminWorkerClass, WorkerStats } from "@cg/rpc";
 import type * as React from "react";
 import { AdminSessionsTable } from "@/components/admin/AdminSessionsTable";
 import { Badge } from "@/components/ui/badge";
@@ -155,6 +155,47 @@ function Bar({
   );
 }
 
+/**
+ * Выбор класса воркера: пусто — «Без класса»; без класса воркер не берёт
+ * сессии (как `draining`), поэтому рядом с пустым выбором — предупреждение.
+ */
+function ClassPicker({
+  worker,
+  classes,
+  onChange,
+}: {
+  worker: AdminWorker;
+  classes: ReadonlyArray<AdminWorkerClass>;
+  onChange: (classId: string | null) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        aria-label="Класс воркера"
+        value={worker.classId ?? ""}
+        onChange={(event) =>
+          onChange(
+            event.currentTarget.value === "" ? null : event.currentTarget.value,
+          )
+        }
+        className="h-8 rounded-md border bg-transparent px-2 text-sm shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+      >
+        <option value="">Без класса</option>
+        {classes.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {worker.classId === null && (
+        <span className="text-xs text-destructive">
+          Без класса — сессий не берёт
+        </span>
+      )}
+    </div>
+  );
+}
+
 const ratio = (part: number, total: number) => (total > 0 ? part / total : 0);
 
 /** Проценты/градусы GPU, пропуская то, что не удалось измерить. */
@@ -220,14 +261,19 @@ function Load({ stats }: { stats: WorkerStats }) {
 export function WorkerCard({
   worker,
   now,
+  classes,
   onStop,
   onDraining,
+  onSetClass,
 }: {
   worker: AdminWorker;
   /** Текущее время, мс — для «сигнал … назад» и столбцов таблицы сессий. */
   now: number;
+  /** Классы воркеров для выбора (спека §5.1), по силе — порядок задаёт вызывающая сторона. */
+  classes: ReadonlyArray<AdminWorkerClass>;
   onStop: (sessionId: string) => void;
   onDraining: (draining: boolean) => void;
+  onSetClass: (classId: string | null) => void;
 }) {
   const signal =
     worker.lastSeenAt === null
@@ -256,6 +302,7 @@ export function WorkerCard({
         <h3 className="text-lg font-semibold">{worker.id}</h3>
         <span className="text-sm text-muted-foreground">{status}</span>
         <span className="flex-1" />
+        <ClassPicker worker={worker} classes={classes} onChange={onSetClass} />
         {worker.draining && <Badge variant="secondary">на обслуживании</Badge>}
         <Button
           variant="outline"

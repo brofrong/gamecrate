@@ -14,6 +14,7 @@ import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
+import { ClassesCard } from "@/components/admin/ClassesCard";
 import { FailuresCard } from "@/components/admin/FailuresCard";
 import { GamesTab } from "@/components/admin/GamesTab";
 import { InstallsTab } from "@/components/admin/InstallsTab";
@@ -46,10 +47,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/lib/usePolling";
 import { cn } from "@/lib/utils";
 import {
+  adminClassesAtom,
   adminPingAtom,
   adminSessionsAtom,
   adminSetDrainingArgs,
   adminSetDrainingAtom,
+  adminSetWorkerClassArgs,
+  adminSetWorkerClassAtom,
   adminStopSessionArgs,
   adminStopSessionAtom,
   adminWorkersAtom,
@@ -255,7 +259,17 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   const failuresAtom = adminSessionsAtom(true);
   const failures = useAtomValue(failuresAtom);
   usePolling(failuresAtom);
+  const classesResult = useAtomValue(adminClassesAtom);
+  usePolling(adminClassesAtom);
+  // Выбор класса в карточке воркера нужен сразу — пока список классов не
+  // пришёл (или упал), показываем пустой (воркер покажет текущий класс всё равно).
+  const classes = AsyncResult.isSuccess(classesResult)
+    ? classesResult.value
+    : [];
   const setDraining = useAtomSet(adminSetDrainingAtom, {
+    mode: "promiseExit",
+  });
+  const setWorkerClass = useAtomSet(adminSetWorkerClassAtom, {
     mode: "promiseExit",
   });
   // Опрос перерисовывает вкладку раз в 5 с — «сигнал … назад» и «Идёт» считаются от этого.
@@ -274,8 +288,18 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
       );
   };
 
+  const onSetClass = async (worker: AdminWorker, classId: string | null) => {
+    const exit = await setWorkerClass(
+      adminSetWorkerClassArgs(worker.id, classId),
+    );
+    if (Exit.isFailure(exit)) toast.error("Не удалось назначить класс");
+    else if (!exit.value) toast.error("Воркер не найден");
+    else toast.success(`${worker.id}: класс обновлён`);
+  };
+
   return (
     <div className="flex flex-col gap-6">
+      <ClassesCard />
       <Polled
         result={workers}
         error="Не удалось загрузить воркеры"
@@ -292,8 +316,10 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
                 key={worker.id}
                 worker={worker}
                 now={now}
+                classes={classes}
                 onStop={onStop}
                 onDraining={(draining) => void onDraining(worker, draining)}
+                onSetClass={(classId) => void onSetClass(worker, classId)}
               />
             ))
           )

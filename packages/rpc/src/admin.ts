@@ -53,12 +53,26 @@ export const AdminWorker = Schema.Struct({
   online: Schema.Boolean,
   lastSeenAt: Schema.NullOr(Schema.String),
   draining: Schema.Boolean,
+  classId: Schema.NullOr(Schema.String),
   hardware: Schema.NullOr(WorkerHardware),
   versions: Schema.NullOr(WorkerVersions),
   stats: Schema.NullOr(WorkerStats),
   sessions: Schema.Array(AdminSession),
 });
 export type AdminWorker = typeof AdminWorker.Type;
+
+/**
+ * Класс воркера для админки (блок «Классы», спека §5.1). `rank` — сила
+ * (больше — сильнее), список сортируется по нему; `workers` — сколько
+ * воркеров сейчас у этого класса (запрет удаления, если не ноль).
+ */
+export const AdminWorkerClass = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  rank: Schema.Int,
+  workers: Schema.Int,
+});
+export type AdminWorkerClass = typeof AdminWorkerClass.Type;
 
 /**
  * Игра общей библиотеки для админки (вкладка «Игры»). `installedAt` — когда
@@ -208,6 +222,17 @@ export type AdminInstalls = typeof AdminInstalls.Type;
 // `admin.users.resetSteamLogin` — попросить сбросить вход Steam в контейнере
 // (не трогает `steam_id`/`account`, только отметку для оркестратора) — `true`,
 // нет пользователя — `false`.
+//
+// `admin.classes.list` — классы воркеров по силе (`rank desc`, сильнейший
+// сверху). `admin.classes.create` — новый класс самым слабым (`rank = min −
+// 1`, пустой список классов → `1`); занятое имя — `"duplicate"`.
+// `admin.classes.rename` — `"ok" | "duplicate" | "notFound"`.
+// `admin.classes.move` — обменять `rank` с соседом в эту сторону (`"up"` —
+// сильнее, `"down"` — слабее) одной транзакцией; крайний класс (нет соседа в
+// эту сторону) — `"edge"`, нет класса — `"notFound"`, иначе `"ok"`.
+// `admin.classes.delete` — у класса есть воркеры — `"inUse"`, нет класса —
+// `"notFound"`, иначе `"ok"`. `admin.workers.setClass` — назначить класс
+// воркеру (`null` — без класса, сессий не берёт); нет воркера — `false`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -258,6 +283,33 @@ export const AdminRpcs = RpcGroup.make(
   }),
   Rpc.make("admin.users.resetSteamLogin", {
     payload: Schema.Struct({ userId: Schema.String }),
+    success: Schema.Boolean,
+  }),
+  Rpc.make("admin.classes.list", { success: Schema.Array(AdminWorkerClass) }),
+  Rpc.make("admin.classes.create", {
+    payload: Schema.Struct({ name: Schema.String }),
+    success: Schema.Literals(["ok", "duplicate"]),
+  }),
+  Rpc.make("admin.classes.rename", {
+    payload: Schema.Struct({ id: Schema.String, name: Schema.String }),
+    success: Schema.Literals(["ok", "duplicate", "notFound"]),
+  }),
+  Rpc.make("admin.classes.move", {
+    payload: Schema.Struct({
+      id: Schema.String,
+      direction: Schema.Literals(["up", "down"]),
+    }),
+    success: Schema.Literals(["ok", "edge", "notFound"]),
+  }),
+  Rpc.make("admin.classes.delete", {
+    payload: Schema.Struct({ id: Schema.String }),
+    success: Schema.Literals(["ok", "inUse", "notFound"]),
+  }),
+  Rpc.make("admin.workers.setClass", {
+    payload: Schema.Struct({
+      workerId: Schema.String,
+      classId: Schema.NullOr(Schema.String),
+    }),
     success: Schema.Boolean,
   }),
 )

@@ -1,6 +1,13 @@
 // Хендлеры группы `admin.*` (доступ проверяет AdminMiddleware).
 import { AdminRpcs, CurrentUser } from "@cg/rpc";
 import { DateTime, Effect } from "effect";
+import {
+  createClass,
+  deleteClass,
+  listClasses,
+  moveClass,
+  renameClass,
+} from "./classes";
 import { deleteGame, listGames } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
@@ -11,7 +18,7 @@ import {
   setBlocked,
   setRole,
 } from "./users";
-import { listWorkers, setDraining } from "./workers";
+import { listWorkers, setClass, setDraining } from "./workers";
 
 export const AdminRpcHandlers = AdminRpcs.toLayer({
   "admin.ping": () => Effect.succeed("pong" as const),
@@ -63,4 +70,11 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
       const now = yield* DateTime.nowAsDate;
       return yield* resetSteamLogin(userId, now);
     }),
+  "admin.classes.list": () => listClasses(),
+  "admin.classes.create": ({ name }) => createClass(name),
+  "admin.classes.rename": ({ id, name }) => renameClass(id, name),
+  "admin.classes.move": ({ id, direction }) => moveClass(id, direction),
+  "admin.classes.delete": ({ id }) => deleteClass(id),
+  "admin.workers.setClass": ({ workerId, classId }) =>
+    setClass(workerId, classId),
 });

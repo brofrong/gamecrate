@@ -140,6 +140,38 @@ export const adminSetDrainingAtom = Api.mutation("admin.workers.setDraining");
 export const adminSetDrainingArgs = (workerId: string, draining: boolean) =>
   ({ payload: { workerId, draining }, reactivityKeys: adminKeys }) as const;
 
+/** Классы воркеров (блок «Классы» на вкладке «Воркеры», спека §5.1). */
+export const adminClassesAtom = Api.query("admin.classes.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Новый класс самым слабым («Добавить класс»). */
+export const adminCreateClassAtom = Api.mutation("admin.classes.create");
+export const adminCreateClassArgs = (name: string) =>
+  ({ payload: { name }, reactivityKeys: adminKeys }) as const;
+
+/** Переименовать класс. */
+export const adminRenameClassAtom = Api.mutation("admin.classes.rename");
+export const adminRenameClassArgs = (id: string, name: string) =>
+  ({ payload: { id, name }, reactivityKeys: adminKeys }) as const;
+
+/** Поднять/опустить класс («вверх» — сильнее, «вниз» — слабее). */
+export const adminMoveClassAtom = Api.mutation("admin.classes.move");
+export const adminMoveClassArgs = (id: string, direction: "up" | "down") =>
+  ({ payload: { id, direction }, reactivityKeys: adminKeys }) as const;
+
+/** Удалить класс (запрет, если у него есть воркеры — `"inUse"`). */
+export const adminDeleteClassAtom = Api.mutation("admin.classes.delete");
+export const adminDeleteClassArgs = (id: string) =>
+  ({ payload: { id }, reactivityKeys: adminKeys }) as const;
+
+/** Назначить класс воркеру (выбор в карточке воркера; `null` — без класса). */
+export const adminSetWorkerClassAtom = Api.mutation("admin.workers.setClass");
+export const adminSetWorkerClassArgs = (
+  workerId: string,
+  classId: string | null,
+) => ({ payload: { workerId, classId }, reactivityKeys: adminKeys }) as const;
+
 /** Игры общей библиотеки + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
 export const adminGamesAtom = Api.query("admin.games.list", undefined, {
   reactivityKeys: adminKeys,

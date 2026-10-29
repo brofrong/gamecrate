@@ -1,7 +1,8 @@
 // Карточка воркера в админке (макет `mockup-workers.html`): железо, версии, загрузка,
-// слоты с сессиями и кнопки — на фикстуре brofrong; без снимка/офлайн — «нет данных».
+// слоты с сессиями, выбор класса (спека §5.1) и кнопки — на фикстуре brofrong; без
+// снимка/офлайн — «нет данных».
 import { describe, expect, it, mock } from "bun:test";
-import type { AdminSession, AdminWorker } from "@cg/rpc";
+import type { AdminSession, AdminWorker, AdminWorkerClass } from "@cg/rpc";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { WorkerCard } from "../src/components/admin/WorkerCard";
 
@@ -25,6 +26,11 @@ const session: AdminSession = {
   failReason: null,
 };
 
+const classes: ReadonlyArray<AdminWorkerClass> = [
+  { id: "c-fast", name: "Быстрое", rank: 2, workers: 0 },
+  { id: "c-standard", name: "Стандарт", rank: 1, workers: 1 },
+];
+
 const brofrong: AdminWorker = {
   id: "brofrong",
   publicIp: "37.153.14.138",
@@ -33,6 +39,7 @@ const brofrong: AdminWorker = {
   online: true,
   lastSeenAt: ago(3000),
   draining: false,
+  classId: "c-standard",
   hardware: {
     cpuModel: "AMD Ryzen 5 2600X Six-Core Processor",
     cpuCores: 6,
@@ -103,15 +110,18 @@ const brofrong: AdminWorker = {
 const renderCard = (worker: AdminWorker = brofrong) => {
   const onStop = mock((_sessionId: string) => {});
   const onDraining = mock((_draining: boolean) => {});
+  const onSetClass = mock((_classId: string | null) => {});
   render(
     <WorkerCard
       worker={worker}
       now={now}
+      classes={classes}
       onStop={onStop}
       onDraining={onDraining}
+      onSetClass={onSetClass}
     />,
   );
-  return { onStop, onDraining };
+  return { onStop, onDraining, onSetClass };
 };
 
 /** Значения строк «Железа» с подписью `label` (`dt` → соседний `dd`). */
@@ -149,6 +159,19 @@ describe("WorkerCard", () => {
     expect(screen.getByText("12 мин")).toBeTruthy();
     expect(screen.getByText("4 с назад")).toBeTruthy();
     expect(screen.queryByText("нет данных")).toBeNull();
+  });
+
+  it("выбор класса зовёт onSetClass, без класса — предупреждение", () => {
+    const { onSetClass } = renderCard();
+    const select = screen.getByLabelText("Класс воркера") as HTMLSelectElement;
+    expect(select.value).toBe("c-standard");
+    expect(screen.queryByText("Без класса — сессий не берёт")).toBeNull();
+
+    fireEvent.change(select, { target: { value: "c-fast" } });
+    expect(onSetClass).toHaveBeenCalledWith("c-fast");
+
+    renderCard({ ...brofrong, classId: null });
+    expect(screen.getByText("Без класса — сессий не берёт")).toBeTruthy();
   });
 
   it("«Остановить» и «На обслуживание» зовут колбэки", () => {
