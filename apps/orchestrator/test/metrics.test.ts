@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Db, sessionMetrics, workerClasses, workers } from "@cg/db";
+import { Db, sessionMetrics, sessions, workerClasses, workers } from "@cg/db";
 import {
   type AgentReport,
   containerGoneReason,
@@ -218,6 +218,26 @@ describe("game end", () => {
         expect(yield* gameEnd()).toEqual(["quit"]);
         yield* runner.handle(report("w1", stopped), new Date());
         expect(yield* gameEnd()).toEqual(["quit"]);
+      }),
+    ));
+
+  it("exit report without a running game leaves the end to Stopped", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        // Стрим готов, игра ещё не запущена: агент отвечает на повторный
+        // StartSession эхом `running: false` без `end`.
+        yield* db
+          .update(sessions)
+          .set({ state: "starting" })
+          .where(eq(sessions.id, "s1"));
+        yield* runner.handle(report("w1", gameExited()), new Date());
+        expect(yield* metricsRows()).toEqual([]);
+        yield* runner.handle(report("w1", stopped), new Date());
+        const [row] = yield* metricsRows();
+        like(row, { gameSeconds: 0, gameEnd: "stopped" });
       }),
     ));
 

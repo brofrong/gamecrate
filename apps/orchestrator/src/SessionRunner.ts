@@ -168,6 +168,7 @@ const make = (options: SessionRunnerOptions) =>
      * `GameState`: запуск — `GameStarted`; выход — `GameExited`, только если игра
      * шла. `exitedBy: "lastHeartbeat"` — момент выхода неизвестен (агент сообщил
      * его после переподключения): отрезок закрывается на последнем heartbeat'е.
+     * Результат — `true`, если применён `GameExited` (игра действительно шла).
      */
     const gameState = (
       workerId: string,
@@ -175,16 +176,20 @@ const make = (options: SessionRunnerOptions) =>
       running: boolean,
       now: Date,
       exitedBy: "now" | "lastHeartbeat" = "now",
-    ) =>
-      step(sessionId, now, (row, snapshot): SessionRepo.Pick | null => {
+    ) => {
+      let exited = false;
+      return step(sessionId, now, (row, snapshot): SessionRepo.Pick | null => {
+        exited = false;
         if (row.workerId !== workerId) return null;
         if (running) return { _tag: "GameStarted" };
         if (!gameStates.has(row.state)) return null;
+        exited = true;
         const lastSeen = snapshot.openSegment?.endedAt;
         return exitedBy === "lastHeartbeat" && lastSeen !== undefined
           ? { event: { _tag: "GameExited" }, at: lastSeen }
           : { _tag: "GameExited" };
-      });
+      }).pipe(Effect.map(() => exited));
+    };
 
     /**
      * Агент (пере)подключился со списком идущих сессий. Активные сессии воркера,
@@ -320,15 +325,17 @@ const make = (options: SessionRunnerOptions) =>
                 );
               case "GameState":
                 // Игра закрылась сама — её исход (старый агент без `end` —
-                // `unknown`, спека 2026-10-29 §4.2).
+                // `unknown`, спека 2026-10-29 §4.2). Только если игра шла:
+                // `running: false` приходит и эхом повторного StartSession
+                // до запуска игры — исход тогда напишет Stopped/Failed.
                 return Effect.gen(function* () {
-                  yield* gameState(
+                  const exited = yield* gameState(
                     workerId,
                     report.sessionId,
                     report.running,
                     now,
                   );
-                  if (!report.running)
+                  if (exited)
                     yield* withDb(
                       MetricsRepo.setGameEnd(
                         report.sessionId,
