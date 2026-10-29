@@ -94,9 +94,12 @@ export function LoadingScreen({
   onReveal,
 }: {
   view: SessionView;
-  /** Сколько мс клиент видит текущий этап — для полоски. */
+  /** Сколько мс клиент видит текущий этап — для полоски, если у этапа нет отметки в `timing`. */
   msInStage: number;
-  /** «Сейчас» сервера, мс (часы браузера с поправкой по `timing.serverNow`) — для таймеров. */
+  /**
+   * «Сейчас» сервера, мс (часы браузера с поправкой по `timing.serverNow`) — для
+   * таймеров и полоски внутри отмеченного этапа.
+   */
   nowServerMs: number;
   /** «Отменить» (после подтверждения) — тот же `session.stop`, что и выход из игры. */
   onCancel: () => void;
@@ -111,7 +114,7 @@ export function LoadingScreen({
   const [coverOk, setCoverOk] = useState(true);
   const steps = loadingSteps(view, nowServerMs);
   const total = loadingTotal(view, nowServerMs);
-  const progress = loadingProgress(view, msInStage);
+  const progress = loadingProgress(view, msInStage, nowServerMs);
   // На «Входим в аккаунт» — подсказка про QR (без `timing` — как раньше, весь
   // `starting`); на остальных — если этап идёт дольше 2× нормы.
   const qrHint =

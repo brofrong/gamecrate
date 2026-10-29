@@ -4,17 +4,11 @@ import { Unauthorized } from "@cg/rpc";
 import { render, screen } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
+import { authStub } from "./moduleStubs";
 import { testRouter } from "./router";
 
-mock.module("../src/auth", () => ({
-  signOut: async () => {},
-  // Экспорты ниже не используются в этом файле, но `mock.module` подменяет
-  // «../src/auth» глобально на весь прогон `bun test` — без них падает
-  // test/login.test.tsx, которому они нужны (см. его комментарий к mock.module).
-  sendEmailCode: async () => ({ error: null }),
-  signInWithEmailCode: async () => ({ error: null }),
-  signInWithProvider: async () => {},
-}));
+// Все имена `../src/auth` (подмена — на весь прогон, см. `moduleStubs.ts`).
+mock.module("../src/auth", authStub);
 
 const { LandingPage } = await import("../src/components/landing/LandingPage");
 const { landingSignedIn } = await import("../src/routes/index");

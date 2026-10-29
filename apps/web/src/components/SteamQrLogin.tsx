@@ -92,7 +92,7 @@ export function SteamQrLoginView({
   // Завести попытку при монтировании.
   useEffect(() => {
     begin();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react/exhaustive-deps
   }, []);
 
   // Опрос раз в `pollMs`, пока статус не терминальный (done/expired/failed).
@@ -203,7 +203,7 @@ export function SteamQrLoginView({
             {svg !== null && (
               <div
                 className="size-48 [&_svg]:size-full"
-                // biome-ignore lint: разметка — доверенный SVG от локальной библиотеки `qrcode`.
+                // eslint-disable-next-line react/no-danger -- разметка — доверенный SVG от локальной библиотеки `qrcode`.
                 dangerouslySetInnerHTML={{ __html: svg }}
               />
             )}

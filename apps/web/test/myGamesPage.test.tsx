@@ -4,9 +4,8 @@
 //
 // `../src/rpc` открывает реальный WebSocket, поэтому он подменяется целиком через
 // `mock.module` — глобально на весь прогон `bun test` для этого модуля (любой импорт
-// `../src/rpc`/`@/rpc`, в этом файле или в другом, получает эту подмену). Значит мок
-// должен нести ровно тот набор имён, который есть у настоящего `rpc.ts` (иначе другие
-// тесты, которые тянут `@/rpc` через `src/routes/*`, посыплются с `undefined`).
+// `../src/rpc`/`@/rpc`, в этом файле или в другом, получает эту подмену). Все имена
+// настоящего `rpc.ts` даёт `rpcStub()` (`moduleStubs.ts`), поверх — атомы этого файла.
 // Сами данные (`meAtom`, `libraryAtom`, ...) — простые писуемые атомы (`Atom.make`),
 // их значение на каждый тест задаёт `RegistryProvider` через `initialValues` — так
 // тесты не делят состояние между собой, хотя атомы создаются один раз на файл.
@@ -28,6 +27,7 @@ import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
 import { mock } from "bun:test";
+import { rpcStub } from "./moduleStubs";
 
 const meAtom = Atom.make(
   AsyncResult.initial<CurrentUserShape, { readonly _tag: string }>(),
@@ -88,6 +88,7 @@ const resultErrorTag = <A, E extends { readonly _tag: string }>(
 ) => (AsyncResult.isFailure(result) ? errorTag(result.cause) : undefined);
 
 mock.module("../src/rpc", () => ({
+  ...rpcStub(),
   meAtom,
   providersAtom,
   libraryAtom,
@@ -344,25 +345,17 @@ describe("MyGamesPage", () => {
   });
 
   it("на узком экране кнопка «Фильтры» открывает шторку", async () => {
-    // Другие файлы подменяют `window.matchMedia` глобально (утечка на весь прогон),
-    // поэтому не полагаемся на `innerWidth`, а подменяем сами и возвращаем как было.
-    const original = window.matchMedia;
+    // Узкий экран — подменой `matchMedia` (исходный вернёт `test/setup.ts`).
     window.matchMedia = ((query: string) =>
       ({
         matches: query.includes("max-width"),
       }) as MediaQueryList) as typeof window.matchMedia;
-    try {
-      renderMyGames("/app", {
-        library: ready([entry({ appId: 1, name: "A" })]),
-      });
-      fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
-      expect(screen.getByRole("dialog", { name: "Фильтры" })).toBeTruthy();
-      expect(
-        screen.getByRole("button", { name: /Показать 1 игр/ }),
-      ).toBeTruthy();
-    } finally {
-      window.matchMedia = original;
-    }
+    renderMyGames("/app", {
+      library: ready([entry({ appId: 1, name: "A" })]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
+    expect(screen.getByRole("dialog", { name: "Фильтры" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Показать 1 игр/ })).toBeTruthy();
   });
 
   it("shows the header summary line", async () => {

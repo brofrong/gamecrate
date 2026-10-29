@@ -204,11 +204,17 @@ export type ProfileRef = typeof ProfileRef.Type;
  * из простого JSON-значения), поэтому для сырых значений с провода нужен
  * `RedactedFromValue` — он декодирует значение в `Redacted` и кодирует его
  * обратно в исходное значение (P2 из общего контекста плана).
+ *
+ * `putAt` — когда оркестратор положил этот вход (ISO 8601, мс; не секрет):
+ * агент возвращает его в `ProfileCommit.steamLoginPutAt`, и конец сессии
+ * убирает только этот вход, а не положенный игроком заново тем временем.
+ * Нет поля — старый оркестратор.
  */
 export const SteamLoginSeed = Schema.Struct({
   accountName: Schema.RedactedFromValue(Schema.String),
   steamId: Schema.String,
   refreshToken: Schema.RedactedFromValue(Schema.String),
+  putAt: Schema.optional(Schema.String),
 });
 export type SteamLoginSeed = typeof SteamLoginSeed.Type;
 
@@ -406,9 +412,13 @@ export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
  * базовая версия отклоняется — спека §6). `steamLoginSeeded` — профиль
  * сохранён после посева `steamLogin` этой сессией/установкой: принятый такой
  * коммит снимает ожидающий вход пользователя у оркестратора (профиль уже
- * хранит вход, сеять его снова незачем). `steamLoginResetAt` — эхо того же
- * поля команды (`StartSession`/`InstallGame`), если агент стёр вход Steam в
- * этом запуске; нет поля — стирания не было.
+ * хранит вход, сеять его снова незачем). `steamLoginPutAt` — эхо
+ * `SteamLoginSeed.putAt` посеянного входа: снимается только он, а вход,
+ * положенный игроком после старта, остаётся. Без посева поля нет; посев без
+ * метки (старый агент или оркестратор) — поля нет или `null`, и снимается
+ * любой текущий вход, как раньше. `steamLoginResetAt` — эхо того же поля
+ * команды (`StartSession`/`InstallGame`), если агент стёр вход Steam в этом
+ * запуске; нет поля — стирания не было.
  */
 export const ProfileCommit = Schema.Struct({
   userId: Schema.String,
@@ -416,6 +426,7 @@ export const ProfileCommit = Schema.Struct({
   objectKey: Schema.String,
   sizeBytes: NonNegativeInt,
   steamLoginSeeded: Schema.Boolean,
+  steamLoginPutAt: Schema.optional(Schema.NullOr(Schema.String)),
   steamLoginResetAt: Schema.optional(Schema.String),
 });
 export type ProfileCommit = typeof ProfileCommit.Type;

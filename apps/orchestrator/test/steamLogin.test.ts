@@ -304,6 +304,59 @@ describe("SteamLoginRunner", () => {
       }),
     ));
 
+  it("Steam account row of another user fails with steamTaken", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const seeds = yield* SteamLoginSeeds;
+        yield* seedUser("u1");
+        yield* seedUser("u2");
+        const now = new Date();
+        yield* db.insert(account).values({
+          id: "acc-u2-steam",
+          accountId: STEAM_ID,
+          providerId: "steam",
+          userId: "u2",
+          createdAt: now,
+          updatedAt: now,
+        });
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        yield* Queue.offer(login.events, authenticated(STEAM_ID));
+        const failed = yield* waitState("a1", "failed");
+
+        expect(failed.error).toBe(steamLoginReasons.steamTaken);
+        expect((yield* userRow("u1")).steamId).toBeNull();
+        expect((yield* userRow("u2")).steamId).toBeNull();
+        expect(yield* steamAccounts("u1")).toHaveLength(0);
+        expect(yield* seeds.get("u1")).toBeNull();
+      }),
+    ));
+
+  it("own steam_id without an account row gets the row", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        yield* seedUser("u1", STEAM_ID);
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        yield* Queue.offer(login.events, authenticated());
+        yield* waitState("a1", "done");
+
+        expect((yield* userRow("u1")).steamId).toBe(STEAM_ID);
+        const accounts = yield* steamAccounts("u1");
+        expect(accounts).toHaveLength(1);
+        expect(accounts[0]?.accountId).toBe(STEAM_ID);
+        expect((yield* seeds.get("u1"))?.steamId).toBe(STEAM_ID);
+      }),
+    ));
+
   it("timeout expires the attempt", () =>
     run((fake) =>
       Effect.gen(function* () {
@@ -519,6 +572,40 @@ describe("SteamLoginRunner", () => {
         const row = yield* attempt("a1");
         expect(row.state).toBe("cancelled");
         expect(row.error).toBeNull();
+        expect(yield* steamAccounts("u1")).toHaveLength(0);
+        expect(yield* seeds.get("u1")).toBeNull();
+        expect(fake.logins).toHaveLength(1);
+      }),
+    ));
+
+  it("deleted attempt stops the Steam login", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const seeds = yield* SteamLoginSeeds;
+        yield* seedUser("u1");
+        yield* startRunner(fake);
+        yield* insertAttempt("a1", "u1");
+
+        yield* waitState("a1", "waiting");
+        const login = yield* loginAt(fake, 0);
+        // Строка попытки пропала (например, чистка) — раннер должен
+        // остановиться так же, как при отмене, не привязывая и не сея.
+        yield* db.delete(steamLogins).where(eq(steamLogins.id, "a1"));
+        yield* waitFor(
+          Effect.sync(() => login.cancelled),
+          (cancelled) => cancelled,
+          "cancel",
+        );
+
+        // Событие, пришедшее уже после пропажи строки, ничего не пишет.
+        yield* Queue.offer(login.events, authenticated());
+        yield* Effect.sleep("100 millis");
+        const rows = yield* db
+          .select({ id: steamLogins.id })
+          .from(steamLogins)
+          .where(eq(steamLogins.id, "a1"));
+        expect(rows).toHaveLength(0);
         expect(yield* steamAccounts("u1")).toHaveLength(0);
         expect(yield* seeds.get("u1")).toBeNull();
         expect(fake.logins).toHaveLength(1);

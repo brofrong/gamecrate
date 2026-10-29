@@ -3,7 +3,11 @@
 import { describe, expect, it } from "bun:test";
 import { Db, steamLogins, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { type CurrentUserShape, SteamLoginRpcs } from "@cg/rpc";
+import {
+  type CurrentUserShape,
+  steamLoginReasons,
+  SteamLoginRpcs,
+} from "@cg/rpc";
 import { eq, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
@@ -217,6 +221,65 @@ describe("steamLogin rpc", () => {
     expect(result.row.state).toBe("pending");
     expect(result.status).toEqual({
       attemptId: result.row.id,
+      status: "waiting",
+      qrUrl: null,
+      reason: null,
+    });
+  });
+
+  it("pending older than a minute is failed with steamError", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { attemptId } = yield* rpc["steamLogin.start"]();
+        yield* setLoginRow(attemptId, {
+          createdAt: new Date(Date.now() - 61_000),
+        });
+        return yield* rpc["steamLogin.status"]({ attemptId });
+      }),
+    );
+    expect(result).toEqual({
+      attemptId: result.attemptId,
+      status: "failed",
+      qrUrl: null,
+      reason: steamLoginReasons.steamError,
+    });
+  });
+
+  it("waiting not updated for 6 minutes is failed", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { attemptId } = yield* rpc["steamLogin.start"]();
+        yield* setLoginRow(attemptId, {
+          state: "waiting",
+          qrUrl: "https://s.team/q/1/abcdef",
+          updatedAt: new Date(Date.now() - 6 * 60_000 - 1_000),
+        });
+        return yield* rpc["steamLogin.status"]({ attemptId });
+      }),
+    );
+    expect(result).toEqual({
+      attemptId: result.attemptId,
+      status: "failed",
+      qrUrl: null,
+      reason: steamLoginReasons.steamError,
+    });
+  });
+
+  it("fresh pending stays waiting", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { attemptId } = yield* rpc["steamLogin.start"]();
+        return yield* rpc["steamLogin.status"]({ attemptId });
+      }),
+    );
+    expect(result).toEqual({
+      attemptId: result.attemptId,
       status: "waiting",
       qrUrl: null,
       reason: null,

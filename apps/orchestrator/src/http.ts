@@ -62,7 +62,9 @@ const AgentWebsocketProtocol = Layer.effect(
 /**
  * Коммит профиля (`SessionRepo.commitProfile`), затем — если его как раз
  * приняли и он был посеян (`steamLoginSeeded`) — `SteamLoginSeeds.clear`:
- * профиль пользователя уже хранит вход, сеять его снова незачем. Отклонённый
+ * профиль пользователя уже хранит вход, сеять его снова незачем. С меткой
+ * `steamLoginPutAt` снимается только посеянный вход: положенный игроком
+ * заново, пока шла сессия, ждёт следующего запуска. Отклонённый
  * (устаревшая `baseVersion`) или не посеянный коммит вход не трогает — он
  * ждёт следующую попытку или истечёт по `SEED_TTL`. Принятый коммит с эхом
  * `steamLoginResetAt` (агент стёр вход Steam по сбросу админа) снимает пометку
@@ -79,8 +81,24 @@ export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
   Effect.gen(function* () {
     const seeds = yield* SteamLoginSeeds;
     const result = yield* SessionRepo.commitProfile(commit);
-    const seedCleared = result.accepted && commit.steamLoginSeeded;
-    if (seedCleared) yield* seeds.clear(commit.userId);
+    // Метка посева — та же ISO-строка, что ушла в `steamLogin.putAt` команды;
+    // нечитаемая не снимает вход (он истечёт по `SEED_TTL`), но стоит знать,
+    // что такое пришло — предупреждение ниже, только id.
+    const seedPutAt =
+      commit.steamLoginPutAt === undefined || commit.steamLoginPutAt === null
+        ? undefined
+        : new Date(commit.steamLoginPutAt);
+    const seedPutAtUnreadable =
+      seedPutAt !== undefined && Number.isNaN(seedPutAt.getTime());
+    if (result.accepted && commit.steamLoginSeeded && seedPutAtUnreadable)
+      yield* Effect.logWarning(
+        "Profile commit has an unreadable Steam login seed label",
+        { userId: commit.userId, workerId },
+      );
+    const seedCleared =
+      result.accepted && commit.steamLoginSeeded && !seedPutAtUnreadable
+        ? yield* seeds.clear(commit.userId, seedPutAt)
+        : false;
     // Эхо — та же ISO-строка, что ушла в команде; нечитаемое не снимает пометку.
     const resetEcho =
       commit.steamLoginResetAt === undefined
@@ -90,14 +108,18 @@ export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
       result.accepted &&
       resetEcho !== undefined &&
       !Number.isNaN(resetEcho.getTime())
-        ? yield* SessionRepo.clearSteamLoginReset(commit.userId, resetEcho).pipe(
+        ? yield* SessionRepo.clearSteamLoginReset(
+            commit.userId,
+            resetEcho,
+          ).pipe(
             Effect.catchDefect((defect) =>
               Effect.logWarning(
                 "Clearing Steam login reset mark failed, commit stays accepted",
                 {
                   userId: commit.userId,
                   workerId,
-                  error: defect instanceof Error ? defect.message : String(defect),
+                  error:
+                    defect instanceof Error ? defect.message : String(defect),
                 },
               ).pipe(Effect.as(false)),
             ),

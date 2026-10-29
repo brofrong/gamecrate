@@ -36,7 +36,7 @@ export function AboutPanel({ details }: { details: GameDetails }) {
             "prose-steam text-sm leading-relaxed text-[#cfd3e6] [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-[#eef1ff] [&_img]:my-2 [&_img]:max-w-full [&_img]:rounded-md [&_li]:ml-4 [&_li]:list-disc [&_p]:mt-2",
             collapsible && !expanded && "max-h-[9.5rem] overflow-hidden",
           )}
-          // HTML уже прогнан через allowlist в `sanitizeSteamHtml`.
+          // eslint-disable-next-line react/no-danger -- HTML уже прогнан через allowlist в `sanitizeSteamHtml`.
           dangerouslySetInnerHTML={{ __html: html }}
         />
       )}

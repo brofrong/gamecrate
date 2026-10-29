@@ -183,6 +183,12 @@ export const saveProfile = (options: {
   /** Вход в Steam §4 был вписан в этот запуск (Task 3, `seedSteamLogin`). */
   readonly steamLoginSeeded: boolean;
   /**
+   * Метка посеянного входа (`SteamLoginSeed.putAt` команды) — в коммит как
+   * `steamLoginPutAt`, чтобы оркестратор снял именно этот вход; нет — посева
+   * не было или вход пришёл без метки, поле в коммит не попадает.
+   */
+  readonly steamLoginPutAt?: string;
+  /**
    * Момент сброса входа Steam админом (`steamLoginResetAt` команды), если
    * агент стёр вход в этом запуске (`clearSteamLogin`, admin-part3 Task 2);
    * нет — стирания не было, поле в коммит не попадает.
@@ -246,6 +252,9 @@ export const saveProfile = (options: {
         objectKey,
         sizeBytes,
         steamLoginSeeded: options.steamLoginSeeded,
+        ...(options.steamLoginPutAt !== undefined
+          ? { steamLoginPutAt: options.steamLoginPutAt }
+          : {}),
         ...(options.steamLoginResetAt !== undefined
           ? { steamLoginResetAt: options.steamLoginResetAt }
           : {}),

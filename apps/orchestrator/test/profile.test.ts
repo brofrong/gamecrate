@@ -176,6 +176,151 @@ describe("profile commit", () => {
       }),
     ));
 
+  it("seed put after the session started survives the seeded commit", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("a"));
+        // Вход «a» ушёл в команду сессии вместе со своей меткой.
+        const sent = yield* seeds.get("u1");
+        if (sent?.putAt === undefined) throw new Error("no putAt");
+        // Пока сессия шла, игрок снова вошёл по QR — вход «b».
+        yield* Effect.sleep("5 millis");
+        yield* seeds.put("u1", makeSeed("b"));
+
+        const result = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: true,
+            steamLoginPutAt: sent.putAt,
+          },
+          "w1",
+        );
+        expect(result).toEqual({ accepted: true });
+        expect(tokenOf(yield* seeds.get("u1"))).toBe("b");
+      }),
+    ));
+
+  it("seeded commit with the seed's putAt clears that seed", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("a"));
+        const sent = yield* seeds.get("u1");
+        if (sent?.putAt === undefined) throw new Error("no putAt");
+
+        yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: true,
+            steamLoginPutAt: sent.putAt,
+          },
+          "w1",
+        );
+        expect(yield* seeds.get("u1")).toBeNull();
+      }),
+    ));
+
+  it("commit without putAt clears as before", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        // Старый агент метку не шлёт (или шлёт `null`): убирается текущий вход,
+        // даже положенный после старта сессии.
+        const commits = [{}, { steamLoginPutAt: null }];
+        for (const [i, echo] of commits.entries()) {
+          yield* seeds.put("u1", makeSeed(`t${i}`));
+          const result = yield* applyProfileCommit(
+            {
+              userId: "u1",
+              baseVersion: i === 0 ? null : i,
+              objectKey: `profiles/u1/${i}.cgp`,
+              sizeBytes: 10,
+              steamLoginSeeded: true,
+              ...echo,
+            },
+            "w1",
+          );
+          expect(result).toEqual({ accepted: true });
+          expect(yield* seeds.get("u1")).toBeNull();
+        }
+      }),
+    ));
+
+  it("seeded commit with an unreadable putAt keeps the seed", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("a"));
+
+        const result = yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: true,
+            steamLoginPutAt: "not-a-date",
+          },
+          "w1",
+        );
+        expect(result).toEqual({ accepted: true });
+        expect(tokenOf(yield* seeds.get("u1"))).toBe("a");
+      }),
+    ));
+
+  it("seeded commit with an unreadable putAt warns with ids only", async () => {
+    const logged: Array<ReadonlyArray<unknown>> = [];
+    const capture = Logger.make(({ logLevel, message }) => {
+      logged.push([
+        logLevel,
+        ...(Array.isArray(message) ? message : [message]),
+      ]);
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("a"));
+
+        yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: true,
+            steamLoginPutAt: "not-a-date",
+          },
+          "w1",
+        );
+      }).pipe(
+        Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
+        Effect.provide(Logger.layer([capture])),
+        Effect.provideService(References.MinimumLogLevel, "All"),
+      ),
+    );
+    const warning = logged.find(
+      (line) =>
+        line[1] === "Profile commit has an unreadable Steam login seed label",
+    );
+    expect(warning?.[0]).toBe("Warn");
+    const detail = warning?.[2] as Record<string, unknown> | undefined;
+    expect(detail).toEqual({ userId: "u1", workerId: "w1" });
+    // Никаких токенов/имён аккаунта в предупреждении — только id.
+    expect(JSON.stringify(detail)).not.toContain("steamuser");
+  });
+
   it("rejected or unseeded commit keeps it", () =>
     run(
       Effect.gen(function* () {
@@ -403,7 +548,10 @@ describe("profile commit", () => {
   it("M2: a failed clear of the reset mark warns but the accepted commit still stands", async () => {
     const logged: Array<ReadonlyArray<unknown>> = [];
     const capture = Logger.make(({ logLevel, message }) => {
-      logged.push([logLevel, ...(Array.isArray(message) ? message : [message])]);
+      logged.push([
+        logLevel,
+        ...(Array.isArray(message) ? message : [message]),
+      ]);
     });
     const resetAt = new Date("2026-10-28T10:00:00.000Z");
     const { result, resetAfter } = await Effect.runPromise(
@@ -464,7 +612,9 @@ describe("profile commit", () => {
     // эхом снимет её (`lte`, fail-safe).
     expect(resetAfter).not.toBeNull();
     const warning = logged.find(
-      (line) => line[1] === "Clearing Steam login reset mark failed, commit stays accepted",
+      (line) =>
+        line[1] ===
+        "Clearing Steam login reset mark failed, commit stays accepted",
     );
     expect(warning?.[0]).toBe("Warn");
     const detail = warning?.[2] as Record<string, unknown> | undefined;

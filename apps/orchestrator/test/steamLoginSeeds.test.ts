@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Db, steamLoginSeeds, user } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import type { SteamLoginSeed } from "@cg/rpc";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   Clock,
   Context,
@@ -196,8 +196,56 @@ describe("SteamLoginSeeds", () => {
       Effect.gen(function* () {
         const seeds = yield* SteamLoginSeeds;
         yield* seeds.put("u1", makeSeed("t1"));
-        yield* seeds.clear("u1");
+        expect(yield* seeds.clear("u1")).toBe(true);
         expect(yield* seeds.get("u1")).toBeNull();
+        expect(yield* rowsOf("u1")).toHaveLength(0);
+      }),
+    ));
+
+  it("get returns when the seed was put (ISO, ms)", () =>
+    run(
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        yield* TestClock.setTime(1_234);
+        yield* seeds.put("u1", makeSeed("t1"));
+        expect((yield* seeds.get("u1"))?.putAt).toBe(
+          new Date(1_234).toISOString(),
+        );
+      }),
+    ));
+
+  it("clear with putAt removes only the seed put at that moment", () =>
+    run(
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        yield* TestClock.setTime(1_000);
+        yield* seeds.put("u1", makeSeed("old"));
+        // Сессия взяла вход «old», а пока она шла, игрок посеял «new».
+        yield* TestClock.setTime(2_000);
+        const fresh = makeSeed("new");
+        yield* seeds.put("u1", fresh);
+
+        expect(yield* seeds.clear("u1", new Date(1_000))).toBe(false);
+        expect(plain(yield* seeds.get("u1"))).toEqual(plain(fresh));
+
+        expect(yield* seeds.clear("u1", new Date(2_000))).toBe(true);
+        expect(yield* rowsOf("u1")).toHaveLength(0);
+      }),
+    ));
+
+  it("clear with putAt matches the stored time to the millisecond", () =>
+    run(
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("t1"));
+        const putAt = new Date("2026-10-29T10:00:00.123Z");
+        // Postgres хранит микросекунды, JS Date — только миллисекунды.
+        const db = yield* Db;
+        yield* db
+          .update(steamLoginSeeds)
+          .set({ putAt: sql`'2026-10-29T10:00:00.123456Z'::timestamptz` })
+          .where(eq(steamLoginSeeds.userId, "u1"));
+        expect(yield* seeds.clear("u1", putAt)).toBe(true);
         expect(yield* rowsOf("u1")).toHaveLength(0);
       }),
     ));

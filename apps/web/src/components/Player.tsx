@@ -220,7 +220,8 @@ export function Player({
   // Открыть можно только готовую трансляцию — без неё снова экран загрузки.
   const loading = showsLoading(view, revealedId === view.id && stream);
   useLoadingTick(loading);
-  // В текущем этапе — с последней смены `state`/`stage`/`installStage`.
+  // В текущем этапе — с последней смены `state`/`stage`/`installStage` (полоске,
+  // пока у этапа нет серверной отметки; с ней — по `nowServerMs`).
   const msInStage = useMsSince(
     `${view.id}/${view.state}/${view.stage}/${view.installStage}`,
   );

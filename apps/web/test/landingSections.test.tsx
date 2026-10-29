@@ -8,17 +8,11 @@ import {
 } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { createRef } from "react";
+import { authStub } from "./moduleStubs";
 import { testRouter } from "./router";
 
-mock.module("../src/auth", () => ({
-  signOut: async () => {},
-  // Экспорты ниже не используются в этом файле, но `mock.module` подменяет
-  // «../src/auth» глобально на весь прогон `bun test` — без них падает
-  // test/login.test.tsx, которому они нужны (см. его комментарий к mock.module).
-  sendEmailCode: async () => ({ error: null }),
-  signInWithEmailCode: async () => ({ error: null }),
-  signInWithProvider: async () => {},
-}));
+// Все имена `../src/auth` (подмена — на весь прогон, см. `moduleStubs.ts`).
+mock.module("../src/auth", authStub);
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");

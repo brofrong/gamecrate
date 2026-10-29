@@ -139,7 +139,7 @@ export function MyGamesPage() {
   // Тост об ошибке привязки Steam (`?error=`) показываем один раз, на монтаж.
   useEffect(() => {
     if (search.error !== undefined) toast.error(authErrorMessage(search.error));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react/exhaustive-deps
   }, []);
 
   const onRefresh = async () => {

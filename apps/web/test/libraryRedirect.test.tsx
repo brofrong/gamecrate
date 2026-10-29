@@ -3,9 +3,9 @@
 // `/library?error=...`, старые ссылки/закладки не должны ломаться).
 //
 // `appRoute` (`AppLayout`) читает `meAtom`/`activeSessionAtom` из `../src/rpc`,
-// который без подмены открывает настоящий WebSocket — подменяем модуль минимальным
-// набором атомов (initial, не success/failure), этого достаточно, чтобы `AppLayout`
-// отрисовал `null` и не упал.
+// который без подмены открывает настоящий WebSocket — подменяем модуль заглушками
+// (`rpcStub()`, атомы в initial, не success/failure), этого достаточно, чтобы
+// `AppLayout` отрисовал `null` и не упал.
 import { describe, expect, it, mock } from "bun:test";
 import type { CurrentUserShape, SessionView } from "@cg/rpc";
 import { render, waitFor } from "@testing-library/react";
@@ -17,6 +17,7 @@ import {
 import { Cause, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
+import { rpcStub } from "./moduleStubs";
 
 const meAtom = Atom.make(
   AsyncResult.initial<CurrentUserShape, { readonly _tag: string }>(),
@@ -34,6 +35,7 @@ const resultErrorTag = <A, E extends { readonly _tag: string }>(
     : undefined;
 
 mock.module("../src/rpc", () => ({
+  ...rpcStub(),
   meAtom,
   activeSessionAtom,
   resultErrorTag,

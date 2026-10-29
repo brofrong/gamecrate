@@ -25,6 +25,7 @@ import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
 import { toast } from "sonner";
+import { rpcStub } from "./moduleStubs";
 
 /** Элемент `initialValues` у `RegistryProvider` — без своего `any` в этом файле. */
 type InitialValue =
@@ -107,6 +108,7 @@ const resultErrorTag = <A, E extends { readonly _tag: string }>(
 ) => (AsyncResult.isFailure(result) ? errorTag(result.cause) : undefined);
 
 mock.module("../src/rpc", () => ({
+  ...rpcStub(),
   meAtom,
   adminPingAtom,
   adminUsersAtom,

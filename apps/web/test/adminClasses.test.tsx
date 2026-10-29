@@ -7,6 +7,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
+import { rpcStub } from "./moduleStubs";
 
 /** Элемент `initialValues` у `RegistryProvider` — без своего `any` в этом файле. */
 type InitialValue =
@@ -47,6 +48,7 @@ const adminDeleteClassAtom = Atom.fn((arg: unknown) => {
 });
 
 mock.module("../src/rpc", () => ({
+  ...rpcStub(),
   adminClassesAtom,
   adminCreateClassAtom,
   adminCreateClassArgs: (name: string) => ({

@@ -18,6 +18,8 @@ export interface SteamLoginRow {
   readonly state: SteamLoginState;
   readonly qrUrl: string | null;
   readonly error: string | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
 }
 
 /**
@@ -70,6 +72,8 @@ export const ownRow = (
         state: steamLogins.state,
         qrUrl: steamLogins.qrUrl,
         error: steamLogins.error,
+        createdAt: steamLogins.createdAt,
+        updatedAt: steamLogins.updatedAt,
       })
       .from(steamLogins)
       .where(

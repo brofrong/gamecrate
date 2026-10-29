@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -49,11 +50,20 @@ import {
 } from "../src/SessionSupervisor";
 import { DiskSpaceError, FreeSpace } from "../src/DiskSpace";
 import { PrefixTemplates } from "../src/PrefixTemplate";
+import { CONNECTION_LOG } from "../src/steam/connectionLog";
 import { defaultHostProbe, HostProbe } from "../src/WorkerMonitor";
 import { tarOfFile, testConfig, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
+
+const fixture = (name: string) =>
+  readFileSync(new URL(`fixtures/steam-logs/${name}`, import.meta.url), "utf8");
+
+/** Строка принятого входа (спека §5.4, проба на brofrong). */
+const LOGGED_ON = fixture("connection_log_logged_on.txt");
+/** Клиент попытался войти, но сервер вход не принял. */
+const WAITING_FOR_CREDENTIALS = fixture("connection_log_waiting.txt");
 
 const MiB = 2 ** 20;
 
@@ -110,6 +120,10 @@ const makeFake = () => {
     inspected: {} as Record<string, ContainerInfo>,
     /** Подменённый код выхода pgrep. */
     pgrepExit: undefined as number | undefined,
+    /** Журнал подключения Steam в контейнере сессии (`CONNECTION_LOG`). */
+    connectionLog: "",
+    /** Чтение журнала подключения (`tail`) падает не-`gone` ошибкой (контейнер жив). */
+    connectionLogFails: false,
     /** Содержимое `/tmp/cg-game-exit` (нет — файла нет). */
     gameExit: undefined as string | undefined,
     /** Файлы в контейнере сессии для `getArchive` (полный путь → текст). */
@@ -317,6 +331,8 @@ const makeFake = () => {
         record(`archiveSize ${container} ${path}`);
         // Обёртка игры в образе сессии (setLaunchOptions).
         if (path === "/usr/local/bin/cg-game-exit") return Effect.succeed(1024);
+        if (path === CONNECTION_LOG)
+          return Effect.succeed(Buffer.byteLength(state.connectionLog));
         if (path !== PACK_OUTPUT)
           return Effect.fail(
             new DockerError({
@@ -430,6 +446,19 @@ const makeFake = () => {
                 ? { exitCode: 0, stdout: `${answer}\n` }
                 : { exitCode: answer.exitCode, stdout: "" },
             );
+          }
+          case "tail": {
+            const match = /^\+(\d+)$/.exec(cmd[2] ?? "");
+            if (match === null || cmd[3] !== CONNECTION_LOG)
+              return Effect.succeed({ exitCode: 2, stdout: "" });
+            if (state.connectionLogFails)
+              return Effect.fail(
+                new DockerError({ operation: "exec", message: "timeout" }),
+              );
+            return Effect.succeed({
+              exitCode: 0,
+              stdout: state.connectionLog.slice(Number(match[1]) - 1),
+            });
           }
           case "/usr/local/bin/cg-steam-shutdown":
             return Effect.succeed({ exitCode: 0, stdout: "" });
@@ -1581,6 +1610,7 @@ describe("SessionSupervisor", () => {
           "putArchive cg-session-s1 /home/ubuntu",
           "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          `archiveSize cg-session-s1 ${CONNECTION_LOG}`,
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1592,6 +1622,139 @@ describe("SessionSupervisor", () => {
         yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
         yield* h.tick("0 seconds");
         expect(h.fake.state.commits[0]?.steamLoginSeeded).toBe(true);
+      }),
+    ));
+
+  it("seeded session warns when Steam does not accept the login", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({
+            ...start,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          expect(h.fake.state.calls).toContain(
+            `archiveSize cg-session-s1 ${CONNECTION_LOG}`,
+          );
+          // Клиент попытался войти, `'OK'` нет; таймаут — от попытки.
+          h.fake.state.connectionLog += WAITING_FOR_CREDENTIALS;
+          yield* h.tick("2 seconds");
+          yield* h.tick("88 seconds");
+          const warnings = () =>
+            h.fake.state.logged.filter((line) =>
+              line.includes("Seeded Steam login was not accepted"),
+            );
+          expect(warnings()).toEqual([]);
+          yield* h.tick("2 seconds");
+          expect(warnings()).toHaveLength(1);
+          const [warning] = warnings();
+          expect(warning).toContain("Warn");
+          expect(warning).toContain('"sessionId":"s1"');
+          expect(warning).toContain('"appId":1794680');
+          expect(warning).not.toContain("test-account");
+          expect(warning).not.toContain("test-refresh-token");
+          // Сессия идёт как шла: без сбоя и остановки.
+          const reports = (yield* h.drain).filter(
+            (report) => report._tag !== "Heartbeat",
+          );
+          expect(reports).toEqual([
+            { _tag: "StreamReady", sessionId: "s1", streamUrl },
+          ]);
+          expect(h.fake.state.calls).not.toContain("stop cg-session-s1 15");
+          yield* h.tick("10 minutes");
+          expect(warnings()).toHaveLength(1);
+        }),
+      (fake) => {
+        // `'OK'` шаблона клиента до старта контейнера не считается.
+        fake.state.connectionLog = LOGGED_ON;
+      },
+    ));
+
+  it("seeded session does not warn after OK", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle({ ...start, steamLogin: testSteamLogin() });
+        yield* h.tick("0 seconds");
+        h.fake.state.connectionLog +=
+          "[2026-10-26 12:35:36] [Logged Off, 4, 0] [U:1:1] LogOn() called; " +
+          "not connected yet, scheduling connection.\n";
+        yield* h.tick("2 seconds");
+        yield* h.tick("30 seconds");
+        h.fake.state.connectionLog +=
+          "[2026-10-26 12:36:06] RecvMsgClientLogOnResponse() : [U:1:1] 'OK'\n";
+        yield* h.tick("2 seconds");
+        yield* h.tick("15 minutes");
+        expect(h.fake.state.logged.join("\n")).not.toContain(
+          "Seeded Steam login was not accepted",
+        );
+      }),
+    ));
+
+  it("repeated connection log read failures warn only once per watch", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({
+            ...start,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          // Контейнер жив, но чтение журнала подключения падает на каждом
+          // опросе (раз в 2 с) все 10 минут `LOGIN_LOG_TIMEOUT`.
+          yield* h.tick("10 minutes");
+          const warnings = h.fake.state.logged.filter((line) =>
+            line.includes("Reading the Steam connection log failed"),
+          );
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toContain("Warn");
+          expect(warnings[0]).toContain('"sessionId":"s1"');
+          // Журнал так и не пошёл (`noLog`) — наблюдение кончилось молча,
+          // сессия идёт как шла.
+          const reports = (yield* h.drain).filter(
+            (report) => report._tag !== "Heartbeat",
+          );
+          expect(reports).toEqual([
+            { _tag: "StreamReady", sessionId: "s1", streamUrl },
+          ]);
+        }),
+      (fake) => {
+        fake.state.connectionLogFails = true;
+      },
+    ));
+
+  it("session commit echoes the putAt of the seed it used", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const putAt = "2026-10-29T10:00:00.123Z";
+        yield* h.supervisor.handle({
+          ...start,
+          steamLogin: testSteamLogin({ putAt }),
+        });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits[0]?.steamLoginSeeded).toBe(true);
+        expect(h.fake.state.commits[0]?.steamLoginPutAt).toBe(putAt);
+      }),
+    ));
+
+  it("session commit has no putAt without a seed or its label", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        // Старый оркестратор: вход без метки.
+        yield* h.supervisor.handle({ ...start, steamLogin: testSteamLogin() });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        // Без посева.
+        yield* h.supervisor.handle({ ...start, sessionId: "s2" });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s2" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits).toHaveLength(2);
+        for (const commit of h.fake.state.commits)
+          expect("steamLoginPutAt" in commit).toBe(false);
       }),
     ));
 
@@ -1620,6 +1783,7 @@ describe("SessionSupervisor", () => {
           "putArchive cg-session-s1 /home/ubuntu",
           "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          `archiveSize cg-session-s1 ${CONNECTION_LOG}`,
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1649,6 +1813,7 @@ describe("SessionSupervisor", () => {
           "putArchive cg-session-s1 /home/ubuntu",
           "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
+          `archiveSize cg-session-s1 ${CONNECTION_LOG}`,
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);

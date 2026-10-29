@@ -286,6 +286,9 @@ describe("scheduler", () => {
         };
         yield* seedUsers("u1", "u2");
         yield* seeds.put("u1", seed);
+        // С входом уходит его метка: по ней конец сессии уберёт именно его.
+        const putAt = (yield* seeds.get("u1"))?.putAt;
+        expect(putAt).toBeString();
         yield* connectWorker(fake, "w1", 2);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -4) });
@@ -304,7 +307,7 @@ describe("scheduler", () => {
             slot: 0,
             udpPort: 59000,
             profile: null,
-            steamLogin: seed,
+            steamLogin: { ...seed, putAt },
             display: { width: 1920, height: 1080 },
           },
           {
@@ -439,7 +442,7 @@ describe("scheduler", () => {
             slot: 1,
             udpPort: 59001,
             profile: null,
-            steamLogin: fresh,
+            steamLogin: { ...fresh, putAt: expect.any(String) },
             display: { width: 1920, height: 1080 },
             steamLoginResetAt: resetNew.toISOString(),
           },
@@ -451,7 +454,7 @@ describe("scheduler", () => {
             slot: 2,
             udpPort: 59002,
             profile: null,
-            steamLogin: none,
+            steamLogin: { ...none, putAt: expect.any(String) },
             display: { width: 1920, height: 1080 },
           },
         ]);

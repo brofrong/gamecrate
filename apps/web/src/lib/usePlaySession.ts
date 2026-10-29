@@ -1,8 +1,8 @@
 // Запуск игры с главной `/app` — общий для `MyGamesPage` (библиотека, «Запускал
 // недавно») и `TrendingPage` («В тренде»): активная сессия пользователя, запуск
-// новой («Играть») и переход к активной («Вернуться в игру»), с теми же текстами
-// ошибок (`GameNotOwned`/`AccessDenied`/`Unauthorized`/остальное), что были
-// продублированы в обоих компонентах до вынесения сюда.
+// новой («Играть») и переход к активной («Вернуться в игру»). Ошибки
+// `session.start` разбирает `reportStartError` — его же зовёт «Играть снова»
+// на экране сессии.
 import { accessDeniedReason, noServerReason } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -17,6 +17,24 @@ import {
   startSessionArgs,
   startSessionAtom,
 } from "@/rpc";
+
+/**
+ * Тост (или уход на вход) по `_tag` ошибки `session.start`:
+ * `GameNotOwned`/`AccessDenied`/`NoServer`/`Unauthorized`/остальное.
+ */
+export function reportStartError(tag: string | undefined): void {
+  if (tag === "GameNotOwned") {
+    toast.error("Эта игра не найдена в вашей библиотеке Steam");
+  } else if (tag === "AccessDenied") {
+    toast.error(accessDeniedReason);
+  } else if (tag === "NoServer") {
+    toast.error(noServerReason);
+  } else if (tag === "Unauthorized") {
+    window.location.assign("/");
+  } else {
+    toast.error("Не удалось начать игру. Попробуйте ещё раз.");
+  }
+}
 
 export function usePlaySession() {
   const active = useAtomValue(activeSessionAtom);
@@ -38,18 +56,7 @@ export function usePlaySession() {
       openSession(exit.value.id);
       return;
     }
-    const tag = errorTag(exit.cause);
-    if (tag === "GameNotOwned") {
-      toast.error("Эта игра не найдена в вашей библиотеке Steam");
-    } else if (tag === "AccessDenied") {
-      toast.error(accessDeniedReason);
-    } else if (tag === "NoServer") {
-      toast.error(noServerReason);
-    } else if (tag === "Unauthorized") {
-      window.location.assign("/");
-    } else {
-      toast.error("Не удалось начать игру. Попробуйте ещё раз.");
-    }
+    reportStartError(errorTag(exit.cause));
   };
 
   const play: LibraryPlay = {

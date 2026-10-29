@@ -229,21 +229,15 @@ describe("FilterBar", () => {
   });
 
   it("на узком экране «Фильтры» открывает шторку (onOpenSheet), а не панель", async () => {
-    // Другие файлы подменяют `window.matchMedia` глобально (утечка на весь прогон),
-    // поэтому не полагаемся на `innerWidth`, а подменяем сами и возвращаем как было.
-    const original = window.matchMedia;
+    // Узкий экран — подменой `matchMedia` (исходный вернёт `test/setup.ts`).
     window.matchMedia = ((query: string) =>
       ({
         matches: query.includes("max-width"),
       }) as MediaQueryList) as typeof window.matchMedia;
-    try {
-      const { onOpenSheet } = renderBar();
-      fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
-      expect(onOpenSheet).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole("dialog")).toBeNull();
-    } finally {
-      window.matchMedia = original;
-    }
+    const { onOpenSheet } = renderBar();
+    fireEvent.click(await screen.findByRole("button", { name: /Фильтры/ }));
+    expect(onOpenSheet).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
