@@ -1388,6 +1388,62 @@ describe("admin cancel", () => {
         like((yield* jobs())[0], { state: "queued", workerId: null });
       }),
     ));
+
+  it("session waits while the game's install is being cancelled", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const dispatcher = yield* InstallDispatcher;
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
+        yield* Scheduler.tick(t0);
+        yield* dispatcher.tick(t0);
+        const job = yield* onlyJob();
+        like(job, { state: "running", workerId: "gs" });
+
+        yield* requestCancel(job.id, at(t0, 1));
+        yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, 2) });
+        yield* Scheduler.tick(at(t0, 3));
+
+        // Задача отменяется — новая сессия не присоединяется к ней, ждёт в
+        // очереди; сама задача не трогается.
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+        expect((yield* onlyJob()).id).toBe(job.id);
+
+        // Агент подтверждает отмену — задача проваливается с причиной админа,
+        // s1 (которая её ждала) — failed; s2 задачу не ждала, её не касается.
+        const cancelledAt = at(t0, 5);
+        yield* dispatcher.handle(
+          report("gs", {
+            _tag: "InstallFailed",
+            jobId: job.id,
+            reason: "Установка отменена",
+          }),
+          cancelledAt,
+        );
+        like(yield* onlyJob(), {
+          state: "failed",
+          error: installErrors.cancelledByAdmin,
+        });
+        like(yield* sessionRow("s1"), {
+          state: "failed",
+          failReason: installErrors.cancelledByAdmin,
+        });
+        like(yield* sessionRow("s2"), { state: "queued", installJobId: null });
+
+        // Следующий проход заводит новую задачу и забирает s2 в неё.
+        yield* Scheduler.tick(at(t0, 6));
+        const [, fresh] = yield* jobs();
+        if (fresh === undefined) return yield* Effect.die("expected new job");
+        expect(fresh.id).not.toBe(job.id);
+        like(fresh, { appId: DOTA, userId: "u2", state: "queued" });
+        like(yield* sessionRow("s2"), {
+          state: "installing",
+          installJobId: fresh.id,
+        });
+      }),
+    ));
 });
 
 describe("install stage", () => {
