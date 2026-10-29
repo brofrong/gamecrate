@@ -606,6 +606,39 @@ describe("PrefixTemplates.ensure", () => {
       },
     ));
 
+  it("ensure skips promotion when the game was removed during the build (M2)", () => {
+    const logs: Array<string> = [];
+    return run(
+      (h) =>
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>();
+          h.fake.state.gate = gate;
+          const fiber = yield* Effect.forkChild(h.ensure(APP));
+          for (let i = 0; i < 50; i++) yield* Effect.yieldNow;
+          expect(h.fake.state.calls).toContain(`wait cg-i-pfx-${APP}-build`);
+          // Админ удалил игру, пока шла сборка: `GameRemoval` увёл
+          // `appmanifest_<appId>.acf` в trash (сам trash тут не нужен —
+          // важно только, что манифеста больше нет в `steamapps`).
+          rmSync(join(h.fake.state.steamapps, `appmanifest_${APP}.acf`));
+          yield* Deferred.succeed(gate, undefined);
+          expect(yield* Fiber.join(fiber)).toBe("skipped");
+          // Ничего не перенеслось в библиотеку, а каталог сборки убран как
+          // обычно (тем же `Effect.ensuring(cleanupLogged)`, что и для
+          // остальных исходов).
+          expect(existsSync(target(h.fake))).toBe(false);
+          expect(layerDirsExist(h.fake)).toEqual([false, false]);
+          expect(
+            logs.some(
+              (line) =>
+                line.includes("Prefix template skipped") &&
+                line.includes("game was removed during the build"),
+            ),
+          ).toBe(true);
+        }),
+      { logs },
+    );
+  });
+
   it("template with steam_autocloud.vdf is not promoted", () => {
     const logs: Array<string> = [];
     return run(

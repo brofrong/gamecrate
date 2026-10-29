@@ -420,6 +420,17 @@ const make = Effect.gen(function* () {
       );
       // Ещё раз: сессия игры могла стартовать, пока шла сборка.
       if (yield* appInUse(appId)) return yield* deferredInUse(appId);
+      // И ещё раз: игру могли удалить, пока шла сборка — `GameRemoval` увёл
+      // её `appmanifest_<appId>.acf` в trash, а `building(appId)` админское
+      // удаление не видит вовсе (CLI — отдельный процесс) или видит только
+      // частично (гонка `ensure`/`moveToTrash` в одном процессе). Переносить
+      // шаблон в библиотеку удалённой игры незачем — это осиротевший каталог,
+      // который никто не уберёт; собранный каталог убирает вызывающий как
+      // обычно.
+      if (
+        installDirOf(join(config.libraryDir, "steamapps"), appId) === undefined
+      )
+        return yield* skipped(appId, "game was removed during the build");
       yield* sync("promote", () =>
         promoteTemplate(
           built,
