@@ -14,6 +14,8 @@ import {
   type AgentCommand,
   type AgentReport,
   allowedDisplaySize,
+  containerGoneReason,
+  type GameEnd,
   type ProfileRef,
   type RunningSession,
   SessionStage,
@@ -66,8 +68,19 @@ import {
   type MetricsSample,
   sessionVram,
 } from "./SessionMetrics";
-import { clearSteamLogin, seedSteamLogin } from "./steam/seedContainer";
+import {
+  clearLaunchOptions,
+  clearSteamLogin,
+  seedSteamLogin,
+  setLaunchOptions,
+} from "./steam/seedContainer";
 import { HostProbe } from "./WorkerMonitor";
+
+/**
+ * Файл, куда обёртка образа `cg-game-exit` пишет, чем кончился процесс игры
+ * (спека 2026-10-29 §4.2).
+ */
+export const GAME_EXIT_FILE = "/tmp/cg-game-exit";
 
 /** Журнал облака Steam в доме пользователя (контракт образа). */
 export const CLOUD_LOG = "/home/ubuntu/.local/share/Steam/logs/cloud_log.txt";
@@ -120,7 +133,7 @@ export const failReasons = {
   dockerStart: "Не удалось запустить игровой сервер",
   streamTimeout: "Стрим не запустился за 2 минуты",
   gpuCapture: "На сервере не работает захват экрана GPU",
-  containerGone: "Игровой сервер неожиданно остановился",
+  containerGone: containerGoneReason,
   invalidCommand: "Некорректная команда запуска сессии",
   profileRestore: "Не удалось загрузить профиль пользователя",
   profileTooLarge: "Профиль пользователя слишком большой (больше 200 МиБ)",
@@ -271,9 +284,26 @@ export const commands = {
   game: (appId: number) => ["pgrep", "-f", gamePattern(appId)],
   closeGame: (appId: number) => ["pkill", "-TERM", "-f", gamePattern(appId)],
   cloud: ["grep", "-cF", CLOUD_MARKER, CLOUD_LOG],
+  /** Чем кончился процесс игры (`cg-game-exit`, файла нет — код ≠ 0). */
+  gameExit: ["cat", GAME_EXIT_FILE],
   /** Текущий этап запуска игры (`steam`…`visible`, контракт образа). */
   stage: (appId: number) => ["/usr/local/bin/cg-session-stage", String(appId)],
 } as const;
+
+/**
+ * Строка `cg-game-exit` → чем закончилась игра: `code 0` — `quit`, `code n`
+ * — `error`, но `code 128+n` (так bash отдаёт смерть от сигнала n) и
+ * `signal n` — `crash`; иначе `unknown`.
+ */
+export const parseGameExit = (
+  text: string,
+): Extract<GameEnd, "quit" | "crash" | "error" | "unknown"> => {
+  const match = /^(code|signal) (\d+)$/.exec(text.trim());
+  if (match === null) return "unknown";
+  const n = Number(match[2]);
+  if (match[1] === "signal") return "crash";
+  return n === 0 ? "quit" : n > 128 ? "crash" : "error";
+};
 
 /** Порядок этапов: отчёт только о более позднем, чем уже отправленный. */
 const stageRank = (stage: SessionStage | undefined) =>
@@ -605,6 +635,15 @@ const make = Effect.gen(function* () {
       }
     });
 
+  /** Чем закончилась игра: файл `cg-game-exit`; нет или не прочитался — `unknown`. */
+  const gameEnd = (session: Session) =>
+    exec(session, commands.gameExit).pipe(
+      Effect.map(({ exitCode, stdout }) =>
+        exitCode === 0 ? parseGameExit(stdout) : "unknown",
+      ),
+      Effect.orElseSucceed(() => "unknown" as const),
+    );
+
   /**
    * Следит за процессом игры, пока он не завершится (после запуска). С
    * запуском игры начинаются замеры её ресурсов (`sampleGame`), итог замеров
@@ -622,6 +661,9 @@ const make = Effect.gen(function* () {
           ),
         );
         if (alive !== session.gameRunning) {
+          // Игра закрылась сама: обёртка уже записала код (её процесс — потомок
+          // `reaper`, по которому pgrep видит игру).
+          const end = alive ? undefined : yield* gameEnd(session);
           const now = yield* Clock.currentTimeMillis;
           // Состояние и отчёт — без точки прерывания между ними: StopSession в этот
           // момент видит уже запущенную игру (и закроет её, и подождёт облако).
@@ -643,6 +685,7 @@ const make = Effect.gen(function* () {
                   _tag: "GameState",
                   sessionId: session.sessionId,
                   running: alive,
+                  ...(end !== undefined ? { end } : {}),
                 }),
               );
             }),
@@ -926,6 +969,18 @@ const make = Effect.gen(function* () {
         userId: session.userId,
         baseVersion: session.baseVersion,
         steamLoginSeeded: session.seeded,
+        // Steam уже закрыт: обёртка игры не должна попасть в профиль.
+        beforePack: clearLaunchOptions({
+          container: session.name,
+          appId: session.appId,
+        }).pipe(
+          Effect.catchTag("SeedError", (error) =>
+            Effect.logWarning("Restoring the game launch options failed", {
+              sessionId: session.sessionId,
+              error: error.message,
+            }),
+          ),
+        ),
         ...(session.loginResetAt !== undefined
           ? { steamLoginResetAt: session.loginResetAt }
           : {}),
@@ -1076,6 +1131,20 @@ const make = Effect.gen(function* () {
             );
             session.seeded = true;
           }
+          // Обёртка `cg-game-exit` в параметрах запуска игры (§4.2); не вышло —
+          // игра идёт без неё, её конец будет `unknown`.
+          yield* setLaunchOptions({
+            container: session.name,
+            appId: session.appId,
+          }).pipe(
+            withServices,
+            Effect.catchTag("SeedError", (error) =>
+              Effect.logWarning("Setting the game launch options failed", {
+                sessionId: session.sessionId,
+                error: error.message,
+              }),
+            ),
+          );
           yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
           yield* reportStage(session, "steam");
           return from;

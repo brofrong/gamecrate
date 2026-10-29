@@ -1,7 +1,7 @@
 // Ведение сессий: события хаба агентов и таймеры (раз в 5 с) превращаются в
 // события автомата `decide`, решения применяются к БД, StopContainer уходит агенту.
 import { Db, type SessionState } from "@cg/db";
-import type { RunningSession } from "@cg/rpc";
+import { containerGoneReason, type RunningSession } from "@cg/rpc";
 import {
   Cause,
   Context,
@@ -319,12 +319,23 @@ const make = (options: SessionRunnerOptions) =>
                   ),
                 );
               case "GameState":
-                return gameState(
-                  workerId,
-                  report.sessionId,
-                  report.running,
-                  now,
-                );
+                // Игра закрылась сама — её исход (старый агент без `end` —
+                // `unknown`, спека 2026-10-29 §4.2).
+                return Effect.gen(function* () {
+                  yield* gameState(
+                    workerId,
+                    report.sessionId,
+                    report.running,
+                    now,
+                  );
+                  if (!report.running)
+                    yield* withDb(
+                      MetricsRepo.setGameEnd(
+                        report.sessionId,
+                        report.end ?? "unknown",
+                      ),
+                    );
+                });
               case "Heartbeat":
                 // Heartbeat перечисляет все живые сессии агента (включая
                 // создаваемые и останавливаемые, см. SessionSupervisor) —
@@ -367,6 +378,11 @@ const make = (options: SessionRunnerOptions) =>
                     yield* withDb(
                       SessionRepo.releaseSlot(workerId, report.sessionId, now),
                     );
+                  // Игра не закрылась сама до остановки — `stopped` (иначе исход
+                  // уже записан и не меняется).
+                  yield* withDb(
+                    MetricsRepo.setGameEnd(report.sessionId, "stopped"),
+                  );
                   if (!report.profileSaved)
                     yield* Effect.logWarning(
                       "Session profile not saved (profile-unsaved on the agent)",
@@ -392,6 +408,15 @@ const make = (options: SessionRunnerOptions) =>
                     yield* withDb(
                       SessionRepo.releaseSlot(workerId, report.sessionId, now),
                     );
+                  // Контейнер неожиданно остановился — игра упала (§4.2).
+                  yield* withDb(
+                    MetricsRepo.setGameEnd(
+                      report.sessionId,
+                      report.reason === containerGoneReason
+                        ? "crash"
+                        : "stopped",
+                    ),
+                  );
                 });
               case "SessionMetrics":
                 // Замеры пишутся и после конца сессии (последний отчёт агент

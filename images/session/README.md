@@ -101,6 +101,11 @@
   Proton запускает exe игры; служебные exe самого Proton и Windows не в счёт); `prepare` — есть
   `reaper` с `AppId=<appid>`; `login` — в `logs/steamui_login.txt` есть строка `SetLoginState`;
   иначе `steam`. Агент зовёт `docker exec` раз в 2 с.
+- `cg-game-exit` → `/usr/local/bin/`: обёртка процесса игры (спека «требования к железу» §4.2):
+  `cg-game-exit <команда…>` запускает команду, пишет `code <n>` в `/tmp/cg-game-exit` и выходит с
+  тем же статусом (смерть от сигнала — `128+n`). Steam зовёт её через `LaunchOptions` игры, которые
+  агент пишет в `localconfig.vdf` контейнера до старта и убирает перед снятием профиля; агент
+  читает файл, когда процесс игры пропал.
 - `.dockerignore` — в контекст сборки идут только эти файлы, `labwc/`, `vendor/` и `nv/x/32/`.
 
 ## Сборка

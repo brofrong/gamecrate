@@ -99,6 +99,10 @@ COPY --chmod=0755 cg-profile-pack cg-steam-shutdown cg-session-exec /usr/local/b
 # Этап запуска игры (экран загрузки, план §4.1/§4.2) — агент зовёт его `docker exec` раз в 2 с.
 COPY --chmod=0755 cg-session-stage /usr/local/bin/
 
+# Обёртка процесса игры: пишет код выхода в /tmp/cg-game-exit (спека «требования к железу» §4.2);
+# Steam зовёт её через LaunchOptions, которые агент пишет в localconfig.vdf перед стартом.
+COPY --chmod=0755 cg-game-exit /usr/local/bin/
+
 # Заглушка NetworkManager: без неё Steam перед каждым входом ждёт сеть 20 с (README.md). Служба
 # s6 от ubuntu — как службы базового образа (их каталоги тоже принадлежат ubuntu). Системная шина
 # — служба dbus базового образа.

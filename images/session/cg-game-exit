@@ -1,0 +1,37 @@
+#!/bin/bash
+# Обёртка процесса игры (спека 2026-10-29 «требования к железу», §4.2): запускает команду игры и
+# пишет, чем она кончилась, одной строкой `code <n>` в /tmp/cg-game-exit (CG_GAME_EXIT_FILE —
+# другой путь, тесты); выходит с тем же статусом. Смерть от сигнала bash отдаёт как 128+n
+# (SIGSEGV → `code 139`), агент считает это падением. Агент читает файл `docker exec`, когда
+# процесс игры пропал (watchGame).
+# Steam-игры зовут её через параметры запуска: агент пишет в localconfig.vdf контейнера
+# `LaunchOptions` = `/usr/local/bin/cg-game-exit %command%` (параметры игрока — после обёртки) и
+# убирает перед сохранением профиля. Ведущие аргументы `NAME=value` (параметры игрока вида
+# `PROTON_LOG=1 %command%`) становятся окружением игры, как без обёртки.
+set -u
+
+out="${CG_GAME_EXIT_FILE:-/tmp/cg-game-exit}"
+
+while [ $# -gt 0 ] && [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+  export "$1"
+  shift
+done
+if [ $# -eq 0 ]; then
+  echo "[cg-game-exit] usage: cg-game-exit <command> [args...]" >&2
+  exit 2
+fi
+
+# SIGTERM/SIGINT/SIGHUP самой обёртке (остановка сессии: pkill по командной строке) не убивают
+# её раньше игры: обработчик откладывается до выхода игры, а в игру сигнал не наследуется
+# игнорированным (обработчики сбрасываются при exec).
+trap ':' TERM INT HUP
+
+"$@"
+status=$?
+
+# Атомарно: агент не прочтёт половину строки.
+tmp="${out}.$$"
+if printf 'code %d\n' "${status}" >"${tmp}" 2>/dev/null; then
+  mv -f "${tmp}" "${out}" 2>/dev/null || rm -f "${tmp}"
+fi
+exit "${status}"

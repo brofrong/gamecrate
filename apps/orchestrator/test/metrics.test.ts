@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { Db, sessionMetrics, workerClasses, workers } from "@cg/db";
-import type { AgentReport, WorkerHardware } from "@cg/rpc";
+import {
+  type AgentReport,
+  containerGoneReason,
+  type WorkerHardware,
+} from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { AgentHubEvent } from "../src/AgentHub";
+import * as MetricsRepo from "../src/MetricsRepo";
 import { SessionRunner } from "../src/SessionRunner";
 import { connectWorker, insertSession, like, run, seedUsers } from "./support";
 
@@ -173,6 +178,160 @@ describe("session metrics", () => {
         expect(rows.map((row) => [row.workerId, row.gameSeconds])).toEqual([
           ["w1", 60],
         ]);
+      }),
+    ));
+});
+
+const gameExited = (
+  end?: "quit" | "crash" | "error" | "unknown",
+): AgentReport => ({
+  _tag: "GameState",
+  sessionId: "s1",
+  running: false,
+  ...(end !== undefined ? { end } : {}),
+});
+
+const stopped: AgentReport = {
+  _tag: "Stopped",
+  sessionId: "s1",
+  cloudSynced: true,
+  profileSaved: true,
+};
+
+const failed = (reason: string): AgentReport => ({
+  _tag: "Failed",
+  sessionId: "s1",
+  reason,
+});
+
+const gameEnd = () =>
+  metricsRows().pipe(Effect.map((rows) => rows.map((row) => row.gameEnd)));
+
+describe("game end", () => {
+  it("stop after quit keeps quit", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        yield* runner.handle(report("w1", metrics()), new Date());
+        yield* runner.handle(report("w1", gameExited("quit")), new Date());
+        expect(yield* gameEnd()).toEqual(["quit"]);
+        yield* runner.handle(report("w1", stopped), new Date());
+        expect(yield* gameEnd()).toEqual(["quit"]);
+      }),
+    ));
+
+  it("containerGone gives crash", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        yield* runner.handle(report("w1", metrics()), new Date());
+        yield* runner.handle(
+          report("w1", failed(containerGoneReason)),
+          new Date(),
+        );
+        expect(yield* gameEnd()).toEqual(["crash"]);
+      }),
+    ));
+
+  it("stop before exit gives stopped", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        yield* runner.handle(report("w1", metrics()), new Date());
+        yield* runner.handle(report("w1", stopped), new Date());
+        const [row] = yield* metricsRows();
+        like(row, { gameSeconds: 60, gameEnd: "stopped" });
+      }),
+    ));
+
+  it("other failures give stopped", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        yield* runner.handle(report("w1", metrics()), new Date());
+        yield* runner.handle(
+          report("w1", failed("Стрим не запустился за 2 минуты")),
+          new Date(),
+        );
+        expect(yield* gameEnd()).toEqual(["stopped"]);
+      }),
+    ));
+
+  it("exit from an old agent without end gives unknown", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        yield* runner.handle(report("w1", metrics()), new Date());
+        yield* runner.handle(report("w1", gameExited()), new Date());
+        expect(yield* gameEnd()).toEqual(["unknown"]);
+      }),
+    ));
+
+  it("game end without a metrics row inserts the row with the session snapshot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const runner = yield* SessionRunner;
+        yield* seed(fake);
+        const [standard] = yield* db
+          .select({ id: workerClasses.id })
+          .from(workerClasses)
+          .where(eq(workerClasses.rank, 1));
+        // Контейнер пропал раньше первого отчёта замеров.
+        yield* runner.handle(
+          report("w1", failed(containerGoneReason)),
+          new Date(),
+        );
+        const rows = yield* metricsRows();
+        expect(rows).toHaveLength(1);
+        like(rows[0], {
+          sessionId: "s1",
+          appId: 570,
+          workerId: "w1",
+          gpuName: "NVIDIA GeForce GTX 1650 SUPER",
+          workerClassId: standard!.id,
+          slots: 1,
+          gameSeconds: 0,
+          peakVramBytes: null,
+          peakRamBytes: null,
+          cpuCoresP95: null,
+          gpuUtilP95: null,
+          vramSource: "gpu_total",
+          gameEnd: "crash",
+        });
+        // Поздний итог замеров — ресурсы пишутся, исход остаётся.
+        yield* runner.handle(
+          report("w1", metrics({ gameSeconds: 5 })),
+          new Date(),
+        );
+        const [row] = yield* metricsRows();
+        like(row, { gameSeconds: 5, peakRamBytes: 2 * GiB, gameEnd: "crash" });
+      }),
+    ));
+
+  it("setGameEnd writes only the first end", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seed(fake);
+        yield* MetricsRepo.setGameEnd("s1", "error");
+        yield* MetricsRepo.setGameEnd("s1", "stopped");
+        expect(yield* gameEnd()).toEqual(["error"]);
+      }),
+    ));
+
+  it("session without a worker gets no row", () =>
+    run(() =>
+      Effect.gen(function* () {
+        yield* seedUsers("u1");
+        yield* insertSession({ id: "s1", userId: "u1", state: "queued" });
+        yield* MetricsRepo.setGameEnd("s1", "stopped");
+        yield* MetricsRepo.setGameEnd("missing", "stopped");
+        expect(yield* metricsRows()).toEqual([]);
       }),
     ));
 });

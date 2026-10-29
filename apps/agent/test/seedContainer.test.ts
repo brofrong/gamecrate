@@ -12,7 +12,14 @@ import { Effect, Logger, References } from "effect";
 import { DockerClient, DockerError } from "../src/DockerClient";
 import { HOME_DIR } from "../src/profile/HomeProfile";
 import { applyLoginSeed, LOGIN_FILES } from "../src/steam/loginSeed";
-import { clearSteamLogin, seedSteamLogin } from "../src/steam/seedContainer";
+import {
+  clearLaunchOptions,
+  clearSteamLogin,
+  seedSteamLogin,
+  setLaunchOptions,
+  unwrapLaunchOptions,
+  wrapLaunchOptions,
+} from "../src/steam/seedContainer";
 import { getPath, parseVdf } from "../src/steam/vdf";
 import { tarOfFile, testSteamLogin, unusedDocker } from "./fakes";
 import { findTarEntry } from "./tar";
@@ -267,5 +274,205 @@ describe("seedSteamLogin", () => {
     ])
       expect(entry(tar, name)).toBeDefined();
     expect(logged.filter((line) => line.level === "Warn")).toEqual([]);
+  });
+});
+
+const STEAM_ID = "76561197960287930";
+/** `userdata/<accountId>`: SteamID64 минус 76561197960265728. */
+const LOCALCONFIG = ".local/share/Steam/userdata/22202/config/localconfig.vdf";
+const LOGIN_USERS_VDF = `"users"\n{\n\t"${STEAM_ID}"\n\t{\n\t\t"AccountName"\t\t"test-account"\n\t}\n}\n`;
+const WRAPPED = "/usr/local/bin/cg-game-exit %command%";
+
+/** localconfig.vdf с параметрами запуска по appid (`undefined` — блока игры нет). */
+const localConfig = (apps: Record<string, string | undefined>) =>
+  `"UserLocalConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{\n\t\t\t"Steam"\n\t\t\t{\n\t\t\t\t"apps"\n\t\t\t\t{\n${Object.entries(
+    apps,
+  )
+    .map(
+      ([appId, options]) =>
+        `\t\t\t\t\t"${appId}"\n\t\t\t\t\t{\n\t\t\t\t\t\t"LastPlayed"\t\t"1760000000"\n${
+          options === undefined
+            ? ""
+            : `\t\t\t\t\t\t"LaunchOptions"\t\t"${options.replace(/"/g, '\\"')}"\n`
+        }\t\t\t\t\t}\n`,
+    )
+    .join("")}\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n`;
+
+/**
+ * Фейковый контейнер: файлы по пути относительно дома; `putArchive` кладёт
+ * записанные файлы обратно (последовательные вызовы видят результат).
+ */
+const homeContainer = (
+  files: Record<string, string>,
+  wrapperInImage = true,
+) => {
+  const home = new Map(
+    Object.entries(files).map(([path, text]) => [`${HOME_DIR}/${path}`, text]),
+  );
+  const put: Array<Uint8Array> = [];
+  const read: Array<string> = [];
+  const logged: Array<{ level: string; text: string }> = [];
+  const docker = {
+    ...unusedDocker,
+    getArchive: (_container: string, path: string) => {
+      read.push(path);
+      const text = home.get(path);
+      return text === undefined
+        ? Effect.fail(
+            new DockerError({
+              operation: "getArchive",
+              status: 404,
+              message: "no such file",
+            }),
+          )
+        : Effect.succeed(
+            tarOfFile(
+              path.slice(path.lastIndexOf("/") + 1),
+              new TextEncoder().encode(text),
+            ),
+          );
+    },
+    archiveSize: (_container: string, path: string) =>
+      path === "/usr/local/bin/cg-game-exit" && wrapperInImage
+        ? Effect.succeed(1024)
+        : Effect.fail(
+            new DockerError({
+              operation: "archiveSize",
+              status: 404,
+              message: "no such file",
+            }),
+          ),
+    putArchive: (_container: string, _path: string, tar: Uint8Array) =>
+      Effect.sync(() => {
+        put.push(tar);
+        const text = entry(tar, "localconfig.vdf");
+        if (text !== undefined) home.set(`${HOME_DIR}/${LOCALCONFIG}`, text);
+      }),
+  };
+  const capture = Logger.make(({ logLevel, message }) => {
+    logged.push({ level: logLevel, text: Bun.inspect(message) });
+  });
+  const runIn = <A, E>(effect: Effect.Effect<A, E, DockerClient>) =>
+    effect.pipe(
+      Effect.provideService(DockerClient, docker),
+      Effect.provide(Logger.layer([capture])),
+      Effect.provideService(References.MinimumLogLevel, "All"),
+      Effect.runPromise,
+    );
+  const launchOptions = (appId: string) =>
+    getPath(parseVdf(home.get(`${HOME_DIR}/${LOCALCONFIG}`) ?? ""), [
+      "UserLocalConfigStore",
+      "Software",
+      "Valve",
+      "Steam",
+      "apps",
+      appId,
+      "LaunchOptions",
+    ]);
+  return { put, read, logged, runIn, launchOptions, home };
+};
+
+describe("launch options", () => {
+  it("wrap and unwrap keep the player's options", () => {
+    for (const original of [
+      "",
+      "-novid",
+      "PROTON_LOG=1 %command% -windowed",
+      "gamemoderun %command%",
+    ]) {
+      const wrapped = wrapLaunchOptions(original);
+      expect(wrapped).toStartWith("/usr/local/bin/cg-game-exit ");
+      expect(wrapped).toContain("%command%");
+      expect(unwrapLaunchOptions(wrapped)).toBe(original);
+      // Повторная обёртка (снять не удалось) — без второй обёртки.
+      expect(wrapLaunchOptions(wrapped)).toBe(wrapped);
+    }
+    expect(wrapLaunchOptions(undefined)).toBe(WRAPPED);
+    expect(unwrapLaunchOptions("-novid")).toBeUndefined();
+  });
+
+  it("setLaunchOptions wraps the game's options in localconfig.vdf, other games untouched", async () => {
+    const c = homeContainer({
+      [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF,
+      [LOCALCONFIG]: localConfig({ "570": "-novid", "10": "-console" }),
+    });
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+
+    expect(c.put).toHaveLength(1);
+    expect(c.launchOptions("570")).toBe(`${WRAPPED} -novid`);
+    expect(c.launchOptions("10")).toBe("-console");
+    const line = tarEntryInfo(c.put[0]!, "localconfig.vdf");
+    expect(line).toStartWith("-rw-------");
+    expect(line).toMatch(/\b1000\s+1000\b/);
+
+    await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toHaveLength(2);
+    expect(c.launchOptions("570")).toBe("-novid");
+    expect(c.launchOptions("10")).toBe("-console");
+  });
+
+  it("setLaunchOptions creates the game block and localconfig.vdf when missing", async () => {
+    const c = homeContainer({ [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF });
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.launchOptions("570")).toBe(WRAPPED);
+    // Родители файла — в архиве, с владельцем ubuntu (иначе Docker создаст их от root).
+    for (const dir of [
+      ".local/share/Steam/userdata/",
+      ".local/share/Steam/userdata/22202/",
+      ".local/share/Steam/userdata/22202/config/",
+    ])
+      expect(tarEntryInfo(c.put[0]!, dir)).toMatch(/^drwx------.*\b1000\s+1000\b/);
+
+    await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.launchOptions("570")).toBe("");
+  });
+
+  it("clearLaunchOptions leaves options without the wrapper alone", async () => {
+    const c = homeContainer({
+      [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF,
+      [LOCALCONFIG]: localConfig({ "570": "-novid" }),
+    });
+    await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toEqual([]);
+  });
+
+  it("without loginusers.vdf nothing is read or written", async () => {
+    const c = homeContainer({});
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+    await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toEqual([]);
+    expect(c.read).toEqual([
+      `${HOME_DIR}/${LOGIN_FILES.loginUsers}`,
+      `${HOME_DIR}/${LOGIN_FILES.loginUsers}`,
+    ]);
+  });
+
+  it("an image without cg-game-exit keeps the options as they are", async () => {
+    const c = homeContainer(
+      {
+        [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF,
+        [LOCALCONFIG]: localConfig({ "570": "-novid" }),
+      },
+      false,
+    );
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toEqual([]);
+    expect(c.read).toEqual([]);
+    expect(c.logged.map((line) => line.text).join("\n")).toContain(
+      "Session image has no cg-game-exit",
+    );
+  });
+
+  it("unreadable localconfig.vdf is not overwritten and is logged", async () => {
+    const c = homeContainer({
+      [LOGIN_FILES.loginUsers]: LOGIN_USERS_VDF,
+      [LOCALCONFIG]: '"UserLocalConfigStore" { "broken',
+    });
+    await c.runIn(setLaunchOptions({ container: "c1", appId: 570 }));
+    expect(c.put).toEqual([]);
+    const warnings = c.logged.filter((line) => line.level === "Warn");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.text).toContain("localconfig.vdf unreadable");
+    expect(warnings[0]?.text).not.toContain("broken");
   });
 });

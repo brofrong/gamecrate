@@ -282,6 +282,29 @@ export const VramSource = Schema.Literals(["process", "gpu_total"]);
 export type VramSource = typeof VramSource.Type;
 
 /**
+ * Чем закончилась игра (спека 2026-10-29 §4.2, `session_metrics.game_end`):
+ * `quit` — процесс игры вышел сам с кодом 0, `error` — с ненулевым, `crash` —
+ * убит сигналом (или контейнер неожиданно остановился), `stopped` — сессию
+ * остановили раньше, `unknown` — код выхода узнать не удалось. Агент в
+ * `GameState` шлёт только `quit`/`error`/`crash`/`unknown`.
+ */
+export const GameEnd = Schema.Literals([
+  "quit",
+  "crash",
+  "error",
+  "stopped",
+  "unknown",
+]);
+export type GameEnd = typeof GameEnd.Type;
+
+/**
+ * Причина `Failed` сессии, когда её контейнер неожиданно пропал или
+ * остановился (`failReasons.containerGone` агента): оркестратор пишет такой
+ * сессии `game_end = crash` (спека 2026-10-29 §4.2).
+ */
+export const containerGoneReason = "Игровой сервер неожиданно остановился";
+
+/**
  * Отчёт агента: стрим готов (`streamUrl` — внутренний адрес Selkies), состояние
  * процесса игры, heartbeat со списком живых сессий, этап запуска контейнера
  * сессии до появления игрового окна (`SessionStage`) или этап задачи установки
@@ -294,9 +317,15 @@ export const AgentReport = Schema.Union([
     sessionId: Schema.String,
     streamUrl: Schema.String,
   }),
+  /**
+   * Процесс игры запущен/завершился. `end` — при `running: false`: чем
+   * закончилась игра (код выхода из обёртки `cg-game-exit`); нет поля —
+   * старый агент.
+   */
   Schema.TaggedStruct("GameState", {
     sessionId: Schema.String,
     running: Schema.Boolean,
+    end: Schema.optional(GameEnd),
   }),
   Schema.TaggedStruct("Heartbeat", { sessionIds: Schema.Array(Schema.String) }),
   Schema.TaggedStruct("SessionStage", {

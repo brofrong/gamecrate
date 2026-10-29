@@ -10,6 +10,7 @@
 !cg-steam-shutdown
 !cg-session-exec
 !cg-session-stage
+!cg-game-exit
 !cg-nm-stub
 !cg-nm-stub.conf
 !cg-nm-stub.run

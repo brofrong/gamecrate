@@ -188,6 +188,11 @@ export const saveProfile = (options: {
    * нет — стирания не было, поле в коммит не попадает.
    */
   readonly steamLoginResetAt?: string;
+  /**
+   * Шаг между закрытием Steam и упаковкой профиля (сессия: снять обёртку
+   * `cg-game-exit` с параметров запуска игры); его сбои он обрабатывает сам.
+   */
+  readonly beforePack?: Effect.Effect<void, never, DockerClient>;
 }): Effect.Effect<
   void,
   ProfileError,
@@ -215,6 +220,8 @@ export const saveProfile = (options: {
         }),
       ),
     );
+
+    if (options.beforePack !== undefined) yield* options.beforePack;
 
     const { exitCode } = yield* docker
       .exec(options.container, [PROFILE_PACK], { timeout: PACK_TIMEOUT })

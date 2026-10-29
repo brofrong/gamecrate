@@ -43,6 +43,7 @@ import {
   commands,
   failReasons,
   GPU_FAILURE_LINE,
+  parseGameExit,
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
@@ -109,6 +110,10 @@ const makeFake = () => {
     inspected: {} as Record<string, ContainerInfo>,
     /** Подменённый код выхода pgrep. */
     pgrepExit: undefined as number | undefined,
+    /** Содержимое `/tmp/cg-game-exit` (нет — файла нет). */
+    gameExit: undefined as string | undefined,
+    /** Файлы в контейнере сессии для `getArchive` (полный путь → текст). */
+    home: {} as Record<string, string>,
     /** Сбой подсчёта маркеров: `exit` — grep вышел с кодом 2, `docker` — exec упал. */
     cloudFail: undefined as "exit" | "docker" | undefined,
     /** Закрыт — `grep` журнала облака ждёт его открытия. */
@@ -286,6 +291,11 @@ const makeFake = () => {
     getArchive: (container, path) =>
       Effect.suspend(() => {
         record(`getArchive ${container} ${path}`);
+        const text = state.home[path];
+        if (text !== undefined)
+          return Effect.succeed(
+            tarOfFile(path.slice(path.lastIndexOf("/") + 1), bytes(text)),
+          );
         // Файлы входа Steam (посев) до записи отсутствуют: пустой дом.
         if (path !== PACK_OUTPUT)
           return Effect.fail(
@@ -305,6 +315,8 @@ const makeFake = () => {
     archiveSize: (container, path) =>
       Effect.suspend(() => {
         record(`archiveSize ${container} ${path}`);
+        // Обёртка игры в образе сессии (setLaunchOptions).
+        if (path === "/usr/local/bin/cg-game-exit") return Effect.succeed(1024);
         if (path !== PACK_OUTPUT)
           return Effect.fail(
             new DockerError({
@@ -393,6 +405,14 @@ const makeFake = () => {
                   stdout: `${state.cloud}\n`,
                 })),
               ),
+            );
+          case "cat":
+            if (cmd.join(" ") !== "cat /tmp/cg-game-exit")
+              return Effect.succeed({ exitCode: 2, stdout: "" });
+            return Effect.succeed(
+              state.gameExit === undefined
+                ? { exitCode: 1, stdout: "" }
+                : { exitCode: 0, stdout: state.gameExit },
             );
           case "pkill":
             if (cmd.join(" ") !== "pkill -TERM -f AppId=1794680( |$)")
@@ -917,7 +937,7 @@ describe("SessionSupervisor", () => {
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "GameState", sessionId: "s1", running: false },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
         ]);
         yield* h.tick("10 seconds");
         expect(yield* h.drain).toEqual([]);
@@ -1166,6 +1186,7 @@ describe("SessionSupervisor", () => {
             ),
           ).toEqual([
             "exec cg-session-lost /usr/local/bin/cg-steam-shutdown",
+            "getArchive cg-session-lost /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
             "exec cg-session-lost /usr/local/bin/cg-profile-pack",
             "archiveSize cg-session-lost /tmp/cg-profile.tar",
             "getArchive cg-session-lost /tmp/cg-profile.tar",
@@ -1285,7 +1306,7 @@ describe("SessionSupervisor", () => {
         h.fake.state.pgrepExit = 1;
         yield* h.tick("5 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual([
-          { _tag: "GameState", sessionId: "s1", running: false },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
         ]);
       }),
     ));
@@ -1331,7 +1352,7 @@ describe("SessionSupervisor", () => {
           yield* h.tick("5 seconds");
           yield* h.tick("2 seconds");
           expect(yield* h.drain).toEqual([
-            { _tag: "GameState", sessionId: "a", running: false },
+            { _tag: "GameState", sessionId: "a", running: false, end: "unknown" },
             {
               _tag: "Stopped",
               sessionId: "a",
@@ -1400,7 +1421,7 @@ describe("SessionSupervisor", () => {
         yield* h.tick("5 seconds");
         expect(yield* h.drain).toEqual([
           { _tag: "GameState", sessionId: "s1", running: true },
-          { _tag: "GameState", sessionId: "s1", running: false },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
         ]);
         yield* h.tick("10 seconds");
         expect((yield* h.drain).filter((r) => r._tag !== "Heartbeat")).toEqual(
@@ -1500,6 +1521,8 @@ describe("SessionSupervisor", () => {
           ...held("s1"),
           "store.get profiles/u1/v7.cgp",
           "putArchive cg-session-s1 /home/ubuntu",
+          "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1534,6 +1557,8 @@ describe("SessionSupervisor", () => {
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
           "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
           "putArchive cg-session-s1 /home/ubuntu",
+          "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1571,6 +1596,8 @@ describe("SessionSupervisor", () => {
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
           "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
           "putArchive cg-session-s1 /home/ubuntu",
+          "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1598,6 +1625,8 @@ describe("SessionSupervisor", () => {
           "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/config.vdf",
           "getArchive cg-session-s1 /home/ubuntu/.steam/registry.vdf",
           "putArchive cg-session-s1 /home/ubuntu",
+          "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1639,6 +1668,8 @@ describe("SessionSupervisor", () => {
             "getArchive cg-session-s1-import /tmp/cg-profile.tar",
             "remove cg-session-s1-import",
             "putArchive cg-session-s1 /home/ubuntu",
+            "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+            "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
             "start cg-session-s1",
             "remove cg-s-s1-hold",
           ]);
@@ -1689,6 +1720,8 @@ describe("SessionSupervisor", () => {
           "create cg-session-s1",
           ...held("s1"),
           "volumeExists cg-home-u1",
+          "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "start cg-session-s1",
           "remove cg-s-s1-hold",
         ]);
@@ -1740,6 +1773,7 @@ describe("SessionSupervisor", () => {
           ),
         ).toEqual([
           "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
+          "getArchive cg-session-s1 /home/ubuntu/.local/share/Steam/config/loginusers.vdf",
           "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
           "archiveSize cg-session-s1 /tmp/cg-profile.tar",
           "getArchive cg-session-s1 /tmp/cg-profile.tar",
@@ -3069,7 +3103,7 @@ describe("session metrics", () => {
           yield* h.tick("5 seconds");
           expect(metricsAndGame(yield* h.drainAll)).toEqual([
             { ...minute, gameSeconds: 65 },
-            { _tag: "GameState", sessionId: "s1", running: false },
+            { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
           ]);
           // Игра закрылась — замеры кончились.
           const calls = h.fake.state.metrics.statsCalls;
@@ -3208,3 +3242,105 @@ describe("session metrics", () => {
       playing,
     ));
 });
+
+describe("game end", () => {
+  it("parseGameExit maps the wrapper's line to the game end", () => {
+    expect(parseGameExit("code 0\n")).toBe("quit");
+    expect(parseGameExit("code 1\n")).toBe("error");
+    expect(parseGameExit("code 127\n")).toBe("error");
+    expect(parseGameExit("code 128\n")).toBe("error");
+    // bash отдаёт смерть от сигнала n как 128+n.
+    expect(parseGameExit("code 139\n")).toBe("crash");
+    expect(parseGameExit("code 134")).toBe("crash");
+    expect(parseGameExit("signal 11\n")).toBe("crash");
+    expect(parseGameExit("")).toBe("unknown");
+    expect(parseGameExit("code\n")).toBe("unknown");
+    expect(parseGameExit("code -1\n")).toBe("unknown");
+    expect(parseGameExit("exit 0\n")).toBe("unknown");
+  });
+
+  it("GameState after the game exits carries the end", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        h.fake.state.game = false;
+        h.fake.state.gameExit = "code 139\n";
+        yield* h.tick("5 seconds");
+        expect(yield* h.drain).toEqual([
+          { _tag: "GameState", sessionId: "s1", running: true },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "crash" },
+        ]);
+      }),
+    ));
+
+  it("no exit file gives unknown", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        yield* startReady(h);
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        h.fake.state.game = false;
+        yield* h.tick("5 seconds");
+        expect(yield* h.drain).toEqual([
+          { _tag: "GameState", sessionId: "s1", running: true },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "unknown" },
+        ]);
+      }),
+    ));
+
+  it("launch options get the wrapper before start and lose it before the profile is packed", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* startReady(h);
+          const localConfig =
+            "/home/ubuntu/.local/share/Steam/userdata/22202/config/localconfig.vdf";
+          expect(
+            callsFrom(
+              h.fake,
+              "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+            ),
+          ).toEqual([
+            "archiveSize cg-session-s1 /usr/local/bin/cg-game-exit",
+            `getArchive cg-session-s1 ${loginUsers}`,
+            `getArchive cg-session-s1 ${localConfig}`,
+            "putArchive cg-session-s1 /home/ubuntu",
+            "start cg-session-s1",
+            "remove cg-s-s1-hold",
+          ]);
+          const wrapped = findTarEntry(h.fake.state.put[0]!.tar, "localconfig.vdf");
+          expect(new TextDecoder().decode(wrapped)).toContain(
+            '"LaunchOptions"\t\t"/usr/local/bin/cg-game-exit %command% -novid"',
+          );
+
+          // Остановка: Steam закрыт → обёртка снята → профиль пакуется.
+          h.fake.state.home[localConfig] = new TextDecoder().decode(wrapped);
+          h.fake.state.calls.length = 0;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          expect(h.fake.state.calls.slice(0, 5)).toEqual([
+            "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
+            `getArchive cg-session-s1 ${loginUsers}`,
+            `getArchive cg-session-s1 ${localConfig}`,
+            "putArchive cg-session-s1 /home/ubuntu",
+            "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+          ]);
+          const restored = findTarEntry(h.fake.state.put[1]!.tar, "localconfig.vdf");
+          expect(new TextDecoder().decode(restored)).toContain(
+            '"LaunchOptions"\t\t"-novid"',
+          );
+        }),
+      (fake) => {
+        fake.state.home[loginUsers] =
+          '"users"\n{\n\t"76561197960287930"\n\t{\n\t\t"AccountName"\t\t"a"\n\t}\n}\n';
+        fake.state.home[
+          "/home/ubuntu/.local/share/Steam/userdata/22202/config/localconfig.vdf"
+        ] =
+          '"UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" { "1794680" { "LaunchOptions" "-novid" } } } } } }';
+      },
+    ));
+});
+
+const loginUsers = "/home/ubuntu/.local/share/Steam/config/loginusers.vdf";
