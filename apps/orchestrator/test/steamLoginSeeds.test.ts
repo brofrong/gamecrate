@@ -4,6 +4,7 @@ import { DbTest } from "@cg/db/test";
 import type { SteamLoginSeed } from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import {
+  Clock,
   Context,
   Duration,
   Effect,
@@ -162,6 +163,31 @@ describe("SteamLoginSeeds", () => {
         yield* seeds.put("u1", makeSeed("t1"));
         expect(yield* rowsOf("u2")).toHaveLength(0);
         expect(yield* rowsOf("u1")).toHaveLength(1);
+      }),
+    ));
+
+  it("pruneExpired removes expired rows of any user, independent of get/put (M2)", () =>
+    run(
+      Effect.gen(function* () {
+        const seeds = yield* SteamLoginSeeds;
+        // u1 положен в t=0 — истекает в t=24ч.
+        yield* seeds.put("u1", makeSeed("expired"));
+        yield* TestClock.adjust("2 hours");
+        // u2 положен в t=2ч — истекает в t=26ч, ещё жив к моменту чистки.
+        // (Не трогаем u1 никаким `get`/`put` после — иначе их попутная
+        // чистка просроченных строк убрала бы его раньше `pruneExpired`,
+        // и тест не отличил бы эффект от M2.)
+        yield* seeds.put("u2", makeSeed("fresh"));
+        yield* TestClock.adjust("23 hours");
+        // Момент чистки — t=25ч: u1 (24ч) просрочен, u2 (26ч) — ещё нет.
+        const at = yield* Effect.map(
+          Clock.currentTimeMillis,
+          (ms) => new Date(ms),
+        );
+        const removed = yield* seeds.pruneExpired(at);
+        expect(removed).toBe(1);
+        expect(yield* rowsOf("u1")).toHaveLength(0);
+        expect(yield* rowsOf("u2")).toHaveLength(1);
       }),
     ));
 

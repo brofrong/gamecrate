@@ -6,8 +6,12 @@
 // (AES-256-GCM ключом `SEED_KEY`, `sealed` = base64 `iv ‖ tag ‖ шифротекст`;
 // AAD — `userId` и `steamId`, так что строку не переложить другому
 // пользователю). Запись живёт `SEED_TTL`; `get` сам удаляет просроченную и
-// отдаёт `null`, `put` попутно удаляет просроченные строки всех пользователей,
-// так что таблица не растёт без присмотра.
+// отдаёт `null`, `put` попутно удаляет просроченные строки всех пользователей.
+// Если вход не используется (игрок не запускает игру и не входит заново),
+// эти попутные удаления не сработают — именно для этого случая `pruneExpired`
+// зовёт ежедневная чистка в `SteamLoginRunner` (спека §4: запись уходит «по
+// сроку», а не только при следующем обращении), так что таблица не растёт
+// без присмотра даже без активности.
 // Никогда не логировать содержимое (`SteamLoginSeed.accountName`/`refreshToken`
 // — `Redacted`, но сам факт put/clear/порчи логировать можно только по `userId`).
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -41,6 +45,13 @@ export interface SteamLoginSeedsShape {
    * остаётся: пользователь вошёл заново уже после сброса.
    */
   readonly clearOlderThan: (userId: string, at: Date) => Effect.Effect<void>;
+  /**
+   * Удалить просроченные строки всех пользователей на момент `at` — независимо
+   * от того, случится ли ещё чей-то `get`/`put`. Возвращает число удалённых
+   * строк. Зовётся ежедневной чисткой `SteamLoginRunner` рядом с
+   * `pruneFinished` (спека §4).
+   */
+  readonly pruneExpired: (at: Date) => Effect.Effect<number>;
 }
 
 /** Секретная часть входа, которая шифруется. */
@@ -211,7 +222,23 @@ const make = (seedKey: Redacted.Redacted<string>) =>
         )
         .pipe(Effect.asVoid, Effect.orDie);
 
-    return { put, get, clear, clearOlderThan } satisfies SteamLoginSeedsShape;
+    const pruneExpired: SteamLoginSeedsShape["pruneExpired"] = (at) =>
+      db
+        .delete(steamLoginSeeds)
+        .where(lte(steamLoginSeeds.expiresAt, at))
+        .returning({ userId: steamLoginSeeds.userId })
+        .pipe(
+          Effect.map((rows) => rows.length),
+          Effect.orDie,
+        );
+
+    return {
+      put,
+      get,
+      clear,
+      clearOlderThan,
+      pruneExpired,
+    } satisfies SteamLoginSeedsShape;
   });
 
 export class SteamLoginSeeds extends Context.Service<

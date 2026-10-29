@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { account, Db, type SteamLoginState, steamLogins, user } from "@cg/db";
+import {
+  account,
+  Db,
+  type SteamLoginState,
+  steamLoginSeeds,
+  steamLogins,
+  user,
+} from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { steamLoginReasons } from "@cg/rpc";
 import { and, eq, inArray } from "drizzle-orm";
@@ -447,6 +454,40 @@ describe("SteamLoginRunner", () => {
           "fresh-failed",
           "old-waiting",
         ]);
+      }),
+    ));
+
+  it("daily prune at start also removes expired Steam login seed rows (M2)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedUser("u1");
+        yield* seedUser("u2");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", {
+          accountName: Redacted.make(ACCOUNT),
+          steamId: STEAM_ID,
+          refreshToken: Redacted.make(TOKEN),
+        });
+        yield* seeds.put("u2", {
+          accountName: Redacted.make(ACCOUNT),
+          steamId: OTHER_STEAM_ID,
+          refreshToken: Redacted.make(TOKEN),
+        });
+        // u1 просрочен давно и без единого `get`/`put` после — только
+        // ежедневная чистка (а не `pruneFinished`, который чистит `steam_logins`)
+        // его уберёт.
+        yield* db
+          .update(steamLoginSeeds)
+          .set({ expiresAt: new Date(Date.now() - 1000) })
+          .where(eq(steamLoginSeeds.userId, "u1"));
+
+        // Чистка при старте раннера (до форка периодического повтора) — та же,
+        // что убирает старые завершённые попытки Steam.
+        yield* startRunner(fake);
+
+        const rows = yield* db.select().from(steamLoginSeeds);
+        expect(rows.map((row) => row.userId).sort()).toEqual(["u2"]);
       }),
     ));
 

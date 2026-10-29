@@ -217,7 +217,11 @@ const make = (options: SteamLoginRunnerOptions) =>
         attempts: stale,
       });
 
-    /** Чистка старых завершённых попыток: `before = now − PRUNE_RETENTION`. */
+    /**
+     * Чистка старых завершённых попыток (`before = now − PRUNE_RETENTION`) и
+     * просроченных посевов (M2: по сроку, а не только при следующем
+     * `get`/`put` — иначе вход без использования лежит неограниченно долго).
+     */
     const prune = Effect.gen(function* () {
       const before = new Date(
         Date.now() - Duration.toMillis(PRUNE_RETENTION),
@@ -225,6 +229,11 @@ const make = (options: SteamLoginRunnerOptions) =>
       const removed = yield* SteamLoginRepo.pruneFinished(before);
       if (removed > 0)
         yield* Effect.logInfo("Pruned old Steam logins", { removed });
+      const removedSeeds = yield* seeds.pruneExpired(new Date());
+      if (removedSeeds > 0)
+        yield* Effect.logInfo("Pruned expired Steam login seeds", {
+          removed: removedSeeds,
+        });
     }).pipe(logFailure("Pruning old Steam logins failed"));
 
     yield* prune;
