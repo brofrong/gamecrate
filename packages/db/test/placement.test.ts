@@ -39,7 +39,11 @@ const hardware = (opts: {
 
 describe("fitsRequirements", () => {
   it("8 GiB VRAM card with 2 slots fails 6 GiB requirement", () => {
-    const hw = hardware({ vramBytes: 8 * GiB, ramBytes: 64 * GiB, cpuThreads: 32 });
+    const hw = hardware({
+      vramBytes: 8 * GiB,
+      ramBytes: 64 * GiB,
+      cpuThreads: 32,
+    });
     expect(
       fitsRequirements(hw, 2, {
         minVramBytes: 6 * GiB,
@@ -70,7 +74,11 @@ describe("fitsRequirements", () => {
   });
 
   it("RAM at the boundary passes (>=)", () => {
-    const hw = hardware({ vramBytes: 8 * GiB, ramBytes: 16 * GiB, cpuThreads: 8 });
+    const hw = hardware({
+      vramBytes: 8 * GiB,
+      ramBytes: 16 * GiB,
+      cpuThreads: 8,
+    });
     expect(
       fitsRequirements(hw, 1, {
         minVramBytes: 0,
@@ -81,7 +89,11 @@ describe("fitsRequirements", () => {
   });
 
   it("CPU threads at the boundary passes (>=), slots < 1 treated as 1", () => {
-    const hw = hardware({ vramBytes: 8 * GiB, ramBytes: 16 * GiB, cpuThreads: 8 });
+    const hw = hardware({
+      vramBytes: 8 * GiB,
+      ramBytes: 16 * GiB,
+      cpuThreads: 8,
+    });
     expect(
       fitsRequirements(hw, 0, {
         minVramBytes: 0,
@@ -280,6 +292,7 @@ describe("gameAvailable", () => {
           id: "w1",
           publicIp: "203.0.113.1",
           slots: 1,
+          roles: ["worker"],
           classId: weak.id,
           lastSeenAt: minutesAgo(11),
         });
@@ -297,11 +310,30 @@ describe("gameAvailable", () => {
           id: "w1",
           publicIp: "203.0.113.1",
           slots: 1,
+          roles: ["worker"],
           classId: weak.id,
           lastSeenAt: minutesAgo(11),
           statsAt: minutesAgo(1),
         });
         expect(yield* gameAvailable("u1", 1, now)).toBe(true);
+      }),
+    ));
+
+  it("recent gamestore-only worker with a class does not make game available", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          roles: ["gamestore"],
+          classId: weak.id,
+          lastSeenAt: minutesAgo(1),
+        });
+        expect(yield* gameAvailable("u1", 1, now)).toBe(false);
       }),
     ));
 
@@ -324,6 +356,7 @@ describe("gameAvailable", () => {
           id: "w1",
           publicIp: "203.0.113.1",
           slots: 1,
+          roles: ["worker"],
           classId: weak.id,
           lastSeenAt: new Date(now.getTime() - WORKER_RECENT_MS),
         });

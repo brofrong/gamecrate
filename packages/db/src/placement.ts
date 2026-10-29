@@ -1,7 +1,7 @@
 // Допуск игры на воркер: классы воркеров, подходит ли железо, какие воркеры
 // годятся игре для пользователя (спека §2.1–§2.3).
 import type { WorkerHardware } from "@cg/rpc";
-import { and, desc, eq, gte, inArray, or } from "drizzle-orm";
+import { and, arrayContains, desc, eq, gte, inArray, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { Db } from "./Db";
 import { gameRequirements, workerClasses, workers } from "./schema";
@@ -40,7 +40,11 @@ export const fitsRequirements = (
 };
 
 /** Класс воркера в порядке силы (`rank desc`): сильнейший первым. */
-export type WorkerClassRow = { readonly id: string; readonly name: string; readonly rank: number };
+export type WorkerClassRow = {
+  readonly id: string;
+  readonly name: string;
+  readonly rank: number;
+};
 
 /**
  * Классы, доступные пользователю (спека §2.4) — задел под тарифы: сейчас у
@@ -126,7 +130,9 @@ export const eligibleWorkers = (
 
     return fitting
       .map((w) => ({ id: w.id, rank: w.rank, slots: w.slots }))
-      .sort((a, b) => b.rank - a.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      .sort(
+        (a, b) => b.rank - a.rank || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+      );
   }).pipe(Effect.orDie);
 
 /**
@@ -137,8 +143,10 @@ export const eligibleWorkers = (
 export const WORKER_RECENT_MS = 10 * 60 * 1000;
 
 /**
- * Доступна ли игра пользователю прямо сейчас (спека §3): среди воркеров,
- * которые подключены или были на связи за последние `WORKER_RECENT_MS`
+ * Доступна ли игра пользователю прямо сейчас (спека §3): среди воркеров с
+ * ролью `worker` (планировщик размещает сессии только на них; агент с одной
+ * ролью `gamestore` игру не запустит), которые подключены или были на связи
+ * за последние `WORKER_RECENT_MS`
  * (`last_seen_at` хаба или `stats_at` монитора — хватает любого из двух; по
  * этим полям, не зная о текущей сетевой подключённости), есть хотя бы один,
  * который годится игре для пользователя (`eligibleWorkers`, §2.1–§2.3, без
@@ -157,7 +165,13 @@ export const gameAvailable = (
       .select({ id: workers.id })
       .from(workers)
       .where(
-        or(gte(workers.lastSeenAt, threshold), gte(workers.statsAt, threshold)),
+        and(
+          arrayContains(workers.roles, ["worker"]),
+          or(
+            gte(workers.lastSeenAt, threshold),
+            gte(workers.statsAt, threshold),
+          ),
+        ),
       );
     if (recent.length === 0) return false;
     const eligible = yield* eligibleWorkers(userId, appId, {

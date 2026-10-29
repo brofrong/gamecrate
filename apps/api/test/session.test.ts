@@ -98,6 +98,7 @@ const seed = Effect.gen(function* () {
     id: "w1",
     publicIp: "203.0.113.1",
     slots: 1,
+    roles: ["worker"],
     classId: cls!.id,
     lastSeenAt: new Date(),
   });
@@ -188,9 +189,7 @@ describe("session rpc", () => {
           .set({ blockedAt: new Date() })
           .where(eq(user.id, alice.id));
         const rpc = yield* client;
-        const denied = yield* Effect.flip(
-          rpc["session.start"]({ appId: 10 }),
-        );
+        const denied = yield* Effect.flip(rpc["session.start"]({ appId: 10 }));
         const active = yield* rpc["session.active"]();
         const rows = yield* db.select().from(sessions);
         return { denied, active, rows };

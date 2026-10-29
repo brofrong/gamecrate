@@ -532,6 +532,7 @@ describe("library.game", () => {
           id: "w1",
           publicIp: "203.0.113.1",
           slots: 1,
+          roles: ["worker"],
           classId: cls!.id,
           lastSeenAt: new Date(),
         });
