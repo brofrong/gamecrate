@@ -5,16 +5,25 @@ import {
   games,
   type InstallStage as DbInstallStage,
   installJobs,
+  installStageMarks,
   playSegments,
   type SessionStage as DbSessionStage,
   type SessionState as DbSessionState,
+  sessionStageMarks,
   sessions,
   user,
   userGames,
 } from "@cg/db";
-import { isSessionId, type SessionState, type SessionView } from "@cg/rpc";
+import {
+  isSessionId,
+  type SessionState,
+  type SessionTiming,
+  type SessionView,
+  type StageTiming,
+} from "@cg/rpc";
 import {
   and,
+  asc,
   eq,
   isNotNull,
   isNull,
@@ -24,6 +33,7 @@ import {
 } from "drizzle-orm";
 import { DateTime, Effect } from "effect";
 import { loadSessionSettings } from "../admin/settings";
+import * as StageNorms from "./StageNorms";
 
 // Состояния в `@cg/db` и `@cg/rpc` — один и тот же список строк.
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
@@ -153,6 +163,64 @@ const playedSeconds = (sessionId: string, now: Date) =>
     return Math.floor(totalMs / 1000);
   });
 
+/**
+ * Отметки этапов по времени → `StageTiming`: этап кончается со следующей
+ * отметкой (последний — ещё идёт, `endedAt` null), норма — `normOf(stage)`.
+ */
+const stageTimings = <S extends string>(
+  marks: ReadonlyArray<{ readonly stage: S; readonly at: Date }>,
+  normOf: (stage: S) => number | undefined,
+): Array<StageTiming> =>
+  marks.map((mark, i) => ({
+    stage: mark.stage,
+    startedAt: mark.at.toISOString(),
+    endedAt: marks[i + 1]?.at.toISOString() ?? null,
+    normMs: normOf(mark.stage) ?? null,
+  }));
+
+/**
+ * Время экрана загрузки (`SessionView.timing`): null, когда сессия уже не на
+ * нём (`stage = visible` или терминальное состояние) — тогда ни отметки, ни
+ * нормы не читаются. Отметки установки — только в `installing` (как
+ * `installStageOf`: `installJobId` после установки остаётся для истории).
+ * Нормы — `StageNorms.normsFor` (кэш по `appId`), у `downloading` нормы нет.
+ */
+const timingOf = (row: SessionWithGame, now: Date) =>
+  Effect.gen(function* () {
+    if (terminalStates.includes(row.state) || row.stage === "visible") {
+      return null;
+    }
+    const db = yield* Db;
+    const launchMarks = yield* db
+      .select({ stage: sessionStageMarks.stage, at: sessionStageMarks.at })
+      .from(sessionStageMarks)
+      .where(eq(sessionStageMarks.sessionId, row.id))
+      .orderBy(asc(sessionStageMarks.at));
+    const installJobId = row.state === "installing" ? row.installJobId : null;
+    const installMarks =
+      installJobId === null
+        ? []
+        : yield* db
+            .select({
+              stage: installStageMarks.stage,
+              at: installStageMarks.at,
+            })
+            .from(installStageMarks)
+            .where(eq(installStageMarks.jobId, installJobId))
+            .orderBy(asc(installStageMarks.at));
+    const norms = yield* StageNorms.normsFor(row.appId);
+    return {
+      serverNow: now.toISOString(),
+      launch: stageTimings(launchMarks, (stage) => norms.launch[stage]).filter(
+        (timing) => timing.stage !== "visible",
+      ),
+      install: stageTimings(installMarks, (stage) =>
+        stage === "downloading" ? undefined : norms.install[stage],
+      ),
+      launchNormMs: norms.launchTotal,
+    } satisfies SessionTiming;
+  });
+
 /** `SessionView` из строки: игровое время и (в `idle_warning`) срок автозакрытия. */
 const toView = (row: SessionWithGame) =>
   Effect.gen(function* () {
@@ -180,6 +248,7 @@ const toView = (row: SessionWithGame) =>
       stage: row.stage,
       installStage: installStageOf(row.state, row.installStage),
       hadInstall: row.installJobId !== null,
+      timing: yield* timingOf(row, now),
       playedSeconds: yield* playedSeconds(row.id, now),
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;

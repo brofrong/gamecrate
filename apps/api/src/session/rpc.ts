@@ -17,8 +17,19 @@ import * as SessionRepo from "./SessionRepo";
 /** Как часто `session.watch` перечитывает сессию без уведомлений (`playedSeconds`, `idleDeadline`). */
 const watchRefresh = "5 seconds";
 
-const sameView = (a: SessionView, b: SessionView) =>
-  JSON.stringify(a) === JSON.stringify(b);
+/** Представление без `timing.serverNow`: оно меняется с каждым чтением. */
+const comparable = (view: SessionView) =>
+  view.timing === null
+    ? view
+    : { ...view, timing: { ...view.timing, serverNow: "" } };
+
+/**
+ * Одинаковые ли представления для `Stream.changesWith`: `timing.serverNow`
+ * не в счёт — иначе поток слал бы повтор на каждый тик только потому, что
+ * прошло время (сайт считает прошедшее время сам от последнего `serverNow`).
+ */
+export const sameView = (a: SessionView, b: SessionView) =>
+  JSON.stringify(comparable(a)) === JSON.stringify(comparable(b));
 
 /**
  * Поток представлений сессии: подписка на `session_changed` оформляется до
