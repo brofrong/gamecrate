@@ -404,6 +404,7 @@ const make = (options: SessionRunnerOptions) =>
                     workerId,
                     report.sessionId,
                     report.stage,
+                    now,
                   ),
                 );
               case "WorkerStats":

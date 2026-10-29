@@ -3,8 +3,10 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  index,
   integer,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -96,6 +98,28 @@ export const installJobs = pgTable(
     uniqueIndex("install_jobs_active_app_idx")
       .on(t.appId)
       .where(sql`${t.state} in ('queued', 'running')`),
+  ],
+);
+
+/**
+ * Отметка начала каждого этапа установки (`install_jobs.stage`,
+ * `InstallRepo.recordStage`) — для статистики «сколько обычно занимает этап»
+ * на экране загрузки (Task 4), как `sessionStageMarks`. Одна отметка на
+ * задачу и этап (PK); пишется в той же транзакции, что и переход `stage`, и
+ * только когда тот реально сменился.
+ */
+export const installStageMarks = pgTable(
+  "install_stage_marks",
+  {
+    jobId: text("job_id")
+      .notNull()
+      .references(() => installJobs.id, { onDelete: "cascade" }),
+    stage: text("stage", { enum: installStages }).notNull(),
+    at: timestamptz("at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.jobId, t.stage] }),
+    index("install_stage_marks_stage_at_idx").on(t.stage, t.at.desc()),
   ],
 );
 
