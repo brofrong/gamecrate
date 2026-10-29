@@ -358,6 +358,8 @@ interface Session {
   phase: Phase;
   /** Вход §4 вписан этим агентом перед стартом (для `ProfileCommit.steamLoginSeeded`). */
   seeded: boolean;
+  /** Метка вписанного входа (`SteamLoginSeed.putAt`, для `ProfileCommit.steamLoginPutAt`). */
+  seedPutAt: string | undefined;
   /**
    * Момент сброса входа Steam, эхом которого агент стёр вход перед стартом
    * (для `ProfileCommit.steamLoginResetAt`); `undefined` — стирания в этом
@@ -972,6 +974,9 @@ const make = Effect.gen(function* () {
         userId: session.userId,
         baseVersion: session.baseVersion,
         steamLoginSeeded: session.seeded,
+        ...(session.seedPutAt !== undefined
+          ? { steamLoginPutAt: session.seedPutAt }
+          : {}),
         // Steam уже закрыт: обёртка игры не должна попасть в профиль.
         beforePack: clearLaunchOptions({
           container: session.name,
@@ -1133,6 +1138,7 @@ const make = Effect.gen(function* () {
               ),
             );
             session.seeded = true;
+            session.seedPutAt = steamLogin.putAt;
           }
           // Обёртка `cg-game-exit` в параметрах запуска игры (§4.2); не вышло —
           // игра идёт без неё, её конец будет `unknown`.
@@ -1221,6 +1227,7 @@ const make = Effect.gen(function* () {
         created: fields.created ?? false,
         phase: fields.phase ?? "starting",
         seeded: false,
+        seedPutAt: undefined,
         loginResetAt: undefined,
         gameRunning: fields.gameRunning ?? false,
         stage: undefined,

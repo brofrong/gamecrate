@@ -17,7 +17,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { Db, steamLoginSeeds } from "@cg/db";
 import type { SteamLoginSeed } from "@cg/rpc";
-import { and, eq, lt, lte } from "drizzle-orm";
+import { and, eq, lt, lte, sql } from "drizzle-orm";
 import { Clock, Context, Duration, Effect, Layer, Redacted } from "effect";
 import { OrchestratorConfig } from "./config";
 
@@ -35,10 +35,17 @@ export interface SteamLoginSeedsShape {
   /**
    * Вход пользователя, если он есть и не просрочен; иначе `null`. Просроченная
    * или нерасшифровываемая (другой `SEED_KEY`, порча) строка удаляется.
+   * `putAt` — момент `put` (ISO, мс): метка, по которой `clear` уберёт
+   * именно этот вход.
    */
   readonly get: (userId: string) => Effect.Effect<SteamLoginSeed | null>;
-  /** Убрать вход пользователя (принятый посеянный коммит профиля). */
-  readonly clear: (userId: string) => Effect.Effect<void>;
+  /**
+   * Убрать вход пользователя (принятый посеянный коммит профиля). С `putAt` —
+   * только вход, положенный в этот момент (до мс, как отдал `get`): вход,
+   * положенный заново, пока шла сессия, остаётся. Без `putAt` (агент без
+   * метки) — любой. Возвращает, убрана ли строка.
+   */
+  readonly clear: (userId: string, putAt?: Date) => Effect.Effect<boolean>;
   /**
    * Убрать вход пользователя, положенный раньше `at` (админ сбросил вход Steam
    * в момент `at`, `user.steam_login_reset_at`); положенный в `at` или позже —
@@ -199,14 +206,27 @@ const make = (seedKey: Redacted.Redacted<string>) =>
           accountName: Redacted.make(secret.accountName),
           steamId: row.steamId,
           refreshToken: Redacted.make(secret.refreshToken),
+          putAt: row.putAt.toISOString(),
         } satisfies SteamLoginSeed;
       }).pipe(Effect.orDie);
 
-    const clear: SteamLoginSeedsShape["clear"] = (userId) =>
+    const clear: SteamLoginSeedsShape["clear"] = (userId, putAt) =>
       db
         .delete(steamLoginSeeds)
-        .where(eq(steamLoginSeeds.userId, userId))
-        .pipe(Effect.asVoid, Effect.orDie);
+        .where(
+          and(
+            eq(steamLoginSeeds.userId, userId),
+            // Postgres хранит микросекунды, метка `get` — миллисекунды.
+            putAt === undefined
+              ? undefined
+              : sql`date_trunc('milliseconds', ${steamLoginSeeds.putAt}) = ${putAt}`,
+          ),
+        )
+        .returning({ userId: steamLoginSeeds.userId })
+        .pipe(
+          Effect.map((rows) => rows.length > 0),
+          Effect.orDie,
+        );
 
     const clearOlderThan: SteamLoginSeedsShape["clearOlderThan"] = (
       userId,

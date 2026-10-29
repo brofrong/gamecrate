@@ -414,6 +414,9 @@ describe("install jobs", () => {
           refreshToken: Redacted.make("refresh-a"),
         };
         yield* seeds.put("userA", steamLogin);
+        // С входом уходит его метка: по ней конец установки уберёт именно его.
+        const putAt = (yield* seeds.get("userA"))?.putAt;
+        expect(putAt).toBeString();
 
         // Два разных appid — две отдельные задачи, можно дать их двум агентам
         // за один проход диспетчера (claimNext выбирает воркер по возрастанию id).
@@ -438,7 +441,7 @@ describe("install jobs", () => {
               appId: DOTA,
               userId: "userA",
               profile: null,
-              steamLogin,
+              steamLogin: { ...steamLogin, putAt },
               steamLoginTimeoutSeconds: 120,
             },
           },
@@ -535,7 +538,7 @@ describe("install jobs", () => {
               appId: PORTAL,
               userId: "u-new",
               profile: null,
-              steamLogin: fresh,
+              steamLogin: { ...fresh, putAt: expect.any(String) },
               steamLoginTimeoutSeconds: 90,
               steamLoginResetAt: resetNew.toISOString(),
             },
@@ -548,7 +551,7 @@ describe("install jobs", () => {
               appId: CS,
               userId: "u-none",
               profile: null,
-              steamLogin: none,
+              steamLogin: { ...none, putAt: expect.any(String) },
               steamLoginTimeoutSeconds: 90,
             },
           },

@@ -1573,7 +1573,8 @@ describe("Installer", () => {
     run((h) =>
       Effect.gen(function* () {
         h.fake.state.autoLogin = false;
-        const steamLogin = testSteamLogin();
+        const putAt = "2026-10-29T10:00:00.123Z";
+        const steamLogin = testSteamLogin({ putAt });
         yield* h.installer.install({
           ...install,
           profile: null,
@@ -1602,6 +1603,7 @@ describe("Installer", () => {
             objectKey: "profiles/u1/new.cgp",
             sizeBytes: bytes("installer-home-tar").length,
             steamLoginSeeded: true,
+            steamLoginPutAt: putAt,
           },
         ]);
       }),
@@ -1687,6 +1689,10 @@ describe("Installer", () => {
           },
         ]);
         expect("steamLoginResetAt" in (h.fake.state.commits[0] ?? {})).toBe(
+          false,
+        );
+        // Вход без метки (старый оркестратор) — и в коммите метки нет.
+        expect("steamLoginPutAt" in (h.fake.state.commits[0] ?? {})).toBe(
           false,
         );
       }),
@@ -2158,9 +2164,9 @@ describe("Installer DeleteGame", () => {
           expect(
             existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
           ).toBe(true);
-          expect(
-            existsSync(join(h.fake.state.lower, "common/Balatro")),
-          ).toBe(true);
+          expect(existsSync(join(h.fake.state.lower, "common/Balatro"))).toBe(
+            true,
+          );
           // Другую игру (не из cg.app меток) удалить можно.
           yield* h.installer.deleteGame(1493710);
           expect(yield* awaitReports(h, 1)).toEqual([
@@ -2197,9 +2203,9 @@ describe("Installer DeleteGame", () => {
           expect(
             existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
           ).toBe(true);
-          expect(
-            existsSync(join(h.fake.state.lower, "common/Balatro")),
-          ).toBe(true);
+          expect(existsSync(join(h.fake.state.lower, "common/Balatro"))).toBe(
+            true,
+          );
           // Другую игру (её шаблон не собирается) удалить можно.
           yield* h.installer.deleteGame(1493710);
           expect(yield* awaitReports(h, 1)).toEqual([

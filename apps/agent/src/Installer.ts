@@ -397,6 +397,8 @@ interface Job {
   phase: "downloading" | "finishing";
   /** Вход §4 вписан в этот запуск (для `ProfileCommit.steamLoginSeeded` и предупреждения). */
   seeded: boolean;
+  /** Метка вписанного входа (`SteamLoginSeed.putAt`, для `ProfileCommit.steamLoginPutAt`). */
+  seedPutAt: string | undefined;
   /**
    * Момент сброса входа Steam, эхом которого агент стёр вход перед стартом
    * (для `ProfileCommit.steamLoginResetAt`); `undefined` — стирания в этом
@@ -725,6 +727,7 @@ const make = Effect.gen(function* () {
               ),
             );
             job.seeded = true;
+            job.seedPutAt = job.steamLogin.putAt;
           }
           const mtime = Math.floor((yield* Clock.currentTimeMillis) / 1000);
           yield* docker
@@ -784,6 +787,9 @@ const make = Effect.gen(function* () {
         userId: job.userId,
         baseVersion: job.profile?.version ?? null,
         steamLoginSeeded: job.seeded,
+        ...(job.seedPutAt !== undefined
+          ? { steamLoginPutAt: job.seedPutAt }
+          : {}),
         ...(job.loginResetAt !== undefined
           ? { steamLoginResetAt: job.loginResetAt }
           : {}),
@@ -960,6 +966,7 @@ const make = Effect.gen(function* () {
         cancelRequested: yield* Deferred.make<void>(),
         phase: "downloading",
         seeded: false,
+        seedPutAt: undefined,
         loginResetAt: undefined,
       };
       current = job;

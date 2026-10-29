@@ -1595,6 +1595,41 @@ describe("SessionSupervisor", () => {
       }),
     ));
 
+  it("session commit echoes the putAt of the seed it used", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const putAt = "2026-10-29T10:00:00.123Z";
+        yield* h.supervisor.handle({
+          ...start,
+          steamLogin: testSteamLogin({ putAt }),
+        });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits[0]?.steamLoginSeeded).toBe(true);
+        expect(h.fake.state.commits[0]?.steamLoginPutAt).toBe(putAt);
+      }),
+    ));
+
+  it("session commit has no putAt without a seed or its label", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        // Старый оркестратор: вход без метки.
+        yield* h.supervisor.handle({ ...start, steamLogin: testSteamLogin() });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        // Без посева.
+        yield* h.supervisor.handle({ ...start, sessionId: "s2" });
+        yield* h.tick("0 seconds");
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s2" });
+        yield* h.tick("0 seconds");
+        expect(h.fake.state.commits).toHaveLength(2);
+        for (const commit of h.fake.state.commits)
+          expect("steamLoginPutAt" in commit).toBe(false);
+      }),
+    ));
+
   it("StartSession with steamLoginResetAt clears login before seeding and echoes it", () =>
     run((h) =>
       Effect.gen(function* () {

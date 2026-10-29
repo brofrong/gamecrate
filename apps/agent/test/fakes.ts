@@ -75,9 +75,11 @@ export const testSteamLogin = (
     readonly accountName: string;
     readonly steamId: string;
     readonly refreshToken: string;
+    readonly putAt: string;
   }> = {},
 ): SteamLoginSeed => ({
   accountName: Redacted.make(patch.accountName ?? "test-account"),
   steamId: patch.steamId ?? "76561197960287930",
   refreshToken: Redacted.make(patch.refreshToken ?? "test-refresh-token"),
+  ...(patch.putAt !== undefined && { putAt: patch.putAt }),
 });

@@ -52,12 +52,8 @@ describe("agent protocol", () => {
   });
 
   it("rejects unknown SessionStage/InstallStage literals", () => {
-    expect(() =>
-      Schema.decodeUnknownSync(SessionStage)("unknown"),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(InstallStage)("unknown"),
-    ).toThrow();
+    expect(() => Schema.decodeUnknownSync(SessionStage)("unknown")).toThrow();
+    expect(() => Schema.decodeUnknownSync(InstallStage)("unknown")).toThrow();
     expect(() =>
       Schema.decodeUnknownSync(AgentReport)({
         _tag: "SessionStage",
@@ -137,7 +133,12 @@ describe("agent protocol", () => {
         cpuCores: 6,
         cpuThreads: 12,
         memoryBytes: 32795732 * 1024,
-        gpus: [{ name: "NVIDIA GeForce GTX 1650 SUPER", memoryBytes: 4096 * 2 ** 20 }],
+        gpus: [
+          {
+            name: "NVIDIA GeForce GTX 1650 SUPER",
+            memoryBytes: 4096 * 2 ** 20,
+          },
+        ],
         disks: [
           {
             name: "nvme0n1",
@@ -216,7 +217,10 @@ describe("agent protocol", () => {
     } as const;
     expect(Schema.decodeUnknownSync(AgentReport)(failed)).toEqual(failed);
     expect(() =>
-      Schema.decodeUnknownSync(AgentCommand)({ _tag: "DeleteGame", appId: 1.5 }),
+      Schema.decodeUnknownSync(AgentCommand)({
+        _tag: "DeleteGame",
+        appId: 1.5,
+      }),
     ).toThrow();
   });
 
@@ -237,5 +241,38 @@ describe("agent protocol", () => {
         sizeBytes: 1,
       }),
     ).toThrow();
+  });
+  it("Steam login putAt goes out in the command and back in ProfileCommit", () => {
+    const putAt = "2026-10-29T10:00:00.123Z";
+    const json = {
+      _tag: "InstallGame",
+      jobId: "job-1",
+      appId: 570,
+      userId: "u1",
+      profile: null,
+      steamLogin: {
+        accountName: "acc",
+        steamId: "76561197960287930",
+        refreshToken: "tok",
+        putAt,
+      },
+      steamLoginTimeoutSeconds: 90,
+    } as const;
+    const decoded = Schema.decodeUnknownSync(AgentCommand)(json);
+    if (decoded._tag !== "InstallGame" || decoded.steamLogin === null)
+      throw new Error("expected InstallGame with steamLogin");
+    expect(decoded.steamLogin.putAt).toBe(putAt);
+    expect(Schema.encodeSync(AgentCommand)(decoded)).toEqual(json);
+    for (const steamLoginPutAt of [putAt, null]) {
+      const commit = {
+        userId: "u1",
+        baseVersion: null,
+        objectKey: "profiles/u1/a.cgp",
+        sizeBytes: 1,
+        steamLoginSeeded: true,
+        steamLoginPutAt,
+      };
+      expect(Schema.decodeUnknownSync(ProfileCommit)(commit)).toEqual(commit);
+    }
   });
 });
