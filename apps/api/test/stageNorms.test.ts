@@ -13,7 +13,7 @@ import {
   user,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { Effect } from "effect";
+import { Effect, Logger, References } from "effect";
 import * as StageNorms from "../src/session/StageNorms";
 
 const run = <A, E>(effect: Effect.Effect<A, E, Db>) =>
@@ -295,5 +295,79 @@ describe("stage norms", () => {
     expect(result.first.launch.steam).toBe(30_000);
     expect(result.cached.launch.steam).toBe(30_000);
     expect(result.fresh.launch.steam).toBe(60_000);
+  });
+
+  it("a failing query returns empty norms instead of dying, logs once, cached briefly (I1)", async () => {
+    const lines: Array<string> = [];
+    const capture = Logger.make((options) => {
+      lines.push(Logger.formatJson.log(options));
+    });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        // Симулируем сбой обоих запросов норм (напр. упавшая таблица под
+        // нагрузкой, статемент-таймаут — спека I1).
+        yield* db.$client.unsafe("drop table session_stage_marks");
+        yield* db.$client.unsafe("drop table install_stage_marks");
+        const first = yield* StageNorms.normsFor(10);
+        // В пределах короткого кэша сбоя — не повторный запрос к той же
+        // упавшей БД (иначе второй вызов снова бы залогировал предупреждение).
+        const second = yield* StageNorms.normsFor(10);
+        return { first, second };
+      }).pipe(
+        Effect.provide(Logger.layer([capture])),
+        Effect.provideService(References.MinimumLogLevel, "Warn"),
+        Effect.provide(DbTest),
+      ),
+    );
+    const empty = { launch: {}, launchTotal: null, install: {} };
+    expect(result.first).toEqual(empty);
+    expect(result.second).toEqual(empty);
+    const warnings = lines.filter((line) =>
+      line.includes("stage norms query failed"),
+    );
+    expect(warnings).toHaveLength(2);
+  });
+
+  it("marks older than 30 days do not count toward the norm (M1)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const old = Date.now() - 40 * 24 * 60 * 60 * 1000;
+        // 5 старых запусков по 100 с — вне 30-дневного окна.
+        yield* times(5, launch(10, [["computer", 0], ["steam", 100]], old));
+        // 5 свежих по 10 с — без старых они и дают норму.
+        yield* times(5, steamLaunch(10, 10));
+        return yield* StageNorms.normsFor(10);
+      }),
+    );
+    // Без 30-дневной границы медиана 10 замеров (5×100 с и 5×10 с) была бы
+    // 55 с — середина между 10 и 100.
+    expect(result.launch.steam).toBe(10_000);
+  });
+
+  it("launchTotal clamps a negative duration (backward clock step) to 0", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        // «visible» раньше «computer» — сбой или шаг часов назад между
+        // отметками; без ограничения снизу медиана была бы отрицательной и
+        // не прошла бы кодирование `NonNegativeInt`.
+        yield* times(
+          5,
+          launch(20, [
+            ["computer", 0],
+            ["steam", 10],
+            ["login", 20],
+            ["prepare", 30],
+            ["loading", 40],
+            ["visible", -5],
+          ]),
+        );
+        return yield* StageNorms.normsFor(20);
+      }),
+    );
+    expect(result.launchTotal).toBe(0);
   });
 });
