@@ -6,9 +6,11 @@
 //   `player` при отвязке; `steam_id` сбрасывается при отвязке Steam, и той же
 //   записью ставится `steam_login_reset_at = now` (тот же механизм, что
 //   «Сбросить вход Steam» в админке): оркестратор выбросит посев, сделанный
-//   до отвязки, агент при следующем старте сотрёт вход из профиля.
+//   до отвязки, агент при следующем старте сотрёт вход из профиля; строку
+//   `steam_login_seeds` пользователя стираем здесь же — отвязка убирает
+//   credential сразу, не дожидаясь следующего запуска или `SEED_TTL`.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
-import { account, user } from "@cg/db";
+import { account, steamLoginSeeds, user } from "@cg/db";
 import { canUnlink } from "@cg/rpc";
 import {
   APIError,
@@ -168,16 +170,24 @@ export const authHooks = (deps: {
       } else if (providerId === STEAM_PROVIDER_ID) {
         // Тем же обновлением помечаем сброс входа (`steam_login_reset_at`),
         // как «Сбросить вход Steam» в админке (Task 3) — отдельного запроса
-        // не нужно, оба поля летят одной мутацией.
+        // не нужно, оба поля летят одной мутацией; посев (`steam_login_seeds`)
+        // убираем в этот же момент, а не ждём `clearOlderThan` на следующем
+        // запуске или `SEED_TTL` (M3) — строки не связаны FK-транзакцией с
+        // `user`, поэтому удаление отдельным запросом в той же попытке записи.
         await runAfterHookWrite(
           "Failed to reset steamId after steam unlink",
           userId,
           providerId,
           () =>
-            deps.db
-              .update(user)
-              .set({ steamId: null, steamLoginResetAt: new Date() })
-              .where(eq(user.id, userId)),
+            Promise.all([
+              deps.db
+                .update(user)
+                .set({ steamId: null, steamLoginResetAt: new Date() })
+                .where(eq(user.id, userId)),
+              deps.db
+                .delete(steamLoginSeeds)
+                .where(eq(steamLoginSeeds.userId, userId)),
+            ]),
         );
       }
       return;

@@ -2,7 +2,13 @@
 // последнего способа входа при отвязке, роль Pocket ID при привязке/отвязке.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { runWithRequestState } from "@better-auth/core/context";
-import { account, migrationsFolder, session, user } from "@cg/db";
+import {
+  account,
+  migrationsFolder,
+  session,
+  steamLoginSeeds,
+  user,
+} from "@cg/db";
 import { APIError } from "better-auth/api";
 import { SQL } from "bun";
 import { eq } from "drizzle-orm";
@@ -337,6 +343,16 @@ describe("account linking", () => {
 
   it("unlinking Steam is allowed even when it is the only other account, and marks the login reset", async () => {
     const beforeUnlink = new Date();
+    // Посев входа (Task 5, QR): отвязка должна убрать его сразу (M3), а не
+    // только помечать сброс на будущее — строку не расшифровываем (это делает
+    // только оркестратор своим `SEED_KEY`), для проверки важно только её наличие.
+    await drizzle({ client: db }).insert(steamLoginSeeds).values({
+      userId: "u-mail",
+      steamId: "76500000000000001",
+      sealed: "unused-ciphertext",
+      putAt: new Date(),
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
     const response = await auth.handler(
       new Request(`${origin}/api/auth/unlink-account`, {
         method: "POST",
@@ -372,6 +388,12 @@ describe("account linking", () => {
     expect(
       mailUser?.steamLoginResetAt && mailUser.steamLoginResetAt.getTime(),
     ).toBeGreaterThanOrEqual(beforeUnlink.getTime());
+    // M3: посев убран сразу отвязкой, не дожидаясь следующего запуска/TTL.
+    const seedRows = await orm
+      .select({ userId: steamLoginSeeds.userId })
+      .from(steamLoginSeeds)
+      .where(eq(steamLoginSeeds.userId, "u-mail"));
+    expect(seedRows).toHaveLength(0);
   });
 
   it("verified email keeps google unlinkable", async () => {
