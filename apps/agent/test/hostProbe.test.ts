@@ -156,9 +156,7 @@ describe("parseNvidiaSmi", () => {
 
   it("плейсхолдеры кроме [N/A] ([Not Supported] и т.п.) — тоже null, не NaN", () => {
     expect(
-      parseNvidiaSmi(
-        "T4, [Not Supported], [Not Supported], 0, 0, 40, 550.1\n",
-      ),
+      parseNvidiaSmi("T4, [Not Supported], [Not Supported], 0, 0, 40, 550.1\n"),
     ).toEqual([
       {
         name: "T4",
@@ -301,9 +299,7 @@ describe("parseGpuProcesses", () => {
     const xml = gpuProcessesXml(
       processInfo("1885732", "C+G", "witness64_d3d11.exe", "N/A"),
     );
-    expect(parseGpuProcesses(xml)).toEqual([
-      { pid: 1885732, usedBytes: null },
-    ]);
+    expect(parseGpuProcesses(xml)).toEqual([{ pid: 1885732, usedBytes: null }]);
   });
 
   it("пустой список процессов и пустой вывод → []", () => {

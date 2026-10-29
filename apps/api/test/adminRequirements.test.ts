@@ -77,7 +77,8 @@ const clearSeededClass = (db: Db["Service"]) => db.delete(workerClasses);
 const insertWorker = (
   db: Db["Service"],
   values: Partial<typeof workers.$inferInsert> & { id: string },
-) => db.insert(workers).values({ publicIp: "37.153.14.138", slots: 1, ...values });
+) =>
+  db.insert(workers).values({ publicIp: "37.153.14.138", slots: 1, ...values });
 
 /** Сессия + её строка `session_metrics` одним вызовом (FK на `sessions.id`). */
 const insertSessionMetrics = (

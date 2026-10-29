@@ -23,10 +23,18 @@ export const MIN_GAME_SECONDS = 300;
 
 /** Сколько сессий этой игры прошло и сколько p95 по всем GPU вместе (без группировки). */
 const sessionsSql = sql<number>`count(*)::int`;
-const vramP95Sql = sql<number | null>`percentile_cont(0.95) within group (order by ${sessionMetrics.peakVramBytes})`;
-const ramP95Sql = sql<number | null>`percentile_cont(0.95) within group (order by ${sessionMetrics.peakRamBytes})`;
-const cpuP95Sql = sql<number | null>`percentile_cont(0.95) within group (order by ${sessionMetrics.cpuCoresP95})`;
-const gpuUtilP95Sql = sql<number | null>`percentile_cont(0.95) within group (order by ${sessionMetrics.gpuUtilP95})`;
+const vramP95Sql = sql<
+  number | null
+>`percentile_cont(0.95) within group (order by ${sessionMetrics.peakVramBytes})`;
+const ramP95Sql = sql<
+  number | null
+>`percentile_cont(0.95) within group (order by ${sessionMetrics.peakRamBytes})`;
+const cpuP95Sql = sql<
+  number | null
+>`percentile_cont(0.95) within group (order by ${sessionMetrics.cpuCoresP95})`;
+const gpuUtilP95Sql = sql<
+  number | null
+>`percentile_cont(0.95) within group (order by ${sessionMetrics.gpuUtilP95})`;
 /**
  * Доля сессий группы с нужным `game_end`: `count(*) filter`, а не `avg` по
  * булеву — `game_end is null` (ещё не известен) не должен выпадать из
@@ -35,10 +43,15 @@ const gpuUtilP95Sql = sql<number | null>`percentile_cont(0.95) within group (ord
 const crashShareSql = sql<number>`(count(*) filter (where ${sessionMetrics.gameEnd} = 'crash'))::float / count(*)`;
 const otherShareSql = sql<number>`(count(*) filter (where ${sessionMetrics.gameEnd} in ('error', 'unknown')))::float / count(*)`;
 /** Самый частый класс воркеров этой модели GPU среди сессий группы; нет класса у всех — `null`. */
-const classNameSql = sql<string | null>`mode() within group (order by ${workerClasses.name})`;
+const classNameSql = sql<
+  string | null
+>`mode() within group (order by ${workerClasses.name})`;
 
 const qualifyingSessions = (appId: number) =>
-  and(eq(sessionMetrics.appId, appId), gte(sessionMetrics.gameSeconds, MIN_GAME_SECONDS));
+  and(
+    eq(sessionMetrics.appId, appId),
+    gte(sessionMetrics.gameSeconds, MIN_GAME_SECONDS),
+  );
 
 /** Текущие требования игры (`null` — нет строки, «данных нет», спека §2.3). */
 export const getRequirements = (
@@ -69,7 +82,9 @@ export const setRequirements = (
   Effect.gen(function* () {
     const db = yield* Db;
     if (requirements === null) {
-      yield* db.delete(gameRequirements).where(eq(gameRequirements.appId, appId));
+      yield* db
+        .delete(gameRequirements)
+        .where(eq(gameRequirements.appId, appId));
       return true;
     }
     yield* db
@@ -109,7 +124,8 @@ const perSlotVramByGpu = (
       if (vramBytes === undefined) continue;
       const perSlot = vramBytes / Math.max(1, row.slots);
       const current = result.get(row.gpuName) ?? null;
-      if (current === null || perSlot > current) result.set(row.gpuName, perSlot);
+      if (current === null || perSlot > current)
+        result.set(row.gpuName, perSlot);
     }
     return result;
   }).pipe(Effect.orDie);
@@ -137,10 +153,15 @@ export const adminGameRequirements = (
         gpuUtilP95: gpuUtilP95Sql,
         crashShare: crashShareSql,
         otherShare: otherShareSql,
-        vramSources: sql<Array<"process" | "gpu_total">>`array_agg(distinct ${sessionMetrics.vramSource})`,
+        vramSources: sql<
+          Array<"process" | "gpu_total">
+        >`array_agg(distinct ${sessionMetrics.vramSource})`,
       })
       .from(sessionMetrics)
-      .leftJoin(workerClasses, eq(workerClasses.id, sessionMetrics.workerClassId))
+      .leftJoin(
+        workerClasses,
+        eq(workerClasses.id, sessionMetrics.workerClassId),
+      )
       .where(qualifyingSessions(appId))
       .groupBy(sessionMetrics.gpuName);
 

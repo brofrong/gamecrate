@@ -1,7 +1,11 @@
 // Панель требований и замеров игры (строка вкладки «Игры» раскрывается в неё, спека
 // §5.2): три поля требований (VRAM/RAM/CPU в GB) с «Сохранить», таблица замеров по
 // моделям GPU, предложение требований («Принять») и подсказки о падениях.
-import type { AdminGameMetricsRow, AdminGameRequirements, Requirements } from "@cg/rpc";
+import type {
+  AdminGameMetricsRow,
+  AdminGameRequirements,
+  Requirements,
+} from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
 import * as React from "react";
@@ -9,7 +13,11 @@ import { toast } from "sonner";
 import { Polled } from "@/components/admin/Polled";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { formatBytes } from "@/lib/adminFormat";
 import { crashHints, suggestRequirements } from "@/lib/requirementsSuggest";
 import { usePolling } from "@/lib/usePolling";
@@ -34,7 +42,11 @@ const fromGbString = (text: string): number | null => {
   return Number.isFinite(value) && value >= 0 ? Math.round(value * GiB) : null;
 };
 
-type Fields = { readonly vramGb: string; readonly ramGb: string; readonly cpuThreads: string };
+type Fields = {
+  readonly vramGb: string;
+  readonly ramGb: string;
+  readonly cpuThreads: string;
+};
 
 const EMPTY_FIELDS: Fields = { vramGb: "", ramGb: "", cpuThreads: "" };
 
@@ -52,7 +64,9 @@ const fieldsFromRequirements = (requirements: Requirements | null): Fields =>
  * одно заполнено, но не парсится (нечисло, отрицательное, нецелые потоки) —
  * `undefined` (ошибка, сохранять нечего).
  */
-const fieldsToRequirements = (fields: Fields): Requirements | null | undefined => {
+const fieldsToRequirements = (
+  fields: Fields,
+): Requirements | null | undefined => {
   const allEmpty =
     fields.vramGb.trim() === "" &&
     fields.ramGb.trim() === "" &&
@@ -133,7 +147,9 @@ function MetricsTable({ rows }: { rows: ReadonlyArray<AdminGameMetricsRow> }) {
               <td className={td}>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className="underline decoration-dotted">{row.gpuName}</span>
+                    <span className="underline decoration-dotted">
+                      {row.gpuName}
+                    </span>
                   </TooltipTrigger>
                   <TooltipContent>
                     {`Источник VRAM: ${row.vramSources
@@ -142,15 +158,28 @@ function MetricsTable({ rows }: { rows: ReadonlyArray<AdminGameMetricsRow> }) {
                   </TooltipContent>
                 </Tooltip>
               </td>
-              <td className={cn(td, row.className === null && "text-muted-foreground")}>
+              <td
+                className={cn(
+                  td,
+                  row.className === null && "text-muted-foreground",
+                )}
+              >
                 {row.className ?? "без класса"}
               </td>
               <td className={td}>{row.sessions}</td>
-              <td className={td}>{row.vramP95 === null ? "—" : formatBytes(row.vramP95)}</td>
-              <td className={td}>{row.ramP95 === null ? "—" : formatBytes(row.ramP95)}</td>
-              <td className={td}>{row.cpuP95 === null ? "—" : row.cpuP95.toFixed(1)}</td>
               <td className={td}>
-                {row.gpuUtilP95 === null ? "—" : `${Math.round(row.gpuUtilP95)} %`}
+                {row.vramP95 === null ? "—" : formatBytes(row.vramP95)}
+              </td>
+              <td className={td}>
+                {row.ramP95 === null ? "—" : formatBytes(row.ramP95)}
+              </td>
+              <td className={td}>
+                {row.cpuP95 === null ? "—" : row.cpuP95.toFixed(1)}
+              </td>
+              <td className={td}>
+                {row.gpuUtilP95 === null
+                  ? "—"
+                  : `${Math.round(row.gpuUtilP95)} %`}
               </td>
               <td className={td}>{`${Math.round(row.crashShare * 100)} %`}</td>
               <td className={td}>{`${Math.round(row.otherShare * 100)} %`}</td>
@@ -188,10 +217,15 @@ function RequirementsContent({
       return;
     }
     setSaving(true);
-    const exit = await setRequirements(adminSetGameRequirementsArgs(appId, requirements));
+    const exit = await setRequirements(
+      adminSetGameRequirementsArgs(appId, requirements),
+    );
     setSaving(false);
     if (Exit.isFailure(exit)) toast.error("Не удалось сохранить требования");
-    else toast.success(requirements === null ? "Требования очищены" : "Требования сохранены");
+    else
+      toast.success(
+        requirements === null ? "Требования очищены" : "Требования сохранены",
+      );
   };
 
   return (
@@ -200,7 +234,9 @@ function RequirementsContent({
         <Field
           label="VRAM, GB"
           value={fields.vramGb}
-          onChange={(value) => setFields((prev) => ({ ...prev, vramGb: value }))}
+          onChange={(value) =>
+            setFields((prev) => ({ ...prev, vramGb: value }))
+          }
         />
         <Field
           label="RAM, GB"
@@ -210,9 +246,16 @@ function RequirementsContent({
         <Field
           label="Потоки CPU"
           value={fields.cpuThreads}
-          onChange={(value) => setFields((prev) => ({ ...prev, cpuThreads: value }))}
+          onChange={(value) =>
+            setFields((prev) => ({ ...prev, cpuThreads: value }))
+          }
         />
-        <Button type="button" size="sm" disabled={saving} onClick={() => void onSave()}>
+        <Button
+          type="button"
+          size="sm"
+          disabled={saving}
+          onClick={() => void onSave()}
+        >
           Сохранить
         </Button>
         {suggestion !== null && (
@@ -232,7 +275,10 @@ function RequirementsContent({
       )}
 
       {hints.map((hint) => (
-        <div key={hint.gpuName} className="flex flex-wrap items-center gap-2 text-sm">
+        <div
+          key={hint.gpuName}
+          className="flex flex-wrap items-center gap-2 text-sm"
+        >
           <span>
             {`На ${hint.gpuName} игра падает в ${Math.round(hint.share * 100)}% сессий — поднять минимум VRAM выше ${(
               (hint.suggestVramBytes - GiB * 0.5) /

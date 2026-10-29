@@ -13,14 +13,7 @@ import {
 import { DbTest } from "@cg/db/test";
 import type { AgentCommand, WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
-import {
-  Effect,
-  Layer,
-  PubSub,
-  References,
-  type Scope,
-  Stream,
-} from "effect";
+import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
 import {
   AgentHub,
   type AgentHubEvent,
@@ -98,7 +91,8 @@ export const like = (actual: unknown, expected: unknown) =>
   expect(json(actual)).toMatchObject(json(expected) as object);
 
 /** Имя класса по умолчанию для ранга (совпадает с сидом миграции на `rank 1`). */
-const classNameOf = (rank: number) => (rank === 1 ? "Стандарт" : `Класс ${rank}`);
+const classNameOf = (rank: number) =>
+  rank === 1 ? "Стандарт" : `Класс ${rank}`;
 
 /**
  * Находит класс воркера с данным `rank` или заводит его (тесты чистят таблицы

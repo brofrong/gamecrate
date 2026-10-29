@@ -280,7 +280,9 @@ describe("WorkerMonitor", () => {
     run(
       ({ monitor }) =>
         Effect.gen(function* () {
-          expect((yield* monitor.snapshot).versions?.steamClientBuiltAt).toBeNull();
+          expect(
+            (yield* monitor.snapshot).versions?.steamClientBuiltAt,
+          ).toBeNull();
         }),
       (host) => host.mtimes.clear(),
     ));
@@ -316,7 +318,9 @@ describe("WorkerMonitor", () => {
         Effect.gen(function* () {
           const { hardware } = yield* monitor.snapshot;
           // memoryTotalBytes null → в hardware.gpus.memoryBytes это 0 (не nullable там).
-          expect(hardware?.gpus).toEqual([{ name: "Tesla T4", memoryBytes: 0 }]);
+          expect(hardware?.gpus).toEqual([
+            { name: "Tesla T4", memoryBytes: 0 },
+          ]);
           yield* tick(STATS_INTERVAL);
           const [stats] = statsOf(yield* Queue.clear(monitor.reports));
           expect(stats?.gpus).toEqual([

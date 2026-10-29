@@ -355,7 +355,11 @@ const make = (options: SessionRunnerOptions) =>
                 // Stopped/Failed, держала бы слот навсегда.
                 return Effect.gen(function* () {
                   yield* withDb(
-                    SessionRepo.recordHeartbeat(workerId, report.sessionIds, now),
+                    SessionRepo.recordHeartbeat(
+                      workerId,
+                      report.sessionIds,
+                      now,
+                    ),
                   );
                   yield* withDb(
                     SessionRepo.releaseStaleSlots(
@@ -428,9 +432,7 @@ const make = (options: SessionRunnerOptions) =>
               case "SessionMetrics":
                 // Замеры пишутся и после конца сессии (последний отчёт агент
                 // шлёт при закрытии игры/остановке), только от её воркера.
-                return withDb(
-                  MetricsRepo.upsertMetrics(workerId, report, now),
-                );
+                return withDb(MetricsRepo.upsertMetrics(workerId, report, now));
               case "InstallProgress":
               case "InstallFinished":
               case "InstallFailed":

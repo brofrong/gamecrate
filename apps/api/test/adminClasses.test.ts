@@ -74,7 +74,10 @@ describe("admin.classes", () => {
       Effect.gen(function* () {
         const db = yield* Db;
         yield* clearSeededClass(db);
-        const standardId = yield* insertClass(db, { name: "Стандарт", rank: 1 });
+        const standardId = yield* insertClass(db, {
+          name: "Стандарт",
+          rank: 1,
+        });
         yield* insertClass(db, { name: "Быстрое", rank: 2 });
         yield* insertWorker(db, { id: "w1", classId: standardId });
         yield* insertWorker(db, { id: "w2", classId: standardId });
@@ -185,7 +188,16 @@ describe("admin.classes", () => {
           id: "00000000-0000-0000-0000-000000000000",
           direction: "up",
         });
-        return { up, afterUp, edgeTop, edgeBottom, notFound, lowId, midId, highId };
+        return {
+          up,
+          afterUp,
+          edgeTop,
+          edgeBottom,
+          notFound,
+          lowId,
+          midId,
+          highId,
+        };
       }),
     );
     expect(result.up).toBe("ok");

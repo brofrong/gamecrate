@@ -544,7 +544,11 @@ describe("scheduler", () => {
             menuSeen: true,
           },
         });
-        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -40) });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          createdAt: at(t0, -40),
+        });
         yield* Scheduler.tick(t0);
         expect(displayOf("s1")).toEqual({ width: 1280, height: 720 });
 
@@ -566,12 +570,20 @@ describe("scheduler", () => {
             },
           })
           .where(eq(userStreamSettings.userId, "u1"));
-        yield* insertSession({ id: "s2", userId: "u1", createdAt: at(t0, -30) });
+        yield* insertSession({
+          id: "s2",
+          userId: "u1",
+          createdAt: at(t0, -30),
+        });
         yield* Scheduler.tick(at(t0, 2));
         expect(displayOf("s2")).toEqual({ width: 1920, height: 1080 });
 
         // Строки настроек нет — размер по умолчанию.
-        yield* insertSession({ id: "s3", userId: "u2", createdAt: at(t0, -20) });
+        yield* insertSession({
+          id: "s3",
+          userId: "u2",
+          createdAt: at(t0, -20),
+        });
         yield* Scheduler.tick(at(t0, 4));
         expect(displayOf("s3")).toEqual({ width: 1920, height: 1080 });
 
@@ -579,7 +591,11 @@ describe("scheduler", () => {
         yield* db
           .insert(userStreamSettings)
           .values({ userId: "u3", value: "garbage" });
-        yield* insertSession({ id: "s4", userId: "u3", createdAt: at(t0, -10) });
+        yield* insertSession({
+          id: "s4",
+          userId: "u3",
+          createdAt: at(t0, -10),
+        });
         yield* Scheduler.tick(at(t0, 6));
         expect(displayOf("s4")).toEqual({ width: 1920, height: 1080 });
       }),

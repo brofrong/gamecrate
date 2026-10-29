@@ -108,7 +108,8 @@ export const parseCpuInfo = (
     else if (key === "model name" && !modelSeen) {
       model = value;
       modelSeen = true;
-    } else if (key === "cpu cores" && cores === undefined) cores = Number(value);
+    } else if (key === "cpu cores" && cores === undefined)
+      cores = Number(value);
   }
   return { model, cores: cores ?? threads, threads };
 };

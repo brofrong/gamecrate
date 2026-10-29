@@ -77,6 +77,7 @@ export function crashHints(
     .map((row) => ({
       gpuName: row.gpuName,
       share: row.crashShare,
-      suggestVramBytes: (row.perSlotVramBytes as number) + CRASH_HINT_VRAM_STEP_BYTES,
+      suggestVramBytes:
+        (row.perSlotVramBytes as number) + CRASH_HINT_VRAM_STEP_BYTES,
     }));
 }

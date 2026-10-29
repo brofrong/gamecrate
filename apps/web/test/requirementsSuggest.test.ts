@@ -77,7 +77,9 @@ describe("crashHints", () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.gpuName).toBe("GPU A");
     expect(result[0]?.share).toBeCloseTo(0.3, 5);
-    expect(result[0]?.suggestVramBytes).toBe(4 * GiB + CRASH_HINT_VRAM_STEP_BYTES);
+    expect(result[0]?.suggestVramBytes).toBe(
+      4 * GiB + CRASH_HINT_VRAM_STEP_BYTES,
+    );
   });
 
   it("excludes a GPU below the crash share threshold", () => {

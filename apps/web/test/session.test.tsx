@@ -593,8 +593,7 @@ describe("session", () => {
     if (resume.kind === "resume") resume.onResume();
     expect(onResume).toHaveBeenCalledTimes(1);
     expect(
-      cardAction({ appId: 400, available: true }, play(view("playing")))
-        .kind,
+      cardAction({ appId: 400, available: true }, play(view("playing"))).kind,
     ).toBe("blocked");
   });
 

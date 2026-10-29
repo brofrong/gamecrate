@@ -1,5 +1,10 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
-import { AppRpcs, type Requirements, type Role, type StreamSettings } from "@cg/rpc";
+import {
+  AppRpcs,
+  type Requirements,
+  type Role,
+  type StreamSettings,
+} from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { AsyncResult, Atom, AtomRpc } from "effect/reactivity";

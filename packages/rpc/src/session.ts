@@ -112,10 +112,7 @@ export class AccessDenied extends Schema.TaggedError<AccessDenied>()(
 export const noServerReason = "Сейчас нет подходящего сервера";
 
 /** Сейчас нет ни одного воркера, который годится этой игре для пользователя (спека §3). */
-export class NoServer extends Schema.TaggedError<NoServer>()(
-  "NoServer",
-  {},
-) {}
+export class NoServer extends Schema.TaggedError<NoServer>()("NoServer", {}) {}
 
 /** Сессии нет или она чужая (существование чужих сессий не раскрывается). */
 export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(

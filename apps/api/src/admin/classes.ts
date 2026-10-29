@@ -15,7 +15,8 @@ const TEMP_RANK = -2147483648;
 
 /** Имена constraint'ов, по которым различаем Postgres-нарушения ниже. */
 const NAME_UNIQUE_CONSTRAINT = "worker_classes_name_key";
-const WORKERS_CLASS_ID_FK_CONSTRAINT = "workers_class_id_worker_classes_id_fkey";
+const WORKERS_CLASS_ID_FK_CONSTRAINT =
+  "workers_class_id_worker_classes_id_fkey";
 
 /**
  * Имя нарушенного ограничения БД, если `error` — `EffectDrizzleQueryError` с

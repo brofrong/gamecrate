@@ -10,18 +10,10 @@ import {
 } from "./classes";
 import { deleteGame, listGames } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
-import {
-  adminGameRequirements,
-  setRequirements,
-} from "./requirements";
+import { adminGameRequirements, setRequirements } from "./requirements";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
 import { adminStop, listSessions } from "./sessions";
-import {
-  listUsers,
-  resetSteamLogin,
-  setBlocked,
-  setRole,
-} from "./users";
+import { listUsers, resetSteamLogin, setBlocked, setRole } from "./users";
 import { listWorkers, setClass, setDraining } from "./workers";
 
 export const AdminRpcHandlers = AdminRpcs.toLayer({

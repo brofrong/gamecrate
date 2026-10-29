@@ -233,7 +233,9 @@ export function ClassesCard() {
                     onStartRename={() => setEditingId(workerClass.id)}
                     onCancelRename={() => setEditingId(null)}
                     onRename={(name) => void onRename(workerClass.id, name)}
-                    onMove={(direction) => void onMove(workerClass.id, direction)}
+                    onMove={(direction) =>
+                      void onMove(workerClass.id, direction)
+                    }
                     onDelete={() => void onDelete(workerClass)}
                   />
                 ))}

@@ -651,16 +651,16 @@ export const make = (socketPath: string): DockerClientShape => {
       ),
 
     stats: (name) =>
-      request("stats", "GET", `${containerPath(name)}/stats?stream=false&one-shot=true`,
+      request(
+        "stats",
+        "GET",
+        `${containerPath(name)}/stats?stream=false&one-shot=true`,
         { ok: [200] },
       ).pipe(
         Effect.flatMap(json("stats", StatsResponse)),
         Effect.flatMap(({ memory_stats: memory, cpu_stats: cpu }) => {
           // Остановленный контейнер отдаёт пустые поля — замера нет.
-          if (
-            memory.usage === undefined ||
-            cpu.system_cpu_usage === undefined
-          )
+          if (memory.usage === undefined || cpu.system_cpu_usage === undefined)
             return Effect.fail(
               new DockerError({
                 operation: "stats",

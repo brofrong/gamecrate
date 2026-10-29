@@ -31,7 +31,11 @@ import {
 import { formatBytes, formatShortDate } from "@/lib/adminFormat";
 import { usePolling } from "@/lib/usePolling";
 import { cn } from "@/lib/utils";
-import { adminDeleteGameArgs, adminDeleteGameAtom, adminGamesAtom } from "@/rpc";
+import {
+  adminDeleteGameArgs,
+  adminDeleteGameAtom,
+  adminGamesAtom,
+} from "@/rpc";
 
 /** «5,5 ГБ · 12 шт.» — игры и служебные пакеты вместе, как в заголовке блока. */
 function headerSummary(value: AdminGames): string {
@@ -55,16 +59,15 @@ function DeleteCell({
   onDelete: (game: AdminGame) => void;
 }) {
   if (game.deleting) {
-    return (
-      <span className="text-sm text-muted-foreground">Удаляется…</span>
-    );
+    return <span className="text-sm text-muted-foreground">Удаляется…</span>;
   }
 
-  const reason = game.activeSessions > 0
-    ? "Сейчас играют"
-    : game.installing
-      ? "Ставится"
-      : null;
+  const reason =
+    game.activeSessions > 0
+      ? "Сейчас играют"
+      : game.installing
+        ? "Ставится"
+        : null;
 
   const button = (
     <Button
@@ -184,10 +187,7 @@ function GamesTable({
               <td className={cn(td, "whitespace-nowrap text-muted-foreground")}>
                 {formatBytes(service.sizeBytes)}
               </td>
-              <td
-                className={cn(td, "text-muted-foreground")}
-                colSpan={4}
-              >
+              <td className={cn(td, "text-muted-foreground")} colSpan={4}>
                 нужны играм, удалить нельзя
               </td>
             </tr>
@@ -251,7 +251,9 @@ export function GamesTab() {
                   onDelete={setToDelete}
                   expandedAppId={expandedAppId}
                   onToggle={(appId) =>
-                    setExpandedAppId((current) => (current === appId ? null : appId))
+                    setExpandedAppId((current) =>
+                      current === appId ? null : appId,
+                    )
                   }
                 />
               )
