@@ -279,6 +279,48 @@ describe("profile commit", () => {
       }),
     ));
 
+  it("seeded commit with an unreadable putAt warns with ids only", async () => {
+    const logged: Array<ReadonlyArray<unknown>> = [];
+    const capture = Logger.make(({ logLevel, message }) => {
+      logged.push([
+        logLevel,
+        ...(Array.isArray(message) ? message : [message]),
+      ]);
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* seedUser("u1");
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", makeSeed("a"));
+
+        yield* applyProfileCommit(
+          {
+            userId: "u1",
+            baseVersion: null,
+            objectKey: "profiles/u1/a.cgp",
+            sizeBytes: 10,
+            steamLoginSeeded: true,
+            steamLoginPutAt: "not-a-date",
+          },
+          "w1",
+        );
+      }).pipe(
+        Effect.provide(SteamLoginSeedsTest.pipe(Layer.provideMerge(DbTest))),
+        Effect.provide(Logger.layer([capture])),
+        Effect.provideService(References.MinimumLogLevel, "All"),
+      ),
+    );
+    const warning = logged.find(
+      (line) =>
+        line[1] === "Profile commit has an unreadable Steam login seed label",
+    );
+    expect(warning?.[0]).toBe("Warn");
+    const detail = warning?.[2] as Record<string, unknown> | undefined;
+    expect(detail).toEqual({ userId: "u1", workerId: "w1" });
+    // Никаких токенов/имён аккаунта в предупреждении — только id.
+    expect(JSON.stringify(detail)).not.toContain("steamuser");
+  });
+
   it("rejected or unseeded commit keeps it", () =>
     run(
       Effect.gen(function* () {

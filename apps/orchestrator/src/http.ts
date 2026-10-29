@@ -82,15 +82,21 @@ export const applyProfileCommit = (commit: ProfileCommit, workerId: string) =>
     const seeds = yield* SteamLoginSeeds;
     const result = yield* SessionRepo.commitProfile(commit);
     // Метка посева — та же ISO-строка, что ушла в `steamLogin.putAt` команды;
-    // нечитаемая не снимает вход: он истечёт по `SEED_TTL`.
+    // нечитаемая не снимает вход (он истечёт по `SEED_TTL`), но стоит знать,
+    // что такое пришло — предупреждение ниже, только id.
     const seedPutAt =
       commit.steamLoginPutAt === undefined || commit.steamLoginPutAt === null
         ? undefined
         : new Date(commit.steamLoginPutAt);
+    const seedPutAtUnreadable =
+      seedPutAt !== undefined && Number.isNaN(seedPutAt.getTime());
+    if (result.accepted && commit.steamLoginSeeded && seedPutAtUnreadable)
+      yield* Effect.logWarning(
+        "Profile commit has an unreadable Steam login seed label",
+        { userId: commit.userId, workerId },
+      );
     const seedCleared =
-      result.accepted &&
-      commit.steamLoginSeeded &&
-      (seedPutAt === undefined || !Number.isNaN(seedPutAt.getTime()))
+      result.accepted && commit.steamLoginSeeded && !seedPutAtUnreadable
         ? yield* seeds.clear(commit.userId, seedPutAt)
         : false;
     // Эхо — та же ISO-строка, что ушла в команде; нечитаемое не снимает пометку.

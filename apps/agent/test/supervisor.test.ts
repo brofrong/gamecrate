@@ -122,6 +122,8 @@ const makeFake = () => {
     pgrepExit: undefined as number | undefined,
     /** Журнал подключения Steam в контейнере сессии (`CONNECTION_LOG`). */
     connectionLog: "",
+    /** Чтение журнала подключения (`tail`) падает не-`gone` ошибкой (контейнер жив). */
+    connectionLogFails: false,
     /** Содержимое `/tmp/cg-game-exit` (нет — файла нет). */
     gameExit: undefined as string | undefined,
     /** Файлы в контейнере сессии для `getArchive` (полный путь → текст). */
@@ -449,6 +451,10 @@ const makeFake = () => {
             const match = /^\+(\d+)$/.exec(cmd[2] ?? "");
             if (match === null || cmd[3] !== CONNECTION_LOG)
               return Effect.succeed({ exitCode: 2, stdout: "" });
+            if (state.connectionLogFails)
+              return Effect.fail(
+                new DockerError({ operation: "exec", message: "timeout" }),
+              );
             return Effect.succeed({
               exitCode: 0,
               stdout: state.connectionLog.slice(Number(match[1]) - 1),
@@ -1683,6 +1689,38 @@ describe("SessionSupervisor", () => {
           "Seeded Steam login was not accepted",
         );
       }),
+    ));
+
+  it("repeated connection log read failures warn only once per watch", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle({
+            ...start,
+            steamLogin: testSteamLogin(),
+          });
+          yield* h.tick("0 seconds");
+          // Контейнер жив, но чтение журнала подключения падает на каждом
+          // опросе (раз в 2 с) все 10 минут `LOGIN_LOG_TIMEOUT`.
+          yield* h.tick("10 minutes");
+          const warnings = h.fake.state.logged.filter((line) =>
+            line.includes("Reading the Steam connection log failed"),
+          );
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toContain("Warn");
+          expect(warnings[0]).toContain('"sessionId":"s1"');
+          // Журнал так и не пошёл (`noLog`) — наблюдение кончилось молча,
+          // сессия идёт как шла.
+          const reports = (yield* h.drain).filter(
+            (report) => report._tag !== "Heartbeat",
+          );
+          expect(reports).toEqual([
+            { _tag: "StreamReady", sessionId: "s1", streamUrl },
+          ]);
+        }),
+      (fake) => {
+        fake.state.connectionLogFails = true;
+      },
     ));
 
   it("session commit echoes the putAt of the seed it used", () =>

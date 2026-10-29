@@ -32,6 +32,7 @@ import {
   Layer,
   Option,
   Queue,
+  Ref,
   Result,
 } from "effect";
 import { randomBytes } from "node:crypto";
@@ -811,24 +812,39 @@ const make = Effect.gen(function* () {
    * Посеянный вход: Steam не принял его (`awaitSteamLogon` — `notAccepted`) —
    * то же предупреждение, что у установщика (по нему ищут в логах), без имени
    * аккаунта и токена. Сессию не трогает. Сбой чтения журнала — предупреждение,
-   * опрос продолжается; контейнера нет — наблюдение молча кончается.
+   * опрос продолжается, но само предупреждение — не чаще раза за наблюдение
+   * (иначе при застрявшем контейнере оно сыпалось бы раз в `LOGIN_LOG_POLL` до
+   * `SEEDED_LOGIN_TIMEOUT`); контейнера нет — наблюдение молча кончается.
    */
   const watchSeededLogin = (session: Session, offset: number) =>
-    awaitSteamLogon({
-      read: docker.exec(session.name, connectionLogTail(offset)).pipe(
-        Effect.map(({ stdout }) => stdout),
-        Effect.catchTag("DockerError", (error) =>
-          isGone(error)
-            ? Effect.fail(error)
-            : Effect.logWarning("Reading the Steam connection log failed", {
-                sessionId: session.sessionId,
-                error: error.message,
-              }).pipe(Effect.as("")),
+    Effect.gen(function* () {
+      const readFailureLogged = yield* Ref.make(false);
+      return yield* awaitSteamLogon({
+        read: docker.exec(session.name, connectionLogTail(offset)).pipe(
+          Effect.map(({ stdout }) => stdout),
+          Effect.catchTag("DockerError", (error) =>
+            isGone(error)
+              ? Effect.fail(error)
+              : Ref.getAndSet(readFailureLogged, true).pipe(
+                  Effect.flatMap((alreadyLogged) =>
+                    alreadyLogged
+                      ? Effect.void
+                      : Effect.logWarning(
+                          "Reading the Steam connection log failed",
+                          {
+                            sessionId: session.sessionId,
+                            error: error.message,
+                          },
+                        ),
+                  ),
+                  Effect.as(""),
+                ),
+          ),
         ),
-      ),
-      poll: LOGIN_LOG_POLL,
-      logTimeout: LOGIN_LOG_TIMEOUT,
-      loginTimeout: SEEDED_LOGIN_TIMEOUT,
+        poll: LOGIN_LOG_POLL,
+        logTimeout: LOGIN_LOG_TIMEOUT,
+        loginTimeout: SEEDED_LOGIN_TIMEOUT,
+      });
     }).pipe(
       Effect.flatMap((outcome) =>
         outcome === "notAccepted"
