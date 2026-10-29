@@ -72,7 +72,11 @@ export const scanLibrary = (steamapps: string): Array<LibraryApp> => {
 export interface RemovalPlan {
   /** `steamapps/appmanifest_<appId>.acf`. */
   readonly manifest: string;
-  /** Существующие `common/<installdir>` и `shadercache/<appId>`. */
+  /**
+   * Существующие `common/<installdir>`, `compatdata/<appId>` (шаблон
+   * префикса Proton — `PrefixTemplate.ts`, он не общий между играми) и
+   * `shadercache/<appId>`.
+   */
   readonly dirs: ReadonlyArray<string>;
 }
 
@@ -104,8 +108,9 @@ const othersInstallDirs = (steamapps: string, appId: number): Set<string> => {
  * Что убрать из библиотеки для `appId`: манифест и существующие каталоги
  * `common/<installdir>` (только если `installdir` — один компонент пути и на
  * него не ссылается другой манифест `steamapps` — общий каталог демки,
- * саундтрека или выделенного сервера не трогаем) и `shadercache/<appId>`.
- * Манифеста нет — `undefined` (игры уже нет).
+ * саундтрека или выделенного сервера не трогаем), `compatdata/<appId>`
+ * (шаблон префикса Proton — он не общий, ключ по `appId`) и
+ * `shadercache/<appId>`. Манифеста нет — `undefined` (игры уже нет).
  */
 export const planRemoval = (
   steamapps: string,
@@ -121,6 +126,7 @@ export const planRemoval = (
     ...(isInstallDir(installDir) && !shared
       ? [join(steamapps, "common", installDir)]
       : []),
+    join(steamapps, "compatdata", String(appId)),
     join(steamapps, "shadercache", String(appId)),
   ];
   return {

@@ -68,6 +68,9 @@ export type AdminWorker = typeof AdminWorker.Type;
  * размещённые — `queued`/`installing`); `installing` — есть активная
  * (`queued`/`running`) задача установки; `deleting` — админ попросил удалить
  * (`deleting_at`), кнопка «Удалить» в этом состоянии уже неактивна.
+ * `deleteError` — причина последнего неудачного удаления (русский текст
+ * агента, без секретов), `null` — его не было или новый запрос уже её
+ * очистил.
  */
 export const AdminGame = Schema.Struct({
   appId: Schema.Int,
@@ -79,6 +82,7 @@ export const AdminGame = Schema.Struct({
   activeSessions: Schema.Int,
   installing: Schema.Boolean,
   deleting: Schema.Boolean,
+  deleteError: Schema.NullOr(Schema.String),
 });
 export type AdminGame = typeof AdminGame.Type;
 

@@ -205,4 +205,32 @@ describe("game deleter", () => {
         expect(fake.sent).toEqual([deleteDota]);
       }),
     ));
+
+  it("GameDeleteFailed stores the reason", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const deleter = yield* GameDeleter;
+        yield* seed;
+        connectAgent(fake, "gs-b", ["gamestore"]);
+        yield* deleter.tick;
+
+        yield* deleter.handle(
+          report("gs-b", {
+            _tag: "GameDeleteFailed",
+            appId: DOTA,
+            reason: "Игра запущена",
+          }),
+        );
+        const [dota] = yield* db
+          .select({
+            deletingAt: gamestoreApps.deletingAt,
+            deleteError: gamestoreApps.deleteError,
+          })
+          .from(gamestoreApps)
+          .where(eq(gamestoreApps.appId, DOTA));
+        expect(dota?.deletingAt).toBeNull();
+        expect(dota?.deleteError).toBe("Игра запущена");
+      }),
+    ));
 });

@@ -160,6 +160,44 @@ describe("admin.users.list", () => {
     expect(alice?.steamLoginResetPending).toBe(false);
   });
 
+  it("list orders newest first and reports activeSession", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertAdminAndPlayer(db);
+        yield* insertUser(db, {
+          id: "u-older",
+          name: "Older",
+          createdAt: new Date("2026-10-01T00:00:00Z"),
+        });
+        yield* insertUser(db, {
+          id: "u-newer",
+          name: "Newer",
+          createdAt: new Date("2026-10-15T00:00:00Z"),
+        });
+        yield* db.insert(games).values({ appId: 20, name: "Celeste" });
+        // Только `u-older` держит активную (не ended/failed) сессию.
+        yield* db.insert(sessions).values({
+          id: "22222222-2222-2222-2222-222222222222",
+          userId: "u-older",
+          appId: 20,
+          state: "queued",
+        });
+
+        const rpc = yield* client;
+        return yield* rpc["admin.users.list"]();
+      }),
+    );
+
+    const ids = result.map((u) => u.id);
+    expect(ids.indexOf("u-newer")).toBeLessThan(ids.indexOf("u-older"));
+
+    const older = result.find((u) => u.id === "u-older");
+    const newer = result.find((u) => u.id === "u-newer");
+    expect(older?.activeSession).toBe(true);
+    expect(newer?.activeSession).toBe(false);
+  });
+
   it("synthetic email is null", async () => {
     const result = await run(
       Effect.gen(function* () {

@@ -39,6 +39,7 @@ import {
 } from "../src/DockerClient";
 import {
   CONNECTION_LOG,
+  deleteReasons,
   downloadingBytes,
   DownloadingBytes,
   Installer,
@@ -450,6 +451,8 @@ const run = (
       appId: number,
       fake: Fake,
     ) => Effect.Effect<TemplateOutcome>;
+    /** Фейк `PrefixTemplates.building`; нет — всегда `false`. */
+    readonly templateBuilding?: (appId: number) => boolean;
   } = {},
 ) => {
   const fake = makeFake();
@@ -533,14 +536,18 @@ const run = (
       ),
       (effect) => {
         const ensure = options.templates;
-        return ensure === undefined
+        const building = options.templateBuilding;
+        return ensure === undefined && building === undefined
           ? effect
           : Effect.provideService(effect, PrefixTemplates, {
               ensure: (appId) =>
-                Effect.suspend(() => {
-                  fake.state.calls.push(`templates.ensure ${appId}`);
-                  return ensure(appId, fake);
-                }),
+                ensure === undefined
+                  ? Effect.succeed<TemplateOutcome>("skipped")
+                  : Effect.suspend(() => {
+                      fake.state.calls.push(`templates.ensure ${appId}`);
+                      return ensure(appId, fake);
+                    }),
+              building: building ?? (() => false),
             });
       },
       (effect) => {
@@ -2170,6 +2177,66 @@ describe("Installer DeleteGame", () => {
               running: true,
             },
           ];
+        },
+      },
+    ));
+
+  it("DeleteGame while the prefix template is building reports GameDeleteFailed", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.deleteGame(2379780);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            {
+              _tag: "GameDeleteFailed",
+              appId: 2379780,
+              reason: deleteReasons.templateBuilding,
+            },
+          ]);
+          // Игра на месте: до переноса в корзину дело не дошло.
+          expect(
+            existsSync(join(h.fake.state.lower, "appmanifest_2379780.acf")),
+          ).toBe(true);
+          expect(
+            existsSync(join(h.fake.state.lower, "common/Balatro")),
+          ).toBe(true);
+          // Другую игру (её шаблон не собирается) удалить можно.
+          yield* h.installer.deleteGame(1493710);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            { _tag: "GameDeleted", appId: 1493710 },
+          ]);
+        }),
+      {
+        setup: balatroInLibrary,
+        templateBuilding: (appId) => appId === 2379780,
+      },
+    ));
+
+  it("DeleteGame removes the prefix template directory (compatdata/<appId>) and clears it from the trash", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.installer.deleteGame(2379780);
+          expect(yield* awaitReports(h, 1)).toEqual([
+            { _tag: "GameDeleted", appId: 2379780 },
+          ]);
+          expect(
+            existsSync(join(h.fake.state.lower, "compatdata/2379780")),
+          ).toBe(false);
+          // Шаблон другой игры не тронут.
+          expect(
+            existsSync(join(h.fake.state.lower, "compatdata/1493710")),
+          ).toBe(true);
+          // Корзина очищена — шаблон не остаётся там навсегда.
+          expect(readdirSync(trashOf(h.fake))).toEqual([]);
+        }),
+      {
+        setup: (fake) => {
+          balatroInLibrary(fake);
+          write(fake.state.lower, {
+            "compatdata/2379780/pfx/user.reg": "x",
+            "compatdata/1493710/pfx/user.reg": "x",
+          });
         },
       },
     ));

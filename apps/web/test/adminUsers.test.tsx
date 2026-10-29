@@ -7,7 +7,7 @@
 // «всегда `undefined`»: `mock.module` действует на весь прогон `bun test`, и файлы после
 // этого по алфавиту (например, `landing.test.tsx`, `indexView`) получат именно этот мок —
 // заглушка там тихо ломает ветку `Unauthorized` → «landing».
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { AdminUser, CurrentUserShape } from "@cg/rpc";
 import {
   fireEvent,
@@ -24,6 +24,7 @@ import {
 import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
+import { toast } from "sonner";
 
 /** Элемент `initialValues` у `RegistryProvider` — без своего `any` в этом файле. */
 type InitialValue =
@@ -47,13 +48,18 @@ const setRoleCalls: unknown[] = [];
 const setBlockedCalls: unknown[] = [];
 const resetSteamLoginCalls: unknown[] = [];
 
+// Ответ сервера для следующего вызова `setRole`/`setBlocked` — по умолчанию
+// «ok», тесты тостов «self»/«notFound» подставляют своё и возвращают обратно.
+let nextSetRoleResult: "ok" | "self" | "notFound" = "ok";
+let nextSetBlockedResult: "ok" | "self" | "notFound" = "ok";
+
 const adminSetRoleAtom = Atom.fn((arg: unknown) => {
   setRoleCalls.push(arg);
-  return Effect.succeed("ok" as const);
+  return Effect.succeed(nextSetRoleResult);
 });
 const adminSetBlockedAtom = Atom.fn((arg: unknown) => {
   setBlockedCalls.push(arg);
-  return Effect.succeed("ok" as const);
+  return Effect.succeed(nextSetBlockedResult);
 });
 const adminResetSteamLoginAtom = Atom.fn((arg: unknown) => {
   resetSteamLoginCalls.push(arg);
@@ -360,5 +366,49 @@ describe("UsersTab", () => {
   it("shows a message when there are no users", async () => {
     renderUsers([]);
     expect(await screen.findByText("Пользователей нет")).toBeTruthy();
+  });
+
+  it("shows «Нельзя изменить себя» when the server reports self", async () => {
+    nextSetRoleResult = "self";
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    renderUsers([selfRow, blockedWithPocketId, plain]);
+    const bobRow = (await screen.findByText("Bob")).closest("tr");
+    if (bobRow === null) throw new Error("row not found");
+
+    fireEvent.click(
+      within(bobRow).getByRole("button", { name: "Сделать админом" }),
+    );
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Нельзя изменить себя");
+    });
+    toastError.mockRestore();
+    nextSetRoleResult = "ok";
+  });
+
+  it("shows «Пользователь не найден» when the server reports notFound", async () => {
+    nextSetBlockedResult = "notFound";
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    renderUsers([selfRow, blockedWithPocketId, plain]);
+    const bobRow = (await screen.findByText("Bob")).closest("tr");
+    if (bobRow === null) throw new Error("row not found");
+
+    fireEvent.click(
+      within(bobRow).getByRole("button", { name: "Заблокировать" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Заблокировать" }),
+    );
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Пользователь не найден");
+    });
+    toastError.mockRestore();
+    nextSetBlockedResult = "ok";
   });
 });

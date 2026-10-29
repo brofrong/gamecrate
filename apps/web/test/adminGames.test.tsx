@@ -1,6 +1,14 @@
 // Вкладка «Игры» (`/admin?tab=games`, Task 4): таблица игр общей библиотеки с
 // размером/датами/запусками и кнопкой «Удалить»; строка «Служебные: …» без кнопки.
-// `../src/rpc` подменяется целиком (приём как в `adminSessions.test.tsx`).
+//
+// `../src/rpc` подменяется целиком (приём как в `adminUsers.test.tsx`): полный набор
+// экспортов, которые транзитивно тянет `routes/admin.tsx` (все вкладки импортируются
+// в нём статически, не только «Игры») — иначе при запуске этого файла одного (`bun test
+// test/adminGames.test.tsx`) загрузка `UsersTab`/`InstallsTab` падает с «export not
+// found». `errorTag`/`resultErrorTag` — настоящая реализация (как в
+// `adminUsers.test.tsx`), не заглушка «всегда `undefined`»: `mock.module` действует на
+// весь прогон `bun test`, и файлы после этого по алфавиту получат именно этот мок —
+// заглушка там тихо ломает ветку `Unauthorized` → «landing».
 import { describe, expect, it, mock } from "bun:test";
 import type { AdminGame, AdminGames, CurrentUserShape } from "@cg/rpc";
 import {
@@ -15,7 +23,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { Effect } from "effect";
+import { Cause, Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
 
@@ -47,8 +55,20 @@ const adminDeleteGameArgs = (appId: number) => ({
   reactivityKeys: ["admin"],
 });
 
-// `routes/admin.tsx` импортирует и другие атомы часть 1 — им здесь хватает заглушек,
+// `routes/admin.tsx` импортирует и другие вкладки — им здесь хватает заглушек,
 // эта вкладка их не трогает.
+const adminUsersAtom = Atom.make(AsyncResult.initial());
+const adminSetRoleAtom = Atom.fn((_arg: unknown) => Effect.succeed("ok" as const));
+const adminSetBlockedAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed("ok" as const),
+);
+const adminResetSteamLoginAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed(true),
+);
+const adminInstallsAtom = Atom.make(AsyncResult.initial());
+const adminCancelInstallAtom = Atom.fn((_arg: unknown) =>
+  Effect.succeed(true),
+);
 const adminSessionsAtom = Atom.family((_failedOnly: boolean) =>
   Atom.make(AsyncResult.initial()),
 );
@@ -60,12 +80,42 @@ const updateSessionSettingsAtom = Atom.fn((_arg: unknown) =>
   Effect.succeed(undefined),
 );
 
+const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>
+  Option.getOrUndefined(
+    Option.map(Cause.findErrorOption(cause), (error) => error._tag),
+  );
+const resultErrorTag = <A, E extends { readonly _tag: string }>(
+  result: AsyncResult.AsyncResult<A, E>,
+) => (AsyncResult.isFailure(result) ? errorTag(result.cause) : undefined);
+
 mock.module("../src/rpc", () => ({
   meAtom,
   adminPingAtom,
   adminGamesAtom,
   adminDeleteGameAtom,
   adminDeleteGameArgs,
+  adminUsersAtom,
+  adminSetRoleAtom,
+  adminSetRoleArgs: (userId: string, role: "player" | "admin") => ({
+    payload: { userId, role },
+    reactivityKeys: ["admin"],
+  }),
+  adminSetBlockedAtom,
+  adminSetBlockedArgs: (userId: string, blocked: boolean) => ({
+    payload: { userId, blocked },
+    reactivityKeys: ["admin"],
+  }),
+  adminResetSteamLoginAtom,
+  adminResetSteamLoginArgs: (userId: string) => ({
+    payload: { userId },
+    reactivityKeys: ["admin"],
+  }),
+  adminInstallsAtom,
+  adminCancelInstallAtom,
+  adminCancelInstallArgs: (jobId: string) => ({
+    payload: { jobId },
+    reactivityKeys: ["admin"],
+  }),
   adminSessionsAtom,
   adminStopSessionAtom,
   adminStopSessionArgs: (sessionId: string) => ({
@@ -84,8 +134,8 @@ mock.module("../src/rpc", () => ({
     payload,
     reactivityKeys: ["settings"],
   }),
-  errorTag: () => undefined,
-  resultErrorTag: () => undefined,
+  errorTag,
+  resultErrorTag,
 }));
 
 const { adminRoute } = await import("../src/routes/admin");
@@ -111,6 +161,7 @@ const game = (
   activeSessions: 0,
   installing: false,
   deleting: false,
+  deleteError: null,
   ...patch,
 });
 
@@ -184,6 +235,28 @@ describe("GamesTab", () => {
     expect(
       screen.getByText("Служебные: Proton Experimental"),
     ).toBeTruthy();
+  });
+
+  it("shows the delete error reason under the name, and nothing for games without one", async () => {
+    const failed = game({
+      appId: 1091501,
+      name: "Celeste",
+      deleteError: "Игра запущена",
+    });
+    renderGames({
+      games: [failed, peglin],
+      service: null,
+    });
+
+    const failedRow = (await screen.findByText("Celeste")).closest("tr");
+    if (failedRow === null) throw new Error("row not found");
+    expect(
+      within(failedRow).getByText("Не удалось удалить: Игра запущена"),
+    ).toBeTruthy();
+
+    const peglinRow = screen.getByText("Peglin").closest("tr");
+    if (peglinRow === null) throw new Error("row not found");
+    expect(within(peglinRow).queryByText(/Не удалось удалить/)).toBeNull();
   });
 
   it("opens the confirm dialog on click and sends the appId on confirm", async () => {
