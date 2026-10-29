@@ -1,8 +1,16 @@
-// Кнопка-ссылка на `/login`: `primary` — бренд-градиент («Играть»), `ghost` — полупрозрачная («Войти»).
+// Кнопка-ссылка лендинга: `primary` — бренд-градиент («Играть»), `ghost` — полупрозрачная
+// («Войти»). Для невошедшего ведёт на `/login`; для вошедшего (`LandingAuth` из
+// `LandingPage`) — в библиотеку `/app`, и «Войти» становится «В библиотеку».
 import { Link } from "@tanstack/react-router";
+import { createContext, use } from "react";
 import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+/** Вошёл ли пользователь — задаёт `LandingPage`, читают кнопки по всему лендингу. */
+export const LandingAuth = createContext<{ signedIn: boolean }>({
+  signedIn: false,
+});
 
 export function PlayButton({
   variant,
@@ -13,7 +21,9 @@ export function PlayButton({
   children?: React.ReactNode;
   className?: string;
 }) {
+  const { signedIn } = use(LandingAuth);
   const primary = variant === "primary";
+  const label = primary ? "Играть" : signedIn ? "В библиотеку" : "Войти";
   return (
     <Button
       asChild
@@ -26,7 +36,7 @@ export function PlayButton({
         className,
       )}
     >
-      <Link to="/login">{children ?? (primary ? "Играть" : "Войти")}</Link>
+      <Link to={signedIn ? "/app" : "/login"}>{children ?? label}</Link>
     </Button>
   );
 }

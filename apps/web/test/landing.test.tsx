@@ -17,7 +17,7 @@ mock.module("../src/auth", () => ({
 }));
 
 const { LandingPage } = await import("../src/components/landing/LandingPage");
-const { indexView } = await import("../src/routes/index");
+const { landingSignedIn } = await import("../src/routes/index");
 
 const user: CurrentUserShape = {
   id: "u1",
@@ -65,16 +65,27 @@ describe("landing", () => {
     expect(document.body.textContent).not.toContain("Войти через Steam");
   });
 
-  it("index redirects signed-in user to library", () => {
-    expect(indexView(AsyncResult.success(user), false)).toBe("library");
-    expect(indexView(AsyncResult.fail(new Unauthorized()), false)).toBe(
-      "landing",
+  it("для вошедшего кнопки ведут в /app, а в шапке — «В библиотеку»", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage signedIn />)} />);
+    const links = await screen.findAllByRole("link", {
+      name: /Играть|В библиотеку|Выбрать/,
+    });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe("/app");
+    }
+    expect(screen.queryByRole("link", { name: "Войти" })).toBeNull();
+  });
+
+  it("/ показывает лендинг всем: вошедший — с кнопками в /app, остальные — на /login", () => {
+    // `IndexPage` — это `<LandingPage signedIn={landingSignedIn(me)} />`, без редиректа.
+    expect(landingSignedIn(AsyncResult.success(user))).toBe(true);
+    expect(landingSignedIn(AsyncResult.fail(new Unauthorized()))).toBe(false);
+    expect(landingSignedIn(AsyncResult.fail({ _tag: "RpcClientError" }))).toBe(
+      false,
     );
-    expect(indexView(AsyncResult.fail({ _tag: "RpcClientError" }), false)).toBe(
-      "unreachable",
-    );
-    expect(indexView(AsyncResult.initial(), true)).toBe("unreachable");
-    expect(indexView(AsyncResult.initial(), false)).toBe("loading");
+    // Пока `auth.me` не ответил — лендинг сразу, с кнопками на /login.
+    expect(landingSignedIn(AsyncResult.initial())).toBe(false);
   });
 
   it("landing has every section anchor", async () => {
