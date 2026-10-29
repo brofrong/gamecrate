@@ -124,7 +124,7 @@ export function SessionStatus({
       if (!played && view.failReason === steamLoginRequiredReason) {
         return (
           <main className="flex min-h-dvh items-center justify-center px-6">
-            <div className="flex max-w-md flex-col items-center gap-4 text-center">
+            <div className="flex max-w-3xl flex-col items-center gap-4 text-center">
               {gameName && (
                 <p className="text-sm text-muted-foreground">{gameName}</p>
               )}
