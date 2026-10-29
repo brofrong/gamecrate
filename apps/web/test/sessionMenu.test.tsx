@@ -426,6 +426,37 @@ describe("session menu", () => {
     expect(screen.getByRole("button", { name: "На весь экран" })).toBeTruthy();
   });
 
+  it("in fullscreen a click on the game locks the pointer", () => {
+    const player = renderPlayer({ streamSettings: control() });
+    const frame = player.frame();
+    const frameDoc = document.implementation.createHTMLDocument("stream");
+    const element = frameDoc.createElement("div");
+    const requestPointerLock = mock(async () => {});
+    element.requestPointerLock = requestPointerLock;
+    Object.defineProperty(frame, "contentDocument", { value: frameDoc });
+    Object.defineProperty(frame, "contentWindow", {
+      value: { webrtcInput: { element } },
+    });
+
+    // Документ без своего окна: `fireEvent` его не умеет — событие руками.
+    const click = () =>
+      frameDoc.body.dispatchEvent(
+        new MouseEvent("mousedown", { button: 0, bubbles: true }),
+      );
+
+    // В окне захвата нет — курсор как раньше.
+    click();
+    expect(requestPointerLock).not.toHaveBeenCalled();
+
+    setFullscreen(player.main());
+    click();
+    expect(requestPointerLock).toHaveBeenCalledTimes(1);
+
+    setFullscreen(null);
+    click();
+    expect(requestPointerLock).toHaveBeenCalledTimes(1);
+  });
+
   it("frame load attaches the bridge and input", () => {
     const bridge = fakeBridge();
     const onFrameLoad = mock((_frame: HTMLIFrameElement) => {});

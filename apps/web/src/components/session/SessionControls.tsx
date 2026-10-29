@@ -23,6 +23,7 @@ import {
 import {
   enterFullscreen,
   focusStream,
+  lockPointerOnClick,
   useIsFullscreen,
 } from "@/lib/fullscreen";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
@@ -72,6 +73,13 @@ export function SessionControls({
     setMenuOpen(open);
     if (open && hint) update({ menuSeen: true });
   };
+
+  // В полном экране клик по игре захватывает мышь (камера в играх от первого лица); вышли — отпускаем.
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!fullscreen || frame === null) return;
+    return lockPointerOnClick(frame);
+  }, [fullscreen, frameRef]);
 
   // Клик по игре уводит фокус в iframe — до документа страницы не доходит ни `pointerdown`,
   // ни `focusin`, и Radix «клика мимо» не видит. Видно только потерю фокуса окном страницы.
