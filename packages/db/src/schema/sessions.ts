@@ -1,14 +1,17 @@
 // Сессии облачного гейминга: воркеры, сессии, игровые отрезки (биллинг) и настройки.
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   integer,
   jsonb,
   pgTable,
+  real,
   serial,
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 import type { WorkerHardware, WorkerStats, WorkerVersions } from "@cg/rpc";
 import { games } from "./library";
@@ -16,6 +19,19 @@ import { user } from "./auth";
 import { installJobs } from "./gamestore";
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
+
+/**
+ * Класс воркера («Стандарт», «Быстрое», …) — упорядочен по силе (`rank`,
+ * больше — сильнее); основа будущих тарифов (спека §1.1, §2.4). Миграция
+ * заводит класс «Стандарт» (`rank = 1`) и назначает его всем существующим
+ * воркерам.
+ */
+export const workerClasses = pgTable("worker_classes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull().unique(),
+  rank: integer("rank").notNull().unique(),
+  createdAt: timestamptz("created_at").notNull().defaultNow(),
+});
 
 /** Состояния сессии (точные строки по спеке). Активная сессия — не `ended`/`failed`. */
 export const sessionStates = [
@@ -52,7 +68,8 @@ export type SessionStage = (typeof sessionStages)[number];
  * прислал). `stats`/`statsAt` — последний отчёт `WorkerStats` (раз в ~5 с,
  * без истории); `statsAt is null` — отчёта ещё не было. `draining` — воркер
  * не берёт новые сессии/установки (`Scheduler.placeOne`, `InstallRepo.claimNext`),
- * уже идущие не трогает — админка (Task 4/часть 2).
+ * уже идущие не трогает — админка (Task 4/часть 2). `classId` — класс воркера
+ * (спека §1.1); `null` — воркер без класса сессий не берёт, как `draining`.
  */
 export const workers = pgTable("workers", {
   id: text("id").primaryKey(),
@@ -60,6 +77,9 @@ export const workers = pgTable("workers", {
   slots: integer("slots").notNull(),
   roles: text("roles").array().notNull().default([]),
   draining: boolean("draining").notNull().default(false),
+  classId: uuid("class_id").references(() => workerClasses.id, {
+    onDelete: "restrict",
+  }),
   hardware: jsonb("hardware").$type<WorkerHardware | null>(),
   versions: jsonb("versions").$type<WorkerVersions | null>(),
   stats: jsonb("stats").$type<WorkerStats | null>(),
@@ -177,6 +197,45 @@ export const userStreamSettings = pgTable("user_stream_settings", {
     .primaryKey()
     .references(() => user.id, { onDelete: "cascade" }),
   value: jsonb("value").notNull(),
+  updatedAt: timestamptz("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+/** Чем закончилась игра (спека §4.2); `null` — сессия ещё не закончилась. */
+export const gameEnds = [
+  "quit",
+  "crash",
+  "error",
+  "stopped",
+  "unknown",
+] as const;
+export type GameEnd = (typeof gameEnds)[number];
+
+/**
+ * Замеры сессии (спека §1.3, §4): одна строка на сессию, пишет оркестратор по
+ * отчёту агента `SessionMetrics` (upsert). `appId`/`workerId`/`gpuName`/
+ * `workerClassId`/`slots` — снимок на момент сессии (копии для выборок и для
+ * истории, если воркер/класс/игра поменяются позже). `null` в пиковых
+ * ресурсах — замер не удался.
+ */
+export const sessionMetrics = pgTable("session_metrics", {
+  sessionId: text("session_id")
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: "cascade" }),
+  appId: integer("app_id").notNull(),
+  workerId: text("worker_id").notNull(),
+  gpuName: text("gpu_name").notNull(),
+  workerClassId: uuid("worker_class_id"),
+  slots: integer("slots").notNull(),
+  gameSeconds: integer("game_seconds").notNull(),
+  peakVramBytes: bigint("peak_vram_bytes", { mode: "number" }),
+  peakRamBytes: bigint("peak_ram_bytes", { mode: "number" }),
+  cpuCoresP95: real("cpu_cores_p95"),
+  gpuUtilP95: real("gpu_util_p95"),
+  vramSource: text("vram_source").notNull(),
+  gameEnd: text("game_end", { enum: gameEnds }),
   updatedAt: timestamptz("updated_at")
     .notNull()
     .defaultNow()

@@ -159,3 +159,25 @@ export const steamLogins = pgTable(
       .where(sql`${t.state} in ('pending', 'waiting', 'scanned')`),
   ],
 );
+
+/**
+ * Требования игры к железу на слот (спека §1.2): одна строка на игру, нет
+ * строки — «данных нет» (§2.3). Все три минимума обязательны, «не важно» —
+ * ноль. `updatedBy` — админ, который задал/правил значения; `null`, если его
+ * аккаунт удалён.
+ */
+export const gameRequirements = pgTable("game_requirements", {
+  appId: integer("app_id")
+    .primaryKey()
+    .references(() => games.appId),
+  minVramBytes: bigint("min_vram_bytes", { mode: "number" }).notNull(),
+  minRamBytes: bigint("min_ram_bytes", { mode: "number" }).notNull(),
+  minCpuThreads: integer("min_cpu_threads").notNull(),
+  updatedBy: text("updated_by").references(() => user.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: timestamptz("updated_at")
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { connect } from "node:net";
-import { Db, profiles, user, workers } from "@cg/db";
+import { Db, profiles, user, workerClasses, workers } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type AgentCommand, type AgentConnect, AgentRpcs } from "@cg/rpc";
 import { BunHttpServer, BunSocket } from "@effect/platform-bun";
@@ -262,6 +262,37 @@ describe("agent hub", () => {
       }),
     ));
 
+  it("hub upsert keeps class_id", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        const events = yield* hub.subscribe;
+        yield* connectAgent(hello("w-class"));
+        yield* waitEvent(events, isTag("Connected", "w-class"));
+
+        const [inserted] = yield* db
+          .insert(workerClasses)
+          .values({ name: "Быстрое", rank: 2 })
+          .returning();
+        const classId = inserted?.id;
+        expect(classId).toBeDefined();
+        yield* db
+          .update(workers)
+          .set({ classId })
+          .where(eq(workers.id, "w-class"));
+
+        yield* connectAgent(hello("w-class"));
+        yield* waitEvent(events, isTag("Connected", "w-class"));
+
+        const [row] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-class"));
+        expect(row?.classId).toBe(classId);
+      }),
+    ));
+
   it("send to unknown worker returns false", () =>
     run(
       Effect.gen(function* () {
@@ -416,7 +447,9 @@ describe("agent hub", () => {
           // catchCause должен просто залогировать и вернуть успех.
           yield* client["agent.report"]({ _tag: "WorkerStats", stats });
         } finally {
-          yield* db.$client.unsafe("ALTER TABLE workers ADD COLUMN stats jsonb");
+          yield* db.$client.unsafe(
+            "ALTER TABLE workers ADD COLUMN stats jsonb",
+          );
         }
 
         // Соединение агента всё ещё живо: обычный отчёт после сбоя доходит и

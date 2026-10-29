@@ -1,7 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
-import { Db, games, user, userGames } from "../src/index";
+import {
+  Db,
+  games,
+  user,
+  userGames,
+  workerClasses,
+  workers,
+} from "../src/index";
 import { DbTest } from "./testDb";
 
 const run = <A, E>(eff: Effect.Effect<A, E, Db>) =>
@@ -47,6 +54,37 @@ describe("schema", () => {
         expect(yield* db.select().from(userGames)).toHaveLength(0);
         const [game] = yield* db.select().from(games);
         expect(game?.protonTier).toBe("pending");
+      }),
+    ));
+
+  it("migration seeds class Стандарт rank 1", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const rows = yield* db.select().from(workerClasses);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.name).toBe("Стандарт");
+        expect(rows[0]?.rank).toBe(1);
+      }),
+    ));
+
+  it("backfill SQL assigns rank-1 class to existing workers", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+        });
+        yield* db.execute(
+          sql`update workers set class_id = (select id from worker_classes where rank = 1)`,
+        );
+        const [row] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w1"));
+        expect(row?.classId).not.toBeNull();
       }),
     ));
 });
