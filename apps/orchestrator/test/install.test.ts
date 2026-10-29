@@ -8,6 +8,7 @@ import {
   sessions,
   settings,
   user,
+  workerClasses,
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
@@ -21,21 +22,8 @@ import {
   steamLoginRequiredReason,
 } from "@cg/rpc";
 import { asc, eq } from "drizzle-orm";
-import {
-  Effect,
-  Layer,
-  PubSub,
-  Redacted,
-  References,
-  type Scope,
-  Stream,
-} from "effect";
-import {
-  AgentHub,
-  type AgentHubEvent,
-  type AgentHubShape,
-  type WorkerInfo,
-} from "../src/AgentHub";
+import { Effect, Layer, Redacted, References, type Scope } from "effect";
+import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
 import {
   DISPATCH_CONFIRM_MS,
   InstallDispatcher,
@@ -47,34 +35,7 @@ import { AGENT_TIMEOUT_MS, failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
-
-/** Фейковый хаб: подключённые агенты и отправленные команды — в памяти. */
-const makeFakeHub = () => {
-  const infos = new Map<string, WorkerInfo>();
-  const sent: Array<{ workerId: string; command: AgentCommand }> = [];
-  const state = {
-    refuse: (_workerId: string, _command: AgentCommand) => false,
-  };
-  const events = Effect.runSync(PubSub.unbounded<AgentHubEvent>());
-  const hub: AgentHubShape = {
-    send: (workerId, command) =>
-      Effect.sync(() => {
-        if (!infos.has(workerId) || state.refuse(workerId, command))
-          return false;
-        sent.push({ workerId, command });
-        return true;
-      }),
-    connected: () => new Set(infos.keys()),
-    info: (workerId) => infos.get(workerId),
-    workerOf: () => undefined,
-    events,
-    subscribe: PubSub.subscribe(events),
-    connect: () => Stream.die("fake hub"),
-    report: () => Effect.die("fake hub"),
-  };
-  return { hub, infos, sent, state };
-};
-type FakeHub = ReturnType<typeof makeFakeHub>;
+import { at, type FakeHub, like, makeFakeHub } from "./support";
 
 type Env =
   | Db
@@ -107,18 +68,30 @@ const run = <A, E>(
   );
 };
 
-const at = (base: Date, seconds: number) =>
-  new Date(base.getTime() + seconds * 1000);
-
-/** Даты в `toMatchObject` Bun не сравнивает — сравниваем через JSON. */
-const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
-const like = (actual: unknown, expected: unknown) =>
-  expect(json(actual)).toMatchObject(json(expected) as object);
-
 const DOTA = 570;
 const PORTAL = 400;
 
-/** Агент подключён: строка `workers` (как пишет хаб) + запись в фейке. */
+/** Класс «Стандарт» (`rank 1`), заводится, если его ещё нет. */
+const standardClassId = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [existing] = yield* db
+      .select({ id: workerClasses.id })
+      .from(workerClasses)
+      .where(eq(workerClasses.rank, 1));
+    if (existing !== undefined) return existing.id;
+    const [created] = yield* db
+      .insert(workerClasses)
+      .values({ name: "Стандарт", rank: 1 })
+      .returning({ id: workerClasses.id });
+    return created!.id;
+  });
+
+/**
+ * Агент подключён (как и раньше); воркеру всегда назначается класс
+ * «Стандарт» — планировщик (§2.1) без класса сессий не размещает, а эти
+ * тесты проверяют именно размещение/установку, а не классы.
+ */
 const connectAgent = (
   fake: FakeHub,
   workerId: string,
@@ -127,9 +100,10 @@ const connectAgent = (
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
+    const classId = yield* standardClassId();
     yield* db
       .insert(workers)
-      .values({ id: workerId, publicIp: "203.0.113.7", slots })
+      .values({ id: workerId, publicIp: "203.0.113.7", slots, classId })
       .onConflictDoNothing();
     fake.infos.set(workerId, {
       workerId,

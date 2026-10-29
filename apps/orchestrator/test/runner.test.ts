@@ -11,9 +11,7 @@ import {
   userStreamSettings,
   workers,
 } from "@cg/db";
-import { DbTest } from "@cg/db/test";
 import {
-  type AgentCommand,
   type AgentReport,
   type RunningSession,
   type SteamLoginSeed,
@@ -22,154 +20,25 @@ import {
   sessionSettingsKey,
 } from "@cg/rpc";
 import { asc, eq, inArray } from "drizzle-orm";
-import {
-  Effect,
-  Layer,
-  Logger,
-  PubSub,
-  Redacted,
-  References,
-  type Scope,
-  Stream,
-} from "effect";
-import {
-  AgentHub,
-  type AgentHubEvent,
-  type AgentHubShape,
-  type WorkerInfo,
-} from "../src/AgentHub";
+import { Effect, Logger, Redacted, References } from "effect";
+import { type AgentHubEvent } from "../src/AgentHub";
 import { failReasons } from "../src/lifecycle";
 import * as Scheduler from "../src/Scheduler";
 import * as SessionRepo from "../src/SessionRepo";
 import {
   RECONCILE_GRACE_MS,
   SessionRunner,
-  type SessionRunnerOptions,
   lostOnRestartReason,
 } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
-
-/** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
-const makeFakeHub = () => {
-  const infos = new Map<string, WorkerInfo>();
-  const sent: Array<{ workerId: string; command: AgentCommand }> = [];
-  const state: {
-    dropSends: boolean;
-    refuse: (workerId: string, command: AgentCommand) => boolean;
-  } = { dropSends: false, refuse: () => false };
-  const events = Effect.runSync(PubSub.unbounded<AgentHubEvent>());
-  const hub: AgentHubShape = {
-    send: (workerId, command) =>
-      Effect.sync(() => {
-        if (
-          state.dropSends ||
-          !infos.has(workerId) ||
-          state.refuse(workerId, command)
-        )
-          return false;
-        sent.push({ workerId, command });
-        return true;
-      }),
-    connected: () => new Set(infos.keys()),
-    info: (workerId) => infos.get(workerId),
-    workerOf: () => undefined,
-    events,
-    subscribe: PubSub.subscribe(events),
-    connect: () => Stream.die("fake hub"),
-    report: () => Effect.die("fake hub"),
-  };
-  return { hub, infos, sent, state };
-};
-type FakeHub = ReturnType<typeof makeFakeHub>;
-
-type Env = Db | AgentHub | SessionRunner | SteamLoginSeeds | Scope.Scope;
-
-const run = <A, E>(
-  body: (fake: FakeHub) => Effect.Effect<A, E, Env>,
-  options: SessionRunnerOptions = {},
-) => {
-  const fake = makeFakeHub();
-  return Effect.runPromise(
-    Effect.scoped(body(fake)).pipe(
-      Effect.provideService(References.MinimumLogLevel, "Error"),
-      Effect.provide(
-        SessionRunner.layerWithoutLoops(options).pipe(
-          Layer.provideMerge(Layer.succeed(AgentHub, fake.hub)),
-          Layer.provideMerge(SteamLoginSeeds.layer),
-          Layer.provideMerge(DbTest),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
-        ),
-      ),
-    ),
-  );
-};
-
-const at = (base: Date, seconds: number) =>
-  new Date(base.getTime() + seconds * 1000);
-
-/**
- * `toMatchObject` в Bun не сравнивает значения `Date` (любые две даты «совпадают»),
- * поэтому сравниваем через JSON: даты становятся ISO-строками.
- */
-const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
-const like = (actual: unknown, expected: unknown) =>
-  expect(json(actual)).toMatchObject(json(expected) as object);
-
-/** Агент воркера подключён: строка `workers` (как пишет хаб) + запись в фейке. */
-const connectWorker = (fake: FakeHub, workerId: string, slots: number) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db
-      .insert(workers)
-      .values({ id: workerId, publicIp: "203.0.113.7", slots })
-      .onConflictDoNothing();
-    fake.infos.set(workerId, {
-      workerId,
-      publicIp: "203.0.113.7",
-      slots,
-      udpPortBase: 59000,
-      roles: ["worker"],
-    });
-  });
-
-const seedUsers = (...ids: string[]) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db
-      .insert(games)
-      .values({ appId: 570, name: "Dota 2" })
-      .onConflictDoNothing();
-    // Игра в библиотеке — планировщик размещает сессии, а не ставит в установку.
-    yield* db
-      .insert(gamestoreApps)
-      .values({ appId: 570, sizeBytes: 1, buildId: "1" })
-      .onConflictDoNothing();
-    for (const id of ids)
-      yield* db.insert(user).values({
-        id,
-        name: id,
-        email: `${id}@steam.invalid`,
-        emailVerified: false,
-      });
-  });
-
-const insertSession = (values: {
-  id: string;
-  userId: string;
-  state?: (typeof sessions.$inferInsert)["state"];
-  workerId?: string;
-  slot?: number;
-  createdAt?: Date;
-  stateSince?: Date;
-  clientSeenAt?: Date;
-  lastInputAt?: Date;
-  agentSeenAt?: Date;
-  stopRequestedAt?: Date;
-}) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db.insert(sessions).values({ appId: 570, ...values });
-  });
+import {
+  at,
+  connectWorker,
+  insertSession,
+  like,
+  run,
+  seedUsers,
+} from "./support";
 
 /** Открытый (или закрытый) отрезок сессии напрямую в БД. */
 const insertSegment = (values: {
