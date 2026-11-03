@@ -63,4 +63,33 @@ describe("cg-launch", () => {
     expect(launch({ CG_APP_ID: "1; rm -rf /" }).exitCode).toBe(1);
     expect(steamRuns()).toEqual([]);
   });
+
+  it("CG_GAME runs the game through cg-game-exit, not steam", () => {
+    mkdirSync(join(dir, "game"), { recursive: true });
+    const gamePath = join(dir, "game", "run");
+    writeFileSync(gamePath, "#!/bin/bash\n");
+    chmodSync(gamePath, 0o755);
+
+    // Фейковая обёртка: дописывает свой argv в файл вместо настоящего запуска игры.
+    const wrapperLog = join(dir, "game-exit.log");
+    const wrapper = join(dir, "cg-game-exit");
+    writeFileSync(wrapper, `#!/bin/bash\necho "$*" >> "${wrapperLog}"\n`);
+    chmodSync(wrapper, 0o755);
+
+    const result = launch({ CG_GAME: gamePath, CG_GAME_EXIT: wrapper });
+
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(wrapperLog, "utf8").trim()).toBe(gamePath);
+    expect(steamRuns()).toEqual([]);
+  });
+
+  it("CG_GAME that is not executable exits 1", () => {
+    mkdirSync(join(dir, "game"), { recursive: true });
+    const gamePath = join(dir, "game", "run");
+    writeFileSync(gamePath, "#!/bin/bash\n");
+    // без chmod +x
+
+    expect(launch({ CG_GAME: gamePath }).exitCode).toBe(1);
+    expect(steamRuns()).toEqual([]);
+  });
 });

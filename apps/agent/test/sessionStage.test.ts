@@ -24,6 +24,7 @@ const script = join(import.meta.dir, "../../../images/session/cg-session-stage")
 const APP_ID = "1966900";
 const REAPER_PID = "500";
 const CLIENT_PID = "600";
+const WRAPPER_PID = "800";
 
 let dir: string;
 let bin: string;
@@ -90,6 +91,11 @@ const addReaper = () =>
     `/home/ubuntu/.local/share/Steam/ubuntu12_32/reaper SteamLaunch AppId=${APP_ID} -- ` +
       "/home/ubuntu/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point",
   );
+
+// Обёртка своей игры (план «свои игры»): `cg-game-exit` запускает `/opt/cg-game/run` напрямую,
+// без Steam/reaper.
+const addWrapper = () =>
+  addProcess(WRAPPER_PID, "/usr/local/bin/cg-game-exit /opt/cg-game/run");
 
 const stage = (appId: string = APP_ID) => {
   const result = Bun.spawnSync(["bash", script, appId], {
@@ -304,5 +310,20 @@ describe("cg-session-stage", () => {
 
     expect(result).toEqual({ stdout: "prepare", exitCode: 0 });
     expect(elapsedMs).toBeLessThan(5000);
+  });
+
+  it("own stage without wrapper prints computer", () => {
+    expect(stage("--own")).toEqual({ stdout: "computer", exitCode: 0 });
+  });
+
+  it("own stage: loading while wrapper runs, visible with a big window", () => {
+    addWrapper();
+    expect(stage("--own")).toEqual({ stdout: "loading", exitCode: 0 });
+
+    setChildren(WRAPPER_PID, ["801"]);
+    setClientEnviron(WRAPPER_PID);
+    setWindowsByPid("801", ["999"]);
+    setGeometry("999", 1920, 1080);
+    expect(stage("--own")).toEqual({ stdout: "visible", exitCode: 0 });
   });
 });

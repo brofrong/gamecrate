@@ -10,6 +10,8 @@
 #
 # Контракт окружения контейнера (задаёт агент):
 #   CG_APP_ID                     appid игры для автозапуска (пусто — cg-launch ничего не запускает)
+#   CG_GAME                       путь к run своей игры в /opt/cg-game (план «свои игры»; вместо
+#                                  CG_APP_ID, Steam не запускается)
 #   CG_MODE=install               установщик: только клиент Steam, без игры
 #   SELKIES_WEBRTC_UDP_MUX_PORT   UDP-порт слота (публикуется наружу 1:1)
 #   SELKIES_WEBRTC_PUBLIC_IP      публичный IP воркера
