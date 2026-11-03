@@ -132,6 +132,38 @@ describe("agentConfig roles", () => {
   });
 });
 
+describe("agentConfig GAMES_DIR", () => {
+  it("not given — Option.none", async () => {
+    expect((await ok(base)).gamesDir).toEqual(Option.none());
+  });
+
+  it("given — Option.some", async () => {
+    const config = await ok({
+      ...base,
+      GAMES_DIR: "/raid/cloud-gaming/games",
+    });
+    expect(config.gamesDir).toEqual(Option.some("/raid/cloud-gaming/games"));
+  });
+
+  it("must not share a directory tree with the session scratch", async () => {
+    for (const dir of [base.SCRATCH_DIR, `${base.SCRATCH_DIR}/games`])
+      expect(
+        await error({ ...base, GAMES_DIR: dir as string }),
+      ).toContain("GAMES_DIR must not be SCRATCH_DIR");
+  });
+
+  it("must not share a directory tree with the install scratch", async () => {
+    expect(
+      await error({
+        ...base,
+        ROLES: "worker,gamestore",
+        INSTALL_SCRATCH_DIR: "/raid/cloud-gaming/install-scratch",
+        GAMES_DIR: "/raid/cloud-gaming/install-scratch/games",
+      }),
+    ).toContain("GAMES_DIR must not be INSTALL_SCRATCH_DIR");
+  });
+});
+
 describe("agentConfig MIN_FREE_GB", () => {
   it("defaults to 20 GB and reads a non-negative integer", async () => {
     expect((await ok(base)).minFreeGb).toBe(20);
