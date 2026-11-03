@@ -1,7 +1,7 @@
 // Секция «Технология»: сцена на canvas без рамки — слева облако (стопки изометрических
 // кубиков), справа устройство с «игрой» и геймпадом, между ними поток частиц по дуге.
-// Частицы обходят курсор, сама дуга не двигается. HUD живёт внутри экрана ноутбука
-// (DOM поверх canvas), снизу — три заметки.
+// Частицы обходят курсор, сама дуга не двигается. На экране ноутбука — ролик-«стрим»
+// и HUD поверх него (DOM поверх canvas), снизу — три заметки.
 import { useCallback, useRef, useState } from "react";
 import {
   type CanvasSize,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/useCanvasLoop";
 import { techNotes } from "./data";
 import { Hud, type HudHandle } from "./Hud";
+import { StreamVideo } from "./StreamVideo";
 
 type Rgb = readonly [number, number, number];
 type Particle = {
@@ -403,6 +404,8 @@ export function TechFlow() {
                 className="pointer-events-none absolute overflow-hidden rounded-lg"
                 style={anchors.screen}
               >
+                <StreamVideo />
+                <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,6,15,0.72),rgba(5,6,15,0.2)_75%)]" />
                 <Hud
                   ref={hudRef}
                   driven
@@ -421,7 +424,7 @@ export function TechFlow() {
                 y={anchors.labelB}
                 title="Твоё устройство"
               >
-                здесь будет живое видео стрима
+                игра в реальном времени
               </FlowLabel>
             </>
           )}

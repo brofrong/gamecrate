@@ -18,8 +18,8 @@ export function LandingPage({ signedIn = false }: { signedIn?: boolean }) {
         <LandingNav />
         <main>
           <Hero />
-          <TechFlow />
           <HowItWorks />
+          <TechFlow />
           <Plans />
           <Achievements />
           <FaqChat />

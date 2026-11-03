@@ -24,6 +24,7 @@ const { HowItWorks } = await import("../src/components/landing/HowItWorks");
 const { Plans, formatRub } = await import("../src/components/landing/Plans");
 const { FaqChat } = await import("../src/components/landing/FaqChat");
 const { Achievements } = await import("../src/components/landing/Achievements");
+const { StreamVideo } = await import("../src/components/landing/StreamVideo");
 const {
   achievements,
   faq,
@@ -186,7 +187,7 @@ describe("landing sections", () => {
     }
     fireEvent.click(screen.getByRole("heading", { name: "Нажми Играть" }));
     expect(screen.getByText("Поднимаем облако…")).toBeTruthy();
-    expect(screen.getByText("здесь будет живое видео стрима")).toBeTruthy();
+    expect(document.querySelector('[aria-hidden="false"] video')).toBeTruthy();
   });
 
   it("reduced motion shows the final frame", () => {
@@ -249,5 +250,63 @@ describe("landing sections", () => {
     expect(
       document.querySelector("[data-msg]")?.parentElement?.className,
     ).toContain("mx-auto");
+  });
+
+  it("stream video fills the laptop screen and the demo's last phase", () => {
+    // Контекст-заглушка: любой метод — no-op, возвращающий её же (градиенты и т.п.).
+    const fakeCtx: object = new Proxy(() => fakeCtx, {
+      get: (_, key) => (key === "then" ? undefined : fakeCtx),
+      set: () => true,
+    });
+    HTMLCanvasElement.prototype.getContext = (() => fakeCtx) as never;
+    stubMotion(true);
+    const tech = render(<TechFlow />);
+    const screenVideo = document.querySelector("#tech video");
+    expect(screenVideo).toBeTruthy();
+    expect(screen.queryByText("здесь будет живое видео стрима")).toBeNull();
+    tech.unmount();
+    render(<HowItWorks />);
+    expect(
+      document.querySelector('[aria-hidden="false"] .aspect-video video'),
+    ).toBeTruthy();
+    expect(screen.queryByText("здесь будет живое видео стрима")).toBeNull();
+  });
+
+  it("stream video is a muted loop with a poster", () => {
+    stubMotion(false);
+    render(<StreamVideo />);
+    const v = document.querySelector("video") as HTMLVideoElement;
+    expect(v.getAttribute("src")).toContain("landing-stream");
+    expect(v.getAttribute("src")).toContain(".mp4");
+    expect(v.getAttribute("poster")).toContain("landing-stream");
+    expect(v.muted).toBe(true);
+    expect(v.loop).toBe(true);
+    expect(v.hasAttribute("playsinline")).toBe(true);
+    expect(v.getAttribute("preload")).toBe("none");
+  });
+
+  it("stream video plays only when visible, active and motion is allowed", () => {
+    const play = mock(() => Promise.resolve());
+    const pause = mock(() => {});
+    const proto = HTMLMediaElement.prototype;
+    const original = { play: proto.play, pause: proto.pause };
+    proto.play = play as never;
+    proto.pause = pause as never;
+    try {
+      stubMotion(false);
+      const a = render(<StreamVideo />);
+      expect(play).toHaveBeenCalledTimes(1);
+      a.rerender(<StreamVideo active={false} />);
+      expect(pause).toHaveBeenCalled();
+      expect(play).toHaveBeenCalledTimes(1);
+      a.unmount();
+      play.mockClear();
+      stubMotion(true);
+      render(<StreamVideo />);
+      expect(play).not.toHaveBeenCalled();
+    } finally {
+      proto.play = original.play;
+      proto.pause = original.pause;
+    }
   });
 });

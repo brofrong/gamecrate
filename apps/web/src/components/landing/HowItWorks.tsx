@@ -14,6 +14,7 @@ import {
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import { cn } from "@/lib/utils";
 import { coverUrl, demoAppIds, steps } from "./data";
+import { StreamVideo } from "./StreamVideo";
 
 const HOT_TILE = 4;
 
@@ -327,16 +328,14 @@ export function HowItWorks() {
                 </div>
                 <div
                   className={cn(
-                    "absolute inset-0 bg-[linear-gradient(120deg,#1b1f6b,#5b2fff_40%,#3cc2ff_80%)] bg-[size:300%_300%] transition-opacity duration-600 motion-safe:animate-[gc-game_6s_ease-in-out_infinite]",
+                    "absolute inset-0 transition-opacity duration-600",
                     cues.has("playing") ? "opacity-100" : "opacity-0",
                   )}
                 >
+                  <StreamVideo active={phase === 2} />
                   <div className="absolute top-2.5 left-2.5 rounded bg-black/45 px-2 py-1 font-mono text-[11px] text-brand-ok">
                     ● 60 FPS · 14 ms
                   </div>
-                  <span className="absolute top-1/2 left-1/2 -translate-1/2 rounded-md bg-black/35 px-2.5 py-1.5 text-xs text-white/70">
-                    здесь будет живое видео стрима
-                  </span>
                 </div>
               </div>
             </Phase>

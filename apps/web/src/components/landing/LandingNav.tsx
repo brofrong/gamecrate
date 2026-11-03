@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils";
 import { PlayButton } from "./PlayButton";
 
 export const navLinks = [
-  ["#tech", "Технология"],
   ["#how", "Как работает"],
+  ["#tech", "Технология"],
   ["#plans", "Тарифы"],
   ["#ach", "Ачивки"],
   ["#faq", "FAQ"],

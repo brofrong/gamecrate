@@ -29,8 +29,8 @@ describe("landing", () => {
     const heading = await screen.findByRole("heading", { level: 1 });
     expect(heading.textContent).toBe("Любая игра. Где угодно. Прямо сейчас.");
     for (const [href, name] of [
-      ["#tech", "Технология"],
       ["#how", "Как работает"],
+      ["#tech", "Технология"],
       ["#plans", "Тарифы"],
       ["#ach", "Ачивки"],
       ["#faq", "FAQ"],
@@ -88,6 +88,19 @@ describe("landing", () => {
     for (const id of ["tech", "how", "plans", "ach", "faq"]) {
       expect(document.getElementById(id)).toBeTruthy();
     }
+  });
+
+  it("«Как это работает» идёт сразу после первого экрана, «Технология» — за ней", async () => {
+    render(<RouterProvider router={testRouter(<LandingPage />)} />);
+    await screen.findByRole("heading", { level: 1 });
+    const ids = [...document.querySelectorAll("main > section[id]")].map(
+      (s) => s.id,
+    );
+    expect(ids.slice(0, 2)).toEqual(["how", "tech"]);
+    const navHrefs = [...document.querySelectorAll("nav a[href^='#']")]
+      .map((a) => a.getAttribute("href"))
+      .filter((href) => href !== "#top");
+    expect(navHrefs.slice(0, 2)).toEqual(["#how", "#tech"]);
   });
 
   it("landing says «облако», never «контейнер»", async () => {
