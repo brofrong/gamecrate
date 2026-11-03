@@ -16,7 +16,7 @@ mock.module("../src/auth", authStub);
 
 const { CoverWall } = await import("../src/components/landing/CoverWall");
 const { Hero } = await import("../src/components/landing/Hero");
-const { TechFlow, nudgeAwayFromCursor } =
+const { TechFlow, nudgeAwayFromCursor, anchorsFor, drawTechFlow, gamepadPose } =
   await import("../src/components/landing/TechFlow");
 const { Hud } = await import("../src/components/landing/Hud");
 type HudHandle = import("../src/components/landing/Hud").HudHandle;
@@ -308,5 +308,53 @@ describe("landing sections", () => {
       proto.play = original.play;
       proto.pause = original.pause;
     }
+  });
+
+  it("hud has no «иллюстрация» caption", () => {
+    HTMLCanvasElement.prototype.getContext = (() => null) as never;
+    render(<Hud />);
+    expect(screen.queryByText("иллюстрация")).toBeNull();
+  });
+
+  it("laptop screen is big on wide screens and fits narrow ones", () => {
+    const wide = anchorsFor({ width: 1124, height: 560 });
+    expect(wide.screen.width).toBeGreaterThanOrEqual(420);
+    const narrow = anchorsFor({ width: 320, height: 460 });
+    expect(narrow.screen.left + narrow.screen.width).toBeLessThan(320);
+  });
+
+  it("phone mirrors the stream video once it has frames", () => {
+    const drawn: unknown[] = [];
+    const fakeCtx: object = new Proxy(() => fakeCtx, {
+      get: (_, key) =>
+        key === "then"
+          ? undefined
+          : key === "drawImage"
+            ? (img: unknown) => drawn.push(img)
+            : fakeCtx,
+      set: () => true,
+    });
+    const size = { width: 1124, height: 560 };
+    const cursor = { x: 0, y: 0, inside: false };
+    const video = { readyState: 4 } as HTMLVideoElement;
+    drawTechFlow(fakeCtx as never, size, 0, cursor, [], video);
+    expect(drawn).toContain(video);
+    drawn.length = 0;
+    drawTechFlow(fakeCtx as never, size, 0, cursor, [], {
+      readyState: 0,
+    } as HTMLVideoElement);
+    expect(drawn).not.toContainEqual({ readyState: 0 });
+  });
+
+  it("gamepad bobs, tilts and presses buttons over time", () => {
+    const poses = [0, 400, 800, 1200, 1600].map(gamepadPose);
+    for (const p of poses) {
+      expect(Math.abs(p.dy)).toBeLessThanOrEqual(6);
+      expect(Math.abs(p.angle)).toBeLessThanOrEqual(0.12);
+      expect(p.pressed).toBeGreaterThanOrEqual(0);
+      expect(p.pressed).toBeLessThan(4);
+    }
+    expect(new Set(poses.map((p) => p.dy.toFixed(2))).size).toBeGreaterThan(1);
+    expect(new Set(poses.map((p) => p.pressed)).size).toBeGreaterThan(1);
   });
 });

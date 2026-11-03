@@ -1,7 +1,9 @@
 // Секция «Технология»: сцена на canvas без рамки — слева облако (стопки изометрических
 // кубиков), справа устройство с «игрой» и геймпадом, между ними поток частиц по дуге.
 // Частицы обходят курсор, сама дуга не двигается. На экране ноутбука — ролик-«стрим»
-// и HUD поверх него (DOM поверх canvas), снизу — три заметки.
+// и HUD поверх него (DOM поверх canvas); телефон лежит перед ноутбуком горизонтально и
+// показывает те же кадры (canvas рисует их из видео ноутбука), геймпад покачивается и
+// «жмёт» кнопки. Снизу — три заметки.
 import { useCallback, useRef, useState } from "react";
 import {
   type CanvasSize,
@@ -127,22 +129,35 @@ const roundRect = (
 };
 
 const laptopSize = (narrow: boolean) =>
-  narrow ? { bw: 200, bh: 125 } : { bw: 320, bh: 200 };
+  narrow ? { bw: 200, bh: 125 } : { bw: 440, bh: 275 };
 
-const anchorsFor = ({ width: W, height: H }: CanvasSize): Anchors => {
+/** Телефон горизонтально, с наклоном, перед правым нижним углом ноутбука. */
+const phoneSize = (narrow: boolean) =>
+  narrow ? { pw: 84, ph: 42 } : { pw: 156, ph: 76 };
+const PHONE_TILT = -0.1;
+/** Насколько телефон свисает ниже ноутбука (центр — на этой высоте над низом). */
+const phoneCenter = (bx: number, by: number, narrow: boolean) => {
+  const { bw, bh } = laptopSize(narrow);
+  const { pw, ph } = phoneSize(narrow);
+  return { x: bx + bw / 2 - pw * 0.2, y: by + bh / 2 + ph * 0.05 };
+};
+
+export const anchorsFor = ({ width: W, height: H }: CanvasSize): Anchors => {
   const narrow = W < 760;
   const ax = narrow ? W * 0.2 : W * 0.22;
-  const ay = H * 0.56;
+  // Большой ноутбук с телефоном снизу — ось сцены выше, чтобы подпись влезла.
+  const ay = H * (narrow ? 0.56 : 0.5);
   const s = narrow ? 16 : 24;
   const { bw, bh } = laptopSize(narrow);
-  const bx = W * 0.72;
+  const { ph } = phoneSize(narrow);
+  const bx = narrow ? W * 0.64 : W * 0.68;
   return {
     ax,
     ay,
     bx,
     by: ay,
     labelA: ay + s * 1.1 + s * 3.2,
-    labelB: ay + bh / 2 + 30,
+    labelB: ay + bh / 2 + ph * 0.55 + 24,
     screen: {
       left: bx - bw / 2 + 8,
       top: ay - bh / 2 + 8,
@@ -170,15 +185,29 @@ export const nudgeAwayFromCursor = (
   p.dy -= (ddy / d) * f * 3;
 };
 
-/** Геймпад: корпус, две рукоятки, крестовина, кнопки, стики. */
+/**
+ * Поза геймпада в момент `t` (мс): покачивание вверх-вниз (`dy`, px), наклон
+ * (`angle`, рад), какая из четырёх кнопок «нажата» и куда отклонены стики.
+ */
+export const gamepadPose = (t: number) => ({
+  dy: Math.sin(t / 520) * 5,
+  angle: Math.sin(t / 830) * 0.1,
+  pressed: Math.floor(t / 260) % 4,
+  stick: { x: Math.cos(t / 400) * 2, y: Math.sin(t / 310) * 2 },
+});
+
+/** Геймпад: корпус, две рукоятки, крестовина, кнопки, стики — в позе момента `t`. */
 const gamepad = (
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   k: number,
+  t: number,
 ) => {
+  const pose = gamepadPose(t);
   ctx.save();
-  ctx.translate(x, y);
+  ctx.translate(x, y + pose.dy);
+  ctx.rotate(pose.angle);
   ctx.scale(k, k);
   ctx.fillStyle = "#10132a";
   ctx.strokeStyle = "rgba(255,255,255,0.15)";
@@ -200,16 +229,32 @@ const gamepad = (
     [18, -1, "#3cc2ff"],
     [24, 5, "#ff6b6b"],
   ];
-  for (const [bx, by, col] of buttons) {
+  buttons.forEach(([bx, by, col], i) => {
+    const down = i === pose.pressed;
     ctx.fillStyle = col;
+    ctx.globalAlpha = down ? 1 : 0.55;
     ctx.beginPath();
-    ctx.arc(bx, by, 2.4, 0, Math.PI * 2);
+    ctx.arc(bx, by, down ? 1.8 : 2.4, 0, Math.PI * 2);
     ctx.fill();
-  }
-  ctx.fillStyle = "#23284a";
-  for (const sx of [-10, 10]) {
+  });
+  ctx.globalAlpha = 1;
+  for (const [sx, dir] of [
+    [-10, 1],
+    [10, -1],
+  ] as const) {
+    ctx.fillStyle = "#23284a";
     ctx.beginPath();
     ctx.arc(sx, 12, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#3a4170";
+    ctx.beginPath();
+    ctx.arc(
+      sx + pose.stick.x * dir,
+      12 + pose.stick.y * dir,
+      2.6,
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
   }
   ctx.restore();
@@ -221,6 +266,8 @@ export const drawTechFlow = (
   t: number,
   cursor: Cursor,
   parts: Particle[],
+  /** Видео ноутбука: его кадры повторяет экран телефона (пока кадров нет — градиент). */
+  video?: HTMLVideoElement | null,
 ): number => {
   const { width: W, height: H } = size;
   const narrow = W < 760;
@@ -287,7 +334,8 @@ export const drawTechFlow = (
   ctx.fillStyle = glow;
   ctx.fillRect(ax - 200, ay - 200, 400, 400);
 
-  // Устройство: ноутбук с «игрой» (HUD — DOM поверх экрана), телефон и геймпад рядом.
+  // Устройство: ноутбук со стримом (видео и HUD — DOM поверх экрана), телефон с теми же
+  // кадрами перед ним и геймпад рядом.
   const { bw, bh } = laptopSize(narrow);
   ctx.save();
   ctx.translate(bx - bw / 2, by - bh / 2);
@@ -318,20 +366,44 @@ export const drawTechFlow = (
   ctx.fillStyle = "#1a1f40";
   roundRect(ctx, -14, bh, bw + 28, 8, 4);
   ctx.fill();
-  ctx.fillStyle = "#10132a";
-  roundRect(ctx, bw + 22, bh * 0.3, bw * 0.2, bh * 0.75, 8);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.15)";
-  ctx.stroke();
-  ctx.fillStyle = screen;
-  roundRect(ctx, bw + 26, bh * 0.3 + 6, bw * 0.2 - 8, bh * 0.75 - 12, 5);
-  ctx.fill();
   ctx.restore();
+
+  const { pw, ph } = phoneSize(narrow);
+  const phone = phoneCenter(bx, by, narrow);
+  ctx.save();
+  ctx.translate(phone.x, phone.y);
+  ctx.rotate(PHONE_TILT);
+  ctx.shadowColor = "rgba(0,0,0,0.55)";
+  ctx.shadowBlur = 24;
+  roundRect(ctx, -pw / 2, -ph / 2, pw, ph, narrow ? 7 : 11);
+  ctx.fillStyle = "#10132a";
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,255,255,0.18)";
+  ctx.stroke();
+  const inset = narrow ? 4 : 6;
+  const sw = pw - inset * 2;
+  const sh = ph - inset * 2;
+  roundRect(ctx, -sw / 2, -sh / 2, sw, sh, narrow ? 4 : 6);
+  ctx.save();
+  ctx.clip();
+  if (video && video.readyState >= 2) {
+    // Кадр видео 16:9 заполняет экран телефона по высоте (лишнее по бокам обрезает клип).
+    const vw = Math.max(sw, (sh * 16) / 9);
+    ctx.drawImage(video, -vw / 2, -sh / 2, vw, sh);
+  } else {
+    ctx.fillStyle = screen;
+    ctx.fillRect(-sw / 2, -sh / 2, sw, sh);
+  }
+  ctx.restore();
+  ctx.restore();
+
   gamepad(
     ctx,
     bx - bw / 2 - (narrow ? 34 : 56),
     by + bh / 2 - (narrow ? 4 : 2),
     narrow ? 0.7 : 1,
+    t,
   );
 
   // Насколько курсор близко к вершине дуги — добавка к «задержке» в HUD (0..6).
@@ -346,6 +418,7 @@ export function TechFlow() {
   const parts = useRef<Particle[] | null>(null);
   const [anchors, setAnchors] = useState<Anchors>();
   const hudRef = useRef<HudHandle>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const lastSize = useRef("");
 
   const draw = useCallback<DrawFrame>((ctx, size, t) => {
@@ -355,7 +428,14 @@ export function TechFlow() {
       setAnchors(anchorsFor(size));
     }
     parts.current ??= makeParticles();
-    const boost = drawTechFlow(ctx, size, t, cursor.current, parts.current);
+    const boost = drawTechFlow(
+      ctx,
+      size,
+      t,
+      cursor.current,
+      parts.current,
+      videoRef.current,
+    );
     hudRef.current?.tick(t, boost);
   }, []);
   useCanvasLoop(canvasRef, draw);
@@ -404,7 +484,7 @@ export function TechFlow() {
                 className="pointer-events-none absolute overflow-hidden rounded-lg"
                 style={anchors.screen}
               >
-                <StreamVideo />
+                <StreamVideo videoRef={videoRef} />
                 <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(5,6,15,0.72),rgba(5,6,15,0.2)_75%)]" />
                 <Hud
                   ref={hudRef}

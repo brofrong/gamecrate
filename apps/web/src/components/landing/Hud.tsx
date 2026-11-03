@@ -192,7 +192,6 @@ export function Hud({
           />
         </div>
       ))}
-      <span className="text-[11px] text-brand-dim">иллюстрация</span>
     </div>
   );
 }

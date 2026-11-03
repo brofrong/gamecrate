@@ -2,7 +2,7 @@
 // Forza Horizon 5, DOOM Eternal, GTA V, Cyberpunk 2077; 854×480, без звука, ~3,4 МБ).
 // Грузится и играет, только пока виден на экране и `active`; при reduced motion —
 // только постер. Один ролик на экране ноутбука в «Технологии» и в демо «Как это работает».
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import poster from "@/assets/landing/landing-stream.jpg";
 import src from "@/assets/landing/landing-stream.mp4";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
@@ -11,11 +11,15 @@ import { cn } from "@/lib/utils";
 export function StreamVideo({
   active = true,
   className,
+  videoRef,
 }: {
   active?: boolean;
   className?: string;
+  /** Снаружи нужен сам `<video>` (телефон в «Технологии» рисует его кадры). */
+  videoRef?: RefObject<HTMLVideoElement | null>;
 }) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const ownRef = useRef<HTMLVideoElement>(null);
+  const ref = videoRef ?? ownRef;
   const reduced = usePrefersReducedMotion();
   const [visible, setVisible] = useState(
     () => typeof IntersectionObserver === "undefined",
@@ -30,7 +34,7 @@ export function StreamVideo({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [ref]);
 
   useEffect(() => {
     const el = ref.current;
@@ -41,7 +45,7 @@ export function StreamVideo({
     } else {
       el.pause();
     }
-  }, [active, visible, reduced]);
+  }, [ref, active, visible, reduced]);
 
   return (
     <video
