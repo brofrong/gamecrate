@@ -1,5 +1,5 @@
 // Настройки стрима, хранимые в аккаунте (таблица `user_stream_settings`): качество,
-// битрейт, разрешение, отладка и признак «меню уже открывали» (спека §4). Читаются при
+// битрейт, разрешение, отладка, раскладка клавиатуры и признак «меню уже открывали» (спека §4). Читаются при
 // каждом запуске игры — следующая сессия на любом устройстве открывается с ними.
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
@@ -28,6 +28,8 @@ export const autoBitrateMbps = 20;
  * - `resolution` — ручной режим, применяется со следующего запуска игры (§4.1): идущая
  *   сессия разрешение не меняет.
  * - `menuSeen` — подсказка новичку («Здесь настройки игры и выход») уже показывалась.
+ * - `localLayout` — клавиши уходят в игру символами раскладки игрока (для чатов на русском);
+ *   по умолчанию — по физическому месту, как на английской (игры ждут WASD на любой раскладке).
  */
 export const StreamSettings = Schema.Struct({
   quality: StreamQuality,
@@ -37,16 +39,18 @@ export const StreamSettings = Schema.Struct({
   resolution: StreamResolution,
   debug: DebugMode,
   menuSeen: Schema.Boolean,
+  localLayout: Schema.Boolean,
 });
 export type StreamSettings = typeof StreamSettings.Type;
 
-/** Значения по умолчанию: автобитрейт, 1080p, отладка выкл, подсказка не показана. */
+/** Значения по умолчанию: автобитрейт, 1080p, отладка выкл, подсказка не показана, клавиши по месту. */
 export const defaultStreamSettings: StreamSettings = {
   quality: "auto",
   bitrateMbps: autoBitrateMbps,
   resolution: "1080p",
   debug: "off",
   menuSeen: false,
+  localLayout: false,
 };
 
 /** Декодирует поле схемой, неизвестное/битое значение — умолчание этого поля. */
@@ -90,6 +94,11 @@ export const decodeStreamSettings = (value: unknown): StreamSettings => {
       Schema.Boolean,
       record["menuSeen"],
       defaultStreamSettings.menuSeen,
+    ),
+    localLayout: decodeField(
+      Schema.Boolean,
+      record["localLayout"],
+      defaultStreamSettings.localLayout,
     ),
   };
 };

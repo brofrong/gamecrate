@@ -36,6 +36,7 @@ describe("decodeStreamSettings", () => {
         bitrateMbps: 99,
         debug: "detailed",
         menuSeen: true,
+        localLayout: "yes",
         extra: 1,
       }),
     ).toEqual({
@@ -43,6 +44,7 @@ describe("decodeStreamSettings", () => {
       debug: "detailed",
       menuSeen: true,
     });
+    expect(decodeStreamSettings({ localLayout: true }).localLayout).toBe(true);
   });
 
   it("non-objects fall back to defaults entirely", () => {

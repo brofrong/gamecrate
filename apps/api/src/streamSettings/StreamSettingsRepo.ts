@@ -41,6 +41,7 @@ export const saveStreamSettings = (
       resolution: value.resolution,
       debug: value.debug,
       menuSeen: value.menuSeen,
+      localLayout: value.localLayout,
     };
     yield* db
       .insert(userStreamSettings)

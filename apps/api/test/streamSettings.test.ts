@@ -113,6 +113,7 @@ describe("streamSettings.save", () => {
           resolution: "720p",
           debug: "short",
           menuSeen: true,
+          localLayout: true,
         });
         const second = yield* rpc["streamSettings.save"]({
           quality: "auto",
@@ -120,6 +121,7 @@ describe("streamSettings.save", () => {
           resolution: "1440p",
           debug: "off",
           menuSeen: true,
+          localLayout: false,
         });
         const got = yield* rpc["streamSettings.get"]();
         const rows = yield* db
@@ -137,6 +139,7 @@ describe("streamSettings.save", () => {
       resolution: "720p",
       debug: "short",
       menuSeen: true,
+      localLayout: true,
     });
     expect(result.second).toEqual({
       quality: "auto",
@@ -144,6 +147,7 @@ describe("streamSettings.save", () => {
       resolution: "1440p",
       debug: "off",
       menuSeen: true,
+      localLayout: false,
     });
     expect(result.got).toEqual(result.second);
     expect(result.rowCount).toBe(1);

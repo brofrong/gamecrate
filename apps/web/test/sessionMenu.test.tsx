@@ -1,5 +1,6 @@
 // Меню сессии на экране стрима (спека §2): кнопки «Меню» и «На весь экран», подсказка новичку,
-// панель качества/отладки, выход с подтверждением, полный экран с захватом клавиш, мост к Selkies.
+// панель качества/отладки/клавиатуры, выход с подтверждением, полный экран с захватом клавиш и
+// мыши, мост к Selkies.
 import {
   afterEach,
   beforeEach,
@@ -210,12 +211,11 @@ describe("session menu", () => {
 
     player.rerenderWith({ streamSettings: control({}, true, update) });
     expect(hintShown()).toBe(true);
-    // Плашка не перехватывает клики по игре.
-    expect(
-      screen.getByText("настройки игры").closest(".pointer-events-none"),
-    ).not.toBeNull();
 
-    await clickMenu();
+    // Плашку нажимают вместо кнопки — она тоже открывает меню.
+    fireEvent.click(screen.getByRole("button", { name: /настройки игры/ }));
+    await act(async () => {});
+    expect(menuShown()).toBe(true);
     expect(update).toHaveBeenCalledWith({ menuSeen: true });
 
     player.rerenderWith({
@@ -464,6 +464,58 @@ describe("session menu", () => {
     setFullscreen(null);
     click();
     expect(requestPointerLock).toHaveBeenCalledTimes(1);
+  });
+
+  it("entering fullscreen locks the pointer at once", async () => {
+    const player = renderPlayer({ streamSettings: control() });
+    const frame = player.frame();
+    const frameDoc = document.implementation.createHTMLDocument("stream");
+    const element = frameDoc.createElement("div");
+    const requestPointerLock = mock(async () => {
+      calls.push({ call: "requestPointerLock" });
+    });
+    element.requestPointerLock = requestPointerLock;
+    Object.defineProperty(frame, "contentDocument", { value: frameDoc });
+    Object.defineProperty(frame, "contentWindow", {
+      value: { webrtcInput: { element }, focus: noop },
+    });
+
+    // Мышь — раньше полного экрана: Chrome тратит на него жест пользователя.
+    fireEvent.click(screen.getByRole("button", { name: "На весь экран" }));
+    await waitFor(() =>
+      expect(calls.map((c) => c.call)).toEqual([
+        "requestPointerLock",
+        "requestFullscreen",
+      ]),
+    );
+
+    // Полный экран запрещён — захваченная мышь отпускается.
+    calls = [];
+    const exitPointerLock = mock(() => {});
+    Object.defineProperty(frameDoc, "pointerLockElement", {
+      configurable: true,
+      get: () => (calls.length > 0 ? element : null),
+    });
+    frameDoc.exitPointerLock = exitPointerLock;
+    HTMLElement.prototype.requestFullscreen = async () => {
+      throw new Error("denied");
+    };
+    fireEvent.click(screen.getByRole("button", { name: "На весь экран" }));
+    await waitFor(() => expect(exitPointerLock).toHaveBeenCalledTimes(1));
+  });
+
+  it("keyboard switch toggles the local layout", async () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({
+      streamSettings: control({ menuSeen: true }, true, update),
+    });
+    await clickMenu();
+    const layout = screen.getByRole("switch", {
+      name: "Печатать на своей раскладке",
+    });
+    expect(layout.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(layout);
+    expect(update).toHaveBeenCalledWith({ localLayout: true });
   });
 
   it("frame load attaches the bridge and input", () => {

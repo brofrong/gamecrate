@@ -1,5 +1,6 @@
-// Кнопки поверх стрима (спека §2.1–2.4): «На весь экран» (только вне полного экрана) и «Меню»
-// в правом верхнем углу, подсказка новичку, выпадающая панель настроек и подтверждение выхода.
+// Кнопки поверх стрима (спека §2.1–2.4): «На весь экран» с подписью (только вне полного экрана) и
+// «Меню» в правом верхнем углу, подсказка новичку (клик по ней тоже открывает меню), выпадающая
+// панель настроек и подтверждение выхода. Здесь же — клавиши по физическому месту (`localLayout`).
 // Панель и диалог порталятся в корень экрана сессии (`rootRef`): в полном экране браузер
 // показывает только поддерево полноэкранного элемента. Закрылись — фокус обратно в стрим.
 import { Maximize, Menu } from "lucide-react";
@@ -26,6 +27,7 @@ import {
   lockPointerOnClick,
   useIsFullscreen,
 } from "@/lib/fullscreen";
+import { physicalKeysInFrame } from "@/lib/physicalKeys";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { cn } from "@/lib/utils";
@@ -81,6 +83,16 @@ export function SessionControls({
     return lockPointerOnClick(frame);
   }, [fullscreen, frameRef]);
 
+  // Клавиши по месту, пока не выбрано «печатать на своей раскладке»; переключатель читается на
+  // каждое нажатие — переподписываться на его смену не нужно.
+  const localLayoutRef = useRef(settings.localLayout);
+  localLayoutRef.current = settings.localLayout;
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (frame === null) return;
+    return physicalKeysInFrame(frame, () => !localLayoutRef.current);
+  }, [frameRef]);
+
   // Клик по игре уводит фокус в iframe — до документа страницы не доходит ни `pointerdown`,
   // ни `focusin`, и Radix «клика мимо» не видит. Видно только потерю фокуса окном страницы.
   useEffect(() => {
@@ -99,18 +111,23 @@ export function SessionControls({
     // Сквозной контейнер: щели между кнопками и плашка подсказки не перехватывают клики по
     // игре (иначе клик уводит фокус из стрима и клавиши перестают доходить до игры).
     <div className="pointer-events-none absolute top-3 right-3 z-30 flex items-center gap-2">
+      {/* Подсказку тоже нажимают вместо кнопки — она открывает меню. Клик по ней уводит фокус
+          из стрима, но меню и так его забирает, а закрывшись — вернёт. */}
       {hint && (
-        <div className="pointer-events-none rounded-md border border-brand-cyan/40 bg-black/70 px-3 py-1.5 text-sm text-brand-text shadow-lg">
+        <button
+          type="button"
+          onClick={() => onMenuOpenChange(true)}
+          className="pointer-events-auto cursor-pointer rounded-md border border-brand-cyan/40 bg-black/70 px-3 py-1.5 text-sm text-brand-text shadow-lg hover:border-brand-cyan"
+        >
           Здесь <strong className="text-brand-cyan">настройки игры</strong> и
           выход
-        </div>
+        </button>
       )}
       {!fullscreen && (
         <Button
           variant="secondary"
-          size="icon"
-          aria-label="На весь экран"
-          className={overlayButton}
+          size="sm"
+          className="pointer-events-auto h-[34px] opacity-60 hover:opacity-100 focus-visible:opacity-100"
           onClick={() => {
             const root = rootRef.current;
             if (root === null) return;
@@ -119,6 +136,7 @@ export function SessionControls({
           }}
         >
           <Maximize />
+          На весь экран
         </Button>
       )}
       <Popover open={menuOpen} onOpenChange={onMenuOpenChange}>
