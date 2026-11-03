@@ -1,6 +1,8 @@
 // Каталог игр Steam и библиотеки пользователей.
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -80,6 +82,35 @@ export const gameDetails = pgTable("game_details", {
     >(),
   achievementsFetchedAt: timestamptz("achievements_fetched_at"),
 });
+
+/**
+ * Своя сборка игры вне Steam («Свои игры», спека 2026-11-03): `appId` —
+ * строка есть только для игр из диапазона своих appId (`OWN_APP_ID_MIN` в
+ * `@cg/rpc`, проверка `own_games_app_id_range` дублирует её в БД).
+ * `slug`/`version` — текущий пакет на воркерах (`syncOwnGames` их
+ * обновляет из манифеста при каждом запуске оркестратора/агента);
+ * `GAMES_DIR/<slug>/<version>/` — путь на диске, `WorkerStats.ownGames` —
+ * что фактически раскатано на воркере (может отставать от этой строки).
+ * `published` — админ открыл игру игрокам («Открыта игрокам»);
+ * `syncOwnGames` это поле не трогает, по умолчанию `false` — новая игра
+ * выходит скрытой, пока её не включат явно.
+ */
+export const ownGames = pgTable(
+  "own_games",
+  {
+    appId: integer("app_id")
+      .primaryKey()
+      .references(() => games.appId),
+    slug: text("slug").notNull().unique(),
+    version: text("version").notNull(),
+    published: boolean("published").notNull().default(false),
+    updatedAt: timestamptz("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (_t) => [check("own_games_app_id_range", sql`app_id >= 1900000000`)],
+);
 
 /** Схема достижений игры из Steam (`GetSchemaForGame`), срок жизни — как у `game_details`. */
 export const gameAchievements = pgTable(

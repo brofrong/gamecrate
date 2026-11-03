@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import type { WorkerHardware } from "@cg/rpc";
+import type { WorkerHardware, WorkerStats } from "@cg/rpc";
 import { Effect } from "effect";
 import {
   Db,
   games,
   gameRequirements,
+  ownGames,
   workerClasses,
   workers,
   type Database,
@@ -361,6 +362,110 @@ describe("gameAvailable", () => {
           lastSeenAt: new Date(now.getTime() - WORKER_RECENT_MS),
         });
         expect(yield* gameAvailable("u1", 1, now)).toBe(true);
+      }),
+    ));
+});
+
+/** appId своей игры, вне диапазона Steam (`OWN_APP_ID_MIN` в `@cg/rpc`). */
+const OWN_APP_ID = 1900000001;
+
+/** `WorkerStats` с заглушками нагрузки — важен только `ownGames`. */
+const statsWith = (
+  ownGamesList: ReadonlyArray<{ slug: string; version: string }>,
+): WorkerStats => ({
+  cpuPercent: 0,
+  memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+  gpus: [],
+  filesystems: [],
+  uptimeSeconds: 0,
+  ownGames: ownGamesList,
+});
+
+/** Своя игра `OWN_APP_ID` с нулевыми требованиями (не мешают проверке пакета). */
+const setupOwnGame = (db: Database, version: string) =>
+  Effect.gen(function* () {
+    yield* db.insert(games).values({ appId: OWN_APP_ID, name: "SoH" });
+    yield* db.insert(ownGames).values({
+      appId: OWN_APP_ID,
+      slug: "soh",
+      version,
+    });
+    yield* db.insert(gameRequirements).values({
+      appId: OWN_APP_ID,
+      minVramBytes: 0,
+      minRamBytes: 0,
+      minCpuThreads: 0,
+      updatedBy: null,
+    });
+  });
+
+describe("eligibleWorkers for own games", () => {
+  it("own game is eligible only on worker with its active package", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* setupOwnGame(db, "9.3.1-1");
+        yield* db.insert(workers).values([
+          {
+            id: "w1",
+            publicIp: "203.0.113.1",
+            slots: 1,
+            classId: weak.id,
+            stats: statsWith([{ slug: "soh", version: "9.3.1-1" }]),
+          },
+          {
+            id: "w2",
+            publicIp: "203.0.113.2",
+            slots: 1,
+            classId: weak.id,
+            stats: statsWith([]),
+          },
+        ]);
+        const eligible = yield* eligibleWorkers("u1", OWN_APP_ID, {
+          workerIds: ["w1", "w2"],
+        });
+        expect(eligible.map((w) => w.id)).toEqual(["w1"]);
+      }),
+    ));
+
+  it("stale package version is not eligible", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* setupOwnGame(db, "9.3.1-1");
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          stats: statsWith([{ slug: "soh", version: "9.3.1-0" }]),
+        });
+        const eligible = yield* eligibleWorkers("u1", OWN_APP_ID, {
+          workerIds: ["w1"],
+        });
+        expect(eligible).toHaveLength(0);
+      }),
+    ));
+
+  it("steam game ignores ownGames in stats", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 570, name: "Dota 2" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          stats: statsWith([]),
+        });
+        const eligible = yield* eligibleWorkers("u1", 570, {
+          workerIds: ["w1"],
+        });
+        expect(eligible.map((w) => w.id)).toEqual(["w1"]);
       }),
     ));
 });

@@ -1,10 +1,16 @@
 // Допуск игры на воркер: классы воркеров, подходит ли железо, какие воркеры
-// годятся игре для пользователя (спека §2.1–§2.3).
-import type { WorkerHardware } from "@cg/rpc";
+// годятся игре для пользователя (спека §2.1–§2.3), а для своих игр —
+// есть ли на воркере активный пакет («Свои игры», спека 2026-11-03).
+import {
+  isOwnAppId,
+  type OwnGamePackage,
+  type WorkerHardware,
+  type WorkerStats,
+} from "@cg/rpc";
 import { and, arrayContains, desc, eq, gte, inArray, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { Db } from "./Db";
-import { gameRequirements, workerClasses, workers } from "./schema";
+import { gameRequirements, ownGames, workerClasses, workers } from "./schema";
 
 /** Минимумы железа игры на слот (спека §1.2); `0` — «не важно». */
 export type Requirements = {
@@ -38,6 +44,20 @@ export const fitsRequirements = (
     hardware.cpuThreads / perSlot >= req.minCpuThreads
   );
 };
+
+/**
+ * Раскатан ли на воркере активный пакет своей игры (`pkg.slug`/`pkg.version`
+ * строки `own_games`): ищет точное совпадение в `WorkerStats.ownGames`
+ * (`stats = null` или без поля — ничего не раскатано, не годится). Старая
+ * версия пакета на воркере не подходит — игра не запустится другим пакетом.
+ */
+export const hasPackage = (
+  stats: WorkerStats | null,
+  pkg: OwnGamePackage,
+): boolean =>
+  (stats?.ownGames ?? []).some(
+    (p) => p.slug === pkg.slug && p.version === pkg.version,
+  );
 
 /** Класс воркера в порядке силы (`rank desc`): сильнейший первым. */
 export type WorkerClassRow = {
@@ -85,6 +105,13 @@ export type EligibleWorker = {
  * иначе отключённый мощный воркер держал бы игру недоступной сильным классам,
  * у которых есть кому её запустить прямо сейчас. Свободные слоты не
  * проверяет — это отдельная забота планировщика. Порядок: `rank desc, id asc`.
+ *
+ * Для своих игр (`isOwnAppId(appId)`, спека 2026-11-03 «Свои игры»): нет
+ * строки `own_games` для этого `appId` — игра недопустима нигде (`[]`),
+ * иначе кандидаты дополнительно фильтруются `hasPackage` — нужен именно
+ * активный пакет (`own_games.slug`/`version`) в `WorkerStats.ownGames`
+ * воркера, старая версия на диске не годится. Для Steam-игр поведение не
+ * меняется.
  */
 export const eligibleWorkers = (
   userId: string,
@@ -98,11 +125,22 @@ export const eligibleWorkers = (
     const allowedIds = allowed.map((c) => c.id);
     if (allowedIds.length === 0) return [];
 
+    let ownGamePackage: { slug: string; version: string } | undefined;
+    if (isOwnAppId(appId)) {
+      const [row] = yield* db
+        .select({ slug: ownGames.slug, version: ownGames.version })
+        .from(ownGames)
+        .where(eq(ownGames.appId, appId));
+      if (!row) return [];
+      ownGamePackage = row;
+    }
+
     const candidates = yield* db
       .select({
         id: workers.id,
         slots: workers.slots,
         hardware: workers.hardware,
+        stats: workers.stats,
         rank: workerClasses.rank,
       })
       .from(workers)
@@ -115,6 +153,10 @@ export const eligibleWorkers = (
         ),
       );
 
+    const withPackage = ownGamePackage
+      ? candidates.filter((w) => hasPackage(w.stats, ownGamePackage!))
+      : candidates;
+
     const [req] = yield* db
       .select({
         minVramBytes: gameRequirements.minVramBytes,
@@ -125,8 +167,8 @@ export const eligibleWorkers = (
       .where(eq(gameRequirements.appId, appId));
 
     const fitting = req
-      ? candidates.filter((w) => fitsRequirements(w.hardware, w.slots, req))
-      : strongestClassOnly(candidates);
+      ? withPackage.filter((w) => fitsRequirements(w.hardware, w.slots, req))
+      : strongestClassOnly(withPackage);
 
     return fitting
       .map((w) => ({ id: w.id, rank: w.rank, slots: w.slots }))
