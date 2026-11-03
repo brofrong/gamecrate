@@ -1,8 +1,11 @@
 // Вкладка «Игры» (`/admin?tab=games`, Task 4, макет `mockup-games.html`): общая
 // библиотека хранилища — размер/даты/запуски и «Удалить» с подтверждением; служебные
 // пакеты (Proton, Steam Linux Runtime…) показаны отдельной строкой без кнопки — их не
-// удаляют никогда (это не `gamestore_apps`, см. глобальные ограничения спеки).
-import type { AdminGame, AdminGames } from "@cg/rpc";
+// удаляют никогда (это не `gamestore_apps`, см. глобальные ограничения спеки). Плюс
+// раздел «Свои сборки» (спека 2026-11-03 «Свои игры», Task 10) над играми библиотеки:
+// где раскатан пакет и переключатель «Открыта игрокам» — у своих сборок нет ни
+// удаления, ни установки через эту вкладку.
+import type { AdminGame, AdminGames, AdminOwnGame } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -23,6 +26,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -35,6 +39,8 @@ import {
   adminDeleteGameArgs,
   adminDeleteGameAtom,
   adminGamesAtom,
+  adminSetOwnGamePublishedArgs,
+  adminSetOwnGamePublishedAtom,
 } from "@/rpc";
 
 /** «5,5 ГБ · 12 шт.» — игры и служебные пакеты вместе, как в заголовке блока. */
@@ -92,6 +98,103 @@ function DeleteCell({
       </TooltipTrigger>
       <TooltipContent>{reason}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * Строки раздела «Свои сборки»: воркеры через запятую или «Нет ни на одном
+ * воркере»; переключатель «Открыта игрокам»; кнопка «Требования» раскрывает
+ * существующую `GameRequirementsPanel` под строкой, как у игр библиотеки.
+ * Удаления и установки здесь нет.
+ */
+function OwnGamesTable({
+  games,
+  expandedAppId,
+  onToggle,
+  onSetPublished,
+}: {
+  games: ReadonlyArray<AdminOwnGame>;
+  expandedAppId: number | null;
+  onToggle: (appId: number) => void;
+  onSetPublished: (game: AdminOwnGame, published: boolean) => void;
+}) {
+  const th = "px-2 py-1.5 text-left font-medium";
+  const td = "px-2 py-2";
+  const columns = 5;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="text-xs text-muted-foreground">
+          <tr>
+            <th className={th}>Игра</th>
+            <th className={th}>Версия</th>
+            <th className={th}>Воркеры</th>
+            <th className={th}>Открыта игрокам</th>
+            <th className={th} aria-label="Действия" />
+          </tr>
+        </thead>
+        <tbody>
+          {games.map((game) => {
+            const switchId = `own-game-published-${game.appId}`;
+            return (
+              <React.Fragment key={game.appId}>
+                <tr className="border-t">
+                  <td className={td}>
+                    <div className="flex items-center gap-2">
+                      <span>{game.name}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                        своя сборка
+                      </span>
+                    </div>
+                  </td>
+                  <td className={cn(td, "whitespace-nowrap")}>
+                    {game.version}
+                  </td>
+                  <td
+                    className={cn(
+                      td,
+                      game.workers.length === 0 && "text-muted-foreground",
+                    )}
+                  >
+                    {game.workers.length === 0
+                      ? "Нет ни на одном воркере"
+                      : game.workers.join(", ")}
+                  </td>
+                  <td className={td}>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id={switchId}
+                        checked={game.published}
+                        onCheckedChange={(checked) =>
+                          onSetPublished(game, checked)
+                        }
+                      />
+                      <label htmlFor={switchId}>Открыта игрокам</label>
+                    </div>
+                  </td>
+                  <td className={cn(td, "text-right")}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onToggle(game.appId)}
+                    >
+                      Требования
+                    </Button>
+                  </td>
+                </tr>
+                {expandedAppId === game.appId && (
+                  <tr className="border-t bg-muted/30">
+                    <td className={td} colSpan={columns}>
+                      <GameRequirementsPanel appId={game.appId} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -210,8 +313,13 @@ export function GamesTab() {
   const games = useAtomValue(adminGamesAtom);
   usePolling(adminGamesAtom);
   const [toDelete, setToDelete] = React.useState<AdminGame | null>(null);
+  // Общий на оба раздела: диапазоны appId своих сборок и игр библиотеки не
+  // пересекаются, раскрытая строка в одном разделе не мешает другому.
   const [expandedAppId, setExpandedAppId] = React.useState<number | null>(null);
   const deleteGame = useAtomSet(adminDeleteGameAtom, { mode: "promiseExit" });
+  const setOwnGamePublished = useAtomSet(adminSetOwnGamePublishedAtom, {
+    mode: "promiseExit",
+  });
 
   const onConfirm = async () => {
     if (toDelete === null) return;
@@ -220,10 +328,55 @@ export function GamesTab() {
     else deleteToast(exit.value);
   };
 
+  const onToggle = (appId: number) =>
+    setExpandedAppId((current) => (current === appId ? null : appId));
+
+  const onSetPublished = async (game: AdminOwnGame, published: boolean) => {
+    const exit = await setOwnGamePublished(
+      adminSetOwnGamePublishedArgs(game.appId, published),
+    );
+    if (Exit.isFailure(exit)) toast.error("Не удалось переключить игру");
+    else if (exit.value === "notFound") toast.error("Игры уже нет");
+    else
+      toast.success(
+        published ? `${game.name}: открыта игрокам` : `${game.name}: скрыта`,
+      );
+  };
+
   const summary = Option.getOrUndefined(AsyncResult.value(games));
 
   return (
     <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Свои сборки</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Polled
+            result={games}
+            error="Не удалось загрузить свои сборки"
+            skeleton={<Skeleton className="h-32 w-full" />}
+          >
+            {(value) =>
+              value.own.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Своих сборок нет
+                </p>
+              ) : (
+                <OwnGamesTable
+                  games={value.own}
+                  expandedAppId={expandedAppId}
+                  onToggle={onToggle}
+                  onSetPublished={(game, published) =>
+                    void onSetPublished(game, published)
+                  }
+                />
+              )
+            }
+          </Polled>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex items-center justify-between">
           <CardTitle>Игры на хранилище</CardTitle>
@@ -250,11 +403,7 @@ export function GamesTab() {
                   service={value.service}
                   onDelete={setToDelete}
                   expandedAppId={expandedAppId}
-                  onToggle={(appId) =>
-                    setExpandedAppId((current) =>
-                      current === appId ? null : appId,
-                    )
-                  }
+                  onToggle={onToggle}
                 />
               )
             }

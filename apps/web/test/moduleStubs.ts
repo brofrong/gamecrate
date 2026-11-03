@@ -105,6 +105,11 @@ export const rpcStub = () => ({
     payload: { appId, requirements },
     reactivityKeys: adminKeys,
   }),
+  adminSetOwnGamePublishedAtom: mutation(),
+  adminSetOwnGamePublishedArgs: (appId: number, published: boolean) => ({
+    payload: { appId, published },
+    reactivityKeys: adminKeys,
+  }),
   adminInstallsAtom: query(),
   streamSettingsAtom: query(),
   saveStreamSettingsAtom: mutation(),

@@ -6,12 +6,13 @@ import {
   games,
   gamestoreApps,
   installJobs,
+  ownGames,
   sessions,
   user,
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { type CurrentUserShape, AdminRpcs } from "@cg/rpc";
+import { type CurrentUserShape, AdminRpcs, OWN_APP_ID_MIN } from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
@@ -92,6 +93,15 @@ const insertInstallJob = (
     userId: string;
   },
 ) => db.insert(installJobs).values(values);
+
+const insertOwnGame = (
+  db: Db["Service"],
+  values: Partial<typeof ownGames.$inferInsert> & {
+    appId: number;
+    slug: string;
+    version: string;
+  },
+) => db.insert(ownGames).values(values);
 
 describe("admin.games", () => {
   const seedGames = (db: Db["Service"]) =>
@@ -340,6 +350,154 @@ describe("admin.games", () => {
   });
 });
 
+describe("admin.games (свои сборки)", () => {
+  const ALPHA = OWN_APP_ID_MIN;
+  const ZETA = OWN_APP_ID_MIN + 1;
+
+  const seedOwnGames = (db: Db["Service"]) =>
+    Effect.gen(function* () {
+      yield* insertUser(db, "u1", "Alice");
+      yield* insertUser(db, "u2", "Bob");
+      yield* insertGame(db, ALPHA, "Alpha Game");
+      yield* insertGame(db, ZETA, "Zeta Game");
+      yield* insertOwnGame(db, { appId: ALPHA, slug: "alpha", version: "1.0.0" });
+      yield* insertOwnGame(db, { appId: ZETA, slug: "zeta", version: "2.0.0" });
+    });
+
+  it("admin list shows own games with workers that have the active package", async () => {
+    const now = new Date();
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedOwnGames(db);
+
+        // w1 — активный пакет alpha ровно этой версии: считается.
+        yield* insertWorker(db, {
+          id: "w1",
+          roles: ["worker"],
+          stats: {
+            cpuPercent: 0,
+            memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+            gpus: [],
+            filesystems: [],
+            uptimeSeconds: 0,
+            ownGames: [{ slug: "alpha", version: "1.0.0" }],
+          } as never,
+        });
+        // w2 — устаревшая версия alpha: не считается.
+        yield* insertWorker(db, {
+          id: "w2",
+          roles: ["worker"],
+          stats: {
+            cpuPercent: 0,
+            memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+            gpus: [],
+            filesystems: [],
+            uptimeSeconds: 0,
+            ownGames: [{ slug: "alpha", version: "0.9.0" }],
+          } as never,
+        });
+        // w3 — роль gamestore, не worker: не считается, даже с подходящим пакетом.
+        yield* insertWorker(db, {
+          id: "w3",
+          roles: ["gamestore"],
+          stats: {
+            cpuPercent: 0,
+            memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+            gpus: [],
+            filesystems: [],
+            uptimeSeconds: 0,
+            ownGames: [{ slug: "alpha", version: "1.0.0" }],
+          } as never,
+        });
+
+        // Alpha: одна размещённая сессия (launches/lastLaunchAt) и одна queued (activeSessions).
+        yield* insertSession(db, {
+          id: "11111111-1111-1111-1111-111111111111",
+          userId: "u1",
+          appId: ALPHA,
+          workerId: "w1",
+          slot: 0,
+          state: "playing",
+          createdAt: new Date(now.getTime() - 1000),
+        });
+        yield* insertSession(db, {
+          id: "22222222-2222-2222-2222-222222222222",
+          userId: "u2",
+          appId: ALPHA,
+          state: "queued",
+          createdAt: now,
+        });
+
+        const rpc = yield* client;
+        return yield* rpc["admin.games.list"]();
+      }),
+    );
+
+    // По имени: «Alpha Game» раньше «Zeta Game».
+    expect(result.own.map((g) => g.name)).toEqual(["Alpha Game", "Zeta Game"]);
+    const alpha = result.own.find((g) => g.appId === ALPHA);
+    expect(alpha?.slug).toBe("alpha");
+    expect(alpha?.version).toBe("1.0.0");
+    expect(alpha?.published).toBe(false);
+    expect(alpha?.workers).toEqual(["w1"]);
+    expect(alpha?.launches).toBe(1);
+    expect(alpha?.lastLaunchAt).toBe(
+      new Date(now.getTime() - 1000).toISOString(),
+    );
+    expect(alpha?.activeSessions).toBe(2);
+    const zeta = result.own.find((g) => g.appId === ZETA);
+    expect(zeta?.workers).toEqual([]);
+    expect(zeta?.launches).toBe(0);
+    expect(zeta?.lastLaunchAt).toBeNull();
+    expect(zeta?.activeSessions).toBe(0);
+  });
+
+  it("setPublished toggles and returns notFound for unknown appId", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedOwnGames(db);
+
+        const rpc = yield* client;
+        const opened = yield* rpc["admin.games.setPublished"]({
+          appId: ALPHA,
+          published: true,
+        });
+        const [afterOpen] = yield* db
+          .select({ published: ownGames.published })
+          .from(ownGames)
+          .where(eq(ownGames.appId, ALPHA));
+        const closed = yield* rpc["admin.games.setPublished"]({
+          appId: ALPHA,
+          published: false,
+        });
+        const [afterClose] = yield* db
+          .select({ published: ownGames.published })
+          .from(ownGames)
+          .where(eq(ownGames.appId, ALPHA));
+        const notFound = yield* rpc["admin.games.setPublished"]({
+          appId: ALPHA + 100,
+          published: true,
+        });
+
+        return {
+          opened,
+          closed,
+          notFound,
+          publishedAfterOpen: afterOpen?.published,
+          publishedAfterClose: afterClose?.published,
+        };
+      }),
+    );
+    expect(result.opened).toBe("ok");
+    expect(result.publishedAfterOpen).toBe(true);
+    expect(result.closed).toBe("ok");
+    expect(result.publishedAfterClose).toBe(false);
+    expect(result.notFound).toBe("notFound");
+  });
+});
+
 describe("admin.installs", () => {
   const seedInstalls = (db: Db["Service"]) =>
     Effect.gen(function* () {
@@ -500,12 +658,22 @@ describe("admin.games/installs access", () => {
         const installsCancel = yield* Effect.flip(
           rpc["admin.installs.cancel"]({ jobId: "x" }),
         );
-        return { gamesList, gamesDelete, installsList, installsCancel };
+        const setPublished = yield* Effect.flip(
+          rpc["admin.games.setPublished"]({ appId: 100, published: true }),
+        );
+        return {
+          gamesList,
+          gamesDelete,
+          installsList,
+          installsCancel,
+          setPublished,
+        };
       }),
     );
     expect(result.gamesList._tag).toBe("Forbidden");
     expect(result.gamesDelete._tag).toBe("Forbidden");
     expect(result.installsList._tag).toBe("Forbidden");
     expect(result.installsCancel._tag).toBe("Forbidden");
+    expect(result.setPublished._tag).toBe("Forbidden");
   });
 });

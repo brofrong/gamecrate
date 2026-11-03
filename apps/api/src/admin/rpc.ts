@@ -8,7 +8,7 @@ import {
   moveClass,
   renameClass,
 } from "./classes";
-import { deleteGame, listGames } from "./games";
+import { deleteGame, listGames, setPublished } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
 import { adminGameRequirements, setRequirements } from "./requirements";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
@@ -45,6 +45,8 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
       const current = yield* CurrentUser;
       return yield* setRequirements(appId, current.id, requirements);
     }),
+  "admin.games.setPublished": ({ appId, published }) =>
+    setPublished(appId, published),
   "admin.installs.list": () =>
     Effect.gen(function* () {
       const now = yield* DateTime.nowAsDate;

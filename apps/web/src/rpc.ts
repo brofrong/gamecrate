@@ -205,6 +205,15 @@ export const adminSetGameRequirementsArgs = (
   requirements: Requirements | null,
 ) => ({ payload: { appId, requirements }, reactivityKeys: adminKeys }) as const;
 
+/** Открыть/закрыть свою сборку игрокам («Открыта игрокам», раздел «Свои сборки»). */
+export const adminSetOwnGamePublishedAtom = Api.mutation(
+  "admin.games.setPublished",
+);
+export const adminSetOwnGamePublishedArgs = (
+  appId: number,
+  published: boolean,
+) => ({ payload: { appId, published }, reactivityKeys: adminKeys }) as const;
+
 /** Активные и недавние задачи установки (вкладка «Установки»). */
 export const adminInstallsAtom = Api.query("admin.installs.list", undefined, {
   reactivityKeys: adminKeys,
