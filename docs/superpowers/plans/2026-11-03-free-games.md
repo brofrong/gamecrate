@@ -774,4 +774,101 @@ it("own game covers come from /own-games", ...); // headerUrl(1900000001) === "/
 
 ## Итоги Task 1
 
-_(заполняет исполнитель Task 1)_
+Спайк 2026-11-03 на brofrong (GTX 1650 Super, NVIDIA 550.163.01, образ `cg-session:550.163.01`,
+UDP 59001). Подробный отчёт — `.superpowers/sdd/2026-11-03-free-games/task-1-report.md`.
+
+**Сборка**
+- Тег `9.3.1` («Dewey Bravo»), версия пакета **`9.3.1-1`**. Бинарник **`soh.elf`**.
+- `soh` и `GenerateSohOtr` собираются GCC 15 на зависимостях из `apt.txt` без правок. Полная сборка
+  с нуля — около 20 мин на 12 потоках brofrong. Повтор с готовым деревом — около 50 с.
+- Цель `ExtractAssets` в upstream сломана в 9.3.0, 9.3.1 и develop (после #7301):
+  `torch-cli/main.cpp` передаёт в `SohTorch::Extract` путь, а функция ждёт байты ROM. Другой тег не
+  помогает. `build.sh` правит этот вызов (python3, повторно не применяется, при другом коде падает).
+  На `soh.elf` правка не влияет. ROM `.v64`/`.n64` `build.sh` приводит к `.z64`.
+- В `builder.Dockerfile` нужен `ENTRYPOINT []`. Иначе entrypoint образа сессии поднимает Selkies
+  вместо команды сборки.
+- Пакет — 91 МиБ: `soh.elf` (55 МиБ, не stripped), `soh.o2r` (4,4 МиБ), `oot.o2r` (34 МиБ),
+  `gamecontrollerdb.txt`, **пустой `assets/`**, `lib/`, `run`, `shipofharkinian.json`. Без каталога
+  `assets/` SoH на каждом старте показывает «Extractor assets not found» и выходит, даже если
+  `oot.o2r` на месте. Сборщику нужна сеть: `gamecontrollerdb.txt` CMake скачивает с master.
+- `lib/` (один проход `ldd`, второй пустой): `libfmt.so.10`, `libSDL2_net-2.0.so.0`,
+  `libspdlog.so.1.15`, `libzip.so.5`.
+
+**Запуск (`run`)**
+- Видео — **X11 через Xwayland**, умолчание SDL2 (2.32.10 classic). `SDL_VIDEODRIVER` не задаётся.
+  GLX NVIDIA работает стабильно: около 40 мин, титул, меню, Хайрульское поле.
+- `SDL_VIDEODRIVER=wayland` тоже рисует (EGL NVIDIA), ввод работает. Но окно не найти: см. ниже.
+  Для SDL2 переменная называется `SDL_VIDEODRIVER`, `SDL_VIDEO_DRIVER` — имя SDL3.
+- Переменные `run`: `SHIP_HOME=$HOME/.local/share/soh`, `LD_LIBRARY_PATH=/opt/cg-game/lib`,
+  `SDL_AUDIO_DRIVER=pulseaudio`, затем `exec /opt/cg-game/soh.elf`.
+- Ключи полного экрана: `Window.Fullscreen.Enabled: true` (`Width`/`Height` 1920×1080 —
+  умолчание). Первый запуск сразу идёт на весь экран, на титульный экран, без меню SoH.
+  `ConfigVersion` и остальное SoH дописывает сам. Меню SoH открывается по Esc. F11 переключает
+  полноэкранный режим (`Shortcuts.Fullscreen`) — в киоске не проверялось.
+- `.o2r` SoH находит в `/opt/cg-game`, когда `SHIP_HOME` указывает в другое место. Порядок поиска:
+  `SHIP_HOME`, затем каталог бинарника. В `/opt/cg-game` (ro) SoH ничего не пишет.
+- Что лежит в `SHIP_HOME` (112 КиБ после игры), `.o2r` нет:
+  - `shipofharkinian.json` — около 14 КиБ;
+  - `imgui.ini` — 320 Б;
+  - `SoHTimeSplitData.json` — 4 Б;
+  - `Save/global.sav` — 75 Б;
+  - `Save/file<N>.sav` — около 43 КиБ на слот;
+  - `logs/Ship of Harkinian.log` — около 20 КиБ за сессию;
+  - `mods/custom_mod_files_go_here.txt` — 0 Б.
+
+  Вне `SHIP_HOME` пишется только кэш шейдеров `~/.cache/nvidia/GLCache` (1,6 МиБ).
+- Ресурсы: около 200 МиБ VRAM, RSS около 280 МиБ, CPU около 11% на титуле.
+
+**Окно для `cg-session-stage --own`**: X11, потомок обёртки.
+- `run` делает `exec`, поэтому `soh.elf` — прямой ребёнок `cg-game-exit`.
+- `DISPLAY=:0` берётся из окружения обёртки.
+- `xdotool search --onlyvisible --pid <pid soh.elf>` находит окно 1920×1080:
+  `WM_CLASS "soh.elf"`, `WM_NAME "Ship of Harkinian (OpenGL)"`, `_NET_WM_PID` задан.
+- `lswt` в apt Ubuntu 26.04 (resolute) нет («No packages found»). Есть `wlrctl` 0.2.2, но
+  `wlrctl toplevel find …` под labwc 0.9.3 окно SoH не нашёл (код 1). Поэтому Wayland не выбран, и
+  `lswt` в образ ставить не нужно.
+- Шаблону `cg-game-exit /opt/cg-game/run( |$)` соответствует и любой shell, в чьей командной строке
+  есть эта строка. В проде `cg-launch` делает `exec`, совпадение одно.
+
+**Выход** (`/tmp/cg-game-exit`)
+- Esc → красная кнопка питания справа вверху → «Quit»: `code 0`.
+- SIGTERM во время игры: `code 0`, SDL выходит чисто.
+- SIGTERM на раннем окне ошибки (до главного цикла): segfault, `code 139`.
+
+**Ввод, звук, сохранения** — через стрим спайка (Selkies, CDP).
+- Клавиатура: Space = Start, X = A, C = B, W = движение.
+- Мышь работает в меню SoH.
+- Виртуальный геймпад Selkies (Xbox 360): A (кнопка 0) и Start (кнопка 9) работают, в том числе
+  если геймпад подключили после запуска SoH.
+- Звук: поток PipeWire `soh.elf` в состоянии running, Selkies pcmflux пишет «First non-silent
+  audio chunk». На слух не проверялось.
+- Сохранения: создан слот 1 и сделано сохранение из паузы (B → Yes). После пересоздания
+  контейнера с тем же `SHIP_HOME` слот на месте.
+
+**Раскладка по умолчанию** (libultraship `ControllerDefaultMappings`, совпадает с
+`shipofharkinian.json` после первого запуска):
+
+| Действие (N64) | Клавиша | Геймпад |
+| --- | --- | --- |
+| Движение (стик) | W A S D | левый стик |
+| A (действие) | X | A |
+| B (меч) | C | B |
+| Z (прицел) | Z | левый триггер |
+| R (щит) | R | правый триггер |
+| L | E | LB |
+| Start (пауза) | Пробел | Start |
+| C-кнопки (предметы) | стрелки ↑ ↓ ← → | правый стик |
+| Крестовина | T G F H (↑ ↓ ← →) | крестовина |
+| Меню SoH | Esc | — |
+
+X, Y, RB и Back геймпада по умолчанию ничего не делают.
+
+**Кадры** 1920×1080 в `/tmp/soh-shots/` на маке, не в git: `1-title.png`, `2-hyrule-field.png`,
+`3-pause-menu.png`, `4-soh-menu.png`.
+- Сняты `grim` внутри спайк-контейнера (wlr-screencopy вывода labwc). Через стрим снять не вышло:
+  WebRTC с мака рвался каждые около 30 с, «Consent to send expired» (CGNAT меняет внешний IP).
+  Chromium в контейнере на brofrong (chromedp/headless-shell) держал соединение, но H.264 не
+  декодирует. Поэтому ввод шёл через него по CDP, а кадры — через `grim`.
+- На Хайрульское поле попали через Map Select: в спайке был включён
+  `gDeveloperTools.DebugEnabled=1`, в черновике его нет. В левом верхнем углу кадров 2–3 —
+  маленький значок отладки, при кадрировании (Task 3) его обрезать.
