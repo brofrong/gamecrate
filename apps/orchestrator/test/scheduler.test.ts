@@ -1,10 +1,20 @@
 // Планировщик с классами воркеров и требованиями к железу (спека §2).
 import { describe, expect, it } from "bun:test";
-import { Db, gameRequirements, games, gamestoreApps, sessions } from "@cg/db";
+import {
+  Db,
+  gameRequirements,
+  games,
+  gamestoreApps,
+  installJobs,
+  ownGames,
+  sessions,
+  user,
+} from "@cg/db";
 import type { WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import * as Scheduler from "../src/Scheduler";
+import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 import {
   at,
   connectWorker,
@@ -59,6 +69,36 @@ const setRequirements = (
     yield* db
       .insert(gameRequirements)
       .values({ appId, updatedBy: null, ...req });
+  });
+
+/** appId своей игры вне диапазона Steam (SoH, Global Constraints). */
+const OWN_APP_ID = 1_900_000_001;
+
+/**
+ * Строка `games`/`own_games` своей игры (слаг и версия SoH, Global
+ * Constraints) + требования с нулями (не мешают проверке пакета/публикации).
+ * `published` по умолчанию `false`, как в таблице.
+ */
+const seedOwnGame = (opts: { readonly published?: boolean } = {}) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(games)
+      .values({ appId: OWN_APP_ID, name: "SoH" })
+      .onConflictDoNothing();
+    yield* db.insert(ownGames).values({
+      appId: OWN_APP_ID,
+      slug: "soh",
+      version: "9.3.1-1",
+      published: opts.published ?? false,
+    });
+    yield* db.insert(gameRequirements).values({
+      appId: OWN_APP_ID,
+      minVramBytes: 0,
+      minRamBytes: 0,
+      minCpuThreads: 0,
+      updatedBy: null,
+    });
   });
 
 describe("scheduler: classes and hardware requirements", () => {
@@ -200,6 +240,118 @@ describe("scheduler: classes and hardware requirements", () => {
           workerId: null,
           slot: null,
         });
+      }),
+    ));
+});
+
+describe("scheduler: own games (спека 2026-11-03 «Свои игры»)", () => {
+  it("own game session is placed on worker with the package with ownGame and no Steam login", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* seedOwnGame({ published: true });
+        yield* connectWorker(fake, "w1", 1, {
+          ownGames: [{ slug: "soh", version: "9.3.1-1" }],
+        });
+        // Посеянный вход Steam и пометка его сброса не должны понадобиться
+        // своей игре — ни прочитаны, ни стёрты.
+        const db = yield* Db;
+        yield* db
+          .update(user)
+          .set({ steamLoginResetAt: at(t0, -60) })
+          .where(eq(user.id, "u1"));
+        const seeds = yield* SteamLoginSeeds;
+        yield* seeds.put("u1", {
+          accountName: Redacted.make("acc"),
+          steamId: "76561198000000000",
+          refreshToken: Redacted.make("rt"),
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: OWN_APP_ID,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s1"), {
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+        });
+        expect(fake.sent).toHaveLength(1);
+        const sent = fake.sent[0]!;
+        expect(sent.workerId).toBe("w1");
+        like(sent.command, {
+          _tag: "StartSession",
+          sessionId: "s1",
+          userId: "u1",
+          appId: OWN_APP_ID,
+          slot: 0,
+          ownGame: { slug: "soh", version: "9.3.1-1" },
+          steamLogin: null,
+        });
+        expect("steamLoginResetAt" in sent.command).toBe(false);
+        // Посеянный вход остался — своя игра его не трогала (не читала, не чистила).
+        expect(yield* seeds.get("u1")).not.toBeNull();
+      }),
+    ));
+
+  it("own game without a package waits, never installs", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* seedOwnGame({ published: true });
+        yield* connectWorker(fake, "w1", 1); // без ownGames — пакета нет
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: OWN_APP_ID,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s1"), {
+          state: "queued",
+          workerId: null,
+          slot: null,
+        });
+        expect(fake.sent).toEqual([]);
+        const db = yield* Db;
+        expect(yield* db.select().from(installJobs)).toEqual([]);
+      }),
+    ));
+
+  it("own game hidden while queued stays queued, never installs", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* seedOwnGame({ published: false });
+        yield* connectWorker(fake, "w1", 1, {
+          ownGames: [{ slug: "soh", version: "9.3.1-1" }],
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: OWN_APP_ID,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s1"), {
+          state: "queued",
+          workerId: null,
+          slot: null,
+        });
+        expect(fake.sent).toEqual([]);
+        const db = yield* Db;
+        expect(yield* db.select().from(installJobs)).toEqual([]);
       }),
     ));
 });

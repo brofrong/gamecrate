@@ -11,7 +11,12 @@ import {
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import type { AgentCommand, WorkerHardware } from "@cg/rpc";
+import type {
+  AgentCommand,
+  OwnGamePackage,
+  WorkerHardware,
+  WorkerStats,
+} from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
 import {
@@ -115,9 +120,27 @@ const classIdByRank = (rank: number) =>
   });
 
 /**
+ * `workers.stats` минимально достаточный для планировщика: нагрузка —
+ * заглушки, важен только `ownGames` (раскатанные на воркере пакеты своих игр,
+ * спека 2026-11-03 «Свои игры», `hasPackage`).
+ */
+const statsWith = (
+  ownGamesList: ReadonlyArray<OwnGamePackage>,
+): WorkerStats => ({
+  cpuPercent: 0,
+  memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+  gpus: [],
+  filesystems: [],
+  uptimeSeconds: 0,
+  ownGames: ownGamesList,
+});
+
+/**
  * Агент воркера подключён: строка `workers` (как пишет хаб) + запись в фейке.
  * По умолчанию класс — «Стандарт» (`rank 1`, заводится, если его ещё нет);
  * `classRank: null` — воркер без класса (спека §2.1, сессий не берёт).
+ * `ownGames` — пакеты своих игр, которые воркер уже раскатал (`workers.stats`,
+ * спека 2026-11-03 «Свои игры»); нет опции — `stats` пустой (ни одного пакета).
  */
 export const connectWorker = (
   fake: FakeHub,
@@ -126,6 +149,7 @@ export const connectWorker = (
   opts: {
     readonly classRank?: number | null;
     readonly hardware?: WorkerHardware;
+    readonly ownGames?: ReadonlyArray<OwnGamePackage>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -140,6 +164,7 @@ export const connectWorker = (
         slots,
         classId,
         hardware: opts.hardware ?? null,
+        stats: opts.ownGames === undefined ? null : statsWith(opts.ownGames),
       })
       .onConflictDoNothing();
     fake.infos.set(workerId, {
@@ -176,6 +201,7 @@ export const seedUsers = (...ids: string[]) =>
 export const insertSession = (values: {
   id: string;
   userId: string;
+  appId?: number;
   state?: (typeof sessions.$inferInsert)["state"];
   workerId?: string;
   slot?: number;
