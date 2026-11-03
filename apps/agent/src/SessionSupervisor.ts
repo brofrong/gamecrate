@@ -8,7 +8,7 @@
 // сразу (`cleanupPending`). Отчёты складывает в очередь `reports` (их по порядку
 // отправляет OrchestratorLink). Пока игра идёт, снимает замеры её ресурсов
 // (`SessionMetrics`, спека 2026-10-29 §4.1).
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgentCommand,
@@ -17,6 +17,7 @@ import {
   containerGoneReason,
   defaultSessionSettings,
   type GameEnd,
+  OwnGamePackage,
   type ProfileRef,
   type RunningSession,
   SessionStage,
@@ -34,6 +35,7 @@ import {
   Queue,
   Ref,
   Result,
+  Schema,
 } from "effect";
 import { randomBytes } from "node:crypto";
 import { AgentConfig, type AgentConfigValues } from "./config";
@@ -48,6 +50,12 @@ import {
 import { parseGpuProcesses, parseNvidiaSmi } from "./hostProbe";
 import { HELPER_LABEL } from "./Helper";
 import { isValidId } from "./ids";
+import {
+  OWN_GAME_LABEL,
+  OWN_GAME_MOUNT,
+  OWN_GAME_RUN,
+  ownGameDir,
+} from "./OwnGames";
 import {
   cleanup,
   holdVolumes,
@@ -159,6 +167,7 @@ export const failReasons = {
   profileRestore: "Не удалось загрузить профиль пользователя",
   profileTooLarge: "Профиль пользователя слишком большой (больше 200 МиБ)",
   noSpace: "На сервере закончилось место",
+  ownGameMissing: "Игры нет на этом сервере",
 } as const;
 
 /** Допустимый `sessionId`/`userId` (см. `ids.ts`). */
@@ -200,6 +209,26 @@ const parseBaseVersion = (
   return /^-?\d{1,15}$/.test(label) ? Number(label) : undefined;
 };
 
+/** Значение метки `OWN_GAME_LABEL`: `<slug>/<version>`. */
+const formatOwnGame = (pkg: OwnGamePackage) => `${pkg.slug}/${pkg.version}`;
+
+/**
+ * Метка `OWN_GAME_LABEL` → пакет: `{ ok: true, pkg: undefined }` — метки нет
+ * (Steam-игра), `{ ok: false }` — метка испорчена.
+ */
+const parseOwnGame = (
+  label: string | undefined,
+):
+  | { readonly ok: true; readonly pkg: OwnGamePackage | undefined }
+  | { readonly ok: false } => {
+  if (label === undefined) return { ok: true, pkg: undefined };
+  const [slug, version, ...rest] = label.split("/");
+  const pkg = { slug, version };
+  return rest.length === 0 && Schema.is(OwnGamePackage)(pkg)
+    ? { ok: true, pkg }
+    : { ok: false };
+};
+
 /** Куда Debian-хосту пробрасывать `libnvidia-allocator` (GBM-бэкенд NVIDIA). */
 const GBM_TARGETS = [
   "/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1",
@@ -217,22 +246,28 @@ export const sessionPassword = () => randomBytes(24).toString("base64url");
 /**
  * Графический контейнер со Steam (сессия, установщик; образ-киоск — композитор
  * labwc без рабочего стола): образ сессии, сеть сессий, GPU NVIDIA и GBM-бэкенд,
- * права и `/dev/input` — одинаково у всех.
+ * права и `/dev/input` — одинаково у всех. `binds` — дополнительные
+ * bind-монтирования, после GBM (сессия своей игры — пакет игры).
  */
 export const desktopSpec = (
   config: AgentConfigValues,
-  fields: Pick<
-    ContainerSpec,
-    "name" | "env" | "labels" | "udpPorts" | "mounts"
-  >,
+  {
+    binds = [],
+    ...fields
+  }: Pick<ContainerSpec, "name" | "env" | "labels" | "udpPorts" | "mounts"> & {
+    readonly binds?: ReadonlyArray<string>;
+  },
 ): ContainerSpec => ({
   ...fields,
   image: config.sessionImage,
   network: config.sessionNetwork,
-  binds: Option.match(config.gbmAllocatorPath, {
-    onNone: () => [],
-    onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
-  }),
+  binds: [
+    ...Option.match(config.gbmAllocatorPath, {
+      onNone: () => [],
+      onSome: (path) => GBM_TARGETS.map((target) => `${path}:${target}:ro`),
+    }),
+    ...binds,
+  ],
   runtime: "nvidia",
   gpus: true,
   shmSizeBytes: SHM_SIZE_BYTES,
@@ -245,12 +280,30 @@ export const desktopSpec = (
 });
 
 /**
+ * Каталог пакета своей игры на хосте (`<GAMES_DIR>/<slug>/<version>`); нет
+ * `GAMES_DIR` — `None`. Есть ли каталог, проверяет `start`.
+ */
+const ownGameSource = (config: AgentConfigValues, pkg: OwnGamePackage) =>
+  Option.map(config.gamesDir, (gamesDir) => ownGameDir(gamesDir, pkg));
+
+/** `path` — существующий каталог. */
+const isDirectory = (path: string) => {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Контейнер сессии для `StartSession`: дом — слой контейнера, клиент Steam и
  * библиотека — overlay-тома сессии (`sessionLayers`), профиль кладётся до старта.
  * Размер экрана — `command.display` против белого списка (`allowedDisplaySize`,
  * проверяется и здесь, и в оркестраторе); нет поля или размер не из списка —
  * 1920×1080. Разрешение идущей сессии не меняется — эти переменные читаются
- * entrypoint'ом только при старте контейнера.
+ * entrypoint'ом только при старте контейнера. Своя игра (`command.ownGame`):
+ * пакет только для чтения в `OWN_GAME_MOUNT`, `CG_GAME` — запускать его вместо
+ * Steam, метка `OWN_GAME_LABEL`; слои Steam те же.
  */
 export const sessionSpec = (
   config: AgentConfigValues,
@@ -258,6 +311,7 @@ export const sessionSpec = (
   password: string,
 ): ContainerSpec => {
   const { width, height } = allowedDisplaySize(command.display);
+  const own = command.ownGame;
   return desktopSpec(config, {
     name: containerName(command.sessionId),
     env: {
@@ -269,6 +323,7 @@ export const sessionSpec = (
       SELKIES_MANUAL_HEIGHT: String(height),
       DISPLAY_SIZEW: String(width),
       DISPLAY_SIZEH: String(height),
+      ...(own !== undefined ? { CG_GAME: OWN_GAME_RUN } : {}),
     },
     labels: {
       "cg.session": command.sessionId,
@@ -276,9 +331,18 @@ export const sessionSpec = (
       "cg.app": String(command.appId),
       [USER_LABEL]: command.userId,
       [BASE_VERSION_LABEL]: formatBaseVersion(command.profile?.version ?? null),
+      ...(own !== undefined ? { [OWN_GAME_LABEL]: formatOwnGame(own) } : {}),
     },
     udpPorts: [command.udpPort],
     mounts: mountsFor(sessionLayers(config, command.sessionId)),
+    ...(own !== undefined
+      ? {
+          binds: Option.match(ownGameSource(config, own), {
+            onNone: () => [],
+            onSome: (dir) => [`${dir}:${OWN_GAME_MOUNT}:ro`],
+          }),
+        }
+      : {}),
   });
 };
 
@@ -288,6 +352,13 @@ export const sessionSpec = (
  * совпадает с `AppId=105`.
  */
 const gamePattern = (appId: number) => `AppId=${appId}( |$)`;
+
+/**
+ * Шаблон процесса своей игры для `pgrep -f` — обёртка `cg-game-exit` с
+ * `OWN_GAME_RUN`: она живёт, пока не запишет `GAME_EXIT_FILE` (сама игра после
+ * `exec` в `run` — `/opt/cg-game/<бинарник>`, её конец ещё не записан).
+ */
+const OWN_GAME_PATTERN = `cg-game-exit ${OWN_GAME_RUN}( |$)`;
 
 /** Команды внутри контейнера (`docker exec`, без shell). */
 export const commands = {
@@ -309,6 +380,16 @@ export const commands = {
   gameExit: ["cat", GAME_EXIT_FILE],
   /** Текущий этап запуска игры (`steam`…`visible`, контракт образа). */
   stage: (appId: number) => ["/usr/local/bin/cg-session-stage", String(appId)],
+  /** Своя игра: жива обёртка `cg-game-exit` пакета. */
+  ownGame: ["pgrep", "-f", OWN_GAME_PATTERN],
+  /**
+   * Своя игра: SIGTERM всему из пакета (`run`/бинарник игры). Обёртка
+   * (`/usr/local/bin/cg-game-exit …`) под шаблон не попадает — и сигнал
+   * переживает (trap), чтобы записать конец игры.
+   */
+  closeOwnGame: ["pkill", "-TERM", "-f", `^${OWN_GAME_MOUNT}/`],
+  /** Своя игра: этап `computer`|`loading`|`visible` (контракт образа). */
+  ownStage: ["/usr/local/bin/cg-session-stage", "--own"],
 } as const;
 
 /**
@@ -367,6 +448,8 @@ interface Session {
   /** Версия профиля, из которой собран дом (`null` — профиля не было). */
   readonly baseVersion: number | null;
   readonly appId: number;
+  /** Пакет своей игры (`StartSession.ownGame`, метка `cg.own-game`); нет — Steam-игра. */
+  readonly ownGame: OwnGamePackage | undefined;
   readonly slot: number;
   readonly name: string;
   readonly overlays: Overlays;
@@ -413,7 +496,24 @@ interface Session {
 }
 
 /** Контейнер, в котором выполняются проверки. */
-type Target = Pick<Session, "name" | "appId">;
+type Target = Pick<Session, "name" | "appId" | "ownGame">;
+
+/** Сессия своей игры (пакет в `/opt/cg-game`), а не Steam. */
+const isOwn = (target: Target) => target.ownGame !== undefined;
+
+/** Команды игры сессии: Steam-игра по `appId` или своя игра из пакета. */
+export const gameCommands = (target: Target) =>
+  isOwn(target)
+    ? {
+        game: commands.ownGame,
+        closeGame: commands.closeOwnGame,
+        stage: commands.ownStage,
+      }
+    : {
+        game: commands.game(target.appId),
+        closeGame: commands.closeGame(target.appId),
+        stage: commands.stage(target.appId),
+      };
 
 /**
  * Сессию нельзя продолжать: убрать контейнер со слоями и сообщить `Failed`
@@ -489,7 +589,7 @@ const make = Effect.gen(function* () {
 
   /** pgrep: 0 — игра идёт, 1 — нет; любой другой код — проверка не удалась. */
   const gameAlive = (target: Target) =>
-    execAlive(target, commands.game(target.appId)).pipe(
+    execAlive(target, gameCommands(target).game).pipe(
       Effect.flatMap(({ exitCode }) =>
         exitCode === 0
           ? Effect.succeed(true)
@@ -701,6 +801,7 @@ const make = Effect.gen(function* () {
           // момент видит уже запущенную игру (и закроет её, и подождёт облако).
           // Игра запущена — этап не раньше `prepare`, даже если скрипт этапов
           // молчит (старый образ): иначе сайт показывал бы «Запускаем Steam» поверх игры.
+          // У своей игры Steam нет: обёртка жива — сразу `loading`.
           // Итог замеров — до `GameState` о выходе (строка замеров уже есть,
           // когда оркестратор узнаёт о конце игры).
           yield* Effect.uninterruptible(
@@ -712,7 +813,9 @@ const make = Effect.gen(function* () {
                   lastAt: now,
                 };
               return Effect.andThen(
-                alive ? reportStage(session, "prepare") : finalMetrics(session),
+                alive
+                  ? reportStage(session, isOwn(session) ? "loading" : "prepare")
+                  : finalMetrics(session),
                 emit({
                   _tag: "GameState",
                   sessionId: session.sessionId,
@@ -730,8 +833,9 @@ const make = Effect.gen(function* () {
           if (!alive) return;
         }
         // Игра идёт: база облака — на этот опрос. Прервано остановкой — базу снимет
-        // finish прямо перед SIGTERM.
-        if (alive) session.cloudBaseline = yield* cloudCount(session);
+        // finish прямо перед SIGTERM. У своей игры облака нет.
+        if (alive && !isOwn(session))
+          session.cloudBaseline = yield* cloudCount(session);
         yield* Effect.sleep(GAME_POLL);
       }
     });
@@ -753,8 +857,10 @@ const make = Effect.gen(function* () {
    * проверки (таймаут, код выхода, непонятный ответ) — предупреждение, опрос
    * продолжается. Скрипта нет или он не исполняемый (код 126/127, старый
    * образ) — одно предупреждение, и опрос
-   * заканчивается: этап `prepare` тогда сообщит `watchGame`. Контейнера нет —
-   * опрос молча заканчивается: сбой сессии решают проверки Selkies и игры.
+   * заканчивается: этап `prepare` (своя игра — `loading`) тогда сообщит
+   * `watchGame`. Контейнера нет — опрос молча заканчивается: сбой сессии
+   * решают проверки Selkies и игры. Своя игра: `cg-session-stage --own`
+   * печатает и `computer` (обёртки ещё нет) — это ответ, а не сбой.
    */
   const watchStage = (session: Session) =>
     Effect.gen(function* () {
@@ -762,7 +868,7 @@ const make = Effect.gen(function* () {
       let seenAt = yield* Clock.currentTimeMillis;
       while (true) {
         const stage = yield* docker
-          .exec(session.name, commands.stage(session.appId), {
+          .exec(session.name, gameCommands(session).stage, {
             timeout: STAGE_CHECK_TIMEOUT,
           })
           .pipe(
@@ -770,7 +876,9 @@ const make = Effect.gen(function* () {
               const stage = stdout.trim();
               if (exitCode === 126 || exitCode === 127)
                 return Effect.succeed("missing" as const);
-              return exitCode === 0 && isScriptStage(stage)
+              return exitCode === 0 &&
+                (isScriptStage(stage) ||
+                  (isOwn(session) && stage === "computer"))
                 ? Effect.succeed(stage)
                 : Effect.fail(
                     new CheckFailed({
@@ -1021,6 +1129,7 @@ const make = Effect.gen(function* () {
    * устарела) — `settle` в режиме `stop`: контейнер только останавливается и
    * вместе со слоями остаётся (`profile-unsaved` в логе), следующая сессия
    * получит предыдущую версию профиля. Зависшую остановку повторяет `settle`.
+   * Своя игра: без облака и без Steam — закрыть игру и сразу снять профиль.
    */
   const finish = (session: Session) =>
     Effect.gen(function* () {
@@ -1033,8 +1142,8 @@ const make = Effect.gen(function* () {
         // StopSession посреди игры: база — прямо перед SIGTERM (всё выгруженное
         // во время игры уже в ней), затем закрыть игру штатно, тогда Steam выгрузит
         // сохранения («AC Exit»).
-        session.cloudBaseline = yield* cloudCount(session);
-        yield* exec(session, commands.closeGame(session.appId)).pipe(
+        if (!isOwn(session)) session.cloudBaseline = yield* cloudCount(session);
+        yield* exec(session, gameCommands(session).closeGame).pipe(
           Effect.catchTag("DockerError", (error) =>
             Effect.logWarning("Closing the game failed", {
               sessionId: session.sessionId,
@@ -1053,18 +1162,26 @@ const make = Effect.gen(function* () {
         ...(session.seedPutAt !== undefined
           ? { steamLoginPutAt: session.seedPutAt }
           : {}),
-        // Steam уже закрыт: обёртка игры не должна попасть в профиль.
-        beforePack: clearLaunchOptions({
-          container: session.name,
-          appId: session.appId,
-        }).pipe(
-          Effect.catchTag("SeedError", (error) =>
-            Effect.logWarning("Restoring the game launch options failed", {
-              sessionId: session.sessionId,
-              error: error.message,
+        // Своя игра шла без Steam: закрывать нечего, параметров запуска нет.
+        ...(isOwn(session)
+          ? { shutdownSteam: false }
+          : {
+              // Steam уже закрыт: обёртка игры не должна попасть в профиль.
+              beforePack: clearLaunchOptions({
+                container: session.name,
+                appId: session.appId,
+              }).pipe(
+                Effect.catchTag("SeedError", (error) =>
+                  Effect.logWarning(
+                    "Restoring the game launch options failed",
+                    {
+                      sessionId: session.sessionId,
+                      error: error.message,
+                    },
+                  ),
+                ),
+              ),
             }),
-          ),
-        ),
         ...(session.loginResetAt !== undefined
           ? { steamLoginResetAt: session.loginResetAt }
           : {}),
@@ -1148,7 +1265,78 @@ const make = Effect.gen(function* () {
       yield* emit(failed);
     });
 
-  /** Новый контейнер: слои → create → профиль → стирание входа → посев → start. */
+  /**
+   * Шаги Steam в созданном контейнере (до старта): стирание входа → посев →
+   * обёртка в параметрах запуска → смещение журнала подключения. У своей игры
+   * их нет.
+   */
+  const prepareSteam = (
+    session: Session,
+    steamLogin: SteamLoginSeed | null,
+    steamLoginResetAt: string | undefined,
+  ) =>
+    Effect.gen(function* () {
+      if (steamLoginResetAt !== undefined) {
+        yield* clearSteamLogin({ container: session.name }).pipe(
+          withServices,
+          Effect.mapError(
+            (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
+          ),
+        );
+        session.loginResetAt = steamLoginResetAt;
+      }
+      if (steamLogin !== null) {
+        yield* seedSteamLogin({
+          container: session.name,
+          seed: steamLogin,
+        }).pipe(
+          withServices,
+          Effect.mapError(
+            (cause) => new Abort({ reason: failReasons.profileRestore, cause }),
+          ),
+        );
+        session.seeded = true;
+        session.seedPutAt = steamLogin.putAt;
+      }
+      // Обёртка `cg-game-exit` в параметрах запуска игры (§4.2); не вышло —
+      // игра идёт без неё, её конец будет `unknown`.
+      yield* setLaunchOptions({
+        container: session.name,
+        appId: session.appId,
+      }).pipe(
+        withServices,
+        Effect.catchTag("SeedError", (error) =>
+          Effect.logWarning("Setting the game launch options failed", {
+            sessionId: session.sessionId,
+            error: error.message,
+          }),
+        ),
+      );
+      // Журнал дописывается и в шаблоне клиента уже есть строки: ответ на
+      // посев — только после этого смещения. Не узнали — сессия идёт без
+      // наблюдения за посевом.
+      if (session.seeded)
+        session.loginLogOffset = yield* docker
+          .archiveSize(session.name, CONNECTION_LOG)
+          .pipe(
+            Effect.catchTag("DockerError", (error) =>
+              isGone(error)
+                ? Effect.succeed(0)
+                : Effect.logWarning(
+                    "Reading the Steam connection log size failed",
+                    {
+                      sessionId: session.sessionId,
+                      error: error.message,
+                    },
+                  ).pipe(Effect.as(undefined)),
+            ),
+          );
+    });
+
+  /**
+   * Новый контейнер: слои → create → профиль → шаги Steam (`prepareSteam`,
+   * только у Steam-игры) → start.
+   */
   const launch = (
     session: Session,
     spec: ContainerSpec,
@@ -1192,65 +1380,12 @@ const make = Effect.gen(function* () {
                 }),
             ),
           );
-          if (steamLoginResetAt !== undefined) {
-            yield* clearSteamLogin({ container: session.name }).pipe(
-              withServices,
-              Effect.mapError(
-                (cause) =>
-                  new Abort({ reason: failReasons.profileRestore, cause }),
-              ),
-            );
-            session.loginResetAt = steamLoginResetAt;
-          }
-          if (steamLogin !== null) {
-            yield* seedSteamLogin({
-              container: session.name,
-              seed: steamLogin,
-            }).pipe(
-              withServices,
-              Effect.mapError(
-                (cause) =>
-                  new Abort({ reason: failReasons.profileRestore, cause }),
-              ),
-            );
-            session.seeded = true;
-            session.seedPutAt = steamLogin.putAt;
-          }
-          // Обёртка `cg-game-exit` в параметрах запуска игры (§4.2); не вышло —
-          // игра идёт без неё, её конец будет `unknown`.
-          yield* setLaunchOptions({
-            container: session.name,
-            appId: session.appId,
-          }).pipe(
-            withServices,
-            Effect.catchTag("SeedError", (error) =>
-              Effect.logWarning("Setting the game launch options failed", {
-                sessionId: session.sessionId,
-                error: error.message,
-              }),
-            ),
-          );
-          // Журнал дописывается и в шаблоне клиента уже есть строки: ответ на
-          // посев — только после этого смещения. Не узнали — сессия идёт без
-          // наблюдения за посевом.
-          if (session.seeded)
-            session.loginLogOffset = yield* docker
-              .archiveSize(session.name, CONNECTION_LOG)
-              .pipe(
-                Effect.catchTag("DockerError", (error) =>
-                  isGone(error)
-                    ? Effect.succeed(0)
-                    : Effect.logWarning(
-                        "Reading the Steam connection log size failed",
-                        {
-                          sessionId: session.sessionId,
-                          error: error.message,
-                        },
-                      ).pipe(Effect.as(undefined)),
-                ),
-              );
+          if (!isOwn(session))
+            yield* prepareSteam(session, steamLogin, steamLoginResetAt);
           yield* docker.start(session.name).pipe(Effect.mapError(dockerStart));
-          yield* reportStage(session, "steam");
+          // Своя игра: этап остаётся `computer`, пока нет обёртки игры
+          // (`cg-session-stage --own`).
+          if (!isOwn(session)) yield* reportStage(session, "steam");
           return from;
         }),
       );
@@ -1316,12 +1451,16 @@ const make = Effect.gen(function* () {
       "sessionId" | "userId" | "baseVersion" | "appId" | "slot" | "name"
     > &
       Partial<
-        Pick<Session, "created" | "phase" | "gameRunning" | "cloudBaseline">
+        Pick<
+          Session,
+          "ownGame" | "created" | "phase" | "gameRunning" | "cloudBaseline"
+        >
       >,
   ) =>
     Effect.gen(function* () {
       const session: Session = {
         ...fields,
+        ownGame: fields.ownGame,
         overlays: sessionLayers(config, fields.sessionId),
         streamUrl: streamUrlFor(fields.sessionId),
         created: fields.created ?? false,
@@ -1389,6 +1528,26 @@ const make = Effect.gen(function* () {
         }
         return;
       }
+      // Своя игра — только с пакетом на этом воркере (Docker не трогаем).
+      if (
+        command.ownGame !== undefined &&
+        !Option.match(ownGameSource(config, command.ownGame), {
+          onNone: () => false,
+          onSome: isDirectory,
+        })
+      ) {
+        yield* Effect.logError("Own game package is missing", {
+          sessionId: command.sessionId,
+          ownGame: formatOwnGame(command.ownGame),
+          gamesDir: Option.getOrUndefined(config.gamesDir),
+        });
+        yield* emit({
+          _tag: "Failed",
+          sessionId: command.sessionId,
+          reason: failReasons.ownGameMissing,
+        });
+        return;
+      }
       // Scratch сессий — на общем диске хоста: без запаса места не стартуем.
       if (
         !(yield* hasFreeSpace(freeSpace, config.scratchDir, config.minFreeGb))
@@ -1405,6 +1564,7 @@ const make = Effect.gen(function* () {
         userId: command.userId,
         baseVersion: command.profile?.version ?? null,
         appId: command.appId,
+        ownGame: command.ownGame,
         slot: command.slot,
         name: containerName(command.sessionId),
       });
@@ -1413,6 +1573,9 @@ const make = Effect.gen(function* () {
         slot: command.slot,
         udpPort: command.udpPort,
         appId: command.appId,
+        ...(command.ownGame !== undefined
+          ? { ownGame: formatOwnGame(command.ownGame) }
+          : {}),
         profileVersion: command.profile?.version ?? null,
       });
       yield* Effect.forkIn(
@@ -1501,9 +1664,10 @@ const make = Effect.gen(function* () {
 
   /**
    * Запущенный контейнер `cg.session` под надзор: проверка меток (пользователь и
-   * база профиля нужны для сохранения), состояние игры и облака, жизненный цикл.
-   * `stop` — сразу остановить (штатно, с сохранением профиля). `undefined` —
-   * метки испорчены или сессия уже ведётся.
+   * база профиля нужны для сохранения; `cg.own-game` — сессия своей игры),
+   * состояние игры и облака, жизненный цикл. `stop` — сразу остановить
+   * (штатно, с сохранением профиля). `undefined` — метки испорчены (испорченная
+   * `cg.own-game` — с предупреждением) или сессия уже ведётся.
    */
   const adoptRunning = (
     container: ContainerInfo,
@@ -1517,6 +1681,18 @@ const make = Effect.gen(function* () {
       );
       const slot = Number(container.labels["cg.slot"]);
       const appId = Number(container.labels["cg.app"]);
+      const ownGame = parseOwnGame(container.labels[OWN_GAME_LABEL]);
+      if (!ownGame.ok) {
+        yield* Effect.logWarning(
+          "Session container has a broken own-game label",
+          {
+            sessionId,
+            name: container.name,
+            label: container.labels[OWN_GAME_LABEL],
+          },
+        );
+        return undefined;
+      }
       if (
         !isValidId(sessionId) ||
         !isValidId(userId) ||
@@ -1526,11 +1702,16 @@ const make = Effect.gen(function* () {
         sessions.has(sessionId)
       )
         return undefined;
-      const target: Target = { name: container.name, appId };
+      const target: Target = {
+        name: container.name,
+        appId,
+        ownGame: ownGame.pkg,
+      };
       const gameRunning = yield* gameAlive(target).pipe(
         Effect.orElseSucceed(() => false),
       );
-      const cloudBaseline = gameRunning ? yield* cloudCount(target) : undefined;
+      const cloudBaseline =
+        gameRunning && !isOwn(target) ? yield* cloudCount(target) : undefined;
       // Пока шли проверки, сессию мог подхватить параллельный StopSession.
       if (sessions.has(sessionId)) return undefined;
       const session = yield* register({
@@ -1538,6 +1719,7 @@ const make = Effect.gen(function* () {
         userId,
         baseVersion,
         appId,
+        ownGame: ownGame.pkg,
         slot,
         name: container.name,
         created: true,

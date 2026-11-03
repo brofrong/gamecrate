@@ -169,8 +169,8 @@ export const restoreProfile = (options: {
 
 /**
  * Снимает профиль с запущенного `container` и фиксирует новую версию: Steam
- * закрывается штатно (`cg-steam-shutdown`; не вышло — только предупреждение),
- * `cg-profile-pack` → размер (не больше `PROFILE_MAX_BYTES`) → архив →
+ * закрывается штатно (`cg-steam-shutdown`; не вышло — только предупреждение;
+ * `shutdownSteam: false` — шага нет), `cg-profile-pack` → размер (не больше `PROFILE_MAX_BYTES`) → архив →
  * шифрование и загрузка → `agent.profileCommit` от
  * `baseVersion`. Отклонён (база устарела) — загруженный объект удаляется, и это
  * тоже `ProfileError` (шаг `commit`): прогресс сессии не сохранён, её контейнер
@@ -199,6 +199,11 @@ export const saveProfile = (options: {
    * `cg-game-exit` с параметров запуска игры); его сбои он обрабатывает сам.
    */
   readonly beforePack?: Effect.Effect<void, never, DockerClient>;
+  /**
+   * Закрыть Steam перед упаковкой (по умолчанию `true`); `false` — сессия
+   * своей игры, Steam в ней не запускался, `cg-steam-shutdown` не вызывается.
+   */
+  readonly shutdownSteam?: boolean;
 }): Effect.Effect<
   void,
   ProfileError,
@@ -210,22 +215,23 @@ export const saveProfile = (options: {
     const committer = yield* ProfileCommitter;
     const log = { container: options.container, userId: options.userId };
 
-    yield* docker.exec(options.container, [STEAM_SHUTDOWN]).pipe(
-      Effect.flatMap(({ exitCode }) =>
-        exitCode === 0
-          ? Effect.void
-          : Effect.logWarning("Steam did not shut down cleanly", {
-              ...log,
-              exitCode,
-            }),
-      ),
-      Effect.catchTag("DockerError", (error: DockerError) =>
-        Effect.logWarning("Steam shutdown failed", {
-          ...log,
-          error: error.message,
-        }),
-      ),
-    );
+    if (options.shutdownSteam !== false)
+      yield* docker.exec(options.container, [STEAM_SHUTDOWN]).pipe(
+        Effect.flatMap(({ exitCode }) =>
+          exitCode === 0
+            ? Effect.void
+            : Effect.logWarning("Steam did not shut down cleanly", {
+                ...log,
+                exitCode,
+              }),
+        ),
+        Effect.catchTag("DockerError", (error: DockerError) =>
+          Effect.logWarning("Steam shutdown failed", {
+            ...log,
+            error: error.message,
+          }),
+        ),
+      );
 
     if (options.beforePack !== undefined) yield* options.beforePack;
 
