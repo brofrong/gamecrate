@@ -2,7 +2,7 @@
 // 2026-11-03): синхронизация описаний из манифестов репозитория и чтение
 // строки каталога.
 import type { OwnGameManifest } from "@cg/rpc";
-import { eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { Db } from "./Db";
 import { gameRequirements, games, ownGames } from "./schema";
@@ -21,14 +21,16 @@ export type OwnGameRow = {
  * имя, `own_games` — `slug`/`version` без изменения `published` (админ
  * включает игру игрокам отдельно, «Открыта игрокам»), `game_requirements` —
  * только если строки ещё нет (`onConflictDoNothing`): правки админа в
- * допуске по железу не затираются повторной синхронизацией. Весь список — в
- * одной транзакции.
+ * допуске по железу не затираются повторной синхронизацией. Свои игры, чьих
+ * манифестов в списке больше нет (каталог `games/<slug>/` удалили из
+ * репозитория), скрываются (`published = false`): строка остаётся для
+ * истории сессий, но игроки её больше не видят и не запускают; пустой
+ * список скрывает все. Всё — в одной транзакции.
  */
 export const syncOwnGames = (
   manifests: ReadonlyArray<OwnGameManifest>,
 ): Effect.Effect<void, never, Db> =>
   Effect.gen(function* () {
-    if (manifests.length === 0) return;
     const db = yield* Db;
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
@@ -61,6 +63,18 @@ export const syncOwnGames = (
             })
             .onConflictDoNothing();
         }
+        const appIds = manifests.map((manifest) => manifest.appId);
+        yield* tx
+          .update(ownGames)
+          .set({ published: false })
+          .where(
+            appIds.length === 0
+              ? eq(ownGames.published, true)
+              : and(
+                  eq(ownGames.published, true),
+                  notInArray(ownGames.appId, appIds),
+                ),
+          );
       }),
     );
   }).pipe(Effect.orDie);

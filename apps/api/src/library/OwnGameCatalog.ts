@@ -82,30 +82,40 @@ export class OwnGameCatalog extends Context.Service<
   }
 >()("@cg/api/OwnGameCatalog") {
   /**
-   * Загрузка из `ownGamesDir` и `syncOwnGames` (имя, пакет, требования — в
-   * БД; `published` не трогается). Строится после миграций (main.ts); сбой
-   * загрузки — ошибка слоя, api не стартует.
+   * Загрузка из `dir` и `syncOwnGames` (имя, пакет, требования — в БД;
+   * `published` выключается у игр, которых в `dir` больше нет). Сбой
+   * загрузки — ошибка слоя.
+   */
+  static readonly fromDir = (
+    dir: string,
+  ): Layer.Layer<OwnGameCatalog, OwnGameCatalogError, Db> =>
+    Layer.effect(
+      OwnGameCatalog,
+      Effect.gen(function* () {
+        const list = yield* Effect.try({
+          try: () => loadOwnGameManifests(dir),
+          catch: (error) =>
+            new OwnGameCatalogError({ message: messageOf(error) }),
+        });
+        yield* syncOwnGames(list);
+        yield* Effect.logInfo("Own game catalog loaded", {
+          dir,
+          games: list.map((manifest) => manifest.slug),
+        });
+        return make(list);
+      }),
+    );
+
+  /**
+   * `fromDir(ownGamesDir)` из конфига. Строится после миграций (main.ts);
+   * сбой загрузки — api не стартует.
    */
   static readonly layer: Layer.Layer<
     OwnGameCatalog,
     OwnGameCatalogError,
     AppConfig | Db
-  > = Layer.effect(
-    OwnGameCatalog,
-    Effect.gen(function* () {
-      const { ownGamesDir } = yield* AppConfig;
-      const list = yield* Effect.try({
-        try: () => loadOwnGameManifests(ownGamesDir),
-        catch: (error) =>
-          new OwnGameCatalogError({ message: messageOf(error) }),
-      });
-      yield* syncOwnGames(list);
-      yield* Effect.logInfo("Own game catalog loaded", {
-        dir: ownGamesDir,
-        games: list.map((manifest) => manifest.slug),
-      });
-      return make(list);
-    }),
+  > = Layer.unwrap(
+    AppConfig.useSync((config) => OwnGameCatalog.fromDir(config.ownGamesDir)),
   );
 
   /** Каталог из готового списка, без файлов и БД (тесты). */

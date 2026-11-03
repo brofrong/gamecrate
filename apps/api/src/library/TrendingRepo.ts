@@ -17,6 +17,7 @@ import { Effect } from "effect";
 import * as CloudRepo from "./CloudRepo";
 import * as LibraryRepo from "./LibraryRepo";
 import { coverUrl } from "./LibraryService";
+import * as OwnGamesRepo from "./OwnGamesRepo";
 
 /** Не больше стольких игр в каждом из списков «сейчас»/«за неделю». */
 const maxEntries = 12;
@@ -50,6 +51,8 @@ const toEntries = (
  * игры с сессиями за последние 7 суток от `now` в любом состоянии кроме
  * `failed` (`players` — число разных `user_id`). Оба списка — по убыванию
  * `players`, затем по имени, не больше 12; игра может быть в обоих.
+ * Скрытые свои игры не попадают ни в один (`shownToPlayers`), открытые —
+ * `inLibrary` у всех.
  */
 export const trending = (
   userId: string,
@@ -59,7 +62,7 @@ export const trending = (
     const db = yield* Db;
     const weekAgo = new Date(now.getTime() - weekMillis);
 
-    const [nowRows, weekRows, ownedAppIds] = yield* Effect.all([
+    const [nowRows, weekRows, ownedAppIds, published] = yield* Effect.all([
       db
         .select({
           appId: games.appId,
@@ -68,7 +71,12 @@ export const trending = (
         })
         .from(sessions)
         .innerJoin(games, eq(sessions.appId, games.appId))
-        .where(notInArray(sessions.state, ["ended", "failed"]))
+        .where(
+          and(
+            notInArray(sessions.state, ["ended", "failed"]),
+            OwnGamesRepo.shownToPlayers(sessions.appId),
+          ),
+        )
         .groupBy(games.appId, games.name)
         .orderBy(desc(count(sessions.id)), asc(games.name))
         .limit(maxEntries),
@@ -81,19 +89,28 @@ export const trending = (
         .from(sessions)
         .innerJoin(games, eq(sessions.appId, games.appId))
         .where(
-          and(gte(sessions.createdAt, weekAgo), ne(sessions.state, "failed")),
+          and(
+            gte(sessions.createdAt, weekAgo),
+            ne(sessions.state, "failed"),
+            OwnGamesRepo.shownToPlayers(sessions.appId),
+          ),
         )
         .groupBy(games.appId, games.name)
         .orderBy(desc(countDistinct(sessions.userId)), asc(games.name))
         .limit(maxEntries),
       LibraryRepo.ownedAppIds(userId),
+      OwnGamesRepo.publishedOwnGames(),
     ]);
 
     const appIds = [
       ...new Set([...nowRows, ...weekRows].map((row) => row.appId)),
     ];
     const cloudStatuses = yield* CloudRepo.cloudStatuses(appIds);
-    const owned = new Set(ownedAppIds);
+    // Открытые свои игры — в библиотеке у каждого (как в `libraryView`).
+    const owned = new Set([
+      ...ownedAppIds,
+      ...published.map((game) => game.appId),
+    ]);
 
     return {
       now: toEntries(nowRows, cloudStatuses, owned),

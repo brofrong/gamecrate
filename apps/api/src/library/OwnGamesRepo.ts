@@ -2,7 +2,16 @@
 // игры»): какие открыты игрокам и сколько пользователь в них наиграл — Steam
 // этого не знает, время считается по отрезкам игры наших сессий.
 import { Db, games, ownGames, playSegments } from "@cg/db";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { OWN_APP_ID_MIN } from "@cg/rpc";
+import {
+  type AnyColumn,
+  and,
+  asc,
+  eq,
+  inArray,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { Effect } from "effect";
 
 /**
@@ -23,6 +32,15 @@ export const publishedOwnGames = (): Effect.Effect<
       .where(eq(ownGames.published, true))
       .orderBy(asc(games.name), asc(ownGames.appId));
   }).pipe(Effect.orDie);
+
+/**
+ * Условие «игра видна игрокам» для колонки `appId` (например,
+ * `sessions.app_id`): Steam-игра — всегда, своя — только открытая
+ * (`own_games.published`). Для «Недавних» и «В тренде»: скрытая своя игра
+ * там не показывается, даже если в неё уже играли.
+ */
+export const shownToPlayers = (appId: AnyColumn): SQL =>
+  sql`(${appId} < ${OWN_APP_ID_MIN} or exists (select 1 from ${ownGames} where ${ownGames.appId} = ${appId} and ${ownGames.published}))`;
 
 /**
  * Время пользователя в каждой из `appIds`: сумма закрытых (`open = false`)

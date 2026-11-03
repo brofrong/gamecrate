@@ -117,6 +117,30 @@ describe("syncOwnGames", () => {
       }),
     ));
 
+  it("sync hides own games whose manifest is gone", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const kept = manifest({ version: "1" });
+        const gone = manifest({
+          appId: APP_ID + 1,
+          slug: "gone",
+          version: "1",
+        });
+        yield* syncOwnGames([kept, gone]);
+        yield* db.update(ownGames).set({ published: true });
+
+        // Каталог `games/gone/` удалили: при следующем старте его нет в списке.
+        yield* syncOwnGames([kept]);
+        expect((yield* ownGameOf(APP_ID))?.published).toBe(true);
+        expect((yield* ownGameOf(APP_ID + 1))?.published).toBe(false);
+
+        // Пустой каталог — скрыты все.
+        yield* syncOwnGames([]);
+        expect((yield* ownGameOf(APP_ID))?.published).toBe(false);
+      }),
+    ));
+
   it("own_games rejects appId below the range", () =>
     run(
       Effect.gen(function* () {

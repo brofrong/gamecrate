@@ -48,7 +48,7 @@ const [soh] = loadOwnGameManifests(repoGamesDir).filter(
 if (soh === undefined) throw new Error("games/soh/game.json not found");
 const SOH = soh.appId;
 
-/** Вторая своя игра — только в БД, не в каталоге api. */
+/** Вторая своя игра: была в репозитории, её каталог `games/other/` удалили. */
 const other: OwnGameManifest = { ...soh, appId: SOH + 1, slug: "other" };
 
 const noSteam: CurrentUserShape = {
@@ -126,8 +126,8 @@ const session = RpcTest.makeClient(SessionRpcs);
 const GiB = 1024 ** 3;
 
 /**
- * Пользователи, обе свои игры в каталоге БД (как после `syncOwnGames` при
- * старте api), `published` — открыта ли SoH игрокам (`other` открыта всегда).
+ * Пользователи и SoH в каталоге БД (как после `syncOwnGames` при старте
+ * api), `published` — открыта ли она игрокам.
  */
 const seed = (opts: { readonly published: boolean }) =>
   Effect.gen(function* () {
@@ -140,15 +140,11 @@ const seed = (opts: { readonly published: boolean }) =>
         steamId: u.steamId,
       })),
     );
-    yield* syncOwnGames([soh, other]);
+    yield* syncOwnGames([soh]);
     yield* db
       .update(ownGames)
       .set({ published: opts.published })
       .where(eq(ownGames.appId, SOH));
-    yield* db
-      .update(ownGames)
-      .set({ published: true })
-      .where(eq(ownGames.appId, other.appId));
   });
 
 /** Воркер на связи, с классом, железом под требования SoH и её активным пакетом. */
@@ -201,11 +197,7 @@ describe("own games", () => {
     );
     expect(view._tag).toBe("Ready");
     if (view._tag !== "Ready") return;
-    expect(view.entries).toContainEqual(sohEntry);
-    expect(view.entries.map((entry) => entry.appId).toSorted()).toEqual([
-      SOH,
-      other.appId,
-    ]);
+    expect(view.entries).toEqual([sohEntry]);
     expect(view.syncedAt).toBeNull();
     expect(view.steamProfile).toBe(false);
   });
@@ -340,26 +332,108 @@ describe("own games", () => {
         const start = yield* Effect.flip(
           (yield* session)["session.start"]({ appId: SOH }),
         );
-        // Открыта в БД, но api не знает её описания (нет в каталоге) — тоже
-        // «не найдена».
-        const notInCatalog = yield* Effect.flip(
-          rpc["library.game"]({ appId: other.appId }),
-        );
         const db = yield* Db;
         const rows = yield* db.select().from(sessions);
-        return { list, page, start, notInCatalog, rows };
+        return { list, page, start, rows };
       }),
     );
-    expect(result.list.entries.map((entry) => entry.appId)).toEqual([
-      other.appId,
-    ]);
+    expect(result.list.entries).toEqual([]);
     expect(result.page).toMatchObject({ _tag: "GameNotFound", appId: SOH });
     expect(result.start).toMatchObject({ _tag: "GameNotOwned", appId: SOH });
-    expect(result.notInCatalog).toMatchObject({
-      _tag: "GameNotFound",
-      appId: other.appId,
-    });
     expect(result.rows).toHaveLength(0);
+  });
+
+  it("own game removed from the repo is hidden at api start", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cg-own-games-"));
+    try {
+      await mkdir(join(dir, "soh"));
+      await writeFile(join(dir, "soh", "game.json"), JSON.stringify(soh));
+      const result = await run(
+        Effect.gen(function* () {
+          yield* seed({ published: true });
+          yield* seedWorker;
+          // Прошлый старт знал и `other`, админ её открыл.
+          const db = yield* Db;
+          yield* syncOwnGames([soh, other]);
+          yield* db
+            .update(ownGames)
+            .set({ published: true })
+            .where(eq(ownGames.appId, other.appId));
+          // Новый старт api: в репозитории только `games/soh/`.
+          yield* Layer.build(OwnGameCatalog.fromDir(dir));
+          const rpc = yield* library;
+          const list = yield* rpc["library.list"]();
+          const page = yield* Effect.flip(
+            rpc["library.game"]({ appId: other.appId }),
+          );
+          const start = yield* Effect.flip(
+            (yield* session)["session.start"]({ appId: other.appId }),
+          );
+          return { list, page, start };
+        }),
+      );
+      expect(result.list.entries.map((entry) => entry.appId)).toEqual([SOH]);
+      expect(result.page).toMatchObject({
+        _tag: "GameNotFound",
+        appId: other.appId,
+      });
+      expect(result.start).toMatchObject({
+        _tag: "GameNotOwned",
+        appId: other.appId,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hidden own game leaves recent and trending, open one is in library", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed({ published: true });
+        const db = yield* Db;
+        // Своя сессия — недавно сыграна; чужая идёт сейчас.
+        yield* db.insert(sessions).values([
+          {
+            id: crypto.randomUUID(),
+            userId: noSteam.id,
+            appId: SOH,
+            state: "ended",
+            endedAt: new Date(),
+          },
+          {
+            id: crypto.randomUUID(),
+            userId: withSteam.id,
+            appId: SOH,
+            state: "playing",
+          },
+        ]);
+        const rpc = yield* library;
+        const open = {
+          recent: yield* rpc["library.recent"](),
+          trending: yield* rpc["library.trending"](),
+        };
+        yield* db
+          .update(ownGames)
+          .set({ published: false })
+          .where(eq(ownGames.appId, SOH));
+        const hidden = {
+          recent: yield* rpc["library.recent"](),
+          trending: yield* rpc["library.trending"](),
+        };
+        return { open, hidden };
+      }),
+    );
+    expect(result.open.recent.map((entry) => entry.appId)).toEqual([SOH]);
+    expect(result.open.trending.now).toMatchObject([
+      { appId: SOH, inLibrary: true, cloud: { _tag: "Ready" } },
+    ]);
+    expect(result.open.trending.week).toMatchObject([
+      { appId: SOH, inLibrary: true, players: 2 },
+    ]);
+    expect(result.hidden).toEqual({
+      recent: [],
+      trending: { now: [], week: [] },
+    });
   });
 
   it("own game page has own info and never calls Steam Store", async () => {
