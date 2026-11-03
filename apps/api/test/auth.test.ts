@@ -28,6 +28,7 @@ import { RpcMiddlewares } from "../src/auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "../src/auth/rpc";
 import { AppConfig, type AppConfigValues, appConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 import { Mailer } from "../src/mail/Mailer";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamStoreApi } from "../src/steam/SteamStoreApi";
@@ -144,6 +145,7 @@ const providersConfig = (
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
   webDistDir: "unused",
+  ownGamesDir: "unused",
   smtpUrl: Redacted.make("log://"),
   mailFrom: "GameCrate <test@example.com>",
   google: Option.none(),
@@ -207,6 +209,7 @@ const appDeps = (webDistDir: string) =>
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
     Layer.mock(SteamStoreApi)({}),
+    OwnGameCatalog.fromManifests([]),
     Layer.succeed(Mailer, { send: () => Effect.void }),
   ).pipe(
     Layer.provideMerge(
@@ -222,6 +225,7 @@ const appDeps = (webDistDir: string) =>
         pocketIdAdminGroup: "cloud_gaming_admins",
         allowedOrigins: ["http://localhost:5173"],
         webDistDir,
+        ownGamesDir: "unused",
         smtpUrl: Redacted.make("log://"),
         mailFrom: "GameCrate <test@example.com>",
         google: Option.none(),

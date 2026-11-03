@@ -1,4 +1,4 @@
-// Точка входа сервера: миграции БД, затем HTTP-сервер на Bun.
+// Точка входа сервера: миграции БД, затем каталог своих игр и HTTP-сервер на Bun.
 import { Db, runMigrations } from "@cg/db";
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
@@ -6,6 +6,7 @@ import { FetchHttpClient, HttpRouter } from "effect/http";
 import { BetterAuth } from "./auth/auth";
 import { AppConfig } from "./config";
 import { HttpApp } from "./http";
+import { OwnGameCatalog } from "./library/OwnGameCatalog";
 import { Mailer } from "./mail/Mailer";
 import { ProtonDb } from "./steam/ProtonDb";
 import { SteamApi } from "./steam/SteamApi";
@@ -15,12 +16,17 @@ const BunServer = Layer.unwrap(
   AppConfig.useSync((config) => BunHttpServer.layer({ port: config.port })),
 );
 
-/** БД, внешние API (Steam Web API, Steam Store, ProtonDB) и почта — для библиотеки, страницы игры, входа и кодов на e-mail. */
+/**
+ * БД, внешние API (Steam Web API, Steam Store, ProtonDB) и почта — для библиотеки, страницы игры,
+ * входа и кодов на e-mail; каталог своих игр (`games/<slug>/game.json`, при построении — синхронизация
+ * в БД; строится в `Layer.launch`, то есть уже после миграций).
+ */
 const Services = Layer.mergeAll(
   SteamApi.layer,
   SteamStoreApi.layer,
   ProtonDb.layer,
   Mailer.layer,
+  OwnGameCatalog.layer,
 ).pipe(Layer.provide(FetchHttpClient.layer), Layer.provideMerge(Db.layer));
 
 const Server = HttpRouter.serve(HttpApp).pipe(

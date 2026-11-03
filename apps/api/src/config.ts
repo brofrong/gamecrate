@@ -1,4 +1,5 @@
 // Конфигурация сервера из окружения (`.env`). Секреты — только Redacted.
+import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect";
 
 /**
@@ -57,6 +58,15 @@ export const appConfig = Config.all({
   ),
   /** Папка собранной SPA (`apps/web/dist`). */
   webDistDir: Config.String("WEB_DIST_DIR"),
+  /**
+   * Каталог своих игр репозитория (`games/<slug>/game.json`, «Свои игры»);
+   * по умолчанию — `games/` в корне репозитория (в образе — `/app/games`).
+   */
+  ownGamesDir: Config.String("OWN_GAMES_DIR").pipe(
+    Config.withDefault(
+      fileURLToPath(new URL("../../../games", import.meta.url)),
+    ),
+  ),
   /** SMTP для отправки писем (коды входа и т.п.); `log://` — см. `mail/Mailer.ts`. */
   smtpUrl: Config.Redacted("SMTP_URL"),
   /** Заголовок `From` писем, например `GameCrate <no-reply@brofrong.ru>`. */

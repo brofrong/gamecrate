@@ -18,6 +18,7 @@ import { RpcTest } from "effect/rpc";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
 import * as CloudRepo from "../src/library/CloudRepo";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamApi } from "../src/steam/SteamApi";
@@ -63,7 +64,14 @@ const storeLayer = Layer.succeed(
 
 const env = Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
-  Layer.provideMerge(Layer.mergeAll(steamLayer, protonLayer, storeLayer)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      steamLayer,
+      protonLayer,
+      storeLayer,
+      OwnGameCatalog.fromManifests([]),
+    ),
+  ),
   Layer.provideMerge(DbTest),
 );
 

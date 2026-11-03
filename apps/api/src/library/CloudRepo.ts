@@ -1,7 +1,7 @@
 // Статус облачной версии игры (установка на сервере стриминга), облачный
 // профиль Steam (MVP-3) и время последней сессии — для `library.list`.
 import { Db, gamestoreApps, installJobs, profiles, sessions } from "@cg/db";
-import type { CloudStatus } from "@cg/rpc";
+import { type CloudStatus, isOwnAppId } from "@cg/rpc";
 import { and, eq, inArray, max, ne } from "drizzle-orm";
 import { Effect } from "effect";
 
@@ -18,17 +18,21 @@ const installPercent = (
  * Статус облака для каждой из `appIds`: `Ready` — игра есть в `gamestore_apps`;
  * иначе `Installing`, если есть активная (`queued`/`running`) задача установки
  * (частичный уникальный индекс гарантирует не более одной); иначе `Missing`
- * (в карту не попадает — см. `cloudStatusOf`). Пустой список — пустая карта
- * без запроса к БД.
+ * (в карту не попадает — см. `cloudStatusOf`). Свои игры (`isOwnAppId`)
+ * всегда `Ready`: их пакет не ставится через Steam, а раскатан на воркеры
+ * (есть ли он на подходящем воркере — забота `gameAvailable`). Пустой список
+ * Steam-игр — без запроса к БД.
  */
 export const cloudStatuses = (
   appIds: ReadonlyArray<number>,
 ): Effect.Effect<ReadonlyMap<number, CloudStatus>, never, Db> =>
   Effect.gen(function* () {
-    if (appIds.length === 0) return new Map();
-    const db = yield* Db;
-    const ids = [...appIds];
     const status = new Map<number, CloudStatus>();
+    for (const appId of appIds)
+      if (isOwnAppId(appId)) status.set(appId, { _tag: "Ready" });
+    const ids = appIds.filter((appId) => !isOwnAppId(appId));
+    if (ids.length === 0) return status;
+    const db = yield* Db;
 
     const ready = yield* db
       .select({ appId: gamestoreApps.appId })

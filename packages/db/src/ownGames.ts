@@ -17,11 +17,12 @@ export type OwnGameRow = {
 
 /**
  * Синхронизирует каталог своих игр с манифестами репозитория (запускается
- * при старте оркестратора на каждый `game.json`): `games` — имя, `own_games`
- * — `slug`/`version` без изменения `published` (админ включает игру
- * игрокам отдельно, «Открыта игрокам»), `game_requirements` — только если
- * строки ещё нет (`onConflictDoNothing`): правки админа в допуске по железу
- * не затираются повторной синхронизацией. Весь список — в одной транзакции.
+ * при старте api — `OwnGameCatalog.layer` — по всем `game.json`): `games` —
+ * имя, `own_games` — `slug`/`version` без изменения `published` (админ
+ * включает игру игрокам отдельно, «Открыта игрокам»), `game_requirements` —
+ * только если строки ещё нет (`onConflictDoNothing`): правки админа в
+ * допуске по железу не затираются повторной синхронизацией. Весь список — в
+ * одной транзакции.
  */
 export const syncOwnGames = (
   manifests: ReadonlyArray<OwnGameManifest>,

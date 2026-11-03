@@ -10,6 +10,7 @@ import {
   type SessionStage,
   sessionStages,
 } from "@cg/db";
+import { OWN_APP_ID_MIN } from "@cg/rpc";
 import { Clock, Effect } from "effect";
 
 /** PgClient под drizzle: его шаблон `sql` — параметризованный запрос. */
@@ -72,7 +73,9 @@ type Row = {
  * времени — обратный шаг часов между отметками, отметка из ручной правки БД).
  * По каждому этапу — медиана и число последних `window` замеров этой игры
  * (`own_*`) и всех игр (`all_*`) не старше `historyDays`; «последние» — по
- * моменту отметки начала этапа.
+ * моменту отметки начала этапа. Свои игры (`app_id >= OWN_APP_ID_MIN`) в
+ * общий пул не входят: у них другие этапы и времена (нет Steam), они
+ * исказили бы норму Steam-игр; своя норма у такой игры считается как обычно.
  */
 const launchQuery = (sql: Sql, appId: number) => sql<Row>`
   with marks as (
@@ -97,7 +100,10 @@ const launchQuery = (sql: Sql, appId: number) => sql<Row>`
       and c.at > now() - ${historyDays} * interval '1 day'
   ), ranked as (
     select stage, ms, app_id = ${appId} as own,
-      row_number() over (partition by stage order by at desc) as all_rn,
+      app_id < ${OWN_APP_ID_MIN} as pooled,
+      row_number() over (
+        partition by stage, app_id < ${OWN_APP_ID_MIN} order by at desc
+      ) as all_rn,
       row_number() over (
         partition by stage, app_id = ${appId} order by at desc
       ) as own_rn
@@ -107,11 +113,11 @@ const launchQuery = (sql: Sql, appId: number) => sql<Row>`
     (count(*) filter (where own and own_rn <= ${window}))::int as own_count,
     round(percentile_cont(0.5) within group (order by ms)
       filter (where own and own_rn <= ${window}))::int as own_ms,
-    (count(*) filter (where all_rn <= ${window}))::int as all_count,
+    (count(*) filter (where pooled and all_rn <= ${window}))::int as all_count,
     round(percentile_cont(0.5) within group (order by ms)
-      filter (where all_rn <= ${window}))::int as all_ms
+      filter (where pooled and all_rn <= ${window}))::int as all_ms
   from ranked
-  where all_rn <= ${window} or (own and own_rn <= ${window})
+  where (pooled and all_rn <= ${window}) or (own and own_rn <= ${window})
   group by stage`;
 
 /**
