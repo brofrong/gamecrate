@@ -116,6 +116,8 @@ const makeFake = () => {
     ownGame: false,
     /** Число подсчётов маркеров облака (`grep`; в `calls` не пишутся). */
     cloudChecks: 0,
+    /** `pkill` закрывает игру сразу (нет — игра выходит, когда тест скажет). */
+    pkillKills: true,
     /** Число строк «Upload complete, result OK» в cloud_log.txt. */
     cloud: 0,
     logs: "",
@@ -453,7 +455,7 @@ const makeFake = () => {
                 : "pkill -TERM -f AppId=1794680( |$)")
             )
               return Effect.succeed({ exitCode: 2, stdout: "" });
-            state.game = false;
+            if (state.pkillKills) state.game = false;
             return Effect.succeed({ exitCode: 0, stdout: "" });
           case "/usr/local/bin/cg-session-stage": {
             if (
@@ -3810,6 +3812,79 @@ describe("own game", () => {
         );
         expect(h.fake.state.cloudChecks).toBe(0);
       }),
+    ));
+
+  it("stopping own game packs the profile only after the wrapper is gone", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const pack = "exec cg-session-s1 /usr/local/bin/cg-profile-pack";
+          expect(h.fake.state.calls).toContain(
+            "exec cg-session-s1 pkill -TERM -f ^/opt/cg-game/",
+          );
+          // Игра ещё дописывает сохранения: обёртка жива два опроса.
+          yield* h.tick("500 millis");
+          yield* h.tick("500 millis");
+          expect(h.fake.state.calls).not.toContain(pack);
+          expect(yield* h.drain).toEqual([]);
+          h.fake.state.game = false;
+          yield* h.tick("500 millis");
+          expect(h.fake.state.calls).toContain(pack);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(h.fake.state.logged).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.pkillKills = false;
+      },
+    ));
+
+  it("own game that ignores SIGTERM is packed after 15 s with a warning", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const pack = "exec cg-session-s1 /usr/local/bin/cg-profile-pack";
+          yield* h.tick("14 seconds");
+          expect(h.fake.state.calls).not.toContain(pack);
+          yield* h.tick("1 seconds");
+          expect(h.fake.state.calls).toContain(pack);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(
+            h.fake.state.logged.some((line) =>
+              line.includes("Own game did not exit after SIGTERM"),
+            ),
+          ).toBe(true);
+        }),
+      (fake) => {
+        fake.state.pkillKills = false;
+      },
     ));
 
   it("adopted own-game session stops without Steam steps", () =>

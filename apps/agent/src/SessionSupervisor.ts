@@ -116,6 +116,14 @@ export const CLOUD_TIMEOUT = Duration.seconds(60);
 export const CLOUD_POLL = Duration.seconds(2);
 export const STAGE_POLL = Duration.seconds(2);
 /**
+ * Остановка своей игры: после SIGTERM ждём, пока уйдёт обёртка игры (игра
+ * дописывает конфиг и сохранения — SoH пишет их по SIGTERM), опрос раз в
+ * `OWN_GAME_EXIT_POLL`; дольше `OWN_GAME_EXIT_TIMEOUT` — предупреждение, и
+ * профиль снимается как есть.
+ */
+export const OWN_GAME_EXIT_TIMEOUT = Duration.seconds(15);
+export const OWN_GAME_EXIT_POLL = Duration.millis(500);
+/**
  * Этап не меняется дольше этого — опрос реже (`STAGE_SLOW_POLL`): окно игры не
  * находится (лаунчер, нераспознанная игра), а скрипт на каждый вызов обходит процессы
  * и окна. Сайт к этому времени уже подсказывает «Показать экран».
@@ -599,6 +607,34 @@ const make = Effect.gen(function* () {
                 new CheckFailed({ message: `pgrep exited with ${exitCode}` }),
               ),
       ),
+    );
+
+  /**
+   * Своя игра после SIGTERM: ждёт, пока обёртка `cg-game-exit` уйдёт (игра
+   * вышла и конец записан), не дольше `OWN_GAME_EXIT_TIMEOUT` — иначе
+   * предупреждение. Контейнера нет — ждать нечего; сбой проверки — опрос
+   * продолжается.
+   */
+  const awaitOwnGameExit = (session: Session) =>
+    Effect.gen(function* () {
+      while (
+        yield* gameAlive(session).pipe(
+          Effect.catchTag("Abort", () => Effect.succeed(false)),
+          Effect.catchTag(["DockerError", "CheckFailed"], () =>
+            Effect.succeed(true),
+          ),
+        )
+      )
+        yield* Effect.sleep(OWN_GAME_EXIT_POLL);
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: OWN_GAME_EXIT_TIMEOUT,
+        orElse: () =>
+          Effect.logWarning(
+            "Own game did not exit after SIGTERM, saving the profile anyway",
+            { sessionId: session.sessionId },
+          ),
+      }),
     );
 
   /** Ждёт ответа Selkies; строка про GPU в логе или таймаут — `Abort`. */
@@ -1151,6 +1187,8 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+        // Своя игра дописывает сохранения по SIGTERM: профиль — после её выхода.
+        if (isOwn(session)) yield* awaitOwnGameExit(session);
       }
       if (session.cloudBaseline !== undefined)
         cloudSynced = yield* waitCloud(session, session.cloudBaseline);
