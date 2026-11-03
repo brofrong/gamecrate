@@ -1,9 +1,9 @@
 // Секция «Технология»: сцена на canvas без рамки — слева облако (стопки изометрических
 // кубиков), справа устройство с «игрой» и геймпадом, между ними поток частиц по дуге.
 // Частицы обходят курсор, сама дуга не двигается. На экране ноутбука — ролик-«стрим»
-// и HUD поверх него (DOM поверх canvas); телефон лежит перед ноутбуком горизонтально и
-// показывает те же кадры (canvas рисует их из видео ноутбука), геймпад покачивается и
-// «жмёт» кнопки. Снизу — три заметки.
+// и HUD поверх него (DOM поверх canvas); телефон горизонтально рядом с ноутбуком, не
+// заходя на него, показывает те же кадры (canvas рисует их из видео ноутбука), геймпад
+// покачивается и «жмёт» кнопки. Снизу — три заметки.
 import { useCallback, useRef, useState } from "react";
 import {
   type CanvasSize,
@@ -35,6 +35,12 @@ type Anchors = {
   labelB: number;
   /** Экран ноутбука в координатах сцены — сюда кладётся HUD. */
   screen: { left: number; top: number; width: number; height: number };
+  /** Ноутбук: ширина и высота корпуса с центром в (bx, by). */
+  laptop: { bw: number; bh: number };
+  /** Телефон: центр, размеры корпуса и наклон (рад). */
+  phone: { x: number; y: number; pw: number; ph: number; tilt: number };
+  /** Геймпад: центр и масштаб. */
+  pad: { x: number; y: number; k: number };
   narrow: boolean;
 };
 
@@ -128,42 +134,85 @@ const roundRect = (
   ctx.closePath();
 };
 
-const laptopSize = (narrow: boolean) =>
-  narrow ? { bw: 200, bh: 125 } : { bw: 440, bh: 275 };
-
-/** Телефон горизонтально, с наклоном, перед правым нижним углом ноутбука. */
-const phoneSize = (narrow: boolean) =>
-  narrow ? { pw: 84, ph: 42 } : { pw: 156, ph: 76 };
 const PHONE_TILT = -0.1;
-/** Насколько телефон свисает ниже ноутбука (центр — на этой высоте над низом). */
-const phoneCenter = (bx: number, by: number, narrow: boolean) => {
-  const { bw, bh } = laptopSize(narrow);
-  const { pw, ph } = phoneSize(narrow);
-  return { x: bx + bw / 2 - pw * 0.2, y: by + bh / 2 + ph * 0.05 };
+/** Зазор между ноутбуком (с основанием) и телефоном. */
+const PHONE_GAP = 18;
+
+/** Полуширина и полувысота рамки телефона с наклоном `PHONE_TILT`. */
+const tiltedHalf = (pw: number, ph: number) => {
+  const c = Math.abs(Math.cos(PHONE_TILT));
+  const s = Math.abs(Math.sin(PHONE_TILT));
+  return { hw: (pw / 2) * c + (ph / 2) * s, hh: (pw / 2) * s + (ph / 2) * c };
 };
 
+/**
+ * Сцена: облако слева, ноутбук (до 440×275, от ширины сцены) и телефон горизонтально
+ * с наклоном. На широкой сцене телефон стоит справа от ноутбука на том же «столе», на
+ * узкой — под ним справа; с ноутбуком не пересекается. Геймпад — слева от ноутбука, а
+ * если там он задел бы подпись облака — перед ноутбуком, под «столом».
+ */
 export const anchorsFor = ({ width: W, height: H }: CanvasSize): Anchors => {
   const narrow = W < 760;
-  const ax = narrow ? W * 0.2 : W * 0.22;
-  // Большой ноутбук с телефоном снизу — ось сцены выше, чтобы подпись влезла.
-  const ay = H * (narrow ? 0.56 : 0.5);
+  const ax = narrow ? W * 0.2 : W * 0.18;
+  const ay = H * 0.5;
   const s = narrow ? 16 : 24;
-  const { bw, bh } = laptopSize(narrow);
-  const { ph } = phoneSize(narrow);
-  const bx = narrow ? W * 0.64 : W * 0.68;
+  const bw = narrow ? 200 : Math.min(440, W * 0.39);
+  const bh = bw * 0.625;
+  const pw = narrow ? 84 : bw * 0.355;
+  const ph = pw * 0.49;
+  const { hw, hh } = tiltedHalf(pw, ph);
+  const bx = narrow ? W * 0.64 : W * 0.6;
+  const by = ay;
+  // Низ основания ноутбука — «стол».
+  const desk = by + bh / 2 + 8;
+  const phone = narrow
+    ? { x: bx + bw / 2 - hw, y: desk + PHONE_GAP / 2 + hh }
+    : { x: bx + bw / 2 + 14 + PHONE_GAP + hw, y: desk - hh };
+  const labelA = ay + s * 1.1 + s * 3.2;
+  // Геймпад: полуширина и выступы вверх/вниз с запасом на покачивание и наклон.
+  const k = narrow ? 0.7 : 1;
+  const padHalf = 44 * k;
+  const padUp = 18 * k + 5;
+  const padDown = 38 * k + 5;
+  // Подпись облака: 200 px по центру `ax`, ~40 px высотой.
+  const captionRight = ax + 100 + 4;
+  const besideX = bx - bw / 2 - 14 - 8 - padHalf;
+  const besideY = by + bh / 2 - 2;
+  const besideHitsCaption =
+    besideX - padHalf < captionRight &&
+    besideY + padDown > labelA &&
+    besideY - padUp < labelA + 40;
+  // Под «столом» — правее подписи облака; на узкой сцене, если там уже телефон, —
+  // под левым краем ноутбука, но ниже подписи облака.
+  const underY = desk + padUp + 6;
+  const underX = Math.max(bx - bw / 2 + padHalf, captionRight + padHalf);
+  const phoneLeft = phone.x - pw / 2 - 4;
+  const underHitsPhone = narrow && underX + padHalf > phoneLeft;
+  const pad = !besideHitsCaption
+    ? { x: besideX, y: besideY, k }
+    : underHitsPhone
+      ? {
+          x: bx - bw / 2 + padHalf,
+          y: Math.max(underY, labelA + 40 + padUp + 4),
+          k,
+        }
+      : { x: underX, y: underY, k };
   return {
     ax,
     ay,
     bx,
-    by: ay,
-    labelA: ay + s * 1.1 + s * 3.2,
-    labelB: ay + bh / 2 + ph * 0.55 + 24,
+    by,
+    labelA,
+    labelB: Math.max(desk, phone.y + hh, pad.y + padDown) + 22,
     screen: {
       left: bx - bw / 2 + 8,
       top: ay - bh / 2 + 8,
       width: bw - 16,
       height: bh - 16,
     },
+    laptop: { bw, bh },
+    phone: { ...phone, pw, ph, tilt: PHONE_TILT },
+    pad,
     narrow,
   };
 };
@@ -271,7 +320,7 @@ export const drawTechFlow = (
 ): number => {
   const { width: W, height: H } = size;
   const narrow = W < 760;
-  const { ax, ay, bx, by } = anchorsFor(size);
+  const { ax, ay, bx, by, laptop, phone, pad } = anchorsFor(size);
   const cx = (ax + bx) / 2;
   const cy = ay - 120;
   ctx.clearRect(0, 0, W, H);
@@ -334,9 +383,9 @@ export const drawTechFlow = (
   ctx.fillStyle = glow;
   ctx.fillRect(ax - 200, ay - 200, 400, 400);
 
-  // Устройство: ноутбук со стримом (видео и HUD — DOM поверх экрана), телефон с теми же
-  // кадрами перед ним и геймпад рядом.
-  const { bw, bh } = laptopSize(narrow);
+  // Устройство: ноутбук со стримом (видео и HUD — DOM поверх экрана), рядом телефон с
+  // теми же кадрами и геймпад.
+  const { bw, bh } = laptop;
   ctx.save();
   ctx.translate(bx - bw / 2, by - bh / 2);
   ctx.shadowColor = "rgba(58,108,255,0.35)";
@@ -368,11 +417,10 @@ export const drawTechFlow = (
   ctx.fill();
   ctx.restore();
 
-  const { pw, ph } = phoneSize(narrow);
-  const phone = phoneCenter(bx, by, narrow);
+  const { pw, ph } = phone;
   ctx.save();
   ctx.translate(phone.x, phone.y);
-  ctx.rotate(PHONE_TILT);
+  ctx.rotate(phone.tilt);
   ctx.shadowColor = "rgba(0,0,0,0.55)";
   ctx.shadowBlur = 24;
   roundRect(ctx, -pw / 2, -ph / 2, pw, ph, narrow ? 7 : 11);
@@ -398,13 +446,7 @@ export const drawTechFlow = (
   ctx.restore();
   ctx.restore();
 
-  gamepad(
-    ctx,
-    bx - bw / 2 - (narrow ? 34 : 56),
-    by + bh / 2 - (narrow ? 4 : 2),
-    narrow ? 0.7 : 1,
-    t,
-  );
+  gamepad(ctx, pad.x, pad.y, pad.k, t);
 
   // Насколько курсор близко к вершине дуги — добавка к «задержке» в HUD (0..6).
   return cursor.inside

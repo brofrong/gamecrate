@@ -323,6 +323,93 @@ describe("landing sections", () => {
     expect(narrow.screen.left + narrow.screen.width).toBeLessThan(320);
   });
 
+  it("phone stands apart from the laptop and inside the scene", () => {
+    for (const width of [320, 444, 760, 844, 1124]) {
+      const height = width < 760 ? 460 : 560;
+      const { bx, by, laptop, phone } = anchorsFor({ width, height });
+      // Ноутбук с основанием-клавиатурой (шире на 14 px с боков, ниже на 8 px).
+      const l = {
+        x0: bx - laptop.bw / 2 - 14,
+        x1: bx + laptop.bw / 2 + 14,
+        y0: by - laptop.bh / 2,
+        y1: by + laptop.bh / 2 + 8,
+      };
+      // Рамка телефона с учётом наклона.
+      const c = Math.abs(Math.cos(phone.tilt));
+      const sn = Math.abs(Math.sin(phone.tilt));
+      const hw = (phone.pw / 2) * c + (phone.ph / 2) * sn;
+      const hh = (phone.pw / 2) * sn + (phone.ph / 2) * c;
+      const p = {
+        x0: phone.x - hw,
+        x1: phone.x + hw,
+        y0: phone.y - hh,
+        y1: phone.y + hh,
+      };
+      const overlaps = p.x0 < l.x1 && p.x1 > l.x0 && p.y0 < l.y1 && p.y1 > l.y0;
+      expect({ width, overlaps }).toEqual({ width, overlaps: false });
+      expect(p.x0).toBeGreaterThanOrEqual(0);
+      expect(p.x1).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it("gamepad touches neither the laptop, the phone nor the cloud caption", () => {
+    type Box = { x0: number; x1: number; y0: number; y1: number };
+    const hit = (a: Box, b: Box) =>
+      a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+    for (const width of [320, 444, 760, 844, 894, 1124]) {
+      const height = width < 760 ? 460 : 560;
+      const a = anchorsFor({ width, height });
+      const { bx, by, laptop, phone, pad } = a;
+      const laptopBox = {
+        x0: bx - laptop.bw / 2 - 14,
+        x1: bx + laptop.bw / 2 + 14,
+        y0: by - laptop.bh / 2,
+        y1: by + laptop.bh / 2 + 8,
+      };
+      const phoneBox = {
+        x0: phone.x - phone.pw / 2 - 4,
+        x1: phone.x + phone.pw / 2 + 4,
+        y0: phone.y - phone.ph / 2 - 8,
+        y1: phone.y + phone.ph / 2 + 8,
+      };
+      // Подпись облака: 200 px по центру `ax`, две строки (~40 px).
+      const captionA = {
+        x0: a.ax - 100,
+        x1: a.ax + 100,
+        y0: a.labelA,
+        y1: a.labelA + 40,
+      };
+      const captionB = {
+        x0: bx + 20 - 100,
+        x1: bx + 20 + 100,
+        y0: a.labelB,
+        y1: a.labelB + 40,
+      };
+      // Геймпад с запасом на покачивание и наклон.
+      const padBox = {
+        x0: pad.x - 44 * pad.k,
+        x1: pad.x + 44 * pad.k,
+        y0: pad.y - 18 * pad.k - 5,
+        y1: pad.y + 38 * pad.k + 5,
+      };
+      const result = {
+        width,
+        laptop: hit(padBox, laptopBox),
+        phone: hit(padBox, phoneBox),
+        captionA: hit(padBox, captionA),
+        captionB: hit(padBox, captionB),
+      };
+      expect(result).toEqual({
+        width,
+        laptop: false,
+        phone: false,
+        captionA: false,
+        captionB: false,
+      });
+      expect(captionB.y1).toBeLessThanOrEqual(height);
+    }
+  });
+
   it("phone mirrors the stream video once it has frames", () => {
     const drawn: unknown[] = [];
     const fakeCtx: object = new Proxy(() => fakeCtx, {
