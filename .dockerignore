@@ -18,3 +18,10 @@ node_modules
 spike/nv
 images/session/nv
 **/*.tgz
+
+# Файлы Nintendo (ROM и архивы активов SoH) — никогда в образ (games/README.md)
+**/*.z64
+**/*.n64
+**/*.v64
+**/*.o2r
+**/roms/

@@ -168,6 +168,9 @@ services:
       # см. волюм ниже и комментарий выше про bind родителя, а не самого каталога).
       STEAM_CLIENT_DIR: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
       INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/install-scratch
+      # Пакеты своих игр <GAMES_DIR>/<slug>/<version>/ (собирает deploy/add-game.sh), внутри
+      # того же bind CG_DATA_DIR.
+      GAMES_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/games
       SCRATCH_DIR: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
       # Меньше стольких ГиБ свободно на ФС scratch — старт сессии/установки отклоняется.
       MIN_FREE_GB: ${MIN_FREE_GB:-20}

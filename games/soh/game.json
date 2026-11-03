@@ -1,0 +1,50 @@
+{
+  "appId": 1900000001,
+  "slug": "soh",
+  "name": "The Legend of Zelda: Ocarina of Time",
+  "version": "9.3.1-1",
+  "binary": "soh.elf",
+  "upstream": {
+    "repo": "https://github.com/HarbourMasters/Shipwright",
+    "ref": "9.3.1"
+  },
+  "inputs": [
+    {
+      "name": "rom",
+      "label": "ROM Ocarina of Time (N64 NTSC-U 1.2 или другой из списка SoH)"
+    }
+  ],
+  "site": {
+    "description": "Ocarina of Time — приключение Линка в Хайруле: мальчик из Кокири-леса находит Окарину Времени, путешествует между детством и взрослой жизнью и спасает королевство от Ганондорфа. Подземелья с головоломками, сражения с прицелом на врага, мелодии окарины, конь Эпона и огромное Хайрульское поле.\n\nЭто Ship of Harkinian — фанатский ПК-порт игры 1998 года, собранный из восстановленного исходного кода. Вместо эмулятора — родная сборка для ПК: широкий экран, 60 кадров в секунду, высокое разрешение и поддержка геймпада.\n\nИгра на английском языке.",
+    "controls": [
+      { "action": "Движение", "keyboard": "W A S D", "gamepad": "Левый стик" },
+      { "action": "Действие (A)", "keyboard": "X", "gamepad": "A" },
+      { "action": "Меч (B)", "keyboard": "C", "gamepad": "B" },
+      { "action": "Прицел (Z)", "keyboard": "Z", "gamepad": "Левый триггер" },
+      { "action": "Щит (R)", "keyboard": "R", "gamepad": "Правый триггер" },
+      { "action": "L", "keyboard": "E", "gamepad": "LB" },
+      { "action": "Пауза (Start)", "keyboard": "Пробел", "gamepad": "Start" },
+      {
+        "action": "Предметы (C-кнопки)",
+        "keyboard": "Стрелки ↑ ↓ ← →",
+        "gamepad": "Правый стик"
+      },
+      {
+        "action": "Крестовина",
+        "keyboard": "T G F H",
+        "gamepad": "Крестовина"
+      },
+      { "action": "Меню Ship of Harkinian", "keyboard": "Esc", "gamepad": "—" }
+    ],
+    "source": {
+      "label": "Ship of Harkinian (HarbourMasters)",
+      "url": "https://www.shipofharkinian.com"
+    },
+    "screenshots": ["shot-1.jpg", "shot-2.jpg", "shot-3.jpg"]
+  },
+  "requirements": {
+    "minVramBytes": 1073741824,
+    "minRamBytes": 2147483648,
+    "minCpuThreads": 2
+  }
+}

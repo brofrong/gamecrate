@@ -41,6 +41,7 @@ rsync -az --delete \
   --exclude ".turbo/" \
   --exclude "dist/" \
   --exclude ".DS_Store" \
+  --exclude "*.z64" --exclude "*.n64" --exclude "*.v64" --exclude "*.o2r" --exclude "roms/" \
   --include ".env.example" \
   --exclude ".env" \
   --exclude ".env.*" \
@@ -105,7 +106,7 @@ append_secret RUSTFS_SECRET_KEY min16 "не короче 16 символов" "o
 append_secret PROFILE_KEY base64_32 "base64 ровно 32 байт" "openssl rand -base64 32"
 append_secret SEED_KEY base64_32 "base64 ровно 32 байт" "openssl rand -base64 32"
 
-echo "==> каталоги библиотеки, клиента Steam и scratch"
+echo "==> каталоги библиотеки, своих игр, клиента Steam и scratch"
 # Владелец — brofrong (uid 1000), без sudo. Пустой <STEAM_CLIENT_DIR>/steamapps нужен до первой
 # сессии: overlay библиотеки монтируется внутрь overlay клиента, без каталога Docker создал бы его от
 # root. Значения по умолчанию — как в compose.yaml (CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR,
@@ -119,8 +120,8 @@ data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
 scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming-scratch)"
 client="$(envval STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client)"
 client_parent="$(envval STEAM_CLIENT_PARENT /home/brofrong/cloud-gaming-steam)"
-dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/install-scratch" "${scratch}"
-  "${client_parent}" "${client}" "${client}/steamapps")
+dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/install-scratch"
+  "${data}/games" "${scratch}" "${client_parent}" "${client}" "${client}/steamapps")
 mkdir -p "${dirs[@]}"
 for d in "${dirs[@]}"; do
   if [ "$(stat -c %u "${d}")" != 1000 ]; then

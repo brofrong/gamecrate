@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Schema } from "effect";
 import { AgentCommand } from "../src/agent";
 import {
@@ -14,7 +16,10 @@ const baseManifest = {
   name: "Ship of Harkinian",
   version: "9.3.1-1",
   binary: "soh.elf",
-  upstream: { repo: "https://github.com/HarbourMasters/Shipwright", ref: "9.3.1" },
+  upstream: {
+    repo: "https://github.com/HarbourMasters/Shipwright",
+    ref: "9.3.1",
+  },
   inputs: [{ name: "gamepad", label: "Геймпад" }],
   site: {
     description: "Фанатский ПК-порт Ocarina of Time.",
@@ -72,4 +77,29 @@ describe("ownGames", () => {
     expect(ownGameAssetUrl(1900000001, "cover.jpg")).toBe(
       "/own-games/1900000001/cover.jpg",
     ));
+});
+
+// Манифесты в games/<slug>/game.json читают сборка (deploy/add-game.sh) и сайт — каждый
+// должен декодироваться по OwnGameManifest, а картинки site/ — лежать рядом.
+describe("games/soh/game.json", () => {
+  const dir = join(import.meta.dir, "../../../games/soh");
+  const manifest = Schema.decodeUnknownSync(OwnGameManifest)(
+    JSON.parse(readFileSync(join(dir, "game.json"), "utf8")),
+  );
+
+  it("decodes as OwnGameManifest", () => {
+    expect(manifest.appId).toBe(1900000001);
+    expect(manifest.slug).toBe("soh");
+    expect(manifest.inputs.map((i) => i.name)).toEqual(["rom"]);
+  });
+
+  it("has every site image", () => {
+    for (const file of [
+      "header.jpg",
+      "hero.jpg",
+      "cover.jpg",
+      ...manifest.site.screenshots,
+    ])
+      expect(existsSync(join(dir, "site", file))).toBe(true);
+  });
 });

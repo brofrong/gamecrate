@@ -16,6 +16,9 @@
   `docker compose up -d --build`.
 - `build-session-image.sh` — сборка образа сессии `cg-session:<версия драйвера>` на воркере
   (см. `images/session/README.md` и раздел «Обновление драйвера NVIDIA» ниже).
+- `add-game.sh <slug> [--host <ssh-хост>] [--input <name>=<путь>]... [--rebuild]` — сборка пакета
+  своей игры (`games/<slug>`) на воркере в `<GAMES_DIR>/<slug>/<version>/` (раздел «Свои игры:
+  сборка пакета» ниже, `games/README.md`).
 - `build-steam-client.sh` — сборка шаблона клиента Steam `STEAM_CLIENT_DIR` на воркере (раздел
   «Клиент Steam: пересборка шаблона» ниже).
 - `measure-session-start.sh <userId> <appId> [запусков]` — замер запуска установленной игры
@@ -64,7 +67,7 @@
   `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam` (родитель `STEAM_CLIENT_DIR` — см. ниже),
   `S3_BUCKET=cg-profiles`, `MIN_FREE_GB=20` (см. «Место на диске»). Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
   `S3_ACCESS_KEY`/`S3_SECRET_KEY` = `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`, `PROFILE_KEY` из
-  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR` — внутри `CG_DATA_DIR`, а также `CG_COMMIT`
+  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR`, `GAMES_DIR` — внутри `CG_DATA_DIR`, а также `CG_COMMIT`
   (по умолчанию `unknown`) — коммит этого деплоя для блока «Версии» админки: `deploy.sh` считает
   его локально (`git rev-parse --short HEAD`, суффикс `-dirty` при незакоммиченных изменениях —
   `.git` в образ и на сервер не попадает, см. `rsync --exclude ".git/"` ниже) и передаёт
@@ -77,6 +80,7 @@
   | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf`, `steamapps/common/<игра>` и шаблоны префикса Proton `steamapps/compatdata/<appid>` (см. «Шаблоны префикса Proton»); lower сессий |
   | `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client` | шаблон клиента Steam (`build-steam-client.sh`, NVMe), внутри пустой `steamapps/`; lower сессий и установщиков |
   | `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam`  | родитель `STEAM_CLIENT_DIR` — то, что реально монтируется в `cg-agent` (см. ниже), сам не используется агентом |
+  | `GAMES_DIR=/raid/cloud-gaming/games`                     | пакеты своих игр `<slug>/<version>/` (`add-game.sh`); в сессии — `/opt/cg-game`, только чтение |
   | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
   | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
 
@@ -820,6 +824,45 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep "Seeded Steam login was not accep
 Отозвать тестовое устройство: в приложении Steam на телефоне → значок щита (Steam Guard) →
 «Устройства» → найти «GameCrate» → отозвать. Следующий запуск/установка этого игрока увидит
 «Войдите в Steam ещё раз» и экран QR.
+
+## Свои игры: сборка пакета (`add-game.sh`)
+
+Свои игры (фанатские ПК-порты вне Steam, первая — Ship of Harkinian) описаны в `games/<slug>/`
+(`games/README.md`). Пакет собирается на воркере, с мака:
+
+```sh
+./deploy/add-game.sh soh --input rom=<путь к ROM Ocarina of Time>
+```
+
+Скрипт читает `games/<slug>/game.json` (`version`, `binary`, `inputs` — каждый вход обязателен) и
+из серверного `.env` только `CG_DATA_DIR` и `SESSION_IMAGE`. Пакет этой версии уже есть — выход
+(«уже есть»; `--rebuild` пересобирает, если на версии не идёт сессия). Дальше:
+
+- `rsync games/<slug>/` → `~/cg-games-src/<slug>/`;
+- входные файлы — во временный каталог хоста (`mktemp -d`, на brofrong `/tmp` — tmpfs): 8 частей
+  параллельно, каждая с докачкой после обрыва, на хосте склейка и сверка SHA-256. Канал с мака до
+  brofrong бывает 5–20 КиБ/с на соединение и рвётся каждые 10–20 минут: одним потоком ROM 32 МиБ
+  шёл около двух часов, scp падал по таймауту;
+- сборка на хосте — отдельным процессом (`setsid nohup`, скрипт, лог и код выхода —
+  `~/cg-games-src/<slug>.build.{sh,log,rc}`), мак показывает лог и после обрыва переподключается.
+  Связь пропала совсем — сборка доходит до конца там же (`ssh brofrong tail -f
+  ~/cg-games-src/<slug>.build.log`). Ctrl-C на маке останавливает её;
+- образ `cg-game-builder-<slug>:<version>` из `builder.Dockerfile` (`FROM ${SESSION_IMAGE}`);
+- `docker run --rm --init --user 1000:1000` сборщика: `/game` (ro), `/input` (ro),
+  `/out = <GAMES_DIR>/<slug>/.build-<version>`. После него входные файлы удаляются сразу;
+  ловушки сборки на хосте и скрипта на маке удаляют их на любом выходе. Если удалить не вышло,
+  скрипт печатает команду для ручного удаления;
+- `ldd` бинарника в `SESSION_IMAGE`: чего нет — из сборщика в `lib/`, не больше 5 проходов;
+- проверки: есть `run` и бинарник, нет ROM (`*.z64`, `*.n64`, `*.v64`);
+- `.build-<version>` → `<version>`. Из прочих версий остаётся одна, самая свежая по mtime.
+  Версии под живой сессией (метка `cg.own-game`) не удаляются.
+
+Каталоги с точкой в `<GAMES_DIR>/<slug>/` (`.build-<version>`) — недособранные пакеты, не версии.
+Сборка не трогает сессии и compose-сервисы, деплой для неё не нужен. Агент видит новый пакет после
+деплоя с `GAMES_DIR`. Игроки видят игру, когда в админке включено «Открыта игрокам».
+
+Файлов Nintendo (ROM, `.o2r`, `roms/`) нет в git, в образах и в rsync деплоя: `.gitignore`,
+`.dockerignore`, исключения `rsync` в обоих скриптах.
 
 ## Смена образа сессии: перетег и откат
 
