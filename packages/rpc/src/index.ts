@@ -13,6 +13,7 @@ export * from "./agent";
 export * from "./auth";
 export * from "./library";
 export * from "./loginMethods";
+export * from "./ownGames";
 export * from "./session";
 export * from "./settings";
 export * from "./steamLogin";

@@ -176,6 +176,7 @@ const view = (patch: Partial<GameView> = {}): GameView => ({
   details,
   achievements: { _tag: "None" },
   available: true,
+  own: null,
   ...patch,
 });
 

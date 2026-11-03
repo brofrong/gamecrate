@@ -322,7 +322,7 @@ describe("MyGamesPage", () => {
   });
 
   it("shows the private-profile notice for a private Steam library", async () => {
-    renderMyGames("/app", { library: { _tag: "Private" } });
+    renderMyGames("/app", { library: { _tag: "Private", entries: [] } });
     expect(
       await screen.findByText("Откройте „Сведения об играх“"),
     ).toBeTruthy();

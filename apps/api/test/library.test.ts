@@ -165,7 +165,7 @@ describe("library", () => {
       makeProton().layer,
     );
     expect(result.synced).toBe("Private");
-    expect(result.view).toEqual({ _tag: "Private" });
+    expect(result.view).toEqual({ _tag: "Private", entries: [] });
     expect(result.row?.libraryPrivate).toBe(true);
     expect(result.row?.librarySyncedAt).toBeNull();
   });

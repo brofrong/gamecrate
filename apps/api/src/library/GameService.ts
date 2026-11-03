@@ -248,5 +248,6 @@ export const gameView = (
       details,
       achievements,
       available,
+      own: null, // TODO(Task 9): описание своей игры, если appId — своя игра.
     };
   });

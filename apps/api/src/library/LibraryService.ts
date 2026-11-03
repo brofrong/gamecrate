@@ -124,7 +124,9 @@ export const libraryView = (
 ): Effect.Effect<LibraryView, never, Db> =>
   Effect.gen(function* () {
     const state = yield* LibraryRepo.libraryState(userId);
-    if (state?.libraryPrivate) return { _tag: "Private" } as const;
+    // TODO(Task 9): свои игры пользователя, не зависящие от приватности Steam.
+    if (state?.libraryPrivate)
+      return { _tag: "Private", entries: [] } as const;
     const rows = yield* LibraryRepo.listEntries(userId);
     const appIds = rows.map((row) => row.appId);
     const cloud = yield* CloudRepo.cloudStatuses(appIds);
