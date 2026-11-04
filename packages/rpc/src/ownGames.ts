@@ -88,7 +88,12 @@ export const OwnGameManifest = Schema.Struct({
     repo: Schema.String,
     ref: Schema.String,
   }),
-  /** Входы, которые игра принимает как «свои» профили (меню сессии, список устройств). */
+  /**
+   * Входные файлы сборки, не профили ввода: каждый `name` — обязательный
+   * `deploy/add-game.sh --input <name>=<путь>`, сборщик видит его как
+   * `/input/<name>` (у SoH — ROM, из него `build.sh` извлекает `oot.o2r`);
+   * `label` — что передать. Сами файлы — ни в пакете, ни в git.
+   */
   inputs: Schema.Array(
     Schema.Struct({ name: OwnGameSlug, label: Schema.String }),
   ),
