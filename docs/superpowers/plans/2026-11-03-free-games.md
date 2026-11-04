@@ -748,7 +748,9 @@ it("own game covers come from /own-games", ...); // headerUrl(1900000001) === "/
   `bun test --env-file=… ` по всем пакетам. Ожидание: зелёно, кроме 6 старых `stageNorms`.
 - [ ] **Step 2: Образ сессии.** Запустить `./deploy/build-session-image.sh brofrong` с тегом,
   который ждёт `SESSION_IMAGE`; суффикс и перетег — по README скрипта. Идущие сессии на старом
-  образе не трогаются.
+  образе не трогаются. Проверка нового образа:
+  `docker run --rm --entrypoint /usr/local/bin/cg-session-stage <SESSION_IMAGE> --own` печатает
+  `computer`. Не печатает — игру не открывать.
 - [ ] **Step 3: Пакет.** Если версия SoH или скрипты сборки менялись после Task 3 — запустить
   `./deploy/add-game.sh soh --input rom=… --rebuild`.
 - [ ] **Step 4: Мердж и деплой.** Мердж `feat/free-games` в main. Основной checkout делят другие
