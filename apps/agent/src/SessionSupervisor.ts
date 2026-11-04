@@ -896,7 +896,10 @@ const make = Effect.gen(function* () {
    * заканчивается: этап `prepare` (своя игра — `loading`) тогда сообщит
    * `watchGame`. Контейнера нет — опрос молча заканчивается: сбой сессии
    * решают проверки Selkies и игры. Своя игра: `cg-session-stage --own`
-   * печатает и `computer` (обёртки ещё нет) — это ответ, а не сбой.
+   * печатает и `computer` (обёртки ещё нет) — это ответ, а не сбой. Код 2 на
+   * `--own` (непонятный аргумент) — образ сессии без своих игр: его `cg-launch`
+   * не знает `CG_GAME` и запускает Steam, игры не будет — `Abort`
+   * (`ownGameMissing`). У Steam-игры код 2 — обычный сбой проверки.
    */
   const watchStage = (session: Session) =>
     Effect.gen(function* () {
@@ -908,20 +911,42 @@ const make = Effect.gen(function* () {
             timeout: STAGE_CHECK_TIMEOUT,
           })
           .pipe(
-            Effect.flatMap(({ exitCode, stdout }) => {
-              const stage = stdout.trim();
-              if (exitCode === 126 || exitCode === 127)
-                return Effect.succeed("missing" as const);
-              return exitCode === 0 &&
-                (isScriptStage(stage) ||
-                  (isOwn(session) && stage === "computer"))
-                ? Effect.succeed(stage)
-                : Effect.fail(
-                    new CheckFailed({
-                      message: `cg-session-stage exited with ${exitCode}: ${JSON.stringify(stage.slice(0, 40))}`,
-                    }),
+            Effect.flatMap(
+              ({
+                exitCode,
+                stdout,
+              }): Effect.Effect<
+                SessionStage | "missing",
+                Abort | CheckFailed
+              > => {
+                const stage = stdout.trim();
+                if (exitCode === 126 || exitCode === 127)
+                  return Effect.succeed("missing" as const);
+                if (exitCode === 2 && isOwn(session))
+                  return Effect.logError(
+                    "Session image has no own-game support: cg-session-stage --own exited with 2",
+                    { sessionId: session.sessionId },
+                  ).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new Abort({
+                          reason: failReasons.ownGameMissing,
+                          cause: "session image without own-game support",
+                        }),
+                      ),
+                    ),
                   );
-            }),
+                return exitCode === 0 &&
+                  (isScriptStage(stage) ||
+                    (isOwn(session) && stage === "computer"))
+                  ? Effect.succeed(stage)
+                  : Effect.fail(
+                      new CheckFailed({
+                        message: `cg-session-stage exited with ${exitCode}: ${JSON.stringify(stage.slice(0, 40))}`,
+                      }),
+                    );
+              },
+            ),
             Effect.catchTag(["DockerError", "CheckFailed"], (error) =>
               error._tag === "DockerError" && isGone(error)
                 ? Effect.succeed("gone" as const)
@@ -1459,25 +1484,31 @@ const make = Effect.gen(function* () {
         );
       // Опрос этапов и наблюдение за посеянным входом идут параллельно
       // готовности и игре; scope закрывается (fiber прерван) до finish/fail —
-      // после Stopped/Failed этапов нет.
+      // после Stopped/Failed этапов нет. Опрос этапов — в гонке с готовностью и
+      // игрой: его `Abort` (образ без своих игр) обрывает сессию, а обычный
+      // конец опроса (`visible`, скрипта нет) — нет.
       yield* Effect.scoped(
         Effect.gen(function* () {
           // Остановка уже запрошена (подхвачен по StopSession) — без StreamReady.
           if (yield* Deferred.isDone(session.stopRequested)) return;
-          yield* Effect.forkScoped(watchStage(session));
           if (session.loginLogOffset !== undefined)
             yield* Effect.forkScoped(
               watchSeededLogin(session, session.loginLogOffset),
             );
-          const ready = yield* untilStop(session, waitReady(session));
-          if (ready.stopped) return;
-          session.phase = "ready";
-          yield* emit({
-            _tag: "StreamReady",
-            sessionId: session.sessionId,
-            streamUrl: session.streamUrl,
-          });
-          yield* untilStop(session, watchGame(session));
+          yield* Effect.raceFirst(
+            Effect.gen(function* () {
+              const ready = yield* untilStop(session, waitReady(session));
+              if (ready.stopped) return;
+              session.phase = "ready";
+              yield* emit({
+                _tag: "StreamReady",
+                sessionId: session.sessionId,
+                streamUrl: session.streamUrl,
+              });
+              yield* untilStop(session, watchGame(session));
+            }),
+            watchStage(session).pipe(Effect.andThen(Effect.never)),
+          );
         }),
       );
       yield* finish(session);

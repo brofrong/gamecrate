@@ -2746,6 +2746,40 @@ describe("SessionSupervisor stages", () => {
       );
   });
 
+  it("steam session: stage exit 2 is only a failed check, polling goes on", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          for (let i = 0; i < 3; i++) yield* h.tick("2 seconds");
+          const reports = yield* h.drainAll;
+          expect(reports.map((report) => report._tag)).not.toContain("Failed");
+          expect(stagesOf(reports)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "login"],
+          ]);
+          expect(h.fake.state.stageChecks).toBe(4);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("Stage check failed"),
+            ),
+          ).toHaveLength(2);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+        }),
+      (fake) => {
+        fake.state.stages = [
+          "steam",
+          { exitCode: 2 },
+          { exitCode: 2 },
+          "login",
+        ];
+      },
+    ));
+
   it("game start reports prepare before GameState", () =>
     run((h) =>
       Effect.gen(function* () {
@@ -3697,6 +3731,39 @@ describe("own game", () => {
       }),
     );
   });
+
+  it("own game on an image without own-game support (stage exit 2) fails with ownGameMissing", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          // Старый образ: cg-launch не знает CG_GAME и запускает Steam,
+          // а cg-session-stage не знает `--own` и выходит с 2.
+          const reports = yield* h.drainAll;
+          expect(reports.at(-1)).toEqual({
+            _tag: "Failed",
+            sessionId: "s1",
+            reason: failReasons.ownGameMissing,
+          });
+          // Контейнер остановлен (здесь Selkies готов сразу — после StreamReady
+          // он остаётся со слоями, как при любом сбое после готовности стрима).
+          expect(h.fake.state.calls).toContain("stop cg-session-s1 15");
+          expect(h.fake.state.stageChecks).toBe(1);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("no own-game support"),
+            ),
+          ).toHaveLength(1);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          // Опроса больше нет.
+          yield* h.tick("10 seconds");
+          expect(h.fake.state.stageChecks).toBe(1);
+        }),
+      (fake) => {
+        fake.state.stages = [{ exitCode: 2 }];
+      },
+    ));
 
   it("own game launch skips Steam login seeding and launch options", () =>
     runOwn((h) =>
