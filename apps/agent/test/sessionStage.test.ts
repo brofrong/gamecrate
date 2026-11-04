@@ -15,6 +15,8 @@ import { join } from "node:path";
  * - `xdotool search --onlyvisible --class/--pid …` отдаёт `${FAKE_XDOTOOL_DIR}/class-*`/`pid-*`
  *   (значение без `[^A-Za-z0-9_]`).
  * - `xwininfo -id <win>` отдаёт `${FAKE_XWININFO_DIR}/geom-<win>` (строки `Width:`/`Height:`).
+ * - `xdotool` и `xwininfo` без `DISPLAY` падают с 1, как настоящие: `docker exec` его не передаёт,
+ *   окружение X11 скрипт обязан взять из `/proc/<pid>/environ` до первого вызова.
  * - `timeout` — на этой машине нет ни GNU, ни BSD `timeout`; фейк ведёт себя как настоящий
  *   (SIGTERM и ненулевой код, если команда не успела), чтобы проверить, что сам скрипт не
  *   зависает на зависшем xdotool/xwininfo, а не угадывание фейка.
@@ -165,6 +167,8 @@ exit "\${found}"
     `#!/bin/bash
 set -u
 dir="\${FAKE_XDOTOOL_DIR:?}"
+# Как настоящий: без DISPLAY к X-серверу не подключиться (docker exec его не передаёт).
+[ -n "\${DISPLAY:-}" ] || exit 1
 cmd="$1"
 shift
 if [ "\${cmd}" != "search" ]; then
@@ -200,6 +204,7 @@ exit 0
     `#!/bin/bash
 set -u
 dir="\${FAKE_XWININFO_DIR:?}"
+[ -n "\${DISPLAY:-}" ] || exit 1
 # вызывается как: xwininfo -id <winid>
 winid="$2"
 f="\${dir}/geom-\${winid}"

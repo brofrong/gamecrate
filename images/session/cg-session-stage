@@ -76,14 +76,20 @@ window_big_enough() {
   [ -n "${width}" ] && [ -n "${height}" ] && [ "${width}" -ge 64 ] && [ "${height}" -ge 64 ]
 }
 
-# Видимое окно ≥ 64×64 у любого потомка tree_pid; окружение X11 для xdotool — из
-# /proc/<env_pid>/environ (Steam: env_pid — клиент, tree_pid — reaper; своя игра — обёртка, та же
-# для обоих).
+# Окружение X11 процесса pid — до любого вызова xdotool/xwininfo: у `docker exec` нет DISPLAY,
+# без него каждый поиск окна пуст. Нет процесса или не прочитать его окружение — 1, проверку окон
+# пропускаем.
+use_x11_env_of() {
+  local pid="$1"
+  [ -n "${pid}" ] && [ -r "${proc_root}/${pid}/environ" ] || return 1
+  load_x11_env "${pid}"
+}
+
+# Видимое окно ≥ 64×64 у любого потомка tree_pid (Steam — reaper, своя игра — обёртка). Окружение
+# X11 уже загружено (use_x11_env_of).
 descendant_window_visible() {
-  local env_pid="$1" tree_pid="$2"
-  [ -n "${env_pid}" ] && [ -n "${tree_pid}" ] || return 1
-  [ -r "${proc_root}/${env_pid}/environ" ] || return 1
-  load_x11_env "${env_pid}"
+  local tree_pid="$1"
+  [ -n "${tree_pid}" ] || return 1
 
   local descendant win
   for descendant in $(descendants "${tree_pid}"); do
@@ -99,7 +105,7 @@ if [ "${1:-}" = "--own" ]; then
   wrapper_pattern='cg-game-exit /opt/cg-game/run( |$)'
   wrapper_pid=$(pgrep -f "${wrapper_pattern}" | head -1)
 
-  if descendant_window_visible "${wrapper_pid}" "${wrapper_pid}"; then
+  if use_x11_env_of "${wrapper_pid}" && descendant_window_visible "${wrapper_pid}"; then
     echo visible
     exit 0
   fi
@@ -129,6 +135,8 @@ client_pid() { pgrep -f 'ubuntu12_32/steam( |$)' | head -1; }
 
 is_visible() {
   [ -n "${reaper_pid}" ] || return 1
+  # Окружение клиента Steam — до поиска по классу, иначе xdotool без DISPLAY ничего не найдёт.
+  use_x11_env_of "$(client_pid)" || return 1
 
   local win
   for win in $(timeout "${x11_timeout_sec}" xdotool search --onlyvisible --class \
@@ -136,7 +144,7 @@ is_visible() {
     window_big_enough "${win}" && return 0
   done
 
-  descendant_window_visible "$(client_pid)" "${reaper_pid}"
+  descendant_window_visible "${reaper_pid}"
 }
 
 is_loading() {
