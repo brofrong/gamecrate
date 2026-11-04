@@ -1,6 +1,7 @@
 // RPC `admin.games.*`/`admin.installs.*`: игры общей библиотеки (список,
 // удаление) и задачи установки (список, отмена), по образцу adminWorkers.test.ts.
 import { describe, expect, it } from "bun:test";
+import { join } from "node:path";
 import {
   Db,
   games,
@@ -19,6 +20,10 @@ import { RpcTest } from "effect/rpc";
 import { AdminRpcHandlers } from "../src/admin/rpc";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
+import {
+  loadOwnGameManifests,
+  OwnGameCatalog,
+} from "../src/library/OwnGameCatalog";
 
 const admin: CurrentUserShape = {
   id: "u-admin",
@@ -37,8 +42,27 @@ const fakeAuth = Layer.succeed(BetterAuth, {
   currentUser: () => Effect.sync(() => Option.fromNullishOr(auth.current)),
 });
 
+/** Настоящий `games/soh/game.json` — образец для манифестов каталога. */
+const [sohManifest] = loadOwnGameManifests(
+  join(import.meta.dir, "../../../games"),
+);
+if (sohManifest === undefined) throw new Error("games/*/game.json not found");
+
+/**
+ * Каталог api: свои сборки alpha и zeta (`OWN_APP_ID_MIN`, `+1`). Строки
+ * `own_games` с другим appId каталог не знает (`game.json` убрали).
+ */
+const catalog = OwnGameCatalog.fromManifests(
+  (["alpha", "zeta"] as const).map((slug, i) => ({
+    ...sohManifest,
+    appId: OWN_APP_ID_MIN + i,
+    slug,
+  })),
+);
+
 const env = Layer.mergeAll(AdminRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
+  Layer.provide(catalog),
   Layer.provideMerge(DbTest),
 );
 
@@ -451,6 +475,36 @@ describe("admin.games (свои сборки)", () => {
     expect(zeta?.launches).toBe(0);
     expect(zeta?.lastLaunchAt).toBeNull();
     expect(zeta?.activeSessions).toBe(0);
+  });
+
+  it("setPublished: a game the api catalog no longer knows is notFound and stays closed", async () => {
+    // Строка в БД есть, а `game.json` из репозитория убрали: открытая, она
+    // вела бы с плитки на «игра не найдена».
+    const GONE = OWN_APP_ID_MIN + 2;
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedOwnGames(db);
+        yield* insertGame(db, GONE, "Gone Game");
+        yield* insertOwnGame(db, {
+          appId: GONE,
+          slug: "gone",
+          version: "1.0.0",
+        });
+
+        const rpc = yield* client;
+        const answer = yield* rpc["admin.games.setPublished"]({
+          appId: GONE,
+          published: true,
+        });
+        const [row] = yield* db
+          .select({ published: ownGames.published })
+          .from(ownGames)
+          .where(eq(ownGames.appId, GONE));
+        return { answer, published: row?.published };
+      }),
+    );
+    expect(result).toEqual({ answer: "notFound", published: false });
   });
 
   it("setPublished toggles and returns notFound for unknown appId", async () => {

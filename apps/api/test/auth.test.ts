@@ -65,6 +65,7 @@ const fakeAuth = (user: CurrentUserShape | null) =>
 const rpcLayer = (user: CurrentUserShape | null) =>
   Layer.mergeAll(AdminRpcHandlers, AuthRpcHandlers, RpcMiddlewares).pipe(
     Layer.provide(fakeAuth(user)),
+    Layer.provide(OwnGameCatalog.fromManifests([])),
     // Заглушка без методов: эти тесты не обращаются к БД.
     Layer.provide(Layer.succeed(Db, {} as Db["Service"])),
   );

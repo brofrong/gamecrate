@@ -27,6 +27,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { Effect } from "effect";
+import { OwnGameCatalog } from "../library/OwnGameCatalog";
 import { holdsSlot, isActive } from "../session/SessionRepo";
 import { activeInstallStates } from "./installs";
 
@@ -275,13 +276,18 @@ export const deleteGame = (
 /**
  * Открыть/закрыть свою сборку игрокам («Открыта игрокам», раздел «Свои
  * сборки»): `update` строки `own_games` по `appId`, нет такой строки —
- * `"notFound"` (0 обновлённых строк), иначе `"ok"`.
+ * `"notFound"` (0 обновлённых строк), иначе `"ok"`. Игры нет в каталоге api
+ * (`OwnGameCatalog`: её `game.json` убрали из репозитория) — тоже
+ * `"notFound"`: открытая, она вела бы с плитки на «игра не найдена» до
+ * перезапуска api (тот её и закроет, `syncOwnGames`).
  */
 export const setPublished = (
   appId: number,
   published: boolean,
-): Effect.Effect<"ok" | "notFound", never, Db> =>
+): Effect.Effect<"ok" | "notFound", never, Db | OwnGameCatalog> =>
   Effect.gen(function* () {
+    if ((yield* OwnGameCatalog).byAppId(appId) === undefined)
+      return "notFound" as const;
     const db = yield* Db;
     const rows = yield* db
       .update(ownGames)
