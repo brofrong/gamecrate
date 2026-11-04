@@ -7,6 +7,7 @@ import {
   type InstallStage as DbInstallStage,
   installJobs,
   installStageMarks,
+  ownGameOf,
   playSegments,
   type SessionStage as DbSessionStage,
   type SessionState as DbSessionState,
@@ -16,6 +17,7 @@ import {
   userGames,
 } from "@cg/db";
 import {
+  isOwnAppId,
   isSessionId,
   type SessionState,
   type SessionTiming,
@@ -308,9 +310,14 @@ const isBlocked = (userId: string) =>
     return row?.blockedAt !== null && row?.blockedAt !== undefined;
   });
 
-/** Игра есть и в каталоге, и в библиотеке пользователя. */
+/**
+ * Игра есть и в каталоге, и в библиотеке пользователя. Своя игра
+ * (`isOwnAppId`) — в библиотеке у всех, пока она открыта игрокам
+ * (`own_games.published`); Steam не нужен.
+ */
 const ownsGame = (userId: string, appId: number) =>
   Effect.gen(function* () {
+    if (isOwnAppId(appId)) return (yield* ownGameOf(appId))?.published === true;
     const db = yield* Db;
     const [row] = yield* db
       .select({ appId: games.appId })

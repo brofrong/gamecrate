@@ -330,3 +330,54 @@ describe("activeFilterCount", () => {
     ).toBe(5);
   });
 });
+
+describe("own games (free)", () => {
+  const own = (appId: number, name: string) =>
+    entry({
+      appId,
+      name,
+      protonTier: "pending",
+      coverUrl: `/own-games/${appId}/cover.jpg`,
+    });
+
+  it("free status keeps only own games and URL round-trips status=free", () => {
+    const filters: Filters = { ...DEFAULT_FILTERS, status: "free" };
+    expect(toSearch(filters)).toEqual({ status: "free" });
+    expect(parseSearch({ status: "free" })).toEqual(filters);
+
+    const entries = [
+      entry({ appId: 620, name: "Portal 2" }),
+      entry({ appId: 570, name: "Dota 2", cloud: { _tag: "Missing" } }),
+      own(1900000001, "Ocarina of Time"),
+    ];
+    // Разделы — как при «все»: своя игра — в «готовы».
+    expect(applyFilters(entries, filters, { steamProfile: true })).toEqual([
+      { section: "ready", entries: [own(1900000001, "Ocarina of Time")] },
+    ]);
+    expect(countMatching(entries, filters, { steamProfile: true })).toBe(1);
+    // Поиск сочетается с «бесплатно».
+    expect(
+      countMatching(
+        entries,
+        { ...filters, q: "portal" },
+        { steamProfile: true },
+      ),
+    ).toBe(0);
+  });
+
+  it("own game is ready even without Steam profile", () => {
+    const entries = [
+      entry({ appId: 620, name: "Portal 2" }),
+      own(1900000001, "Ocarina of Time"),
+    ];
+    expect(
+      applyFilters(entries, DEFAULT_FILTERS, { steamProfile: false }),
+    ).toEqual([
+      { section: "ready", entries: [own(1900000001, "Ocarina of Time")] },
+      {
+        section: "noprofile",
+        entries: [entry({ appId: 620, name: "Portal 2" })],
+      },
+    ]);
+  });
+});

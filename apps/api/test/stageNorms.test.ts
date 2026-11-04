@@ -347,6 +347,45 @@ describe("stage norms", () => {
     expect(result.launch.steam).toBe(10_000);
   });
 
+  it("own games are not in the all-games pool, keep their own norm", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        const own = 1900000001;
+        yield* db.insert(games).values({ appId: own, name: "SoH" });
+        // Свежие отметки (в 30-дневном окне): 5 запусков своей игры по 60 с
+        // на `computer` и 5 запусков Celeste по 10 с; у Hades своих нет.
+        const recent = Date.now() - 24 * 60 * 60 * 1000;
+        for (let i = 0; i < 5; i++) {
+          yield* launch(
+            own,
+            [
+              ["computer", 0],
+              ["loading", 60],
+            ],
+            recent + i * 3_600_000,
+          );
+          yield* launch(
+            20,
+            [
+              ["computer", 0],
+              ["steam", 10],
+            ],
+            recent + i * 3_600_000 + 60_000,
+          );
+        }
+        const hades = yield* StageNorms.normsFor(10);
+        const soh = yield* StageNorms.normsFor(own);
+        return { hades, soh };
+      }),
+    );
+    // Общий пул — только Celeste (10 с); со своей игрой медиана 10 замеров
+    // была бы 35 с.
+    expect(result.hades.launch.computer).toBe(10_000);
+    expect(result.soh.launch.computer).toBe(60_000);
+  });
+
   it("launchTotal clamps a negative duration (backward clock step) to 0", async () => {
     const result = await run(
       Effect.gen(function* () {

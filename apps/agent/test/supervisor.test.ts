@@ -17,11 +17,12 @@ import {
   Effect,
   Layer,
   Logger,
+  Option,
   Queue,
   References,
 } from "effect";
 import { TestClock } from "effect/testing";
-import { AgentConfig } from "../src/config";
+import { AgentConfig, type AgentConfigValues } from "../src/config";
 import {
   type ContainerInfo,
   type ContainerSpec,
@@ -44,6 +45,7 @@ import {
   commands,
   failReasons,
   GPU_FAILURE_LINE,
+  gameCommands,
   parseGameExit,
   SessionSupervisor,
   type SessionSupervisorShape,
@@ -107,6 +109,15 @@ const makeFake = () => {
     selkies: true,
     /** Процесс игры жив (pgrep). */
     game: false,
+    /**
+     * Сессия своей игры: pgrep, pkill и `cg-session-stage` отвечают только на
+     * команды своей игры (обёртка `cg-game-exit /opt/cg-game/run`, `--own`).
+     */
+    ownGame: false,
+    /** Число подсчётов маркеров облака (`grep`; в `calls` не пишутся). */
+    cloudChecks: 0,
+    /** `pkill` закрывает игру сразу (нет — игра выходит, когда тест скажет). */
+    pkillKills: true,
     /** Число строк «Upload complete, result OK» в cloud_log.txt. */
     cloud: 0,
     logs: "",
@@ -391,13 +402,19 @@ const makeFake = () => {
               stdout: "",
             });
           case "pgrep":
-            if (cmd.join(" ") !== "pgrep -f AppId=1794680( |$)")
+            if (
+              cmd.join(" ") !==
+              (state.ownGame
+                ? "pgrep -f cg-game-exit /opt/cg-game/run( |$)"
+                : "pgrep -f AppId=1794680( |$)")
+            )
               return Effect.succeed({ exitCode: 2, stdout: "" });
             return Effect.succeed({
               exitCode: state.pgrepExit ?? (state.game ? 0 : 1),
               stdout: state.game ? "42\n" : "",
             });
           case "grep":
+            state.cloudChecks++;
             // Ровно такой вызов: считаем маркеры выгрузки в журнале облака Steam.
             if (
               cmd.join("|") !==
@@ -431,12 +448,20 @@ const makeFake = () => {
                 : { exitCode: 0, stdout: state.gameExit },
             );
           case "pkill":
-            if (cmd.join(" ") !== "pkill -TERM -f AppId=1794680( |$)")
+            if (
+              cmd.join(" ") !==
+              (state.ownGame
+                ? "pkill -TERM -f ^/opt/cg-game/"
+                : "pkill -TERM -f AppId=1794680( |$)")
+            )
               return Effect.succeed({ exitCode: 2, stdout: "" });
-            state.game = false;
+            if (state.pkillKills) state.game = false;
             return Effect.succeed({ exitCode: 0, stdout: "" });
           case "/usr/local/bin/cg-session-stage": {
-            if (cmd.join(" ") !== "/usr/local/bin/cg-session-stage 1794680")
+            if (
+              cmd.join(" ") !==
+              `/usr/local/bin/cg-session-stage ${state.ownGame ? "--own" : "1794680"}`
+            )
               return Effect.succeed({ exitCode: 2, stdout: "" });
             const answer = state.stages.shift() ?? state.lastStage;
             state.lastStage = answer;
@@ -534,11 +559,15 @@ interface Harness {
  * Супервизор на фейках и TestClock; `setup` готовит фейк до старта.
  * `templates` — фейк `PrefixTemplates`: `ensure` пишет `templates.ensure
  * <appId>` в журнал вызовов (нет — сервис по умолчанию, без записи).
+ * `config` перекрывает поля конфига агента.
  */
 const run = (
   body: (h: Harness) => Effect.Effect<void, unknown>,
   setup: (fake: Fake) => void = () => {},
-  options: { readonly templates?: boolean } = {},
+  options: {
+    readonly templates?: boolean;
+    readonly config?: Partial<AgentConfigValues>;
+  } = {},
 ) => {
   const fake = makeFake();
   setup(fake);
@@ -551,7 +580,7 @@ const run = (
         Layer.provide(
           Layer.succeed(
             AgentConfig,
-            testConfig({ scratchDir: fake.state.scratch }),
+            testConfig({ scratchDir: fake.state.scratch, ...options.config }),
           ),
         ),
       ),
@@ -2717,6 +2746,40 @@ describe("SessionSupervisor stages", () => {
       );
   });
 
+  it("steam session: stage exit 2 is only a failed check, polling goes on", () =>
+    run(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(start);
+          yield* h.tick("0 seconds");
+          for (let i = 0; i < 3; i++) yield* h.tick("2 seconds");
+          const reports = yield* h.drainAll;
+          expect(reports.map((report) => report._tag)).not.toContain("Failed");
+          expect(stagesOf(reports)).toEqual([
+            ["s1", "computer"],
+            ["s1", "steam"],
+            ["s1", "login"],
+          ]);
+          expect(h.fake.state.stageChecks).toBe(4);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("Stage check failed"),
+            ),
+          ).toHaveLength(2);
+          expect(
+            (yield* h.supervisor.snapshot).map((s) => s.sessionId),
+          ).toEqual(["s1"]);
+        }),
+      (fake) => {
+        fake.state.stages = [
+          "steam",
+          { exitCode: 2 },
+          { exitCode: 2 },
+          "login",
+        ];
+      },
+    ));
+
   it("game start reports prepare before GameState", () =>
     run((h) =>
       Effect.gen(function* () {
@@ -3552,3 +3615,467 @@ describe("game end", () => {
 });
 
 const loginUsers = "/home/ubuntu/.local/share/Steam/config/loginusers.vdf";
+
+/** Своя игра (SoH) с пакетом `soh/9.3.1-1`. */
+const ownStart: Extract<AgentCommand, { _tag: "StartSession" }> = {
+  ...start,
+  appId: 1900000001,
+  ownGame: { slug: "soh", version: "9.3.1-1" },
+};
+
+/**
+ * Супервизор с `GAMES_DIR` во временном каталоге (`withPackage` — с пакетом
+ * `soh/9.3.1-1` и исполняемым `run`) и фейком сессии своей игры.
+ */
+const runOwn = async (
+  body: (h: Harness, gamesDir: string) => Effect.Effect<void, unknown>,
+  setup: (fake: Fake) => void = () => {},
+  options: { readonly withPackage?: boolean } = {},
+) => {
+  const gamesDir = mkdtempSync(join(tmpdir(), "cg-games-"));
+  try {
+    if (options.withPackage !== false) {
+      mkdirSync(join(gamesDir, "soh", "9.3.1-1"), { recursive: true });
+      writeFileSync(join(gamesDir, "soh", "9.3.1-1", "run"), "#!/bin/sh\n", {
+        mode: 0o755,
+      });
+    }
+    await run(
+      (h) => body(h, gamesDir),
+      (fake) => {
+        fake.state.ownGame = true;
+        fake.state.lastStage = "computer";
+        setup(fake);
+      },
+      { config: { gamesDir: Option.some(gamesDir) } },
+    );
+  } finally {
+    rmSync(gamesDir, { recursive: true, force: true });
+  }
+};
+
+/** Подхваченный контейнер своей игры `a` с меткой `cg.own-game`. */
+const ownContainer = (ownGameLabel: string): ContainerInfo => ({
+  name: "cg-session-a",
+  labels: {
+    "cg.session": "a",
+    "cg.slot": "1",
+    "cg.app": "1900000001",
+    "cg.user": "ua",
+    "cg.base-version": "3",
+    "cg.own-game": ownGameLabel,
+  },
+  running: true,
+});
+
+describe("own game", () => {
+  it("own game: container gets CG_GAME, read-only package bind and label", () =>
+    runOwn((h, gamesDir) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle(ownStart);
+        yield* h.tick("0 seconds");
+        expect(sessionSpecs(h.fake)).toHaveLength(1);
+        const spec = sessionSpecs(h.fake)[0];
+        expect(spec?.env.CG_GAME).toBe("/opt/cg-game/run");
+        expect(spec?.env.CG_APP_ID).toBe("1900000001");
+        expect(spec?.binds).toEqual([
+          "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/libnvidia-allocator.so.1:ro",
+          "/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01:/usr/lib/x86_64-linux-gnu/gbm/nvidia-drm_gbm.so:ro",
+          `${gamesDir}/soh/9.3.1-1:/opt/cg-game:ro`,
+        ]);
+        expect(spec?.labels["cg.own-game"]).toBe("soh/9.3.1-1");
+        expect(spec?.labels["cg.app"]).toBe("1900000001");
+        // Слои Steam — как у любой сессии.
+        expect(spec?.mounts.map((mount) => mount.volume)).toEqual([
+          "cg-s-s1-client",
+          "cg-s-s1-apps",
+        ]);
+      }),
+    ));
+
+  it("own game without package fails with ownGameMissing, no docker calls", async () => {
+    // Пакета нет в GAMES_DIR.
+    await runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          const before = h.fake.state.dockerCalls;
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          expect(yield* h.drainAll).toEqual([
+            {
+              _tag: "Failed",
+              sessionId: "s1",
+              reason: "Игры нет на этом сервере",
+            },
+          ]);
+          expect(h.fake.state.dockerCalls).toBe(before);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+        }),
+      () => {},
+      { withPackage: false },
+    );
+    // GAMES_DIR не задан.
+    await run((h) =>
+      Effect.gen(function* () {
+        const before = h.fake.state.dockerCalls;
+        yield* h.supervisor.handle(ownStart);
+        yield* h.tick("0 seconds");
+        expect(yield* h.drainAll).toEqual([
+          {
+            _tag: "Failed",
+            sessionId: "s1",
+            reason: failReasons.ownGameMissing,
+          },
+        ]);
+        expect(h.fake.state.dockerCalls).toBe(before);
+      }),
+    );
+  });
+
+  it("own game on an image without own-game support (stage exit 2) fails with ownGameMissing", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          // Старый образ: cg-launch не знает CG_GAME и запускает Steam,
+          // а cg-session-stage не знает `--own` и выходит с 2.
+          const reports = yield* h.drainAll;
+          expect(reports.at(-1)).toEqual({
+            _tag: "Failed",
+            sessionId: "s1",
+            reason: failReasons.ownGameMissing,
+          });
+          // Контейнер остановлен (здесь Selkies готов сразу — после StreamReady
+          // он остаётся со слоями, как при любом сбое после готовности стрима).
+          expect(h.fake.state.calls).toContain("stop cg-session-s1 15");
+          expect(h.fake.state.stageChecks).toBe(1);
+          expect(
+            h.fake.state.logged.filter((line) =>
+              line.includes("no own-game support"),
+            ),
+          ).toHaveLength(1);
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          // Опроса больше нет.
+          yield* h.tick("10 seconds");
+          expect(h.fake.state.stageChecks).toBe(1);
+        }),
+      (fake) => {
+        fake.state.stages = [{ exitCode: 2 }];
+      },
+    ));
+
+  it("own game launch skips Steam login seeding and launch options", () =>
+    runOwn((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle({
+          ...ownStart,
+          steamLogin: testSteamLogin(),
+          steamLoginResetAt: "2026-11-03T10:00:00.000Z",
+        });
+        yield* h.tick("0 seconds");
+        expect(yield* h.drain).toEqual([
+          { _tag: "StreamReady", sessionId: "s1", streamUrl },
+        ]);
+        expect(callsFrom(h.fake, "create cg-session-s1")).toEqual([
+          "create cg-session-s1",
+          ...held("s1"),
+          "volumeExists cg-home-u1",
+          "start cg-session-s1",
+          "remove cg-s-s1-hold",
+        ]);
+        expect(h.fake.state.put).toEqual([]);
+      }),
+    ));
+
+  it("own game stages: computer → loading → visible, never steam/login/prepare", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          // После docker start этап остаётся `computer`: обёртки ещё нет.
+          expect(stagesOf(yield* h.drainAll)).toEqual([["s1", "computer"]]);
+          yield* h.tick("2 seconds");
+          expect(yield* h.drainAll).toEqual([]);
+          // Игра запустилась раньше, чем скрипт этапов это заметил.
+          h.fake.state.game = true;
+          yield* h.tick("2 seconds");
+          yield* h.tick("1 seconds");
+          expect(yield* h.drainAll).toEqual([
+            { _tag: "SessionStage", sessionId: "s1", stage: "loading" },
+            { _tag: "GameState", sessionId: "s1", running: true },
+          ]);
+          h.fake.state.stages = ["visible"];
+          yield* h.tick("2 seconds");
+          expect(stagesOf(yield* h.drainAll)).toEqual([["s1", "visible"]]);
+          // `computer` от скрипта — не сбой проверки.
+          expect(h.fake.state.logged).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.stages = ["computer", "computer"];
+      },
+    ));
+
+  it("own game exit is read from the wrapper", () =>
+    runOwn((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle(ownStart);
+        yield* h.tick("0 seconds");
+        yield* h.drain;
+        // pgrep обёртки: 0, 0, 1.
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        yield* h.tick("5 seconds");
+        h.fake.state.game = false;
+        h.fake.state.gameExit = "code 0\n";
+        yield* h.tick("5 seconds");
+        // Облака у своей игры нет: Stopped сразу после выхода игры.
+        expect(yield* h.drain).toEqual([
+          { _tag: "GameState", sessionId: "s1", running: true },
+          { _tag: "GameState", sessionId: "s1", running: false, end: "quit" },
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: true,
+          },
+        ]);
+        expect(h.fake.state.cloudChecks).toBe(0);
+      }),
+    ));
+
+  it("stopping own game closes /opt/cg-game, skips cloud wait and Steam shutdown", () =>
+    runOwn((h) =>
+      Effect.gen(function* () {
+        yield* h.supervisor.handle(ownStart);
+        yield* h.tick("0 seconds");
+        h.fake.state.game = true;
+        yield* h.tick("5 seconds");
+        yield* h.drain;
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(yield* h.drain).toEqual([
+          {
+            _tag: "Stopped",
+            sessionId: "s1",
+            cloudSynced: false,
+            profileSaved: true,
+          },
+        ]);
+        expect(
+          callsFrom(h.fake, "exec cg-session-s1 pkill -TERM -f ^/opt/cg-game/"),
+        ).toEqual([
+          "exec cg-session-s1 pkill -TERM -f ^/opt/cg-game/",
+          "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+          "archiveSize cg-session-s1 /tmp/cg-profile.tar",
+          "getArchive cg-session-s1 /tmp/cg-profile.tar",
+          "store.put u1",
+          "commit profiles/u1/new.cgp",
+          ...removedWithLayers("s1"),
+        ]);
+        expect(h.fake.state.calls).not.toContain(
+          "exec cg-session-s1 /usr/local/bin/cg-steam-shutdown",
+        );
+        expect(h.fake.state.cloudChecks).toBe(0);
+      }),
+    ));
+
+  it("stopping own game packs the profile only after the wrapper is gone", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const pack = "exec cg-session-s1 /usr/local/bin/cg-profile-pack";
+          expect(h.fake.state.calls).toContain(
+            "exec cg-session-s1 pkill -TERM -f ^/opt/cg-game/",
+          );
+          // Игра ещё дописывает сохранения: обёртка жива два опроса.
+          yield* h.tick("500 millis");
+          yield* h.tick("500 millis");
+          expect(h.fake.state.calls).not.toContain(pack);
+          expect(yield* h.drain).toEqual([]);
+          h.fake.state.game = false;
+          yield* h.tick("500 millis");
+          expect(h.fake.state.calls).toContain(pack);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(h.fake.state.logged).toEqual([]);
+        }),
+      (fake) => {
+        fake.state.pkillKills = false;
+      },
+    ));
+
+  it("own game that ignores SIGTERM is packed after 15 s with a warning", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          yield* h.supervisor.handle(ownStart);
+          yield* h.tick("0 seconds");
+          h.fake.state.game = true;
+          yield* h.tick("5 seconds");
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+          yield* h.tick("0 seconds");
+          const pack = "exec cg-session-s1 /usr/local/bin/cg-profile-pack";
+          yield* h.tick("14 seconds");
+          expect(h.fake.state.calls).not.toContain(pack);
+          yield* h.tick("1 seconds");
+          expect(h.fake.state.calls).toContain(pack);
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "s1",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(
+            h.fake.state.logged.some((line) =>
+              line.includes("Own game did not exit after SIGTERM"),
+            ),
+          ).toBe(true);
+        }),
+      (fake) => {
+        fake.state.pkillKills = false;
+      },
+    ));
+
+  it("adopted own-game session stops without Steam steps", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          expect(yield* h.supervisor.snapshot).toEqual([
+            {
+              sessionId: "a",
+              slot: 1,
+              streamUrl: "http://cg-session-a:8080",
+              gameRunning: true,
+            },
+          ]);
+          yield* h.drain;
+          yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "a" });
+          yield* h.tick("0 seconds");
+          expect(yield* h.drain).toEqual([
+            {
+              _tag: "Stopped",
+              sessionId: "a",
+              cloudSynced: false,
+              profileSaved: true,
+            },
+          ]);
+          expect(
+            callsFrom(
+              h.fake,
+              "exec cg-session-a pkill -TERM -f ^/opt/cg-game/",
+            ),
+          ).toEqual([
+            "exec cg-session-a pkill -TERM -f ^/opt/cg-game/",
+            "exec cg-session-a /usr/local/bin/cg-profile-pack",
+            "archiveSize cg-session-a /tmp/cg-profile.tar",
+            "getArchive cg-session-a /tmp/cg-profile.tar",
+            "store.put ua",
+            "commit profiles/ua/new.cgp",
+            ...removedWithLayers("a"),
+          ]);
+          expect(h.fake.state.cloudChecks).toBe(0);
+        }),
+      (fake) => {
+        mkdirSync(join(fake.state.scratch, "a", "client", "upper"), {
+          recursive: true,
+        });
+        fake.state.game = true;
+        fake.state.existing = [ownContainer("soh/9.3.1-1")];
+      },
+    ));
+
+  it("adopted container with a broken own-game label is handled like one without profile labels", () =>
+    runOwn(
+      (h) =>
+        Effect.gen(function* () {
+          expect(yield* h.supervisor.snapshot).toEqual([]);
+          expect(h.fake.state.calls).toContain("remove cg-session-a");
+          expect(
+            h.fake.state.logged.some((line) => line.includes("own-game label")),
+          ).toBe(true);
+        }),
+      (fake) => {
+        fake.state.game = true;
+        fake.state.existing = [ownContainer("soh")];
+      },
+    ));
+
+  it("steam session commands unchanged", () => {
+    const steam = gameCommands({
+      name: "cg-session-s1",
+      appId: 1794680,
+      ownGame: undefined,
+    });
+    expect(steam.game).toEqual(["pgrep", "-f", "AppId=1794680( |$)"]);
+    expect(steam.closeGame).toEqual([
+      "pkill",
+      "-TERM",
+      "-f",
+      "AppId=1794680( |$)",
+    ]);
+    expect(steam.stage).toEqual(["/usr/local/bin/cg-session-stage", "1794680"]);
+    const own = gameCommands({
+      name: "cg-session-s1",
+      appId: 1900000001,
+      ownGame: { slug: "soh", version: "9.3.1-1" },
+    });
+    expect(own.game).toEqual([
+      "pgrep",
+      "-f",
+      "cg-game-exit /opt/cg-game/run( |$)",
+    ]);
+    expect(own.closeGame).toEqual(["pkill", "-TERM", "-f", "^/opt/cg-game/"]);
+    expect(own.stage).toEqual(["/usr/local/bin/cg-session-stage", "--own"]);
+    // Шаблон обёртки: её командная строка — да, сама игра и скрипт этапов — нет.
+    const pattern = new RegExp(own.game[2] ?? "");
+    expect(
+      pattern.test("/bin/bash /usr/local/bin/cg-game-exit /opt/cg-game/run"),
+    ).toBe(true);
+    expect(pattern.test("/opt/cg-game/soh.elf")).toBe(false);
+    expect(pattern.test(own.stage.join(" "))).toBe(false);
+  });
+
+  it("saveProfile with shutdownSteam false does not close Steam", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const fake = makeFake();
+        yield* saveProfile({
+          container: "cg-session-s1",
+          userId: "u1",
+          baseVersion: 7,
+          steamLoginSeeded: false,
+          shutdownSteam: false,
+        }).pipe(
+          Effect.provideService(DockerClient, fake.docker),
+          Effect.provideService(ProfileStore, fake.store),
+          Effect.provideService(ProfileCommitter, fake.committer),
+        );
+        expect(fake.state.calls).toEqual([
+          "exec cg-session-s1 /usr/local/bin/cg-profile-pack",
+          "archiveSize cg-session-s1 /tmp/cg-profile.tar",
+          "getArchive cg-session-s1 /tmp/cg-profile.tar",
+          "store.put u1",
+          "commit profiles/u1/new.cgp",
+        ]);
+        rmSync(fake.state.scratch, { recursive: true, force: true });
+      }).pipe(Effect.provideService(References.MinimumLogLevel, "None")),
+    ));
+});

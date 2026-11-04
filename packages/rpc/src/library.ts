@@ -2,6 +2,7 @@
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { AuthMiddleware } from "./auth";
+import { OwnGameInfo } from "./ownGames";
 
 /**
  * Тир совместимости ProtonDB. `"pending"` — ProtonDB не знает игру (404),
@@ -70,13 +71,16 @@ export type LibraryEntry = typeof LibraryEntry.Type;
 
 /**
  * Библиотека для экрана `/library`. `Private` — профиль Steam скрывает
- * «Сведения об играх»; `Ready` — игры (по убыванию времени в игре, затем по
- * имени), время последней синхронизации (ISO 8601, null — ещё не было) и
+ * «Сведения об играх» (Steam-игры не видны), но `entries` — свои игры
+ * пользователя: они не зависят от Steam и видны независимо от приватности
+ * профиля. `Ready` — Steam-игры (по убыванию времени в игре, затем по
+ * имени), за ними — открытые свои игры (по имени),
+ * время последней синхронизации (ISO 8601, null — ещё не было) и
  * `steamProfile` — у пользователя привязан Steam (иначе библиотека своя,
  * не из Steam).
  */
 export const LibraryView = Schema.Union([
-  Schema.TaggedStruct("Private", {}),
+  Schema.TaggedStruct("Private", { entries: Schema.Array(LibraryEntry) }),
   Schema.TaggedStruct("Ready", {
     entries: Schema.Array(LibraryEntry),
     syncedAt: Schema.NullOr(Schema.String),
@@ -192,6 +196,8 @@ export type GameSessionEntry = typeof GameSessionEntry.Type;
  * Страница игры `/app/game/<appId>` (спека 2026-10-27 §4.3). `details: null` —
  * Steam Store не ответил и кэша нет (или Steam игру не знает); фронт рисует то,
  * что есть. `inLibrary: false` — игры нет в библиотеке пользователя («В тренде»).
+ * `own: null` — игра из Steam (обычная страница); есть — своя игра, фронт
+ * показывает её вместо Steam-блоков («Фанатский ПК-порт», «Управление»).
  */
 export const GameView = Schema.Struct({
   appId: Schema.Int,
@@ -208,6 +214,7 @@ export const GameView = Schema.Struct({
   achievements: GameAchievements,
   /** Есть ли сейчас подходящий игре воркер для пользователя (спека §3). */
   available: Schema.Boolean,
+  own: Schema.NullOr(OwnGameInfo),
 });
 export type GameView = typeof GameView.Type;
 

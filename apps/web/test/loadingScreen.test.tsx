@@ -622,3 +622,60 @@ describe("loading screen timers", () => {
       expect(screen.queryByText(/обычно/)).toBeNull();
     }));
 });
+
+describe("own game loading screen", () => {
+  const own = (state: SessionState, patch: Partial<SessionView> = {}) =>
+    view(state, {
+      appId: 1900000001,
+      gameName: "The Legend of Zelda: Ocarina of Time",
+      ...patch,
+    });
+
+  it("own game loading screen has two steps and no Steam QR hint", () => {
+    expect(loadingSteps(own("starting", { stage: "computer" }))).toEqual([
+      { label: "Готовим компьютер", status: "now" },
+      { label: "Запускаем игру", status: "next" },
+    ]);
+    expect(loadingSteps(own("playing", { stage: "loading" }))).toEqual([
+      { label: "Готовим компьютер", status: "done" },
+      { label: "Запускаем игру", status: "now" },
+    ]);
+    expect(loadingSteps(own("queued"))).toEqual([
+      { label: "Ждём свободный сервер", status: "now" },
+      { label: "Готовим компьютер", status: "next" },
+      { label: "Запускаем игру", status: "next" },
+    ]);
+    // Полоска: «Запускаем игру» — вторая половина.
+    expect(
+      loadingProgress(own("playing", { stage: "loading" }), 0),
+    ).toBeCloseTo(0.5);
+
+    // Без `timing` у Steam-игры в `starting` подсказка про QR есть всегда — у своей нет.
+    renderPlayer(own("starting", { stage: "computer", streamReady: true }));
+    expect(screen.getByText("Готовим компьютер")).toBeTruthy();
+    expect(screen.getByText("Запускаем игру")).toBeTruthy();
+    expect(screen.queryByText(/Steam/)).toBeNull();
+    expect(screen.queryByText(qrHint)).toBeNull();
+    expect(reveal()).toBeTruthy();
+  });
+
+  it("own game: header total sums only its two stage norms", () =>
+    withClock(0, () => {
+      renderPlayer(
+        own("starting", {
+          stage: "loading",
+          timing: timing({
+            launch: [
+              mark("computer", -12_000, -4_000),
+              mark("loading", -4_000, null),
+            ],
+          }),
+        }),
+      );
+      // 10 + 15 с, а не сумма всех этапов Steam-запуска.
+      expect(screen.getByText("Запуск идёт 0:12 · обычно ~25 с")).toBeTruthy();
+      expect(
+        screen.getByText("Запускаем игру · обычно ~15 с · 0:04"),
+      ).toBeTruthy();
+    }));
+});

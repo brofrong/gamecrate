@@ -9,3 +9,9 @@ dist
 *.tgz
 .superpowers/
 images/session/nv/
+# Файлы Nintendo (ROM и архивы активов SoH) — никогда в git (games/README.md)
+**/*.z64
+**/*.n64
+**/*.v64
+**/*.o2r
+**/roms/

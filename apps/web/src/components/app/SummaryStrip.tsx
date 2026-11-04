@@ -4,11 +4,12 @@
 // установка, «Установка · N %». Рисуется, как только загрузился `me` — даже без Steam и
 // до того, как подтянулась библиотека (спека §4.6: ссылка на подключение должна быть
 // видна сразу), поэтому `view` опционален — счётчики «N игр · M готовы» показываются
-// только когда он есть и `_tag === "Ready"`.
+// только когда он есть и `_tag === "Ready"`; считаются только игры Steam (`steamCounts`).
 import type { CurrentUserShape, LibraryView, SessionView } from "@cg/rpc";
 import { Link } from "@tanstack/react-router";
 import type * as React from "react";
 import { currentMonth, formatMinutes, formatMonth } from "@/lib/formatTime";
+import { steamCounts } from "@/lib/libraryFilters";
 
 function Tile({ children }: { children: React.ReactNode }) {
   return (
@@ -29,11 +30,9 @@ export function SummaryStrip({
   monthMinutes: number;
   activeSession?: SessionView | null;
 }) {
-  const total = view?._tag === "Ready" ? view.entries.length : 0;
-  const ready =
-    view?._tag === "Ready"
-      ? view.entries.filter((entry) => entry.cloud._tag === "Ready").length
-      : 0;
+  const { total, ready } = steamCounts(
+    view?._tag === "Ready" ? view.entries : [],
+  );
   const month = formatMonth(currentMonth(new Date()));
   const installPercent =
     activeSession?.state === "installing" ? activeSession.installPercent : null;

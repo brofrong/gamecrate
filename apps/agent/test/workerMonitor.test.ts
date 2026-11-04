@@ -1,9 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentReport } from "@cg/rpc";
-import { Context, Duration, Effect, Layer, Queue, References } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  References,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { AgentConfig, type AgentConfigValues } from "../src/config";
 import {
@@ -467,6 +475,41 @@ describe("WorkerMonitor library", () => {
         const [stats] = statsOf(yield* Queue.clear(monitor.reports));
         expect(stats).toBeDefined();
         expect(stats !== undefined && "library" in stats).toBe(false);
+      }),
+    ));
+});
+
+describe("WorkerMonitor ownGames", () => {
+  it("GAMES_DIR задан — в снимке список пакетов своих игр", async () => {
+    const games = await mkdtemp(join(tmpdir(), "cg-monitor-games-"));
+    try {
+      await mkdir(join(games, "soh", "9.3.1-1"), { recursive: true });
+      await Bun.write(join(games, "soh", "9.3.1-1", "run"), "#!/bin/sh\n");
+      await chmod(join(games, "soh", "9.3.1-1", "run"), 0o755);
+      await run(
+        ({ monitor, tick }) =>
+          Effect.gen(function* () {
+            yield* tick(STATS_INTERVAL);
+            const [stats] = statsOf(yield* Queue.clear(monitor.reports));
+            expect(stats?.ownGames).toEqual([
+              { slug: "soh", version: "9.3.1-1" },
+            ]);
+          }),
+        () => {},
+        { gamesDir: Option.some(games) },
+      );
+    } finally {
+      await rm(games, { recursive: true, force: true });
+    }
+  });
+
+  it("без GAMES_DIR поля ownGames нет", () =>
+    run(({ monitor, tick }) =>
+      Effect.gen(function* () {
+        yield* tick(STATS_INTERVAL);
+        const [stats] = statsOf(yield* Queue.clear(monitor.reports));
+        expect(stats).toBeDefined();
+        expect(stats !== undefined && "ownGames" in stats).toBe(false);
       }),
     ));
 });

@@ -21,8 +21,11 @@
   `~/.local/share/Steam/steamapps` и `~/.steam` (с родителями) заранее, владелец `ubuntu`; `PATH` с
   `/usr/games`.
 - `cg-launch` — `steam -silent -applaunch "$CG_APP_ID"`; пустой `CG_APP_ID` — ничего не делает,
-  не число — ошибка (exit 1). `CG_MODE=install` (установщик) — `steam -silent` без игры, `CG_APP_ID`
-  не нужен. Запускает Steam не больше одного раза за жизнь контейнера: замок
+  не число — ошибка (exit 1). Непустой `CG_GAME` (план «свои игры») — своя игра вместо Steam:
+  `exec /usr/local/bin/cg-game-exit "$CG_GAME"` (`CG_GAME_EXIT` — другой путь обёртки, тесты); не
+  исполняемый файл — ошибка (exit 1); проверяется раньше `CG_APP_ID`, тем же замком. `CG_MODE=install`
+  (установщик) — `steam -silent` без игры, `CG_APP_ID`/`CG_GAME` не нужны. Запускает Steam/игру не
+  больше одного раза за жизнь контейнера: замок
   `mkdir /tmp/cg-launch.lock` (`/tmp` — слой контейнера, не том `/home/ubuntu`; `CG_LAUNCH_LOCK` —
   другой путь, для тестов); если композитор перезапустится и автостарт сработает снова —
   `[cg-launch] already launched …, skipping`.
@@ -100,7 +103,12 @@
   нужен); `loading` — есть процесс, чья командная строка начинается с `<буква>:\common\` (так
   Proton запускает exe игры; служебные exe самого Proton и Windows не в счёт); `prepare` — есть
   `reaper` с `AppId=<appid>`; `login` — в `logs/steamui_login.txt` есть строка `SetLoginState`;
-  иначе `steam`. Агент зовёт `docker exec` раз в 2 с.
+  иначе `steam`. `cg-session-stage --own` (своя игра, план «свои игры», без Steam/`reaper`) печатает
+  `computer|loading|visible` и всегда exit 0: обёртка `cg-game-exit /opt/cg-game/run` находится по
+  `pgrep -f` (шаблон собирается внутри скрипта, как `AppId=<appid>` выше); `visible` — у её потомка
+  (игра — прямой потомок, `run` делает `exec`) есть видимое окно ≥ 64×64, окружение X11 — из
+  `/proc/<pid обёртки>/environ`; `loading` — обёртка жива, окна нет; иначе `computer`. Агент зовёт
+  `docker exec` раз в 2 с.
 - `cg-game-exit` → `/usr/local/bin/`: обёртка процесса игры (спека «требования к железу» §4.2):
   `cg-game-exit <команда…>` запускает команду, пишет `code <n>` в `/tmp/cg-game-exit` и выходит с
   тем же статусом (смерть от сигнала — `128+n`). Steam зовёт её через `LaunchOptions` игры, которые

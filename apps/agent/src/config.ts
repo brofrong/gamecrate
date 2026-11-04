@@ -130,6 +130,12 @@ const fields = Config.all({
    */
   installScratchDir: Config.option(HostDir("INSTALL_SCRATCH_DIR")),
   /**
+   * Пакеты своих игр (роль `worker`): `<GAMES_DIR>/<slug>/<version>/`
+   * (`scanOwnGames` в `OwnGames.ts`). Не задан — агент своих игр не умеет
+   * (`WorkerStats.ownGames` не присылается).
+   */
+  gamesDir: Config.option(HostDir("GAMES_DIR")),
+  /**
    * Минимум свободного места (ГиБ) на ФС `SCRATCH_DIR`/`INSTALL_SCRATCH_DIR`:
    * меньше — `StartSession`/`InstallGame` отклоняются («На сервере закончилось
    * место»), чтобы upper-слои не заполнили общий диск хоста.
@@ -151,6 +157,9 @@ const firstOverlap = (
  * или быть вложены (в любую сторону) ни друг с другом, ни с `LIBRARY_DIR` и
  * `STEAM_CLIENT_DIR` — иначе уборка удалит библиотеку или клиент Steam. Роль
  * `gamestore` требует `INSTALL_SCRATCH_DIR` (`LIBRARY_DIR` обязателен всегда).
+ * `GAMES_DIR` (пакеты своих игр, не чистится) не должен совпадать или быть
+ * вложен ни с `SCRATCH_DIR`, ни с `INSTALL_SCRATCH_DIR` — своя игра не должна
+ * пропасть при уборке scratch.
  */
 export const agentConfig = fields.pipe(
   Config.flatMap((values) => {
@@ -175,6 +184,16 @@ export const agentConfig = fields.pipe(
         [...install, ...scratch],
         ...shared.map(([name, dir]) => [...install, name, dir] as const),
       );
+    }
+    if (Option.isSome(values.gamesDir)) {
+      const games = ["GAMES_DIR", values.gamesDir.value] as const;
+      pairs.push([...games, ...scratch]);
+      if (Option.isSome(values.installScratchDir))
+        pairs.push([
+          ...games,
+          "INSTALL_SCRATCH_DIR",
+          values.installScratchDir.value,
+        ]);
     }
     const overlap = firstOverlap(pairs);
     if (overlap !== undefined)

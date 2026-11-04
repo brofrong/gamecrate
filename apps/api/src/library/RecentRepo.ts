@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { DateTime, Effect } from "effect";
 import * as CloudRepo from "./CloudRepo";
 import { coverUrl } from "./LibraryService";
+import { shownToPlayers } from "./OwnGamesRepo";
 
 /**
  * Сколько последних (не-failed) сессий пользователя просматриваем, сворачивая
@@ -44,7 +45,8 @@ export const sessionDurationMinutes = (
  * Последние `limit` игр пользователя: для каждого `appId` — самая свежая по
  * `created_at` сессия в состоянии, отличном от `failed`; порядок — по
  * `created_at` этой сессии, новые первыми. `lastPlayedAt` = `ended_at ??
- * created_at`. Игра без такой сессии не попадает в список.
+ * created_at`. Игра без такой сессии не попадает в список, скрытая своя
+ * игра — тоже (`shownToPlayers`).
  */
 export const recentGames = (
   userId: string,
@@ -61,7 +63,13 @@ export const recentGames = (
         endedAt: sessions.endedAt,
       })
       .from(sessions)
-      .where(and(eq(sessions.userId, userId), ne(sessions.state, "failed")))
+      .where(
+        and(
+          eq(sessions.userId, userId),
+          ne(sessions.state, "failed"),
+          shownToPlayers(sessions.appId),
+        ),
+      )
       .orderBy(desc(sessions.createdAt))
       .limit(sessionWindow);
 

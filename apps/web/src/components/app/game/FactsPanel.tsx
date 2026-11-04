@@ -1,6 +1,7 @@
 // Панель «Об игре» с фактами (спека 2026-10-27 §3.5): разработчик, издатель (если
 // другой), дата выхода, жанры (до четырёх), Metacritic со ссылкой и всегда — ссылка
-// «Открыть в Steam ↗». Без `details` остаётся только ссылка на Steam.
+// «Открыть в Steam ↗». Без `details` остаётся только ссылка на Steam. У своей игры
+// (`own`) ссылки на Steam нет; без строк панели нет вовсе.
 import type { GameView } from "@cg/rpc";
 import { Info } from "lucide-react";
 import { Panel, PanelHeader } from "@/components/app/Panel";
@@ -46,19 +47,21 @@ export function FactsPanel({ game }: { game: GameView }) {
           ),
       });
   }
-  rows.push({
-    label: "Steam",
-    value: (
-      <a
-        href={storeUrl(game.appId)}
-        target="_blank"
-        rel="noreferrer"
-        className={linkClassName}
-      >
-        Открыть в Steam ↗
-      </a>
-    ),
-  });
+  if (game.own === null)
+    rows.push({
+      label: "Steam",
+      value: (
+        <a
+          href={storeUrl(game.appId)}
+          target="_blank"
+          rel="noreferrer"
+          className={linkClassName}
+        >
+          Открыть в Steam ↗
+        </a>
+      ),
+    });
+  if (rows.length === 0) return null;
 
   return (
     <Panel>

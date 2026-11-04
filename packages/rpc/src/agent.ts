@@ -3,6 +3,7 @@
 // браузерный API её никогда не обслуживает.
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
+import { OwnGamePackage } from "./ownGames";
 import { InstallStage, SessionStage } from "./session";
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
@@ -125,7 +126,9 @@ export type LibraryApp = typeof LibraryApp.Type;
  * пусты/`null`, если измерить не удалось (нет GPU, `nvidia-smi` упал,
  * `statfs` не прошёл) — карточка в админке покажет «нет данных», не упадёт.
  * `library` — содержимое общей библиотеки, только у агента с ролью
- * `gamestore` (вкладка «Игры» админки); у остальных поля нет.
+ * `gamestore` (вкладка «Игры» админки); у остальных поля нет. `ownGames` —
+ * пакеты своих игр, установленные на воркере (планировщик сравнивает с
+ * `StartSession.ownGame`); нет поля — старый агент, своих игр ещё не умеет.
  */
 export const WorkerStats = Schema.Struct({
   cpuPercent: Schema.Number,
@@ -155,6 +158,7 @@ export const WorkerStats = Schema.Struct({
   ),
   uptimeSeconds: NonNegativeNumber,
   library: Schema.optional(Schema.Array(LibraryApp)),
+  ownGames: Schema.optional(Schema.Array(OwnGamePackage)),
 });
 export type WorkerStats = typeof WorkerStats.Type;
 
@@ -240,6 +244,9 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * в `loginusers.vdf`, `Accounts` в `config.vdf`, `AutoLoginUser`/
  * `RememberPassword` в `registry.vdf`; сохранения не трогает) до посева
  * `steamLogin`, если он тоже есть. `undefined` — сброса не было.
+ * `StartSession.ownGame` — есть, значит `appId` — своя игра (запускать пакет
+ * `<slug>/<version>` из `ownGame`, а не Steam); нет поля — обычный Steam-запуск,
+ * как раньше.
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -254,6 +261,7 @@ export const AgentCommand = Schema.Union([
       Schema.Struct({ width: Schema.Int, height: Schema.Int }),
     ),
     steamLoginResetAt: Schema.optional(Schema.String),
+    ownGame: Schema.optional(OwnGamePackage),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
   Schema.TaggedStruct("InstallGame", {

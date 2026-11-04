@@ -1,7 +1,9 @@
 // Обложка игры, общая для `GameTile` (сетка `/app`) и `ActiveSessionPanel`:
-// горизонтальная шапка Steam → запасная вертикальная обложка → заглушка с именем.
+// горизонтальная шапка Steam (у своей игры — наша `header.jpg`) → запасная
+// вертикальная обложка → заглушка с именем.
 // Заполняет родителя (`size-full`) — размер, форму и обрезку (aspect-ratio,
 // `overflow-hidden`, скругление) задаёт обёртка вызывающего компонента.
+import { isOwnAppId, ownGameAssetUrl } from "@cg/rpc";
 import { Gamepad2 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -12,9 +14,11 @@ export type CoverGame = {
   readonly coverUrl: string;
 };
 
-/** Горизонтальная шапка Steam — основная картинка обложки. */
+/** Горизонтальная шапка Steam (своей игры — `/own-games/…`) — основная картинка обложки. */
 export const headerUrl = (appId: number) =>
-  `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`;
+  isOwnAppId(appId)
+    ? ownGameAssetUrl(appId, "header.jpg")
+    : `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/header.jpg`;
 
 /** Какая картинка показана: шапка Steam, запасная вертикальная обложка или заглушка. */
 type Art = "header" | "cover" | "none";

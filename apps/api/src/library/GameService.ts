@@ -2,12 +2,15 @@
 // библиотеки пользователя, статус облака и размер, сессии пользователя в игре,
 // описание из кэша Steam Store (с походом в Steam при устаревшем кэше) и достижения
 // (схема кэшируется, открытые — запрашиваются при каждом открытии). Steam Store и
-// достижения запрашиваются параллельно; ни один из них не роняет ответ.
+// достижения запрашиваются параллельно; ни один из них не роняет ответ. Своя игра
+// (спека 2026-11-03 «Свои игры») — описание из каталога `games/*/game.json`, без
+// Steam Store и достижений.
 import {
   Db,
   gameAvailable,
   games,
   gamestoreApps,
+  ownGameOf,
   playSegments,
   sessions,
   userGames,
@@ -18,6 +21,8 @@ import {
   GameNotFound,
   type GameSessionEntry,
   type GameView,
+  isOwnAppId,
+  ownGameAssetUrl,
   ProtonTier,
 } from "@cg/rpc";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
@@ -27,6 +32,8 @@ import { SteamStoreApi } from "../steam/SteamStoreApi";
 import * as CloudRepo from "./CloudRepo";
 import * as GameDetailsRepo from "./GameDetailsRepo";
 import { coverUrl } from "./LibraryService";
+import { OwnGameCatalog } from "./OwnGameCatalog";
+import * as OwnGamesRepo from "./OwnGamesRepo";
 import { sessionDurationMinutes } from "./RecentRepo";
 
 const isProtonTier = Schema.is(ProtonTier);
@@ -186,13 +193,67 @@ const userSessions = (
     }));
   }).pipe(Effect.orDie);
 
+/**
+ * Страница своей игры: скрытая (`published = false`) или неизвестная каталогу
+ * api — `GameNotFound`. В библиотеке она у всех, облако — `Ready`, размера
+ * нет; описание, управление и скриншоты — из каталога, время в игре — по
+ * отрезкам наших сессий. Steam Store и достижения Steam не запрашиваются.
+ */
+const ownGameView = (
+  userId: string,
+  appId: number,
+  now: Date,
+): Effect.Effect<GameView, GameNotFound, Db | OwnGameCatalog> =>
+  Effect.gen(function* () {
+    const row = yield* ownGameOf(appId);
+    const manifest = (yield* OwnGameCatalog).byAppId(appId);
+    if (row?.published !== true || manifest === undefined)
+      return yield* new GameNotFound({ appId });
+    const [playtime, sessionList, available] = yield* Effect.all(
+      [
+        OwnGamesRepo.ownPlaytimeMinutes(userId, [appId]),
+        userSessions(userId, appId, now),
+        gameAvailable(userId, appId, now),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return {
+      appId,
+      name: manifest.name,
+      coverUrl: coverUrl(appId),
+      cloud: { _tag: "Ready" },
+      protonTier: "pending",
+      inLibrary: true,
+      playtimeMinutes: playtime.get(appId) ?? 0,
+      sizeBytes: null,
+      lastSession: sessionList[0] ?? null,
+      sessions: sessionList,
+      details: null,
+      achievements: { _tag: "None" },
+      available,
+      own: {
+        description: manifest.site.description,
+        controls: manifest.site.controls,
+        source: manifest.site.source,
+        screenshots: manifest.site.screenshots.map((file) =>
+          ownGameAssetUrl(appId, file),
+        ),
+      },
+    };
+  });
+
 export const gameView = (
   userId: string,
   steamId: string | null,
   appId: number,
   now: Date,
-): Effect.Effect<GameView, GameNotFound, Db | SteamStoreApi | SteamApi> =>
+): Effect.Effect<
+  GameView,
+  GameNotFound,
+  Db | SteamStoreApi | SteamApi | OwnGameCatalog
+> =>
   Effect.gen(function* () {
+    if (isOwnAppId(appId)) return yield* ownGameView(userId, appId, now);
     const db = yield* Db;
     const [gameRow] = yield* db
       .select({ name: games.name, protonTier: games.protonTier })
@@ -248,5 +309,6 @@ export const gameView = (
       details,
       achievements,
       available,
+      own: null,
     };
   });

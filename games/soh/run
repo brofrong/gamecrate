@@ -1,0 +1,24 @@
+#!/bin/bash
+# Запуск Ship of Harkinian в сессии: пакет смонтирован в /opt/cg-game (только чтение), cg-launch
+# зовёт `cg-game-exit /opt/cg-game/run` в окружении сессии labwc (DISPLAY Xwayland, LD_PRELOAD
+# интерпозера геймпадов Selkies).
+#
+# SHIP_HOME — дом игрока (профиль): настройки, сохранения (Save/), лог. Архивы .o2r SoH ищет
+# сначала в SHIP_HOME, потом рядом с бинарником (/opt/cg-game) — в дом они не копируются.
+# Первый запуск получает shipofharkinian.json пакета: сразу полный экран, без меню SoH. Дальше
+# файл принадлежит игроку (SoH сам дописывает его), поверх не копируется.
+#
+# Видео — X11 через Xwayland (умолчание SDL2, SDL_VIDEODRIVER не задаём): на NVIDIA 550 работает,
+# окно игры видно cg-session-stage через xdotool --pid (спайк Task 1). Wayland тоже рисует, но
+# окно тогда не найти: lswt в Ubuntu 26.04 нет.
+set -eu
+
+export SHIP_HOME="${HOME}/.local/share/soh"
+mkdir -p "${SHIP_HOME}"
+if [ ! -f "${SHIP_HOME}/shipofharkinian.json" ]; then
+  cp /opt/cg-game/shipofharkinian.json "${SHIP_HOME}/shipofharkinian.json"
+fi
+
+export LD_LIBRARY_PATH=/opt/cg-game/lib
+export SDL_AUDIO_DRIVER=pulseaudio
+exec /opt/cg-game/soh.elf

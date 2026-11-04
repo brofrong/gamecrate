@@ -4,7 +4,8 @@
 // `WorkerStats`. Агент работает в контейнере, но `/proc/{stat,meminfo,cpuinfo,
 // uptime}` и `/sys/block` там показывают хост; каталоги SCRATCH_DIR,
 // STEAM_CLIENT_DIR и LIBRARY_DIR смонтированы по тем же путям, что на хосте.
-// С ролью gamestore снимок несёт и список игр общей библиотеки (`library`).
+// С ролью gamestore снимок несёт и список игр общей библиотеки (`library`); с
+// заданным GAMES_DIR — список пакетов своих игр (`ownGames`).
 import { readdir, readFile, stat, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -13,9 +14,18 @@ import {
   WorkerStats,
   WorkerVersions,
 } from "@cg/rpc";
-import { Context, Duration, Effect, Layer, Queue, Schema } from "effect";
+import {
+  Context,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  Schema,
+} from "effect";
 import { AgentConfig } from "./config";
 import { scanLibrary } from "./GameRemoval";
+import { scanOwnGames } from "./OwnGames";
 import {
   classifyBlockDevice,
   NVIDIA_SMI_ARGS,
@@ -260,6 +270,9 @@ const make = Effect.gen(function* () {
     const current = yield* readCpuTimes;
     const cpu = percentBetween(previous, current);
     previous = current;
+    // Отдельная переменная (не `config.gamesDir` по месту) — иначе
+    // `Option.isSome` ниже не сузит тип внутри замыкания `Effect.sync`.
+    const gamesDir = config.gamesDir;
     const stats: WorkerStats = {
       cpuPercent: cpu,
       memory: parseMeminfo((yield* probe.readText("/proc/meminfo")) ?? ""),
@@ -281,6 +294,14 @@ const make = Effect.gen(function* () {
             library: yield* Effect.sync(() =>
               scanLibrary(join(config.libraryDir, "steamapps")),
             ),
+          }
+        : {}),
+      // Пакеты своих игр — только у worker с заданным GAMES_DIR (планировщик
+      // сравнивает их со `StartSession.ownGame`; без GAMES_DIR агент своих
+      // игр не умеет, поля нет вовсе, не пустой список).
+      ...(config.roles.includes("worker") && Option.isSome(gamesDir)
+        ? {
+            ownGames: yield* Effect.sync(() => scanOwnGames(gamesDir.value)),
           }
         : {}),
     };

@@ -7,10 +7,16 @@ import {
   eligibleWorkers,
   gamestoreApps,
   installJobs,
+  ownGames,
   sessions,
   user,
 } from "@cg/db";
-import { type ProfileRef, accessDeniedReason } from "@cg/rpc";
+import {
+  isOwnAppId,
+  type OwnGamePackage,
+  type ProfileRef,
+  accessDeniedReason,
+} from "@cg/rpc";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { AgentHub } from "./AgentHub";
@@ -47,6 +53,11 @@ interface Placement {
   readonly profile: ProfileRef | null;
   /** Пометка сброса входа Steam пользователя (`SessionRepo.steamLoginResetAt`). */
   readonly steamLoginResetAt: Date | null;
+  /**
+   * Пакет своей игры, который нужно запустить (спека 2026-11-03 «Свои игры»);
+   * нет поля — обычный запуск Steam.
+   */
+  readonly ownGame?: OwnGamePackage;
 }
 
 /**
@@ -72,6 +83,18 @@ const appInLibrary: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gam
 
 /** Игра сессии в общей библиотеке и не удаляется (`deleting_at is null`). */
 const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId} and ${gamestoreApps.deletingAt} is null)`;
+
+/**
+ * У игры сессии есть строка каталога своих игр (спека 2026-11-03 «Свои игры»):
+ * это своя игра (фанатский ПК-порт вне Steam), а не Steam-приложение, —
+ * независимо от `published`. Такая сессия никогда не уходит в установку
+ * (`placeOne`): пакет раскатывается на воркеры заранее, а не задачей
+ * установки.
+ */
+const ownGameRow: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.appId} = ${sessions.appId})`;
+
+/** Строка каталога своей игры сессии есть и открыта игрокам (`published`). */
+const ownGamePublished: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.appId} = ${sessions.appId} and ${ownGames.published})`;
 
 /**
  * У игры сессии есть активная (`queued`/`running`) задача установки, которую
@@ -205,25 +228,31 @@ export const startInstall = (
  * Одна транзакция на один проход. Сессия заблокированного пользователя (в
  * любой из веток ниже) не ставится и не размещается, а валится с
  * `accessDeniedReason` (`blockedFailure`). Сначала самая старая `queued`-
- * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`),
+ * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`, и
+ * она не своя игра — своя игра никогда не уходит в установку, `ownGameRow`),
  * чья задача установки не отменяется админом (`appInstallCancelling`), уходит
  * в установку (`startInstall`) — слот ей не нужен, поэтому она не ждёт
  * воркеров; сессия отменяемой игры остаётся в очереди и дождётся новой задачи
  * после её конца. Иначе — очередь без затора (спека §2.5): до `PLACE_SCAN`
- * самых старых `queued`-сессий установленных и не удаляемых игр
+ * самых старых `queued`-сессий установленных (`appInstalled`) или открытых
+ * игрокам своих игр (`ownGamePublished`, спека 2026-11-03 «Свои игры»)
  * (`created_at asc`, `FOR UPDATE SKIP LOCKED`) просматриваются по очереди, для
  * каждой — `eligibleWorkers(userId, appId, { workerIds: candidates })`
- * (классы воркеров и железо, спека §2.1–§2.3), первый из них со свободным
- * слотом (слот — наименьший свободный) размещает сессию; не нашёлся —
- * переходим к следующей сессии. Строка игры читается под `FOR SHARE` (api
- * помечает удаление под `FOR UPDATE` и проверяет активные сессии — либо мы
- * видим пометку, либо api видит нашу сессию); удаляемая или пропавшая игра —
- * сессия пропускается, как и при отсутствии свободного воркера. Просмотренные,
- * но не размещённые сессии остаются заблокированными только до конца
- * транзакции — следующий проход их не пропустит. Размещение — `workerId`,
- * `slot`, `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит;
- * профиль и пометка сброса входа Steam читаются в той же транзакции: сбой
- * чтения откатывает размещение, а не оставляет его без команды.
+ * (классы воркеров и железо, спека §2.1–§2.3; для своей игры он же проверяет
+ * раскатанный пакет, `hasPackage`), первый из них со свободным слотом (слот —
+ * наименьший свободный) размещает сессию; не нашёлся — переходим к следующей
+ * сессии. Строка игры читается под `FOR SHARE` — `gamestore_apps` для
+ * Steam-игры (api помечает удаление под `FOR UPDATE` и проверяет активные
+ * сессии — либо мы видим пометку, либо api видит нашу сессию), `own_games`
+ * для своей игры; удаляемая/непубликованная или пропавшая игра — сессия
+ * пропускается, как и при отсутствии свободного воркера. Просмотренные, но не
+ * размещённые сессии остаются заблокированными только до конца транзакции —
+ * следующий проход их не пропустит. Размещение — `workerId`, `slot`,
+ * `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит; профиль и
+ * пометка сброса входа Steam читаются в той же транзакции: сбой чтения
+ * откатывает размещение, а не оставляет его без команды. Своя игра не входит
+ * в Steam — пометка сброса входа для неё не читается (`steamLoginResetAt:
+ * null` без запроса), `Placement.ownGame` несёт её пакет (`slug`/`version`).
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -232,7 +261,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     return yield* db.transaction(() =>
       Effect.gen(function* () {
         const [uninstalled] = yield* lockOldestQueued(
-          sql`not ${appInLibrary} and not ${appInstallCancelling}`,
+          sql`not (${appInLibrary} or ${ownGameRow}) and not ${appInstallCancelling}`,
         );
         if (uninstalled !== undefined)
           return uninstalled.userBlocked
@@ -240,7 +269,10 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
             : ((yield* startInstall(now, uninstalled)) as Outcome);
 
         if (candidates.length === 0) return undefined;
-        const queued = yield* lockOldestQueued(appInstalled, PLACE_SCAN);
+        const queued = yield* lockOldestQueued(
+          sql`${appInstalled} or ${ownGamePublished}`,
+          PLACE_SCAN,
+        );
         if (queued.length === 0) return undefined;
 
         const taken = yield* db
@@ -258,12 +290,27 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
           if (session.userBlocked)
             return yield* blockedFailure(now, session.id);
 
-          const [app] = yield* db
-            .select({ deletingAt: gamestoreApps.deletingAt })
-            .from(gamestoreApps)
-            .where(eq(gamestoreApps.appId, session.appId))
-            .for("share");
-          if (app === undefined || app.deletingAt !== null) continue;
+          let ownGame: OwnGamePackage | undefined;
+          if (isOwnAppId(session.appId)) {
+            const [row] = yield* db
+              .select({
+                slug: ownGames.slug,
+                version: ownGames.version,
+                published: ownGames.published,
+              })
+              .from(ownGames)
+              .where(eq(ownGames.appId, session.appId))
+              .for("share");
+            if (row === undefined || !row.published) continue;
+            ownGame = { slug: row.slug, version: row.version };
+          } else {
+            const [app] = yield* db
+              .select({ deletingAt: gamestoreApps.deletingAt })
+              .from(gamestoreApps)
+              .where(eq(gamestoreApps.appId, session.appId))
+              .for("share");
+            if (app === undefined || app.deletingAt !== null) continue;
+          }
 
           const eligible = yield* eligibleWorkers(
             session.userId,
@@ -286,9 +333,12 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
               })
               .where(eq(sessions.id, session.id));
             const profile = yield* SessionRepo.profileOf(session.userId);
-            const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
-              session.userId,
-            );
+            // Своя игра не входит в Steam — ни читать, ни сбрасывать её вход
+            // не нужно (ниже, в `tick`, это и держит `steamLogin: null`).
+            const steamLoginResetAt =
+              ownGame === undefined
+                ? yield* SessionRepo.steamLoginResetAt(session.userId)
+                : null;
             return {
               _tag: "Placed",
               session,
@@ -297,6 +347,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
               udpPort: info.udpPortBase + slot,
               profile,
               steamLoginResetAt,
+              ...(ownGame !== undefined && { ownGame }),
             } satisfies Placement;
           }
         }
@@ -337,7 +388,10 @@ const unplace = (placement: Placement) =>
  * уходит после коммита, поэтому сбой не откатит уже отправленные команды.
  * Есть пометка сброса входа Steam — посеянный раньше неё вход забывается
  * (`clearOlderThan`), а команда несёт `steamLoginResetAt` (ISO); пометки нет —
- * поля в команде нет.
+ * поля в команде нет. Своя игра (`placement.ownGame`, спека 2026-11-03 «Свои
+ * игры») не входит в Steam: `steamLoginResetAt` для неё всегда `null`
+ * (`placeOne` его не читал), `seeds.get` не вызывается — команда несёт
+ * `steamLogin: null` и `ownGame` вместо обычного Steam-входа.
  * `send` вернул `false` — сессия возвращается в `queued` (`unplace`), а воркер
  * до конца прохода не используется. Если процесс упадёт между коммитом и
  * отправкой, сессия останется `starting` без агента и её завершит таймаут
@@ -363,12 +417,23 @@ export const tick = (now: Date) =>
           });
         continue;
       }
-      const { session, workerId, slot, udpPort, profile, steamLoginResetAt } =
-        placement;
+      const {
+        session,
+        workerId,
+        slot,
+        udpPort,
+        profile,
+        steamLoginResetAt,
+        ownGame,
+      } = placement;
       // Вход, посеянный до сброса админом, устарел: не отправляем и забываем.
+      // Своя игра не входит в Steam (`steamLoginResetAt` для неё всегда
+      // `null`, см. `placeOne`) — эта ветка для неё не выполняется.
       if (steamLoginResetAt !== null)
         yield* seeds.clearOlderThan(session.userId, steamLoginResetAt);
-      const steamLogin = yield* seeds.get(session.userId);
+      // Своя игра не читает посеянный вход Steam — он ей не нужен.
+      const steamLogin =
+        ownGame === undefined ? yield* seeds.get(session.userId) : null;
       const display = yield* SessionRepo.displaySizeFor(session.userId);
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
@@ -383,6 +448,7 @@ export const tick = (now: Date) =>
         ...(steamLoginResetAt !== null && {
           steamLoginResetAt: steamLoginResetAt.toISOString(),
         }),
+        ...(ownGame !== undefined && { ownGame }),
       });
       if (sent) {
         placed++;

@@ -101,14 +101,42 @@ export const AdminGame = Schema.Struct({
 export type AdminGame = typeof AdminGame.Type;
 
 /**
- * Игры общей библиотеки + служебные пакеты. `service` — часть библиотеки
- * воркера `gamestore`, которой нет в `gamestore_apps` (Proton, Steam Linux
- * Runtime и т. п.) — их показывают как «Служебные: …», но никогда не удаляют;
- * `null` — у воркера `gamestore` ещё нет снимка библиотеки (или такого
- * воркера нет вовсе).
+ * Своя сборка вне Steam для админки (раздел «Свои сборки», спека 2026-11-03
+ * «Свои игры»). `slug`/`version` — текущий пакет из `own_games`;
+ * `published` — открыта ли игра игрокам («Открыта игрокам»). `workers` — id
+ * воркеров с ролью `worker`, у которых раскатан именно этот пакет (точное
+ * совпадение `slug`/`version` в `WorkerStats.ownGames`, устаревшая версия на
+ * диске не считается); пустой список — «Нет ни на одном воркере».
+ * `launches`/`lastLaunchAt`/`activeSessions` — как у `AdminGame`, по сессиям
+ * этого `appId`. Своя сборка не ставится и не удаляется через эту вкладку
+ * (её раскатка — отдельный процесс на воркере), поэтому здесь нет
+ * `sizeBytes`/`installedAt`/`installing`/`deleting`.
+ */
+export const AdminOwnGame = Schema.Struct({
+  appId: Schema.Int,
+  name: Schema.String,
+  slug: Schema.String,
+  version: Schema.String,
+  published: Schema.Boolean,
+  workers: Schema.Array(Schema.String),
+  launches: Schema.Int,
+  lastLaunchAt: Schema.NullOr(Schema.String),
+  activeSessions: Schema.Int,
+});
+export type AdminOwnGame = typeof AdminOwnGame.Type;
+
+/**
+ * Игры общей библиотеки + служебные пакеты + свои сборки. `service` — часть
+ * библиотеки воркера `gamestore`, которой нет в `gamestore_apps` (Proton,
+ * Steam Linux Runtime и т. п.) — их показывают как «Служебные: …», но
+ * никогда не удаляют; `null` — у воркера `gamestore` ещё нет снимка
+ * библиотеки (или такого воркера нет вовсе). `own` — свои сборки
+ * («Свои сборки», по имени), отдельный раздел вкладки «Игры», без удаления
+ * и установки.
  */
 export const AdminGames = Schema.Struct({
   games: Schema.Array(AdminGame),
+  own: Schema.Array(AdminOwnGame),
   service: Schema.NullOr(
     Schema.Struct({
       count: Schema.Int,
@@ -276,6 +304,9 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // спека §5.2). `admin.games.setRequirements` — сохранить или удалить
 // (`requirements: null`) строку `game_requirements`; `updated_by` —
 // текущий админ; всегда `true` (не проверяет, что игра существует).
+// `admin.games.setPublished` — открыть/закрыть свою сборку игрокам
+// («Открыта игрокам», раздел «Свои сборки»): `"ok"`, нет такой строки
+// `own_games` — `"notFound"`.
 // `admin.installs.list` — активные и недавние (7 дней, не больше 50) задачи
 // установки. `admin.installs.cancel` — попросить отменить активную задачу
 // (`"Установка отменена администратором"` — причина ждущим сессиям, ставит
@@ -341,6 +372,10 @@ export const AdminRpcs = RpcGroup.make(
       requirements: Schema.NullOr(Requirements),
     }),
     success: Schema.Boolean,
+  }),
+  Rpc.make("admin.games.setPublished", {
+    payload: Schema.Struct({ appId: Schema.Int, published: Schema.Boolean }),
+    success: Schema.Literals(["ok", "notFound"]),
   }),
   Rpc.make("admin.installs.list", { success: AdminInstalls }),
   Rpc.make("admin.installs.cancel", {

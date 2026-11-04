@@ -22,6 +22,7 @@ import { Effect, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import {
@@ -90,7 +91,14 @@ const protonLayer = Layer.succeed(
 
 const env = Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
-  Layer.provideMerge(Layer.mergeAll(steamLayer, storeLayer, protonLayer)),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      steamLayer,
+      storeLayer,
+      protonLayer,
+      OwnGameCatalog.fromManifests([]),
+    ),
+  ),
   Layer.provideMerge(DbTest),
 );
 

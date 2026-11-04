@@ -14,6 +14,7 @@ import { HttpRouter, HttpServer } from "effect/http";
 import { BetterAuth } from "../src/auth/auth";
 import { AppConfig } from "../src/config";
 import { HttpApp } from "../src/http";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 import { StreamUpstream } from "../src/session/streamProxy";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { SteamStoreApi } from "../src/steam/SteamStoreApi";
@@ -66,6 +67,7 @@ const appDeps = (
     Layer.mock(SteamApi)({}),
     Layer.mock(ProtonDb)({}),
     Layer.mock(SteamStoreApi)({}),
+    OwnGameCatalog.fromManifests([]),
     Layer.succeed(AppConfig, {
       port: 0,
       publicUrl: `${publicOrigin}/app`,
@@ -78,6 +80,7 @@ const appDeps = (
       pocketIdAdminGroup: "cloud_gaming_admins",
       allowedOrigins: ["http://localhost:5173"],
       webDistDir,
+      ownGamesDir: "unused",
       smtpUrl: Redacted.make("log://"),
       mailFrom: "GameCrate <test@example.com>",
       google: Option.none(),

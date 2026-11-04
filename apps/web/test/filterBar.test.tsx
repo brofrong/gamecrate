@@ -164,13 +164,39 @@ describe("FilterBar", () => {
     });
   });
 
-  it("чип «Играть бесплатно» заблокирован с title «Скоро»; «Из ящика» и «Нужен вход в Steam» в строке нет", async () => {
-    renderBar();
+  it("free chip is enabled and toggles status", async () => {
+    const { onChange } = renderBar();
     const chip = await screen.findByRole("button", {
       name: "Играть бесплатно",
     });
-    expect((chip as HTMLButtonElement).disabled).toBe(true);
-    expect(chip.getAttribute("title")).toBe("Скоро");
+    expect((chip as HTMLButtonElement).disabled).toBe(false);
+    expect(chip.getAttribute("title")).toBeNull();
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(chip);
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      status: "free",
+    });
+  });
+
+  it("активный чип «Играть бесплатно» сбрасывает статус в all", async () => {
+    const { onChange } = renderBar({
+      filters: { ...DEFAULT_FILTERS, status: "free" },
+    });
+    const chip = await screen.findByRole("button", {
+      name: "Играть бесплатно",
+    });
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(chip);
+    expect(onChange).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      status: "all",
+    });
+  });
+
+  it("«Из ящика» и «Нужен вход в Steam» в строке чипов нет", async () => {
+    renderBar();
+    await screen.findByRole("button", { name: "Играть бесплатно" });
     expect(screen.queryByRole("button", { name: "Из ящика" })).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Нужен вход в Steam" }),
@@ -292,6 +318,27 @@ describe("FilterSheet", () => {
       status: "ready",
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("«Бесплатно» в шторке ставит status: free", () => {
+    const onApply = mock((_next: Filters) => {});
+    render(
+      <FilterSheet
+        open={true}
+        filters={DEFAULT_FILTERS}
+        onApply={onApply}
+        onClose={() => {}}
+        countFor={countFor}
+      />,
+    );
+    const chip = screen.getByRole("button", { name: "Бесплатно" });
+    fireEvent.click(chip);
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: /Показать \d+ игр/ }));
+    expect(onApply).toHaveBeenCalledWith({
+      ...DEFAULT_FILTERS,
+      status: "free",
+    });
   });
 
   it("чипа «Из ящика» в шторке больше нет", () => {

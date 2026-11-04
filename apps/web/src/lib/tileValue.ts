@@ -1,6 +1,6 @@
 // Значение справа на обложке плитки игры (спека 2026-10-27 §3.3) — чистая логика без
 // React: одно короткое слово/число, его тон и процент установки для полосы прогресса.
-import type { CloudStatus, RecentEntry } from "@cg/rpc";
+import { type CloudStatus, isOwnAppId, type RecentEntry } from "@cg/rpc";
 import {
   formatHoursShort,
   formatMinutes,
@@ -22,11 +22,21 @@ const muted = (text: string): TileValue => ({
   percent: null,
 });
 
-/** `dimmed` (у пользователя нет облачного профиля Steam) перекрывает статус облака. */
+/**
+ * Своя игра — всегда «бесплатно» (Steam ей не нужен, `dimmed` её не трогает); у
+ * остальных `dimmed` (у пользователя нет облачного профиля Steam) перекрывает
+ * статус облака.
+ */
 export function tileValue(
-  game: { readonly cloud: CloudStatus; readonly playtimeMinutes?: number },
+  game: {
+    readonly appId?: number;
+    readonly cloud: CloudStatus;
+    readonly playtimeMinutes?: number;
+  },
   dimmed: boolean,
 ): TileValue {
+  if (game.appId !== undefined && isOwnAppId(game.appId))
+    return { text: "бесплатно", tone: "ok", percent: null };
   if (dimmed) return muted("нужен вход в Steam");
   switch (game.cloud._tag) {
     case "Ready": {

@@ -32,6 +32,7 @@ export const testConfig = (
   scratchDir: "/scratch",
   roles: ["worker"],
   installScratchDir: Option.none(),
+  gamesDir: Option.none(),
   minFreeGb: 20,
   ...patch,
 });

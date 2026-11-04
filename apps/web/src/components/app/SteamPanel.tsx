@@ -15,6 +15,7 @@ import {
 } from "@/components/SteamQrLogin";
 import { Button } from "@/components/ui/button";
 import { formatRelativeDate } from "@/lib/formatTime";
+import { steamCounts } from "@/lib/libraryFilters";
 
 export function SteamPanel({
   user,
@@ -33,11 +34,10 @@ export function SteamPanel({
 }) {
   const [open, setOpen] = useState(false);
   const linked = user.steamId !== null;
-  const total = view?._tag === "Ready" ? view.entries.length : 0;
-  const ready =
-    view?._tag === "Ready"
-      ? view.entries.filter((entry) => entry.cloud._tag === "Ready").length
-      : 0;
+  // Только игры Steam: свои игры к панели Steam не относятся.
+  const { total, ready } = steamCounts(
+    view?._tag === "Ready" ? view.entries : [],
+  );
   const syncedAt = view?._tag === "Ready" ? view.syncedAt : null;
 
   const stats = [

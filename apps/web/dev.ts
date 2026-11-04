@@ -2,7 +2,10 @@
 // `/api/*`, `/rpc` (WebSocket) и `/stream/*` (стрим сессии: HTTP и WebSocket Selkies)
 // проксируются на apps/api, чтобы браузер видел один origin и cookie сессии Better Auth
 // ходили и в HTTP, и в апгрейд сокета (iframe стрима тоже должен быть same-origin).
+// `/own-games/<appId>/<file>` — картинки своих игр прямо из `games/<slug>/site/`.
 //   WEB_PORT — порт dev-сервера (по умолчанию 5173), API_URL — адрес api (http://localhost:3000).
+import { join } from "node:path";
+import { OWN_ASSET_FILE, ownGameSiteDirs } from "./scripts/ownGameAssets";
 import index from "./src/index.html";
 
 const port = Number(Bun.env.WEB_PORT ?? 5173);
@@ -14,6 +17,26 @@ const apiWsUrl = (request: Request) => {
   target.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
   return target;
 };
+
+/** Каталоги картинок своих игр по `appId` (новая игра — после перезапуска dev). */
+const ownSiteDirs = ownGameSiteDirs();
+
+/**
+ * Картинка своей игры: только известный `appId` и простое имя файла
+ * (`OWN_ASSET_FILE`, без `/` и `..`) — за пределы `games/<slug>/site/` не выйти.
+ */
+async function ownGameAsset(
+  request: Bun.BunRequest<"/own-games/:appId/:file">,
+): Promise<Response> {
+  const { appId, file } = request.params;
+  const siteDir = ownSiteDirs.get(Number(appId));
+  if (siteDir === undefined || !OWN_ASSET_FILE.test(file))
+    return new Response("Not Found", { status: 404 });
+  const asset = Bun.file(join(siteDir, file));
+  return (await asset.exists())
+    ? new Response(asset)
+    : new Response("Not Found", { status: 404 });
+}
 
 /** HTTP-прокси на api; Host/Origin браузера сохраняются, редиректы отдаются браузеру как есть. */
 async function proxyHttp(request: Request): Promise<Response> {
@@ -99,6 +122,7 @@ const server = Bun.serve({
           ? undefined
           : new Response("Ожидался WebSocket", { status: 426 })
         : proxyHttp(request),
+    "/own-games/:appId/:file": ownGameAsset,
     "/*": index,
   },
   websocket: {

@@ -3,6 +3,10 @@
 # на прежнем образе KDE — /etc/xdg/autostart/cg-launch.desktop). Работает в окружении сессии: там
 # LD_PRELOAD интерпозера ввода Selkies (геймпад), DISPLAY Xwayland и переменные контейнера, в том
 # числе CG_APP_ID. Пустой CG_APP_ID — ничего не запускать.
+# CG_GAME (план «свои игры») — путь к исполняемому `run` своей игры, смонтированному только для
+# чтения в /opt/cg-game: запускается через обёртку `/usr/local/bin/cg-game-exit "${CG_GAME}"`
+# (CG_GAME_EXIT — другой путь обёртки, тесты); Steam не трогается. Проверяется раньше CG_APP_ID, тем
+# же замком: непустой CG_GAME должен быть исполняемым файлом, иначе exit 1.
 # CG_MODE=install (контейнер установщика, агент с ролью gamestore) — только клиент Steam, без игры:
 # он сам докачивает игры, чьи appmanifest помечены «нужно обновление» (заготовку кладёт агент).
 # Steam запускается не больше одного раза за жизнь контейнера: если композитор перезапустится и
@@ -13,17 +17,24 @@ set -u
 
 mode="${CG_MODE:-}"
 app_id="${CG_APP_ID:-}"
+game="${CG_GAME:-}"
 if [ "${mode}" != "install" ]; then
-  if [ -z "${app_id}" ]; then
+  if [ -n "${game}" ]; then
+    if [ ! -f "${game}" ] || [ ! -x "${game}" ]; then
+      echo "[cg-launch] CG_GAME is not an executable file: ${game}" >&2
+      exit 1
+    fi
+  elif [ -z "${app_id}" ]; then
     echo "[cg-launch] CG_APP_ID is empty, nothing to launch" >&2
     exit 0
+  else
+    case "${app_id}" in
+      *[!0-9]*)
+        echo "[cg-launch] CG_APP_ID is not a number: ${app_id}" >&2
+        exit 1
+        ;;
+    esac
   fi
-  case "${app_id}" in
-    *[!0-9]*)
-      echo "[cg-launch] CG_APP_ID is not a number: ${app_id}" >&2
-      exit 1
-      ;;
-  esac
 fi
 
 lock="${CG_LAUNCH_LOCK:-/tmp/cg-launch.lock}"
@@ -35,6 +46,12 @@ fi
 if [ "${mode}" = "install" ]; then
   echo "[cg-launch] install mode: steam -silent" >&2
   exec steam -silent
+fi
+
+if [ -n "${game}" ]; then
+  game_exit="${CG_GAME_EXIT:-/usr/local/bin/cg-game-exit}"
+  echo "[cg-launch] ${game_exit} ${game}" >&2
+  exec "${game_exit}" "${game}"
 fi
 
 echo "[cg-launch] steam -silent -applaunch ${app_id}" >&2

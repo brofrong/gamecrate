@@ -144,6 +144,7 @@ beforeAll(async () => {
     pocketIdAdminGroup: "cloud_gaming_admins",
     allowedOrigins: [],
     webDistDir: "unused",
+    ownGamesDir: "unused",
     smtpUrl: Redacted.make("log://"),
     mailFrom: "GameCrate <test@example.com>",
     google: Option.none(),

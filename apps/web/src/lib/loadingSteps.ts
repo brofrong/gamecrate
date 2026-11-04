@@ -4,13 +4,14 @@
 // ползёт полоска внутри текущего этапа. Время этапов, их нормы и когда предложить
 // «Показать экран» — по серверным отметкам `SessionView.timing` (спека
 // 2026-10-29-launch-timers, часть 2).
-import type {
-  InstallStage,
-  SessionStage,
-  SessionState,
-  SessionTiming,
-  SessionView,
-  StageTiming,
+import {
+  type InstallStage,
+  isOwnAppId,
+  type SessionStage,
+  type SessionState,
+  type SessionTiming,
+  type SessionView,
+  type StageTiming,
 } from "@cg/rpc";
 import { formatClock } from "./formatTime";
 
@@ -58,6 +59,19 @@ export const launchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
   ["prepare", "Готовим игру"],
   ["loading", "Загружаем игру"],
 ];
+
+/**
+ * Этапы запуска своей игры (спека 2026-11-03 «Бесплатные игры» §4.3): Steam нет —
+ * агент шлёт только `computer`, `loading` и `visible`.
+ */
+export const ownLaunchSteps: ReadonlyArray<readonly [LaunchStage, string]> = [
+  ["computer", "Готовим компьютер"],
+  ["loading", "Запускаем игру"],
+];
+
+/** Этапы запуска этой сессии: у своей игры — `ownLaunchSteps`. */
+const launchStepsOf = (view: SessionView) =>
+  isOwnAppId(view.appId) ? ownLaunchSteps : launchSteps;
 
 /** Подписи этапов установки по порядку (переиспользует и админка — столбец «Этап»). */
 export const installSteps: ReadonlyArray<readonly [InstallStage, string]> = [
@@ -118,8 +132,9 @@ function plan(view: SessionView): {
         stageNormMs(timing, stage.kind, stage.stage) ?? stageMs,
       );
     };
-  const launchLabels = launchSteps.map(([, label]) => label);
-  const launchStages = launchSteps.map(([stage]): Timed => ({
+  const steps = launchStepsOf(view);
+  const launchLabels = steps.map(([, label]) => label);
+  const launchStages = steps.map(([stage]): Timed => ({
     kind: "launch",
     stage,
   }));
@@ -182,7 +197,7 @@ function plan(view: SessionView): {
   return {
     labels: [...prefix, ...launchLabels],
     stages: [...prefixStages, ...launchStages],
-    current: prefix.length + launchSteps.findIndex(([key]) => key === stage),
+    current: prefix.length + steps.findIndex(([key]) => key === stage),
     fraction: timed({ kind: "launch", stage }, STAGE_MS.launch[stage]),
     bounds,
   };
@@ -248,7 +263,7 @@ export function loadingTotal(
   if (!first) return null;
   const norm =
     timing.launchNormMs ??
-    launchSteps.reduce(
+    launchStepsOf(view).reduce(
       (sum, [stage]) => sum + (stageNormMs(timing, "launch", stage) ?? 0),
       0,
     );

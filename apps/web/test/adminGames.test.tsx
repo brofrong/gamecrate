@@ -14,6 +14,7 @@ import type {
   AdminGame,
   AdminGameRequirements,
   AdminGames,
+  AdminOwnGame,
   CurrentUserShape,
 } from "@cg/rpc";
 import {
@@ -81,6 +82,16 @@ const adminSetGameRequirementsArgs = (
   requirements: unknown,
 ) => ({ payload: { appId, requirements }, reactivityKeys: ["admin"] });
 
+const setPublishedCalls: unknown[] = [];
+const adminSetOwnGamePublishedAtom = Atom.fn((arg: unknown) => {
+  setPublishedCalls.push(arg);
+  return Effect.succeed("ok" as const);
+});
+const adminSetOwnGamePublishedArgs = (appId: number, published: boolean) => ({
+  payload: { appId, published },
+  reactivityKeys: ["admin"],
+});
+
 // `routes/admin.tsx` импортирует и другие вкладки — им здесь хватает заглушек,
 // эта вкладка их не трогает.
 const adminUsersAtom = Atom.make(AsyncResult.initial());
@@ -124,6 +135,8 @@ mock.module("../src/rpc", () => ({
   adminGameRequirementsAtom,
   adminSetGameRequirementsAtom,
   adminSetGameRequirementsArgs,
+  adminSetOwnGamePublishedAtom,
+  adminSetOwnGamePublishedArgs,
   adminUsersAtom,
   adminSetRoleAtom,
   adminSetRoleArgs: (userId: string, role: "player" | "admin") => ({
@@ -224,16 +237,32 @@ const game = (
   ...patch,
 });
 
+/** Строка «Свои сборки» (раздел 2026-11-03 «Свои игры», Task 10). */
+const ownGame = (
+  patch: Partial<AdminOwnGame> & { appId: number; name: string; slug: string },
+): AdminOwnGame => ({
+  version: "1.0.0",
+  published: false,
+  workers: [],
+  launches: 0,
+  lastLaunchAt: null,
+  activeSessions: 0,
+  ...patch,
+});
+
 const routeTree = rootRoute.addChildren([adminRoute]);
 
-function renderGames(games: AdminGames) {
+/** `own` по умолчанию пуст — большинству тестов этой вкладки свои сборки не нужны. */
+function renderGames(
+  games: Omit<AdminGames, "own"> & { own?: AdminGames["own"] },
+) {
   const router = createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: ["/admin?tab=games"] }),
   });
   const initialValues: Array<InitialValue> = [
     [meAtom, AsyncResult.success(admin)],
-    [adminGamesAtom, AsyncResult.success(games)],
+    [adminGamesAtom, AsyncResult.success({ own: [], ...games })],
   ];
   return render(
     <RegistryProvider initialValues={initialValues}>
@@ -341,6 +370,100 @@ describe("GamesTab", () => {
         reactivityKeys: ["admin"],
       });
     });
+  });
+});
+
+// Раздел «Свои сборки» (спека 2026-11-03 «Свои игры», Task 10): воркеры с активным
+// пакетом, переключатель «Открыта игрокам», требования — без удаления и установки.
+describe("GamesTab own games section", () => {
+  const withWorkers = ownGame({
+    appId: 1900000001,
+    name: "Ship of Harkinian",
+    slug: "soh",
+    workers: ["w1", "w2"],
+  });
+  const withoutWorkers = ownGame({
+    appId: 1900000002,
+    name: "Other Port",
+    slug: "other",
+    published: true,
+  });
+
+  it("own game row has publish switch and no delete button", async () => {
+    renderGames({ games: [], service: null, own: [withWorkers] });
+
+    const row = (await screen.findByText("Ship of Harkinian")).closest("tr");
+    if (row === null) throw new Error("row not found");
+    expect(within(row).getByText("своя сборка")).toBeTruthy();
+    expect(
+      within(row).getByRole("switch", { name: "Открыта игрокам" }),
+    ).toBeTruthy();
+    expect(within(row).queryByRole("button", { name: "Удалить" })).toBeNull();
+  });
+
+  it("shows workers joined by comma, or «Нет ни на одном воркере» when empty", async () => {
+    renderGames({
+      games: [],
+      service: null,
+      own: [withWorkers, withoutWorkers],
+    });
+
+    const withRow = (await screen.findByText("Ship of Harkinian")).closest(
+      "tr",
+    );
+    if (withRow === null) throw new Error("row not found");
+    expect(within(withRow).getByText("w1, w2")).toBeTruthy();
+
+    const withoutRow = screen.getByText("Other Port").closest("tr");
+    if (withoutRow === null) throw new Error("row not found");
+    expect(
+      within(withoutRow).getByText("Нет ни на одном воркере"),
+    ).toBeTruthy();
+  });
+
+  it("toggling the switch sends appId and the new published value", async () => {
+    renderGames({ games: [], service: null, own: [withWorkers] });
+
+    const switchEl = await screen.findByRole("switch", {
+      name: "Открыта игрокам",
+    });
+    expect((switchEl as HTMLButtonElement).getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    fireEvent.click(switchEl);
+
+    await waitFor(() => {
+      expect(setPublishedCalls.at(-1)).toEqual({
+        payload: { appId: 1900000001, published: true },
+        reactivityKeys: ["admin"],
+      });
+    });
+  });
+
+  it("the requirements button opens GameRequirementsPanel for the game's appId", async () => {
+    requirementsStore[1900000003] = {
+      requirements: null,
+      rows: [],
+      overall: { sessions: 0, vramP95: null, ramP95: null, cpuP95: null },
+    };
+    const game3 = ownGame({
+      appId: 1900000003,
+      name: "Third Port",
+      slug: "third",
+    });
+    renderGames({ games: [], service: null, own: [game3] });
+
+    const row = (await screen.findByText("Third Port")).closest("tr");
+    if (row === null) throw new Error("row not found");
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Требования" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "нет данных, запускается только на самом сильном классе",
+      ),
+    ).toBeTruthy();
   });
 });
 

@@ -15,6 +15,8 @@ import { join } from "node:path";
  * - `xdotool search --onlyvisible --class/--pid …` отдаёт `${FAKE_XDOTOOL_DIR}/class-*`/`pid-*`
  *   (значение без `[^A-Za-z0-9_]`).
  * - `xwininfo -id <win>` отдаёт `${FAKE_XWININFO_DIR}/geom-<win>` (строки `Width:`/`Height:`).
+ * - `xdotool` и `xwininfo` без `DISPLAY` падают с 1, как настоящие: `docker exec` его не передаёт,
+ *   окружение X11 скрипт обязан взять из `/proc/<pid>/environ` до первого вызова.
  * - `timeout` — на этой машине нет ни GNU, ни BSD `timeout`; фейк ведёт себя как настоящий
  *   (SIGTERM и ненулевой код, если команда не успела), чтобы проверить, что сам скрипт не
  *   зависает на зависшем xdotool/xwininfo, а не угадывание фейка.
@@ -24,6 +26,7 @@ const script = join(import.meta.dir, "../../../images/session/cg-session-stage")
 const APP_ID = "1966900";
 const REAPER_PID = "500";
 const CLIENT_PID = "600";
+const WRAPPER_PID = "800";
 
 let dir: string;
 let bin: string;
@@ -90,6 +93,11 @@ const addReaper = () =>
     `/home/ubuntu/.local/share/Steam/ubuntu12_32/reaper SteamLaunch AppId=${APP_ID} -- ` +
       "/home/ubuntu/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4/_v2-entry-point",
   );
+
+// Обёртка своей игры (план «свои игры»): `cg-game-exit` запускает `/opt/cg-game/run` напрямую,
+// без Steam/reaper.
+const addWrapper = () =>
+  addProcess(WRAPPER_PID, "/usr/local/bin/cg-game-exit /opt/cg-game/run");
 
 const stage = (appId: string = APP_ID) => {
   const result = Bun.spawnSync(["bash", script, appId], {
@@ -159,6 +167,8 @@ exit "\${found}"
     `#!/bin/bash
 set -u
 dir="\${FAKE_XDOTOOL_DIR:?}"
+# Как настоящий: без DISPLAY к X-серверу не подключиться (docker exec его не передаёт).
+[ -n "\${DISPLAY:-}" ] || exit 1
 cmd="$1"
 shift
 if [ "\${cmd}" != "search" ]; then
@@ -194,6 +204,7 @@ exit 0
     `#!/bin/bash
 set -u
 dir="\${FAKE_XWININFO_DIR:?}"
+[ -n "\${DISPLAY:-}" ] || exit 1
 # вызывается как: xwininfo -id <winid>
 winid="$2"
 f="\${dir}/geom-\${winid}"
@@ -304,5 +315,20 @@ describe("cg-session-stage", () => {
 
     expect(result).toEqual({ stdout: "prepare", exitCode: 0 });
     expect(elapsedMs).toBeLessThan(5000);
+  });
+
+  it("own stage without wrapper prints computer", () => {
+    expect(stage("--own")).toEqual({ stdout: "computer", exitCode: 0 });
+  });
+
+  it("own stage: loading while wrapper runs, visible with a big window", () => {
+    addWrapper();
+    expect(stage("--own")).toEqual({ stdout: "loading", exitCode: 0 });
+
+    setChildren(WRAPPER_PID, ["801"]);
+    setClientEnviron(WRAPPER_PID);
+    setWindowsByPid("801", ["999"]);
+    setGeometry("999", 1920, 1080);
+    expect(stage("--own")).toEqual({ stdout: "visible", exitCode: 0 });
   });
 });

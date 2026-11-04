@@ -20,6 +20,7 @@ import { AdminRpcHandlers } from "../src/admin/rpc";
 import { resetSteamLogin } from "../src/admin/users";
 import { BetterAuth } from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 
 const admin: CurrentUserShape = {
   id: "u-admin",
@@ -40,6 +41,7 @@ const fakeAuth = Layer.succeed(BetterAuth, {
 
 const env = Layer.mergeAll(AdminRpcHandlers, RpcMiddlewares).pipe(
   Layer.provide(fakeAuth),
+  Layer.provide(OwnGameCatalog.fromManifests([])),
   Layer.provideMerge(DbTest),
 );
 

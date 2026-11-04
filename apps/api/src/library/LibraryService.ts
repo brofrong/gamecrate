@@ -1,8 +1,10 @@
 // Синхронизация библиотеки Steam, обновление тиров ProtonDB и представление для `library.*`.
 import type { Db } from "@cg/db";
 import {
+  isOwnAppId,
   type LibraryEntry,
   type LibraryView,
+  ownGameAssetUrl,
   ProtonTier,
   type SteamUnavailable,
 } from "@cg/rpc";
@@ -11,10 +13,16 @@ import { ProtonDb } from "../steam/ProtonDb";
 import { SteamApi } from "../steam/SteamApi";
 import * as CloudRepo from "./CloudRepo";
 import * as LibraryRepo from "./LibraryRepo";
+import * as OwnGamesRepo from "./OwnGamesRepo";
 
-/** Вертикальная обложка Steam 600×900 (фолбэк на `header.jpg` — на фронте). */
+/**
+ * Вертикальная обложка 600×900: Steam (фолбэк на `header.jpg` — на фронте),
+ * у своей игры — `cover.jpg` из её картинок на сайте.
+ */
 export const coverUrl = (appId: number) =>
-  `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/library_600x900_2x.jpg`;
+  isOwnAppId(appId)
+    ? ownGameAssetUrl(appId, "cover.jpg")
+    : `https://cdn.cloudflare.steamstatic.com/steam/apps/${appId}/library_600x900_2x.jpg`;
 
 /** Тир ProtonDB перепроверяется не чаще раза в сутки. */
 const tierMaxAgeMillis = 24 * 60 * 60 * 1000;
@@ -118,13 +126,42 @@ export const needsInitialSync = (
     ),
   );
 
-/** Библиотека пользователя из БД. */
+/**
+ * Свои игры, открытые игрокам, — записи библиотеки любого пользователя (со
+ * Steam и без, при закрытом профиле тоже): время в игре — по отрезкам наших
+ * сессий, тир ProtonDB не проверяется (`pending`), облако — `Ready`.
+ */
+const ownEntries = (userId: string) =>
+  Effect.gen(function* () {
+    const rows = yield* OwnGamesRepo.publishedOwnGames();
+    const appIds = rows.map((row) => row.appId);
+    const playtime = yield* OwnGamesRepo.ownPlaytimeMinutes(userId, appIds);
+    const cloud = yield* CloudRepo.cloudStatuses(appIds);
+    const lastPlayed = yield* CloudRepo.lastPlayedAt(userId, appIds);
+    return rows.map((row): LibraryEntry => ({
+      appId: row.appId,
+      name: row.name,
+      playtimeMinutes: playtime.get(row.appId) ?? 0,
+      protonTier: "pending",
+      coverUrl: coverUrl(row.appId),
+      cloud: CloudRepo.cloudStatusOf(cloud, row.appId),
+      lastPlayedAt: lastPlayed.get(row.appId) ?? null,
+    }));
+  });
+
+/**
+ * Библиотека пользователя из БД: Steam-игры, после них — открытые свои игры
+ * (`ownEntries`). Закрытый профиль Steam (`Private`) прячет только
+ * Steam-игры, свои остаются в `entries`.
+ */
 export const libraryView = (
   userId: string,
 ): Effect.Effect<LibraryView, never, Db> =>
   Effect.gen(function* () {
     const state = yield* LibraryRepo.libraryState(userId);
-    if (state?.libraryPrivate) return { _tag: "Private" } as const;
+    const own = yield* ownEntries(userId);
+    if (state?.libraryPrivate)
+      return { _tag: "Private", entries: own } as const;
     const rows = yield* LibraryRepo.listEntries(userId);
     const appIds = rows.map((row) => row.appId);
     const cloud = yield* CloudRepo.cloudStatuses(appIds);
@@ -141,7 +178,7 @@ export const libraryView = (
     }));
     return {
       _tag: "Ready",
-      entries,
+      entries: [...entries, ...own],
       syncedAt: state?.librarySyncedAt?.toISOString() ?? null,
       steamProfile,
     } as const;

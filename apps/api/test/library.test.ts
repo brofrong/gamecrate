@@ -20,6 +20,7 @@ import {
   syncLibrary,
   syncOnLogin,
 } from "../src/library/LibraryService";
+import { OwnGameCatalog } from "../src/library/OwnGameCatalog";
 import { LibraryRpcHandlers } from "../src/library/rpc";
 import { ProtonDb } from "../src/steam/ProtonDb";
 import { type OwnedGames, SteamApi } from "../src/steam/SteamApi";
@@ -96,7 +97,9 @@ const store = Layer.succeed(
 const env = (steam: Layer.Layer<SteamApi>, proton: Layer.Layer<ProtonDb>) =>
   Layer.mergeAll(LibraryRpcHandlers, RpcMiddlewares).pipe(
     Layer.provide(fakeAuth(steamUser)),
-    Layer.provideMerge(Layer.mergeAll(steam, proton, store)),
+    Layer.provideMerge(
+      Layer.mergeAll(steam, proton, store, OwnGameCatalog.fromManifests([])),
+    ),
     Layer.provideMerge(DbTest),
   );
 
@@ -165,7 +168,7 @@ describe("library", () => {
       makeProton().layer,
     );
     expect(result.synced).toBe("Private");
-    expect(result.view).toEqual({ _tag: "Private" });
+    expect(result.view).toEqual({ _tag: "Private", entries: [] });
     expect(result.row?.libraryPrivate).toBe(true);
     expect(result.row?.librarySyncedAt).toBeNull();
   });
