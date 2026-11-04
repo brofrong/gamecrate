@@ -1,6 +1,7 @@
 // Шторка фильтров на телефоне `/app` (см. прототип `app-home-mobile.html`):
 // затемнение + панель снизу с сегментами «Статус»/«Сортировка», чипами
-// Proton/«Ещё» и кнопкой «Показать N игр». Открывается кнопкой «Фильтры» из `FilterBar`. Шторка владеет своим черновиком —
+// Proton/«Ещё» (там же «Бесплатно» — `status: free`, в сегментах статуса ему тесно)
+// и кнопкой «Показать N игр». Открывается кнопкой «Фильтры» из `FilterBar`. Шторка владеет своим черновиком —
 // он инициализируется из `filters` при каждом открытии (компонент размонтирован,
 // когда `open === false`, так что черновик просто создаётся заново из пропсов)
 // и применяется только нажатием «Показать N игр» (`onApply` + `onClose`).
@@ -172,6 +173,22 @@ function FilterSheetContent({
           Ещё
         </h3>
         <div className="mb-4 flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            aria-pressed={draft.status === "free"}
+            onClick={() =>
+              setDraft((prev) => ({
+                ...prev,
+                status: prev.status === "free" ? "all" : "free",
+              }))
+            }
+            className={cn(
+              chipClassName,
+              draft.status === "free" && chipActiveClassName,
+            )}
+          >
+            Бесплатно
+          </button>
           {EXTRA_CHIPS.map((chip) => (
             <button
               key={chip.value}

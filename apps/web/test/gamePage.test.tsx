@@ -182,18 +182,47 @@ const view = (patch: Partial<GameView> = {}): GameView => ({
 
 function renderGame(
   result: AsyncResult.AsyncResult<GameView, { readonly _tag: string }>,
+  appId = 1086940,
 ) {
   render(
     <RegistryProvider
       initialValues={[
-        [gameAtom(1086940), result],
+        [gameAtom(appId), result],
         [activeSessionAtom, AsyncResult.success(null)],
       ]}
     >
-      <RouterProvider router={testRouter(<GamePage appId={1086940} />)} />
+      <RouterProvider router={testRouter(<GamePage appId={appId} />)} />
     </RegistryProvider>,
   );
 }
+
+/** Своя игра (SoH): без Steam-данных, с описанием, управлением и источником. */
+const ownView = (): GameView =>
+  view({
+    appId: 1900000001,
+    name: "The Legend of Zelda: Ocarina of Time",
+    coverUrl: "/own-games/1900000001/cover.jpg",
+    protonTier: "pending",
+    sizeBytes: null,
+    details: null,
+    achievements: { _tag: "None" },
+    own: {
+      description:
+        "Приключение Линка в Хайруле.\n\nЭто <b>фанатский</b> ПК-порт.",
+      controls: [
+        { action: "Движение", keyboard: "W A S D", gamepad: "Левый стик" },
+        { action: "Меч (B)", keyboard: "C", gamepad: "B" },
+      ],
+      source: {
+        label: "Ship of Harkinian (HarbourMasters)",
+        url: "https://www.shipofharkinian.com",
+      },
+      screenshots: [
+        "/own-games/1900000001/shot-1.jpg",
+        "/own-games/1900000001/shot-2.jpg",
+      ],
+    },
+  });
 
 describe("GamePage", () => {
   it("renders hero with name, cloud chip, proton, hours, last session and «Играть»", async () => {
@@ -354,6 +383,58 @@ describe("GamePage", () => {
       await screen.findByText("Ты ещё не запускал эту игру в облаке"),
     ).toBeTruthy();
     expect(screen.queryByText(/последний запуск/)).toBeNull();
+  });
+});
+
+describe("GamePage: own game", () => {
+  it("own game page shows controls, fan-port note and no ProtonDB/achievements", async () => {
+    // Достижения «Private» показали бы панель у Steam-игры — у своей её нет вовсе.
+    renderGame(
+      AsyncResult.success({ ...ownView(), achievements: { _tag: "Private" } }),
+      1900000001,
+    );
+    await screen.findByRole("heading", {
+      name: "The Legend of Zelda: Ocarina of Time",
+    });
+    // Описание — абзацами, как текст (без HTML).
+    expect(screen.getByText("Приключение Линка в Хайруле.").tagName).toBe("P");
+    expect(screen.getByText("Это <b>фанатский</b> ПК-порт.").tagName).toBe("P");
+    // «Управление»: действие, клавиатура, геймпад.
+    const controls = screen.getByRole("table", { name: "Управление" });
+    expect(controls.textContent).toContain("Действие");
+    expect(controls.textContent).toContain("Клавиатура");
+    expect(controls.textContent).toContain("Геймпад");
+    const row = screen.getByRole("row", { name: /Движение/ });
+    expect(row.textContent).toContain("W A S D");
+    expect(row.textContent).toContain("Левый стик");
+    // «Фанатский ПК-порт» со ссылкой на проект.
+    expect(screen.getByText("Фанатский ПК-порт")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Ship of Harkinian (HarbourMasters) ↗" })
+        .getAttribute("href"),
+    ).toBe("https://www.shipofharkinian.com");
+    // Скриншоты — наши, клик открывает лайтбокс.
+    fireEvent.click(screen.getByRole("button", { name: "Скриншот 2" }));
+    expect(
+      screen
+        .getByRole("dialog", { name: "Скриншот 2 из 2" })
+        .querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("/own-games/1900000001/shot-2.jpg");
+    // Ни Steam, ни ProtonDB, ни достижений.
+    expect(screen.queryByText(/ProtonDB/)).toBeNull();
+    expect(screen.queryByText("Совместимость")).toBeNull();
+    expect(screen.queryByText("Достижения")).toBeNull();
+    expect(screen.queryByText("Открыть в Steam ↗")).toBeNull();
+    expect(screen.queryByText("Steam не дал описание этой игры")).toBeNull();
+    // Кнопка «Играть» и сессии — как у Steam-игры.
+    expect(
+      screen.getAllByRole("button", {
+        name: "Играть: The Legend of Zelda: Ocarina of Time",
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("Мои сессии")).toBeTruthy();
   });
 });
 

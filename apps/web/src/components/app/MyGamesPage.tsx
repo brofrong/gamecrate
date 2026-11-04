@@ -4,7 +4,8 @@
 // «Запускал недавно» (те же плитки, подпись — дата · длительность), секции сетки по
 // статусу облака по 24 плитки с «Показать ещё» (сброс раскрытия — `key` секции от
 // фильтров). Фильтры живут в адресе маршрута (`?status=...`), адрес с фильтром
-// переживает перезагрузку страницы.
+// переживает перезагрузку страницы. Свои игры видны всем: без Steam и при закрытом
+// профиле сетка с ними стоит над «Подключите Steam»/заметкой о профиле.
 import type { LibraryView } from "@cg/rpc";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
@@ -179,10 +180,13 @@ export function MyGamesPage() {
     AsyncResult.isFailure(active) ||
     stalled;
 
-  const total =
+  // У `Private` в `entries` только свои игры — они в сетке и в счётчиках поиска тоже.
+  const entries = AsyncResult.isSuccess(library) ? library.value.entries : [];
+  const steamProfile =
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
-      ? library.value.entries.length
-      : 0;
+      ? library.value.steamProfile
+      : false;
+  const total = entries.length;
   const readyCount =
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
       ? library.value.entries.filter((entry) => entry.cloud._tag === "Ready")
@@ -196,6 +200,54 @@ export function MyGamesPage() {
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
       ? library.value
       : undefined;
+
+  // «Запускал недавно» и секции сетки: и для обычной библиотеки, и над
+  // «Подключите Steam»/заметкой о закрытом профиле (там — только свои игры).
+  const grid = (
+    <>
+      {filters.q.trim().length === 0 &&
+        AsyncResult.isSuccess(recent) &&
+        recent.value.length > 0 && (
+          <GameSection
+            title="Запускал недавно"
+            count={recent.value.length}
+            scroll
+            action={
+              <Link
+                to="/app/time"
+                className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
+              >
+                все сессии →
+              </Link>
+            }
+          >
+            {recent.value.map((entry) => (
+              <GameTile
+                key={entry.appId}
+                game={entry}
+                caption={recentCaption(entry, new Date())}
+              />
+            ))}
+          </GameSection>
+        )}
+      {applyFilters(entries, filters, { steamProfile }).map((group) => (
+        <GameSection
+          key={`${group.section}:${filtersKey}`}
+          title={SECTION_TITLES[group.section]}
+          count={group.entries.length}
+          limit={SECTION_PAGE}
+        >
+          {group.entries.map((entry) => (
+            <GameTile
+              key={entry.appId}
+              game={entry}
+              dimmed={group.section === "noprofile"}
+            />
+          ))}
+        </GameSection>
+      ))}
+    </>
+  );
 
   return (
     <>
@@ -224,13 +276,7 @@ export function MyGamesPage() {
         filters={filters}
         onApply={onFiltersChange}
         onClose={() => setSheetOpen(false)}
-        countFor={(f) =>
-          AsyncResult.isSuccess(library) && library.value._tag === "Ready"
-            ? countMatching(library.value.entries, f, {
-                steamProfile: library.value.steamProfile,
-              })
-            : 0
-        }
+        countFor={(f) => countMatching(entries, f, { steamProfile })}
       />
 
       <SummaryStrip
@@ -252,71 +298,33 @@ export function MyGamesPage() {
           }}
         />
       ) : user.steamId === null ? (
-        <ConnectSteam
-          onDone={() => {
-            reloadMe();
-            void onRefresh();
-          }}
-        />
+        <>
+          {entries.length > 0 && grid}
+          <ConnectSteam
+            onDone={() => {
+              reloadMe();
+              void onRefresh();
+            }}
+          />
+        </>
       ) : !AsyncResult.isSuccess(library) ? (
         <LibrarySkeleton />
       ) : library.value._tag === "Private" ? (
-        <PrivateProfile
-          onRefresh={() => void onRefresh()}
-          refreshing={refreshing}
-        />
-      ) : library.value.entries.length === 0 ? (
+        <>
+          {entries.length > 0 && grid}
+          <PrivateProfile
+            onRefresh={() => void onRefresh()}
+            refreshing={refreshing}
+          />
+        </>
+      ) : entries.length === 0 ? (
         <EmptyNotice
           view={library.value}
           onRefresh={() => void onRefresh()}
           refreshing={refreshing}
         />
       ) : (
-        <>
-          {filters.q.trim().length === 0 &&
-            AsyncResult.isSuccess(recent) &&
-            recent.value.length > 0 && (
-              <GameSection
-                title="Запускал недавно"
-                count={recent.value.length}
-                scroll
-                action={
-                  <Link
-                    to="/app/time"
-                    className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
-                  >
-                    все сессии →
-                  </Link>
-                }
-              >
-                {recent.value.map((entry) => (
-                  <GameTile
-                    key={entry.appId}
-                    game={entry}
-                    caption={recentCaption(entry, new Date())}
-                  />
-                ))}
-              </GameSection>
-            )}
-          {applyFilters(library.value.entries, filters, {
-            steamProfile: library.value.steamProfile,
-          }).map((group) => (
-            <GameSection
-              key={`${group.section}:${filtersKey}`}
-              title={SECTION_TITLES[group.section]}
-              count={group.entries.length}
-              limit={SECTION_PAGE}
-            >
-              {group.entries.map((entry) => (
-                <GameTile
-                  key={entry.appId}
-                  game={entry}
-                  dimmed={group.section === "noprofile"}
-                />
-              ))}
-            </GameSection>
-          ))}
-        </>
+        grid
       )}
 
       <AsideSlot>

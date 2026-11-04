@@ -1,7 +1,7 @@
 // Экран загрузки до появления игры (спека 2026-10-27-loading-screen §2, макет B): размытый
 // арт игры на фоне, слева обложка, справа название, этапы списком и общая полоска.
 // Лежит поверх трансляции в `Player` — та подключается под ним и не пересоздаётся.
-import type { SessionView } from "@cg/rpc";
+import { isOwnAppId, type SessionView } from "@cg/rpc";
 import { ArrowLeft, Check, Monitor } from "lucide-react";
 import { useState } from "react";
 import {
@@ -116,8 +116,10 @@ export function LoadingScreen({
   const total = loadingTotal(view, nowServerMs);
   const progress = loadingProgress(view, msInStage, nowServerMs);
   // На «Входим в аккаунт» — подсказка про QR (без `timing` — как раньше, весь
-  // `starting`); на остальных — если этап идёт дольше 2× нормы.
+  // `starting`; у своей игры входа в Steam нет — и подсказки); на остальных — если
+  // этап идёт дольше 2× нормы.
   const qrHint =
+    !isOwnAppId(view.appId) &&
     view.state === "starting" &&
     (view.stage === "login" || view.timing === null);
   const slowHint = view.stage !== "login" && stageOverdue(view, nowServerMs);

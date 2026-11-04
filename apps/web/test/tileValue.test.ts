@@ -1,6 +1,8 @@
 // Значение справа на плитке игры (спека 2026-10-27 §3.3): одно короткое слово/число
 // и его тон; процент — только для полосы прогресса установки.
 import { describe, expect, it } from "bun:test";
+import { headerUrl } from "../src/components/app/GameCover";
+import { coverUrl, heroUrl } from "../src/lib/gameHero";
 import { tileValue } from "../src/lib/tileValue";
 
 const ready = { _tag: "Ready" } as const;
@@ -46,4 +48,30 @@ describe("tileValue", () => {
       tone: "muted",
       percent: null,
     }));
+});
+
+describe("own games", () => {
+  it("own tile says бесплатно, not нужен вход в Steam", () => {
+    const own = { appId: 1900000001, cloud: ready, playtimeMinutes: 900 };
+    const free = { text: "бесплатно", tone: "ok", percent: null } as const;
+    expect(tileValue(own, false)).toEqual(free);
+    expect(tileValue(own, true)).toEqual(free);
+    // Steam-игра с тем же статусом — как раньше.
+    expect(tileValue({ ...own, appId: 620 }, true).text).toBe(
+      "нужен вход в Steam",
+    );
+  });
+
+  it("own game covers come from /own-games", () => {
+    expect(headerUrl(1900000001)).toBe("/own-games/1900000001/header.jpg");
+    expect(heroUrl(1900000001)).toBe("/own-games/1900000001/hero.jpg");
+    expect(coverUrl(1900000001)).toBe("/own-games/1900000001/cover.jpg");
+    // Steam-игры — по-прежнему с CDN Steam.
+    expect(headerUrl(620)).toBe(
+      "https://cdn.cloudflare.steamstatic.com/steam/apps/620/header.jpg",
+    );
+    expect(heroUrl(620)).toBe(
+      "https://cdn.cloudflare.steamstatic.com/steam/apps/620/library_hero.jpg",
+    );
+  });
 });

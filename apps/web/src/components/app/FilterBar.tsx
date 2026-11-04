@@ -3,7 +3,7 @@
 // активных фильтров; на планшете/десктопе она раскрывает панель под собой (сортировка,
 // статус, время в игре, ProtonDB — применяются сразу), на телефоне — зовёт `onOpenSheet`
 // (шторку `FilterSheet`). Вторая строка — три чипа: «Готовы к запуску», «Нужна
-// установка» и «Играть бесплатно» (пока «Скоро»: игр без аккаунта ещё нет).
+// установка» и «Играть бесплатно» (только свои игры, `status=free`).
 // Контролируемый компонент: не знает про URL — адрес хранит родитель (`MyGamesPage`).
 import { Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -27,6 +27,7 @@ const STATUS_OPTIONS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: "ready", label: "готовы" },
   { value: "installing", label: "нужна установка" },
   { value: "noprofile", label: "нужен вход в Steam" },
+  { value: "free", label: "бесплатно" },
 ];
 
 const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
@@ -47,6 +48,7 @@ const STATUS_CHIPS: ReadonlyArray<{
 }> = [
   { value: "ready", label: "Готовы к запуску", dot: "bg-[#3ddc97]" },
   { value: "installing", label: "Нужна установка", dot: "bg-[#ffd166]" },
+  { value: "free", label: "Играть бесплатно", dot: "bg-[#3cc2ff]" },
 ];
 
 /**
@@ -340,16 +342,6 @@ export function FilterBar({
             </button>
           );
         })}
-        <button
-          type="button"
-          aria-pressed={false}
-          disabled
-          title="Скоро"
-          className={chipClassName}
-        >
-          <span aria-hidden className="size-1.5 rounded-sm bg-[#3cc2ff]" />
-          Играть бесплатно
-        </button>
         {activeCount > 0 && (
           <button
             type="button"

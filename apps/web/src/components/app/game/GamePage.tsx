@@ -2,7 +2,8 @@
 // описание и достижения, справа совместимость, факты и сессии. Правой колонки
 // `AppShell` здесь нет — средняя занимает всю ширину. Рисует всё, что знает: без
 // `details` остаются шапка, совместимость, ссылка на Steam и короткая заметка.
-// `GameNotFound` — экран «Этой игры нет в твоей библиотеке».
+// Своя игра (`own`) — `OwnGamePanel` вместо медиа и описания Steam, без
+// достижений и совместимости. `GameNotFound` — экран «Этой игры нет в твоей библиотеке».
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -15,6 +16,7 @@ import { CompatPanel } from "@/components/app/game/CompatPanel";
 import { FactsPanel } from "@/components/app/game/FactsPanel";
 import { GameHero, HeroButton } from "@/components/app/game/GameHero";
 import { MediaStrip } from "@/components/app/game/MediaStrip";
+import { OwnGamePanel } from "@/components/app/game/OwnGamePanel";
 import { SessionsPanel } from "@/components/app/game/SessionsPanel";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Button } from "@/components/ui/button";
@@ -84,23 +86,29 @@ export function GamePage({ appId }: { appId: number }) {
       <GameHero game={game} action={action} now={now} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="flex min-w-0 flex-col gap-6">
-          {game.details !== null && (
+          {game.own !== null ? (
+            <OwnGamePanel own={game.own} />
+          ) : (
             <>
-              <MediaStrip details={game.details} name={game.name} />
-              <AboutPanel details={game.details} />
+              {game.details !== null && (
+                <>
+                  <MediaStrip details={game.details} name={game.name} />
+                  <AboutPanel details={game.details} />
+                </>
+              )}
+              {game.details === null && (
+                <Panel>
+                  <p className="text-sm text-[#8a90a8]">
+                    Steam не дал описание этой игры
+                  </p>
+                </Panel>
+              )}
+              <AchievementsPanel achievements={game.achievements} />
             </>
           )}
-          {game.details === null && (
-            <Panel>
-              <p className="text-sm text-[#8a90a8]">
-                Steam не дал описание этой игры
-              </p>
-            </Panel>
-          )}
-          <AchievementsPanel achievements={game.achievements} />
         </div>
         <div className="flex flex-col gap-6">
-          <CompatPanel game={game} />
+          {game.own === null && <CompatPanel game={game} />}
           <FactsPanel game={game} />
           {game.inLibrary && <SessionsPanel game={game} now={now} />}
         </div>
