@@ -4,7 +4,12 @@
 // ведёт на `/profile` — там живёт QR-подключение (`ConnectSteam` на `/app` — тоже
 // туда же, но сразу в карточке сетки).
 import { describe, expect, it } from "bun:test";
-import type { CurrentUserShape, LibraryView, SessionView } from "@cg/rpc";
+import {
+  type CurrentUserShape,
+  type LibraryView,
+  OWN_APP_ID_MIN,
+  type SessionView,
+} from "@cg/rpc";
 import { render, screen } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import type * as React from "react";
@@ -74,6 +79,26 @@ describe("SummaryStrip", () => {
     );
     const link = await screen.findByText("Steam · 2 игр · 1 готовы");
     expect(link.closest("a")?.getAttribute("href")).toBe("/profile");
+  });
+
+  it("the Steam tile counts Steam games only, not own games", async () => {
+    const withOwn: LibraryView = {
+      ...readyView,
+      entries: [
+        ...(readyView._tag === "Ready" ? readyView.entries : []),
+        {
+          appId: OWN_APP_ID_MIN + 1,
+          name: "Ship of Harkinian",
+          playtimeMinutes: 0,
+          protonTier: "pending",
+          coverUrl: "/own-games/1900000001/cover.jpg",
+          cloud: { _tag: "Ready" },
+          lastPlayedAt: null,
+        },
+      ],
+    };
+    renderStrip(<SummaryStrip user={user} view={withOwn} monthMinutes={0} />);
+    expect(await screen.findByText("Steam · 2 игр · 1 готовы")).toBeTruthy();
   });
 
   it("shows «Подключить Steam» linking to /profile without a linked Steam account, even without a view", async () => {

@@ -2,7 +2,12 @@
 // Рендерим компоненты напрямую с пропсами (без атомов) — композицию в `aside`/`sticky`
 // проверяет `myGamesPage.test.tsx`. `Link` внутри (`TimePanel`) требует `RouterProvider`.
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { CurrentUserShape, SessionView, TimeSummary } from "@cg/rpc";
+import {
+  type CurrentUserShape,
+  OWN_APP_ID_MIN,
+  type SessionView,
+  type TimeSummary,
+} from "@cg/rpc";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { ActiveSessionPanel } from "../src/components/app/ActiveSessionPanel";
@@ -175,6 +180,42 @@ describe("SteamPanel", () => {
       expect(toastSuccess).toHaveBeenCalledWith("Скопировано"),
     );
     expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("counts Steam games only, not own games", () => {
+    const entry = (appId: number, ready: boolean) => ({
+      appId,
+      name: `Game ${appId}`,
+      playtimeMinutes: 0,
+      protonTier: "pending" as const,
+      coverUrl: "https://example.com/c.jpg",
+      cloud: ready ? { _tag: "Ready" as const } : { _tag: "Missing" as const },
+      lastPlayedAt: null,
+    });
+    render(
+      <SteamPanel
+        user={user}
+        view={{
+          _tag: "Ready",
+          // 3 игры Steam (готова одна) и 2 свои (обе «готовы»).
+          entries: [
+            entry(1, true),
+            entry(2, false),
+            entry(3, false),
+            entry(OWN_APP_ID_MIN + 1, true),
+            entry(OWN_APP_ID_MIN + 2, true),
+          ],
+          syncedAt: "2026-10-23T09:55:00.000Z",
+          steamProfile: true,
+        }}
+        onRefresh={() => {}}
+        refreshing={false}
+        onConnected={() => {}}
+      />,
+    );
+    expect(screen.getByText("3")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.queryByText("5")).toBeNull();
   });
 
   it("shows an error toast and no success toast when the copy fails", async () => {
