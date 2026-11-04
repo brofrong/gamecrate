@@ -404,7 +404,9 @@ for pass in 1 2 3 4 5 6; do
     set -euo pipefail
     mkdir -p /out/lib
     for so in "$@"; do
-      p="$(ldconfig -p | awk -v n="${so}" "\$1 == n && /x86-64/ { print \$NF; exit }")"
+      # Первое совпадение — флагом, без exit: awk, вышедший раньше, оборвал бы пайп, и ldconfig
+      # с длинным выводом упал бы от SIGPIPE (141) — при pipefail молча обрывая скрипт.
+      p="$(ldconfig -p | awk -v n="${so}" "!found && \$1 == n && /x86-64/ { found = 1; print \$NF }")"
       if [ -z "${p}" ]; then
         echo "ОШИБКА: ${so} нет и в сборщике" >&2
         exit 1
