@@ -172,7 +172,7 @@ describe("session menu", () => {
   it("menu header shows the game and its play time", async () => {
     renderPlayer({
       view: view({ state: "disconnected", playedSeconds: 4325 }),
-      streamSettings: control({ menuSeen: true }),
+      streamSettings: control({ menuTourSeen: true }),
     });
     await clickMenu();
     expect(screen.getByText("Portal 2")).toBeTruthy();
@@ -184,7 +184,7 @@ describe("session menu", () => {
     try {
       const shown = renderPlayer({
         view: view({ playedSeconds: 725 }),
-        streamSettings: control({ menuSeen: true }),
+        streamSettings: control({ menuTourSeen: true }),
       });
       await clickMenu();
       const clock = () => screen.getByTitle("Игровое время").textContent;
@@ -194,7 +194,7 @@ describe("session menu", () => {
       // Пришло значение с сервера — отсчёт от него, а не от прежнего.
       shown.rerenderWith({
         view: view({ playedSeconds: 730 }),
-        streamSettings: control({ menuSeen: true }),
+        streamSettings: control({ menuTourSeen: true }),
       });
       expect(clock()).toBe("12:10");
       act(() => jest.advanceTimersByTime(1_000));
@@ -206,22 +206,24 @@ describe("session menu", () => {
 
   it("hint waits for loaded settings and goes away on first open", async () => {
     const update = mock<Update>(() => {});
+    const seen = { fullscreenTutorialSeen: true };
     const player = renderPlayer({
-      streamSettings: control({}, false, update),
+      streamSettings: control(seen, false, update),
     });
     expect(hintShown()).toBe(false);
 
-    player.rerenderWith({ streamSettings: control({}, true, update) });
+    player.rerenderWith({ streamSettings: control(seen, true, update) });
     expect(hintShown()).toBe(true);
 
     // Плашку нажимают вместо кнопки — она тоже открывает меню.
     fireEvent.click(screen.getByRole("button", { name: /настройки игры/ }));
     await act(async () => {});
     expect(menuShown()).toBe(true);
-    expect(update).toHaveBeenCalledWith({ menuSeen: true });
+    expect(update).toHaveBeenCalledWith({ menuTourSeen: true });
+    expect(hintShown()).toBe(false);
 
     player.rerenderWith({
-      streamSettings: control({ menuSeen: true }, true, update),
+      streamSettings: control({ ...seen, menuTourSeen: true }, true, update),
     });
     expect(hintShown()).toBe(false);
 
@@ -230,7 +232,7 @@ describe("session menu", () => {
     expect(update).toHaveBeenCalledTimes(1);
   });
 
-  it("opening the menu before load does not write menuSeen", async () => {
+  it("opening the menu before load does not write menuTourSeen", async () => {
     const update = mock<Update>(() => {});
     renderPlayer({ streamSettings: control({}, false, update) });
 
@@ -327,7 +329,7 @@ describe("session menu", () => {
   });
 
   it("menu tells how to capture the mouse", async () => {
-    renderPlayer({ streamSettings: control({ menuSeen: true }) });
+    renderPlayer({ streamSettings: control({ menuTourSeen: true }) });
     await clickMenu();
     const hint = screen.getByText(/захватит мышь/);
     expect(hint.textContent).toContain("Ctrl+Shift+клик");
@@ -524,7 +526,7 @@ describe("session menu", () => {
     const long = "The Legend of Zelda: Ocarina of Time — Master Quest Edition";
     renderPlayer({
       view: view({ gameName: long }),
-      streamSettings: control({ menuSeen: true }),
+      streamSettings: control({ menuTourSeen: true }),
     });
     await clickMenu();
     const name = screen.getByText(long);
@@ -539,7 +541,7 @@ describe("session menu", () => {
   it("keyboard switch toggles the local layout", async () => {
     const update = mock<Update>(() => {});
     renderPlayer({
-      streamSettings: control({ menuSeen: true }, true, update),
+      streamSettings: control({ menuTourSeen: true }, true, update),
     });
     await clickMenu();
     const layout = screen.getByRole("switch", {
@@ -586,12 +588,14 @@ const tutorialHint = () =>
 const stepTwo = () => screen.queryByText(/Чтобы выйти/);
 const escBar = () => screen.queryByText(/чтобы выйти из полного экрана/);
 
-/** Документ iframe стрима со своим окном `focus`, чтобы `enterFullscreen` не падал. */
-const frameDocument = (frame: HTMLIFrameElement) => {
-  const doc = document.implementation.createHTMLDocument("stream");
-  Object.defineProperty(frame, "contentDocument", { value: doc });
-  Object.defineProperty(frame, "contentWindow", { value: { focus: noop } });
-  return doc;
+/**
+ * Окно iframe стрима: клавиши Esc приходят на него (фаза захвата `window` — первая на пути
+ * события, там же их ловит Selkies). `focus` — чтобы `enterFullscreen` не падал.
+ */
+const frameWindow = (frame: HTMLIFrameElement) => {
+  const win = Object.assign(new EventTarget(), { focus: noop });
+  Object.defineProperty(frame, "contentWindow", { value: win });
+  return win;
 };
 
 const escape = (
@@ -777,16 +781,16 @@ describe("полоска «Зажми Esc» в полном экране", () =>
       const player = renderPlayer({
         streamSettings: control({ fullscreenTutorialSeen: true }),
       });
-      const doc = frameDocument(player.frame());
+      const win = frameWindow(player.frame());
       setFullscreen(player.main());
       expect(escBar()).toBeNull();
 
-      escape(doc.body, "keydown");
+      escape(win, "keydown");
       expect(escBar()).toBeTruthy();
       const progress = screen.getByTestId("esc-progress");
       expect(progress.style.animation).toContain("gc-fill 1500ms");
 
-      escape(doc.body, "keyup");
+      escape(win, "keyup");
       expect(screen.getByTestId("esc-progress").style.animation).toBe("");
       act(() => jest.advanceTimersByTime(2_900));
       expect(escBar()).toBeTruthy();
@@ -797,10 +801,31 @@ describe("полоска «Зажми Esc» в полном экране", () =>
     }
   });
 
+  it("Selkies гасит Esc на окне iframe — полоска всё равно появляется", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    const win = frameWindow(player.frame());
+    // Как `selkies-core.js`: слушатель окна в фазе захвата, подписан раньше нашего.
+    const selkies = (event: Event) => event.stopPropagation();
+    win.addEventListener("keydown", selkies, true);
+    win.addEventListener("keyup", selkies, true);
+    fireEvent.load(player.frame());
+    setFullscreen(player.main());
+
+    escape(win, "keydown");
+    expect(screen.getByTestId("esc-progress").style.animation).toContain(
+      "gc-fill",
+    );
+    escape(win, "keyup");
+    expect(screen.getByTestId("esc-progress").style.animation).toBe("");
+  });
+
   it("Esc в окне страницы тоже показывает полоску и заменяет шаг 2", () => {
     setKeyboard(keyboardStub());
     const player = renderPlayer({ streamSettings: control() });
-    frameDocument(player.frame());
+    frameWindow(player.frame());
     setFullscreen(player.main());
     expect(stepTwo()).toBeTruthy();
     escape(document.body, "keydown");
@@ -813,14 +838,14 @@ describe("полоска «Зажми Esc» в полном экране", () =>
     const player = renderPlayer({
       streamSettings: control({ fullscreenTutorialSeen: true }),
     });
-    const doc = frameDocument(player.frame());
+    const win = frameWindow(player.frame());
     setFullscreen(player.main());
-    escape(doc.body, "keydown");
+    escape(win, "keydown");
     const first = screen.getByTestId("esc-progress");
-    escape(doc.body, "keydown", true);
+    escape(win, "keydown", true);
     expect(screen.getByTestId("esc-progress")).toBe(first);
-    escape(doc.body, "keyup");
-    escape(doc.body, "keydown");
+    escape(win, "keyup");
+    escape(win, "keydown");
     expect(screen.getByTestId("esc-progress")).not.toBe(first);
   });
 
@@ -829,13 +854,13 @@ describe("полоска «Зажми Esc» в полном экране", () =>
     const player = renderPlayer({
       streamSettings: control({ fullscreenTutorialSeen: true }),
     });
-    const doc = frameDocument(player.frame());
-    escape(doc.body, "keydown");
+    const win = frameWindow(player.frame());
+    escape(win, "keydown");
     expect(escBar()).toBeNull();
 
     setKeyboard(undefined);
     setFullscreen(player.main());
-    escape(doc.body, "keydown");
+    escape(win, "keydown");
     expect(escBar()).toBeNull();
   });
 
@@ -844,11 +869,139 @@ describe("полоска «Зажми Esc» в полном экране", () =>
     const player = renderPlayer({
       streamSettings: control({ fullscreenTutorialSeen: true }),
     });
-    const doc = frameDocument(player.frame());
+    const win = frameWindow(player.frame());
     setFullscreen(player.main());
-    escape(doc.body, "keydown");
+    escape(win, "keydown");
     expect(escBar()).toBeTruthy();
     setFullscreen(null);
     expect(escBar()).toBeNull();
+  });
+});
+
+const tourCallout = () => screen.queryByTestId("menu-tour");
+/** Раздел меню по заголовку — чтобы проверить подсветку и приглушение. */
+const section = (title: string) =>
+  screen.getByRole("heading", { name: title }).closest("section");
+
+describe("шаг 3 обучения: подсказка у меню и обход его разделов", () => {
+  it("подсказка у меню — только после входа и выхода из полного экрана", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({ streamSettings: control() });
+    expect(tutorialHint()).toBeTruthy();
+    expect(hintShown()).toBe(false);
+
+    setFullscreen(player.main());
+    expect(hintShown()).toBe(false);
+    setFullscreen(null);
+    expect(hintShown()).toBe(true);
+  });
+
+  it("× на шаге 1 — подсказка у меню сразу", () => {
+    renderPlayer({ streamSettings: control() });
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть подсказку" }));
+    expect(hintShown()).toBe(true);
+  });
+
+  it("обучение полному экрану пройдено раньше — подсказка сразу; обход пройден — её нет", () => {
+    const shown = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    expect(hintShown()).toBe(true);
+    shown.unmount();
+
+    renderPlayer({
+      streamSettings: control({
+        fullscreenTutorialSeen: true,
+        menuTourSeen: true,
+      }),
+    });
+    expect(hintShown()).toBe(false);
+  });
+
+  it("обход: четыре раздела по очереди, остальные приглушены, «Понятно» — конец", async () => {
+    renderPlayer({ streamSettings: control({ fullscreenTutorialSeen: true }) });
+    await clickMenu();
+
+    const steps: Array<[string, RegExp]> = [
+      ["Качество", /подстраивается под сеть/],
+      ["Клавиатура", /Пишешь в чат по-русски/],
+      ["Мышь", /Камера не крутится/],
+    ];
+    for (const [index, [title, text]] of steps.entries()) {
+      const callout = tourCallout() as HTMLElement;
+      expect(callout.textContent).toMatch(text);
+      expect(callout.textContent).toContain(`${index + 1} из 4`);
+      expect(section(title)?.contains(callout)).toBe(true);
+      expect(section(title)?.classList.contains("opacity-40")).toBe(false);
+      expect(section("Отладка")?.classList.contains("opacity-40")).toBe(true);
+      const next = screen.getByRole("button", { name: "Дальше" });
+      expect(document.activeElement).toBe(next);
+      fireEvent.click(next);
+    }
+
+    const last = tourCallout() as HTMLElement;
+    expect(last.textContent).toContain("сохранения останутся");
+    expect(last.textContent).toContain("4 из 4");
+    const endGame = screen.getByRole("button", { name: "Закончить игру" });
+    expect(endGame.parentElement?.contains(last)).toBe(true);
+    expect(screen.queryByRole("button", { name: "Пропустить" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Понятно" }));
+    expect(tourCallout()).toBeNull();
+    expect(section("Отладка")?.classList.contains("opacity-40")).toBe(false);
+    expect(menuShown()).toBe(true);
+  });
+
+  it("«Пропустить» заканчивает обход; закрыли меню посреди — больше не показывается", async () => {
+    const shown = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    await clickMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Пропустить" }));
+    expect(tourCallout()).toBeNull();
+    shown.unmount();
+
+    renderPlayer({ streamSettings: control({ fullscreenTutorialSeen: true }) });
+    await clickMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Дальше" }));
+    await clickMenu(); // закрыть посреди
+    // Фокус в стрим Radix возвращает таймером после закрытия — открываем, когда он вернулся.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+    await clickMenu();
+    expect(menuShown()).toBe(true);
+    expect(tourCallout()).toBeNull();
+  });
+
+  it("пройденный обход при открытии меню не показывается", async () => {
+    renderPlayer({
+      streamSettings: control({
+        fullscreenTutorialSeen: true,
+        menuTourSeen: true,
+      }),
+    });
+    await clickMenu();
+    expect(menuShown()).toBe(true);
+    expect(tourCallout()).toBeNull();
+  });
+
+  it("после перерыва — подсказка и обход снова, признаки не перезаписываются", async () => {
+    const update = mock<Update>(() => {});
+    const ago30 = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString();
+    renderPlayer({
+      view: view({ previousPlayedAt: ago30 }),
+      streamSettings: control(
+        { fullscreenTutorialSeen: true, menuTourSeen: true },
+        true,
+        update,
+      ),
+    });
+    expect(hintShown()).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть подсказку" }));
+    expect(hintShown()).toBe(true);
+
+    await clickMenu();
+    expect(tourCallout()).toBeTruthy();
+    expect(hintShown()).toBe(false);
+    expect(update).not.toHaveBeenCalled();
   });
 });

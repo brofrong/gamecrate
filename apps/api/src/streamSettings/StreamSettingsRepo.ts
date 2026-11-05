@@ -40,7 +40,7 @@ export const saveStreamSettings = (
       bitrateMbps: value.bitrateMbps,
       resolution: value.resolution,
       debug: value.debug,
-      menuSeen: value.menuSeen,
+      menuTourSeen: value.menuTourSeen,
       localLayout: value.localLayout,
       fullscreenTutorialSeen: value.fullscreenTutorialSeen,
     };

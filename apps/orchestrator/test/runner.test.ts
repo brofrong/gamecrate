@@ -562,7 +562,7 @@ describe("scheduler", () => {
             bitrateMbps: 10,
             resolution: "720p",
             debug: "off",
-            menuSeen: true,
+            menuTourSeen: true,
           },
         });
         yield* insertSession({
@@ -587,7 +587,7 @@ describe("scheduler", () => {
               bitrateMbps: 20,
               resolution: "1440p",
               debug: "off",
-              menuSeen: true,
+              menuTourSeen: true,
             },
           })
           .where(eq(userStreamSettings.userId, "u1"));

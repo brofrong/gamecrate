@@ -1,6 +1,8 @@
 // Содержимое меню сессии (спека §2.3): шапка с игрой и игровым временем, «Качество» (Авто / битрейт / разрешение), «Отладка»,
 // «Клавиатура» (печатать на своей раскладке), подсказка про захват мыши (§2.5) и «Закончить игру». Правки применяются сразу через `onChange`; ползунок — по отпусканию;
-// разрешение только сохраняется — применится со следующего запуска (§4.1).
+// разрешение только сохраняется — применится со следующего запуска (§4.1). Обход меню (правка
+// владельца 2026-11-05): по разделу за шаг — подсвечен, остальные приглушены, под ним короткая фраза,
+// «Пропустить» и «Дальше»; шаг ведёт `SessionControls`.
 import {
   type DebugMode,
   maxBitrateMbps,
@@ -15,6 +17,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatClock } from "@/lib/formatTime";
+import { cn } from "@/lib/utils";
 
 const resolutions: ReadonlyArray<StreamResolution> = ["720p", "1080p", "1440p"];
 
@@ -23,6 +26,71 @@ const debugModes: ReadonlyArray<{ value: DebugMode; label: string }> = [
   { value: "short", label: "Коротко" },
   { value: "detailed", label: "Подробно" },
 ];
+
+type TourSection = "quality" | "keyboard" | "mouse" | "end";
+
+/** Шаги обхода меню: какой раздел подсвечен и что про него сказать. «Отладку» не объясняем. */
+export const menuTour: ReadonlyArray<{ section: TourSection; text: string }> = [
+  {
+    section: "quality",
+    text: "«Авто» подстраивается под сеть. Выключи, чтобы самому задать битрейт и разрешение.",
+  },
+  {
+    section: "keyboard",
+    text: "Пишешь в чат по-русски — включи. Для игры лучше выключить.",
+  },
+  {
+    section: "mouse",
+    text: "Камера не крутится — кликни по игре в полном экране или Ctrl+Shift+клик в окне.",
+  },
+  { section: "end", text: "Игра закроется, сохранения останутся." },
+];
+
+/** Плашка шага обхода под подсвеченным разделом. «Дальше» берёт фокус — без мыши тоже пройти. */
+function TourCallout({
+  step,
+  onStep,
+}: {
+  step: number;
+  onStep: (next: number | null) => void;
+}) {
+  const last = step === menuTour.length - 1;
+  return (
+    <div
+      data-testid="menu-tour"
+      aria-live="polite"
+      className="grid gap-2 rounded-md border border-brand-cyan/40 bg-brand-cyan/10 p-2.5 text-xs text-brand-text"
+    >
+      <p>{menuTour[step]?.text}</p>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground tabular-nums">
+          {step + 1} из {menuTour.length}
+        </span>
+        <div className="flex items-center gap-1">
+          {!last && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2"
+              onClick={() => onStep(null)}
+            >
+              Пропустить
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="h-7 px-3"
+            // biome-ignore lint/a11y/noAutofocus: шаг сменился — фокус на следующей кнопке обхода.
+            autoFocus
+            onClick={() => onStep(last ? null : step + 1)}
+          >
+            {last ? "Понятно" : "Дальше"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /** Значение `ToggleGroup` как один из `options`; пустой выбор (снятие нажатого) — `undefined`. */
 const pick = <T extends string>(
@@ -72,6 +140,8 @@ export function SessionMenu({
   settings,
   onChange,
   onEndGame,
+  tourStep = null,
+  onTourStep = () => {},
 }: {
   gameName: string;
   played: PlayedClock;
@@ -79,12 +149,37 @@ export function SessionMenu({
   onChange: (patch: Partial<StreamSettings>) => void;
   /** «Закончить игру» — дальше подтверждение (его показывает вызывающий). */
   onEndGame: () => void;
+  /** Шаг обхода (индекс в `menuTour`) или `null` — обхода нет. */
+  tourStep?: number | null;
+  /** Следующий шаг; `null` — обход закончен («Пропустить», «Понятно»). */
+  onTourStep?: (next: number | null) => void;
 }) {
   const ids = useId();
   // Значение под пальцем, пока ползунок тянут; отпустили — `null`, на экране снова `settings`.
   const [dragMbps, setDragMbps] = useState<number | null>(null);
   const manual = settings.quality === "manual";
   const debugOptions = debugModes.map((mode) => mode.value);
+  const touring =
+    tourStep === null ? null : (menuTour[tourStep]?.section ?? null);
+  // Раздел в обходе: текущий — с кольцом и плашкой шага, остальные приглушены.
+  const spot = (section: TourSection | "debug") =>
+    touring === null
+      ? undefined
+      : touring === section
+        ? "relative"
+        : "opacity-40 transition-opacity";
+  const tourRing = (section: TourSection) =>
+    touring === section && (
+      <span
+        aria-hidden
+        className="pointer-events-none absolute -inset-2 rounded-lg ring-2 ring-brand-cyan"
+      />
+    );
+  const callout = (section: TourSection) =>
+    touring === section &&
+    tourStep !== null && (
+      <TourCallout key={tourStep} step={tourStep} onStep={onTourStep} />
+    );
 
   return (
     // `grid-cols-1` — колонка шириной панели (`minmax(0, 1fr)`): у неявной колонки ширина не
@@ -96,7 +191,11 @@ export function SessionMenu({
         </span>
         <PlayedTime played={played} />
       </div>
-      <section className="grid gap-3" aria-labelledby={`${ids}-quality`}>
+      <section
+        className={cn("grid gap-3", spot("quality"))}
+        aria-labelledby={`${ids}-quality`}
+      >
+        {tourRing("quality")}
         <h3 id={`${ids}-quality`} className={sectionTitle}>
           Качество
         </h3>
@@ -159,9 +258,13 @@ export function SessionMenu({
             </div>
           </>
         )}
+        {callout("quality")}
       </section>
 
-      <section className="grid gap-3" aria-labelledby={`${ids}-debug`}>
+      <section
+        className={cn("grid gap-3", spot("debug"))}
+        aria-labelledby={`${ids}-debug`}
+      >
         <h3 id={`${ids}-debug`} className={sectionTitle}>
           Отладка
         </h3>
@@ -187,7 +290,11 @@ export function SessionMenu({
 
       {/* Раскладка: по умолчанию клавиши уходят по месту (`physicalKeys.ts`), чтобы игры понимали
           WASD на русской раскладке; включённый переключатель — символы своей раскладки. */}
-      <section className="grid gap-2" aria-labelledby={`${ids}-keyboard`}>
+      <section
+        className={cn("grid gap-2", spot("keyboard"))}
+        aria-labelledby={`${ids}-keyboard`}
+      >
+        {tourRing("keyboard")}
         <h3 id={`${ids}-keyboard`} className={sectionTitle}>
           Клавиатура
         </h3>
@@ -203,10 +310,15 @@ export function SessionMenu({
           Для чатов на русском. Выключено — клавиши работают как на английской
           раскладке, и игры понимают их на любой.
         </p>
+        {callout("keyboard")}
       </section>
 
       {/* Захват мыши (спека §2.5): в окне — только сочетанием Selkies, в полном экране — кликом. */}
-      <section className="grid gap-2" aria-labelledby={`${ids}-mouse`}>
+      <section
+        className={cn("grid gap-2", spot("mouse"))}
+        aria-labelledby={`${ids}-mouse`}
+      >
+        {tourRing("mouse")}
         <h3 id={`${ids}-mouse`} className={sectionTitle}>
           Мышь
         </h3>
@@ -216,12 +328,17 @@ export function SessionMenu({
           полном экране хватит клика, выйти — удержать{" "}
           <kbd className={key}>Esc</kbd>.
         </p>
+        {callout("mouse")}
       </section>
 
-      <Button variant="secondary" className="w-full" onClick={onEndGame}>
-        <LogOut />
-        Закончить игру
-      </Button>
+      <div className={cn("grid gap-3", spot("end"))}>
+        {tourRing("end")}
+        <Button variant="secondary" className="w-full" onClick={onEndGame}>
+          <LogOut />
+          Закончить игру
+        </Button>
+        {callout("end")}
+      </div>
     </div>
   );
 }

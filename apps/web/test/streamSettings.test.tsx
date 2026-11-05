@@ -32,12 +32,12 @@ describe("useStreamSettingsState", () => {
       debug: "short",
     });
 
-    act(() => result.current.update({ menuSeen: true }));
+    act(() => result.current.update({ menuTourSeen: true }));
     rerender({ loaded: { ...defaultStreamSettings, debug: "detailed" } });
     expect(result.current.settings).toEqual({
       ...defaultStreamSettings,
       debug: "short",
-      menuSeen: true,
+      menuTourSeen: true,
     });
   });
 
@@ -54,12 +54,12 @@ describe("useStreamSettingsState", () => {
       debug: "short",
     });
 
-    rerender({ loaded: { ...defaultStreamSettings, menuSeen: true } });
+    rerender({ loaded: { ...defaultStreamSettings, menuTourSeen: true } });
     expect(result.current.loaded).toBe(true);
     expect(result.current.settings).toEqual({
       ...defaultStreamSettings,
       debug: "short",
-      menuSeen: true,
+      menuTourSeen: true,
     });
   });
 
@@ -73,7 +73,7 @@ describe("useStreamSettingsState", () => {
       );
 
       // Правка уже действует (стрим её видит), но запись из умолчаний перетёрла бы аккаунт.
-      act(() => result.current.update({ menuSeen: true }));
+      act(() => result.current.update({ menuTourSeen: true }));
       act(() => result.current.update({ debug: "short" }));
       expect(result.current.settings.debug).toBe("short");
       act(() => jest.advanceTimersByTime(1000));
@@ -88,7 +88,7 @@ describe("useStreamSettingsState", () => {
         ...defaultStreamSettings,
         resolution: "1440p",
         bitrateMbps: 35,
-        menuSeen: true,
+        menuTourSeen: true,
         debug: "short",
       });
 
@@ -100,7 +100,7 @@ describe("useStreamSettingsState", () => {
         ...defaultStreamSettings,
         resolution: "1440p",
         bitrateMbps: 35,
-        menuSeen: true,
+        menuTourSeen: true,
         debug: "off",
       });
     } finally {
@@ -154,7 +154,7 @@ describe("useStreamSettingsState", () => {
       act(() => result.current.update({ debug: "short" }));
       expect(result.current.settings.debug).toBe("short");
       act(() => jest.advanceTimersByTime(50));
-      act(() => result.current.update({ menuSeen: true }));
+      act(() => result.current.update({ menuTourSeen: true }));
       act(() => jest.advanceTimersByTime(50));
       act(() =>
         result.current.update({ quality: "manual", bitrateMbps: 10 }),
@@ -169,7 +169,7 @@ describe("useStreamSettingsState", () => {
       expect(save).toHaveBeenCalledWith({
         ...defaultStreamSettings,
         debug: "short",
-        menuSeen: true,
+        menuTourSeen: true,
         quality: "manual",
         bitrateMbps: 10,
       });

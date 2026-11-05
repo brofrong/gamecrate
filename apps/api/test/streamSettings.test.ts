@@ -67,7 +67,7 @@ describe("streamSettings.get", () => {
             quality: "turbo",
             bitrateMbps: 99,
             debug: "detailed",
-            menuSeen: true,
+            menuTourSeen: true,
           },
         });
         return yield* (yield* client)["streamSettings.get"]();
@@ -77,7 +77,7 @@ describe("streamSettings.get", () => {
     expect(settings).toEqual({
       ...defaultStreamSettings,
       debug: "detailed",
-      menuSeen: true,
+      menuTourSeen: true,
     });
   });
 
@@ -112,7 +112,7 @@ describe("streamSettings.save", () => {
           bitrateMbps: 10,
           resolution: "720p",
           debug: "short",
-          menuSeen: true,
+          menuTourSeen: true,
           localLayout: true,
           fullscreenTutorialSeen: true,
         });
@@ -121,7 +121,7 @@ describe("streamSettings.save", () => {
           bitrateMbps: 20,
           resolution: "1440p",
           debug: "off",
-          menuSeen: true,
+          menuTourSeen: true,
           localLayout: false,
           fullscreenTutorialSeen: false,
         });
@@ -140,7 +140,7 @@ describe("streamSettings.save", () => {
       bitrateMbps: 10,
       resolution: "720p",
       debug: "short",
-      menuSeen: true,
+      menuTourSeen: true,
       localLayout: true,
       fullscreenTutorialSeen: true,
     });
@@ -149,7 +149,7 @@ describe("streamSettings.save", () => {
       bitrateMbps: 20,
       resolution: "1440p",
       debug: "off",
-      menuSeen: true,
+      menuTourSeen: true,
       localLayout: false,
       fullscreenTutorialSeen: false,
     });

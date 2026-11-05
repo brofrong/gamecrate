@@ -183,9 +183,13 @@ const isEscape = (event: Event): boolean => {
 };
 
 /**
- * Нажатие и отпускание Esc — в документе iframe стрима (там фокус в полном экране; подписка
- * переставляется на каждую загрузку iframe) и в окне страницы (фокус ушёл на наши кнопки).
+ * Нажатие и отпускание Esc — в окне iframe стрима (там фокус в полном экране; подписка
+ * переставляется на каждую загрузку iframe) и в документе страницы (фокус ушёл на наши кнопки).
  * Автоповтор удержания (`repeat`) — не новое нажатие. Возвращает «стоп».
+ *
+ * Именно окно iframe, а не его документ: Selkies слушает клавиши на `window` в фазе захвата и
+ * в Chrome гасит каждое нажатие и отпускание (`stopPropagation`, `selkies-core.js` образа,
+ * проверено 2026-11-05) — до документа они не доходят. Слушателей того же окна это не задевает.
  */
 export function watchEscape(
   frame: HTMLIFrameElement,
@@ -198,7 +202,7 @@ export function watchEscape(
     if (isEscape(event)) handlers.onUp();
   };
   const listen = (
-    target: Pick<Document, "addEventListener" | "removeEventListener">,
+    target: Pick<EventTarget, "addEventListener" | "removeEventListener">,
   ) => {
     target.addEventListener("keydown", onKeyDown, true);
     target.addEventListener("keyup", onKeyUp, true);
@@ -208,17 +212,16 @@ export function watchEscape(
     };
   };
 
-  let detachDocument = () => {};
+  let detachFrame = () => {};
   const attach = () => {
-    detachDocument();
-    detachDocument = () => {};
-    let doc: Document | null;
+    detachFrame();
+    detachFrame = () => {};
     try {
-      doc = frame.contentDocument;
+      const win = frame.contentWindow;
+      if (win !== null) detachFrame = listen(win);
     } catch {
-      return;
+      // окно iframe чужого origin или выгружается — следующая загрузка подпишет заново.
     }
-    if (doc !== null) detachDocument = listen(doc);
   };
 
   attach();
@@ -226,7 +229,7 @@ export function watchEscape(
   const detachPage = listen(document);
   return () => {
     frame.removeEventListener("load", attach);
-    detachDocument();
+    detachFrame();
     detachPage();
   };
 }

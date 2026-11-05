@@ -5,7 +5,9 @@
 // весь экран» у кнопки, шаг 2 — при первом входе вверху «Чтобы выйти — зажми Esc» (`EscPrompt`);
 // пройдено — `fullscreenTutorialSeen`. После перерыва в игре (`TUTORIAL_BREAK_MS`, правка владельца
 // 2026-11-05) обучение повторяется — один раз за сессию. В полном экране каждое нажатие Esc
-// показывает ту же полоску со шкалой удержания.
+// показывает ту же полоску со шкалой удержания. Шаг 3 (правка владельца 2026-11-05): когда шаги 1–2
+// позади и игрок вне полного экрана — подсказка у меню, а первое открытие меню — обход его разделов
+// (`menuTour`); пройден — `menuTourSeen`, после перерыва — снова, тоже раз за сессию.
 // Панель и диалог порталятся в корень экрана сессии (`rootRef`): в полном экране браузер
 // показывает только поддерево полноэкранного элемента. Закрылись — фокус обратно в стрим.
 import { Maximize, Menu, X } from "lucide-react";
@@ -110,8 +112,6 @@ export function SessionControls({
   // Панель закрылась ради диалога выхода — фокус берёт диалог, не стрим. Ref, а не состояние:
   // Radix зовёт `onCloseAutoFocus` таймером уже после размонтирования панели.
   const toConfirm = useRef(false);
-  // Пока признак не загрузился — без подсказки (не мигать у тех, кто уже открывал меню).
-  const hint = loaded && !settings.menuSeen;
   // Обучение в этой сессии уже было (вошёл в полный экран или нажал ×) — второй раз не показываем,
   // даже если признак ещё не записан или игрок вернулся после перерыва.
   const [tutorialDone, setTutorialDone] = useState(false);
@@ -123,15 +123,27 @@ export function SessionControls({
     if (!settings.fullscreenTutorialSeen)
       update({ fullscreenTutorialSeen: true });
   };
+  // Обход меню в этой сессии уже начинали — второй раз не показываем (как `tutorialDone`). Пока
+  // признак не загрузился — ни подсказки, ни обхода (не мигать у тех, кто его уже прошёл).
+  const [tourDone, setTourDone] = useState(false);
+  const tourPending =
+    loaded && !tourDone && (!settings.menuTourSeen || returning);
+  const [tourStep, setTourStep] = useState<number | null>(null);
+  // Шаг 3: подсказка у меню — после шагов 1–2 и вне полного экрана.
+  const hint = tourPending && !tutorial && !fullscreen;
   const holdable = keyboardLockSupported();
   const [tutorialStep2, setTutorialStep2] = useState(false);
   const [esc, setEsc] = useState<EscPromptState | null>(null);
 
-  // Отметка «меню видели» — только когда подсказка была показана: до загрузки настроек
-  // признака ещё не знаем, и записывать его не за что.
+  // Первое открытие меню, пока обход не пройден, — обход с первого шага (закрыли посреди — тоже
+  // пройден). Признак пишем при старте и только если его нет: после перерыва он уже `true`.
   const onMenuOpenChange = (open: boolean) => {
     setMenuOpen(open);
-    if (open && hint) update({ menuSeen: true });
+    if (!open) return;
+    setTourStep(tourPending ? 0 : null);
+    if (!tourPending) return;
+    setTourDone(true);
+    if (!settings.menuTourSeen) update({ menuTourSeen: true });
   };
 
   // Первый вход в полный экран с обучением — шаг 2, и обучение пройдено. Признак и `update`
@@ -294,6 +306,8 @@ export function SessionControls({
                   setMenuOpen(false);
                   setConfirmOpen(true);
                 }}
+                tourStep={tourStep}
+                onTourStep={setTourStep}
               />
             </PopoverContent>
           </Popover>

@@ -19,8 +19,19 @@ describe("StreamSettings schema", () => {
   it("старый клиент без fullscreenTutorialSeen проходит схему — обучение не пройдено", () => {
     const { fullscreenTutorialSeen: _, ...old } = defaultStreamSettings;
     expect(
-      Schema.decodeUnknownSync(StreamSettings)({ ...old, menuSeen: true }),
-    ).toEqual({ ...defaultStreamSettings, menuSeen: true });
+      Schema.decodeUnknownSync(StreamSettings)({ ...old, menuTourSeen: true }),
+    ).toEqual({ ...defaultStreamSettings, menuTourSeen: true });
+  });
+
+  it("старый клиент с menuSeen и без menuTourSeen проходит схему — обход не пройден", () => {
+    const { menuTourSeen: _, ...old } = defaultStreamSettings;
+    expect(
+      Schema.decodeUnknownSync(StreamSettings)({
+        ...old,
+        menuSeen: true,
+        fullscreenTutorialSeen: true,
+      }),
+    ).toEqual({ ...defaultStreamSettings, fullscreenTutorialSeen: true });
   });
 
   it("rejects bitrate 1, 41 and 2.5", () => {
@@ -42,6 +53,7 @@ describe("decodeStreamSettings", () => {
         quality: "turbo",
         bitrateMbps: 99,
         debug: "detailed",
+        menuTourSeen: true,
         menuSeen: true,
         localLayout: "yes",
         fullscreenTutorialSeen: 1,
@@ -50,7 +62,7 @@ describe("decodeStreamSettings", () => {
     ).toEqual({
       ...defaultStreamSettings,
       debug: "detailed",
-      menuSeen: true,
+      menuTourSeen: true,
     });
     expect(decodeStreamSettings({ localLayout: true }).localLayout).toBe(true);
     expect(

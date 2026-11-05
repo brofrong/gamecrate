@@ -1,5 +1,5 @@
 // Настройки стрима, хранимые в аккаунте (таблица `user_stream_settings`): качество,
-// битрейт, разрешение, отладка, раскладка клавиатуры и признаки «меню уже открывали» и «обучение
+// битрейт, разрешение, отладка, раскладка клавиатуры и признаки «обход меню пройден» и «обучение
 // полному экрану пройдено» (спека §4). Читаются при
 // каждом запуске игры — следующая сессия на любом устройстве открывается с ними.
 import { Effect, Schema } from "effect";
@@ -28,7 +28,10 @@ export const autoBitrateMbps = 20;
  * - `bitrateMbps` — потолок ручного режима; при плохой сети Selkies всё равно снизит.
  * - `resolution` — ручной режим, применяется со следующего запуска игры (§4.1): идущая
  *   сессия разрешение не меняет.
- * - `menuSeen` — подсказка новичку («Здесь настройки игры и выход») уже показывалась.
+ * - `menuTourSeen` — подсказка у меню («Здесь настройки игры и выход») и обход его разделов
+ *   пройдены (правка владельца 2026-11-05; заменил `menuSeen` — обход новый, его видят все).
+ *   Ключ необязателен на входе, как `fullscreenTutorialSeen`; `menuSeen` из старых вкладок —
+ *   лишний ключ, схема его отбрасывает.
  * - `localLayout` — клавиши уходят в игру символами раскладки игрока (для чатов на русском);
  *   по умолчанию — по физическому месту, как на английской (игры ждут WASD на любой раскладке).
  * - `fullscreenTutorialSeen` — обучение полному экрану («Играй на весь экран», «зажми Esc»)
@@ -42,7 +45,9 @@ export const StreamSettings = Schema.Struct({
   ),
   resolution: StreamResolution,
   debug: DebugMode,
-  menuSeen: Schema.Boolean,
+  menuTourSeen: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
   localLayout: Schema.Boolean,
   fullscreenTutorialSeen: Schema.Boolean.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
@@ -56,7 +61,7 @@ export const defaultStreamSettings: StreamSettings = {
   bitrateMbps: autoBitrateMbps,
   resolution: "1080p",
   debug: "off",
-  menuSeen: false,
+  menuTourSeen: false,
   localLayout: false,
   fullscreenTutorialSeen: false,
 };
@@ -98,10 +103,10 @@ export const decodeStreamSettings = (value: unknown): StreamSettings => {
       defaultStreamSettings.resolution,
     ),
     debug: decodeField(DebugMode, record["debug"], defaultStreamSettings.debug),
-    menuSeen: decodeField(
+    menuTourSeen: decodeField(
       Schema.Boolean,
-      record["menuSeen"],
-      defaultStreamSettings.menuSeen,
+      record["menuTourSeen"],
+      defaultStreamSettings.menuTourSeen,
     ),
     localLayout: decodeField(
       Schema.Boolean,

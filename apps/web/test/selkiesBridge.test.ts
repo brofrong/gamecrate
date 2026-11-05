@@ -101,7 +101,7 @@ describe("changedSettingsMessages", () => {
     expect(
       changedSettingsMessages(defaultStreamSettings, {
         ...defaultStreamSettings,
-        menuSeen: true,
+        menuTourSeen: true,
       }),
     ).toEqual([]);
 
