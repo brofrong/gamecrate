@@ -7,7 +7,9 @@
 // 2026-11-05) обучение повторяется — один раз за сессию. В полном экране каждое нажатие Esc
 // показывает ту же полоску со шкалой удержания. Шаг 3 (правка владельца 2026-11-05): когда шаги 1–2
 // позади и игрок вне полного экрана — подсказка у меню, а первое открытие меню — обход его разделов
-// (`menuTour`); пройден — `menuTourSeen`, после перерыва — снова, тоже раз за сессию.
+// (`menuTour`); пройден — `menuTourSeen`, после перерыва — снова, тоже раз за сессию. В полном
+// экране с мышью «Меню» нет (правка владельца 2026-11-05): после клика по игре мышь захвачена и до
+// кнопки не дотянуться. На сенсорном экране без мыши кнопка остаётся — тап до неё достаёт.
 // Панель и диалог порталятся в корень экрана сессии (`rootRef`): в полном экране браузер
 // показывает только поддерево полноэкранного элемента. Закрылись — фокус обратно в стрим.
 import { Maximize, Menu, X } from "lucide-react";
@@ -131,6 +133,7 @@ export function SessionControls({
   const [tourStep, setTourStep] = useState<number | null>(null);
   // Шаг 3: подсказка у меню — после шагов 1–2 и вне полного экрана.
   const hint = tourPending && !tutorial && !fullscreen;
+  const menuHidden = fullscreen && !touchOnly();
   const holdable = keyboardLockSupported();
   const [tutorialStep2, setTutorialStep2] = useState(false);
   const [esc, setEsc] = useState<EscPromptState | null>(null);
@@ -224,6 +227,11 @@ export function SessionControls({
     return physicalKeysInFrame(frame, () => !localLayoutRef.current);
   }, [frameRef]);
 
+  // Кнопка ушла вместе с открытой панелью — после выхода из полного экрана панель сама не всплывает.
+  useEffect(() => {
+    if (menuHidden) setMenuOpen(false);
+  }, [menuHidden]);
+
   // Клик по игре уводит фокус в iframe — до документа страницы не доходит ни `pointerdown`,
   // ни `focusin`, и Radix «клика мимо» не видит. Видно только потерю фокуса окном страницы.
   useEffect(() => {
@@ -256,61 +264,63 @@ export function SessionControls({
               и выход
             </button>
           )}
-          <Popover open={menuOpen} onOpenChange={onMenuOpenChange}>
-            <div className="relative">
-              {hint && (
-                <span
-                  aria-hidden
-                  className={cn(
-                    "pointer-events-none absolute -inset-1 rounded-lg ring-2 ring-brand-cyan",
-                    !reducedMotion && "animate-pulse",
-                  )}
-                />
-              )}
-              <PopoverTrigger asChild>
-                <Button
-                  variant="secondary"
-                  size="icon"
-                  aria-label="Меню"
-                  className={overlayButton}
-                >
-                  <Menu />
-                </Button>
-              </PopoverTrigger>
-            </div>
-            <PopoverContent
-              container={rootRef.current}
-              align="end"
-              sideOffset={8}
-              className="w-[300px]"
-              // В полном экране Esc (захваченный) — клавиша игры, а не «закрыть меню».
-              onEscapeKeyDown={(event) => {
-                if (fullscreen) event.preventDefault();
-              }}
-              onCloseAutoFocus={(event) => {
-                if (toConfirm.current) {
-                  toConfirm.current = false;
-                  event.preventDefault();
-                  return;
-                }
-                returnFocus(event);
-              }}
-            >
-              <SessionMenu
-                gameName={gameName}
-                played={played}
-                settings={settings}
-                onChange={update}
-                onEndGame={() => {
-                  toConfirm.current = true;
-                  setMenuOpen(false);
-                  setConfirmOpen(true);
+          {!menuHidden && (
+            <Popover open={menuOpen} onOpenChange={onMenuOpenChange}>
+              <div className="relative">
+                {hint && (
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "pointer-events-none absolute -inset-1 rounded-lg ring-2 ring-brand-cyan",
+                      !reducedMotion && "animate-pulse",
+                    )}
+                  />
+                )}
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    aria-label="Меню"
+                    className={overlayButton}
+                  >
+                    <Menu />
+                  </Button>
+                </PopoverTrigger>
+              </div>
+              <PopoverContent
+                container={rootRef.current}
+                align="end"
+                sideOffset={8}
+                className="w-[300px]"
+                // В полном экране Esc (захваченный) — клавиша игры, а не «закрыть меню».
+                onEscapeKeyDown={(event) => {
+                  if (fullscreen) event.preventDefault();
                 }}
-                tourStep={tourStep}
-                onTourStep={setTourStep}
-              />
-            </PopoverContent>
-          </Popover>
+                onCloseAutoFocus={(event) => {
+                  if (toConfirm.current) {
+                    toConfirm.current = false;
+                    event.preventDefault();
+                    return;
+                  }
+                  returnFocus(event);
+                }}
+              >
+                <SessionMenu
+                  gameName={gameName}
+                  played={played}
+                  settings={settings}
+                  onChange={update}
+                  onEndGame={() => {
+                    toConfirm.current = true;
+                    setMenuOpen(false);
+                    setConfirmOpen(true);
+                  }}
+                  tourStep={tourStep}
+                  onTourStep={setTourStep}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
         {!fullscreen && (
           <div data-testid="fullscreen-row" className="flex items-center gap-2">

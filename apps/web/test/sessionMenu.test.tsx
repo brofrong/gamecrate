@@ -147,6 +147,16 @@ beforeEach(() => {
   };
 });
 
+// Сенсорный экран без мыши — подменой `matchMedia` (исходный вернёт `test/setup.ts`).
+const touchScreen = () => {
+  window.matchMedia = ((query: string) =>
+    ({
+      matches: query === "(pointer: coarse)",
+      addEventListener: noop,
+      removeEventListener: noop,
+    }) as unknown as MediaQueryList) as typeof window.matchMedia;
+};
+
 afterEach(() => {
   HTMLElement.prototype.requestFullscreen = originalRequestFullscreen;
   Reflect.deleteProperty(document, "fullscreenElement");
@@ -402,6 +412,7 @@ describe("session menu", () => {
   });
 
   it("escape does not close the menu in fullscreen", async () => {
+    touchScreen();
     const player = renderPlayer({ streamSettings: control() });
     await clickMenu();
     setFullscreen(player.main());
@@ -432,11 +443,37 @@ describe("session menu", () => {
     setKeyboard(keyboard);
     setFullscreen(player.main());
     expect(screen.queryByRole("button", { name: "На весь экран" })).toBeNull();
-    expect(menuButton()).toBeTruthy();
 
     setFullscreen(null);
     expect(keyboard.unlock).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "На весь экран" })).toBeTruthy();
+  });
+
+  it("в полном экране с мышью «Меню» нет — мышь захвачена, до кнопки не дотянуться", async () => {
+    const player = renderPlayer({
+      streamSettings: control({ menuTourSeen: true }),
+    });
+    await clickMenu();
+    expect(menuShown()).toBe(true);
+
+    setFullscreen(player.main());
+    expect(screen.queryByRole("button", { name: "Меню" })).toBeNull();
+    expect(menuShown()).toBe(false);
+
+    // Вышли — кнопка вернулась, а панель, открытая до входа, сама не всплыла.
+    setFullscreen(null);
+    expect(menuButton()).toBeTruthy();
+    expect(menuShown()).toBe(false);
+  });
+
+  it("на сенсорном экране без мыши «Меню» в полном экране остаётся", async () => {
+    touchScreen();
+    const player = renderPlayer({
+      streamSettings: control({ menuTourSeen: true }),
+    });
+    setFullscreen(player.main());
+    await clickMenu();
+    expect(menuShown()).toBe(true);
   });
 
   it("in fullscreen a click on the game locks the pointer", () => {
@@ -694,12 +731,7 @@ describe("обучение полному экрану", () => {
   });
 
   it("на сенсорном экране без мыши шага 2 нет, но обучение пройдено", () => {
-    window.matchMedia = ((query: string) =>
-      ({
-        matches: query === "(pointer: coarse)",
-        addEventListener: noop,
-        removeEventListener: noop,
-      }) as unknown as MediaQueryList) as typeof window.matchMedia;
+    touchScreen();
     const update = mock<Update>(() => {});
     const player = renderPlayer({ streamSettings: control({}, true, update) });
     setFullscreen(player.main());
