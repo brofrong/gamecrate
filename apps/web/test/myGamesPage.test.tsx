@@ -340,55 +340,95 @@ describe("MyGamesPage", () => {
     cloud: { _tag: "Ready" },
   });
 
-  /** `a` стоит в документе раньше `b`. */
-  const precedes = (a: Node, b: Node) =>
-    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  const sohRecent: RecentEntry = {
+    appId: 1900000001,
+    name: "Ocarina of Time",
+    coverUrl: "/own-games/1900000001/cover.jpg",
+    cloud: { _tag: "Ready" },
+    lastPlayedAt: "2026-11-04T10:00:00.000Z",
+    lastDurationMinutes: 30,
+  };
 
-  it("user without Steam sees own games above Connect Steam", async () => {
+  it("своих игр нет в сетке, поиске и счётчике — они в «Из ящика»", async () => {
     renderMyGames("/app", {
-      me: { ...user, steamId: null },
-      library: ready([soh], { syncedAt: null, steamProfile: false }),
-    });
-    const tile = await screen.findByRole("link", {
-      name: "Игра: Ocarina of Time",
-    });
-    expect(screen.getByText("бесплатно")).toBeTruthy();
-    expect(
-      screen.getByRole("heading", { name: /^Готовы к запуску/ }),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole("heading", { name: /Нужен вход в Steam/ }),
-    ).toBeNull();
-    const connect = screen.getByText("Подключите Steam");
-    expect(precedes(tile, connect)).toBe(true);
-  });
-
-  it("private profile shows own games under the notice", async () => {
-    renderMyGames("/app", { library: { _tag: "Private", entries: [soh] } });
-    const tile = await screen.findByRole("link", {
-      name: "Игра: Ocarina of Time",
-    });
-    const notice = screen.getByText("Откройте „Сведения об играх“");
-    // Сетка — сверху, заметка о закрытом профиле — под ней (как у «Подключите Steam»).
-    expect(precedes(tile, notice)).toBe(true);
-  });
-
-  it("«Играть бесплатно» оставляет только свои игры", async () => {
-    renderMyGames("/app?status=free", {
       library: ready([
         entry({ appId: 620, name: "Portal 2", cloud: { _tag: "Ready" } }),
         soh,
       ]),
     });
     expect(
-      await screen.findByRole("link", { name: "Игра: Ocarina of Time" }),
+      await screen.findByRole("link", { name: "Игра: Portal 2" }),
     ).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Игра: Portal 2" })).toBeNull();
     expect(
-      screen
-        .getByRole("button", { name: "Играть бесплатно" })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
+      screen.queryByRole("link", { name: "Игра: Ocarina of Time" }),
+    ).toBeNull();
+    expect(screen.getByText(/^1 игр · 1 готовы/)).toBeTruthy();
+    expect(screen.getByPlaceholderText("Найти среди 1 игр")).toBeTruthy();
+  });
+
+  it("своя игра остаётся в «Запускал недавно»", async () => {
+    renderMyGames("/app", {
+      library: ready([soh]),
+      recent: [sohRecent],
+    });
+    expect(
+      await screen.findByRole("heading", { name: /^Запускал недавно/ }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Игра: Ocarina of Time" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: /^Готовы к запуску/ }),
+    ).toBeNull();
+  });
+
+  it("без Steam: «Подключите Steam» и ссылка на «Из ящика», своей игры в сетке нет", async () => {
+    renderMyGames("/app", {
+      me: { ...user, steamId: null },
+      library: ready([soh], { syncedAt: null, steamProfile: false }),
+    });
+    expect(await screen.findByText("Подключите Steam")).toBeTruthy();
+    const hint = screen.getByRole("link", {
+      name: /Без Steam можно играть в играх «Из ящика»/,
+    });
+    expect(hint.getAttribute("href")).toBe("/app/crate");
+    expect(
+      screen.queryByRole("link", { name: "Игра: Ocarina of Time" }),
+    ).toBeNull();
+  });
+
+  it("без Steam и без открытых своих игр ссылки на «Из ящика» нет", async () => {
+    renderMyGames("/app", {
+      me: { ...user, steamId: null },
+      library: ready([], { syncedAt: null, steamProfile: false }),
+    });
+    expect(await screen.findByText("Подключите Steam")).toBeTruthy();
+    expect(
+      screen.queryByRole("link", { name: /Без Steam можно играть/ }),
+    ).toBeNull();
+  });
+
+  it("при закрытом профиле своей игры в сетке нет", async () => {
+    renderMyGames("/app", { library: { _tag: "Private", entries: [soh] } });
+    expect(
+      await screen.findByText("Откройте „Сведения об играх“"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("link", { name: "Игра: Ocarina of Time" }),
+    ).toBeNull();
+  });
+
+  it("старый адрес /app?status=free открывает «Из ящика»", async () => {
+    renderMyGames("/app?status=free", { library: ready([soh]) });
+    expect(
+      await screen.findByRole("heading", { name: "Из ящика" }),
+    ).toBeTruthy();
+  });
+
+  it("чип «Играть бесплатно» ведёт на «Из ящика»", async () => {
+    renderMyGames("/app", { library: ready([soh]) });
+    const chip = await screen.findByRole("link", { name: "Играть бесплатно" });
+    expect(chip.getAttribute("href")).toBe("/app/crate");
   });
 
   it("одна строка поиска и одна кнопка «Фильтры» на всех экранах, без отдельных иконок в шапке", async () => {

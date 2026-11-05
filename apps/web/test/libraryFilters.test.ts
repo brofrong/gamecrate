@@ -8,6 +8,7 @@ import {
   countMatching,
   DEFAULT_FILTERS,
   type Filters,
+  libraryGames,
   parseSearch,
   toSearch,
 } from "../src/lib/libraryFilters";
@@ -331,7 +332,7 @@ describe("activeFilterCount", () => {
   });
 });
 
-describe("own games (free)", () => {
+describe("own games", () => {
   const own = (appId: number, name: string) =>
     entry({
       appId,
@@ -340,44 +341,14 @@ describe("own games (free)", () => {
       coverUrl: `/own-games/${appId}/cover.jpg`,
     });
 
-  it("free status keeps only own games and URL round-trips status=free", () => {
-    const filters: Filters = { ...DEFAULT_FILTERS, status: "free" };
-    expect(toSearch(filters)).toEqual({ status: "free" });
-    expect(parseSearch({ status: "free" })).toEqual(filters);
-
-    const entries = [
-      entry({ appId: 620, name: "Portal 2" }),
-      entry({ appId: 570, name: "Dota 2", cloud: { _tag: "Missing" } }),
-      own(1900000001, "Ocarina of Time"),
-    ];
-    // Разделы — как при «все»: своя игра — в «готовы».
-    expect(applyFilters(entries, filters, { steamProfile: true })).toEqual([
-      { section: "ready", entries: [own(1900000001, "Ocarina of Time")] },
-    ]);
-    expect(countMatching(entries, filters, { steamProfile: true })).toBe(1);
-    // Поиск сочетается с «бесплатно».
-    expect(
-      countMatching(
-        entries,
-        { ...filters, q: "portal" },
-        { steamProfile: true },
-      ),
-    ).toBe(0);
+  it("старый адрес status=free разбирается как «все»", () => {
+    expect(parseSearch({ status: "free" })).toEqual(DEFAULT_FILTERS);
   });
 
-  it("own game is ready even without Steam profile", () => {
-    const entries = [
-      entry({ appId: 620, name: "Portal 2" }),
-      own(1900000001, "Ocarina of Time"),
-    ];
-    expect(
-      applyFilters(entries, DEFAULT_FILTERS, { steamProfile: false }),
-    ).toEqual([
-      { section: "ready", entries: [own(1900000001, "Ocarina of Time")] },
-      {
-        section: "noprofile",
-        entries: [entry({ appId: 620, name: "Portal 2" })],
-      },
+  it("libraryGames оставляет только игры Steam — свои живут в «Из ящика»", () => {
+    const portal = entry({ appId: 620, name: "Portal 2" });
+    expect(libraryGames([portal, own(1900000001, "Ocarina of Time")])).toEqual([
+      portal,
     ]);
   });
 });

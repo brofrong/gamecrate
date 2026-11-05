@@ -1,12 +1,10 @@
 // Фильтры библиотеки: состояние ⇄ URL search params (`parseSearch`/`toSearch`) и
 // применение фильтров/сортировки/группировки к списку игр (`applyFilters`,
-// `countMatching`), счётчики Steam (`steamCounts`). Чистая логика без React — используется
-// главной `/app`.
+// `countMatching`), игры библиотеки без своих (`libraryGames`), счётчики Steam
+// (`steamCounts`). Чистая логика без React — используется главной `/app`.
 import { isOwnAppId, type LibraryEntry, type ProtonTier } from "@cg/rpc";
 
-/** `free` — чип «Играть бесплатно»: только свои игры, разделы — как при `all`. */
-export type StatusFilter =
-  "all" | "ready" | "installing" | "noprofile" | "free";
+export type StatusFilter = "all" | "ready" | "installing" | "noprofile";
 export type SortKey = "recent" | "name" | "playtime";
 export type ProtonFilter = "any" | ProtonTier;
 export type Chip = "never" | "10h";
@@ -32,7 +30,6 @@ const STATUS_VALUES: ReadonlyArray<StatusFilter> = [
   "ready",
   "installing",
   "noprofile",
-  "free",
 ];
 const SORT_VALUES: ReadonlyArray<SortKey> = ["recent", "name", "playtime"];
 const PROTON_TIERS: ReadonlyArray<ProtonTier> = [
@@ -122,12 +119,8 @@ type SectionGroup = {
   readonly entries: ReadonlyArray<LibraryEntry>;
 };
 
-/**
- * «Бесплатно», поиск, тир ProtonDB и чипы — одна игра должна удовлетворять всем
- * активным условиям.
- */
+/** Поиск, тир ProtonDB и чипы — одна игра должна удовлетворять всем активным условиям. */
 function matchesFilters(entry: LibraryEntry, filters: Filters): boolean {
-  if (filters.status === "free" && !isOwnAppId(entry.appId)) return false;
   if (filters.proton !== "any" && entry.protonTier !== filters.proton) {
     return false;
   }
@@ -171,12 +164,8 @@ function sortEntries(
   return [...entries].sort(compare);
 }
 
-/**
- * Секция карточки: своя игра всегда `ready` (Steam ей не нужен), остальные без
- * привязанного Steam-профиля — в `noprofile`.
- */
+/** Секция карточки: без привязанного Steam-профиля — `noprofile`. */
 function sectionFor(entry: LibraryEntry, steamProfile: boolean): Section {
-  if (isOwnAppId(entry.appId)) return "ready";
   if (!steamProfile) return "noprofile";
   return entry.cloud._tag === "Ready" ? "ready" : "installing";
 }
@@ -212,12 +201,7 @@ export function applyFilters(
 
   const result: SectionGroup[] = [];
   for (const section of SECTION_ORDER) {
-    if (
-      filters.status !== "all" &&
-      filters.status !== "free" &&
-      filters.status !== section
-    )
-      continue;
+    if (filters.status !== "all" && filters.status !== section) continue;
     const list = bySection.get(section);
     if (!list || list.length === 0) continue;
     const sorted =
@@ -251,6 +235,16 @@ export function countMatching(
 }
 
 /**
+ * Игры сетки «Мои игры»: без своих (`isOwnAppId`) — они на «Из ящика» (`/app/crate`), в
+ * библиотеке остаются только в «Запускал недавно».
+ */
+export function libraryGames(
+  entries: ReadonlyArray<LibraryEntry>,
+): ReadonlyArray<LibraryEntry> {
+  return entries.filter((entry) => !isOwnAppId(entry.appId));
+}
+
+/**
  * «N игр · M готовы» под подписью Steam (плитка на телефоне, панель Steam): только игры
  * Steam — свои игры (`isOwnAppId`) в `entries` тоже, но к Steam отношения не имеют.
  */
@@ -258,7 +252,7 @@ export function steamCounts(entries: ReadonlyArray<LibraryEntry>): {
   total: number;
   ready: number;
 } {
-  const steam = entries.filter((entry) => !isOwnAppId(entry.appId));
+  const steam = libraryGames(entries);
   return {
     total: steam.length,
     ready: steam.filter((entry) => entry.cloud._tag === "Ready").length,

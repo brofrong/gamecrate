@@ -4,9 +4,10 @@
 // «Запускал недавно» (те же плитки, подпись — дата · длительность), секции сетки по
 // статусу облака по 24 плитки с «Показать ещё» (сброс раскрытия — `key` секции от
 // фильтров). Фильтры живут в адресе маршрута (`?status=...`), адрес с фильтром
-// переживает перезагрузку страницы. Свои игры видны всем: без Steam и при закрытом
-// профиле сетка с ними стоит над «Подключите Steam»/заметкой о профиле.
-import type { LibraryView } from "@cg/rpc";
+// переживает перезагрузку страницы. Своих игр в сетке нет — они на «Из ящика»
+// (`/app/crate`), здесь — только в «Запускал недавно»; игроку без Steam под «Подключите
+// Steam» ссылка туда, если открытые свои игры есть.
+import { isOwnAppId, type LibraryView } from "@cg/rpc";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
 import { CloudOff, Gamepad2 } from "lucide-react";
@@ -37,6 +38,7 @@ import {
   applyFilters,
   countMatching,
   type Filters,
+  libraryGames,
   parseSearch,
   type Section,
   toSearch,
@@ -180,18 +182,19 @@ export function MyGamesPage() {
     AsyncResult.isFailure(active) ||
     stalled;
 
-  // У `Private` в `entries` только свои игры — они в сетке и в счётчиках поиска тоже.
-  const entries = AsyncResult.isSuccess(library) ? library.value.entries : [];
+  const allEntries = AsyncResult.isSuccess(library)
+    ? library.value.entries
+    : [];
+  const entries = libraryGames(allEntries);
+  const hasOwnGames = allEntries.some((entry) => isOwnAppId(entry.appId));
   const steamProfile =
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
       ? library.value.steamProfile
       : false;
   const total = entries.length;
-  const readyCount =
-    AsyncResult.isSuccess(library) && library.value._tag === "Ready"
-      ? library.value.entries.filter((entry) => entry.cloud._tag === "Ready")
-          .length
-      : 0;
+  const readyCount = entries.filter(
+    (entry) => entry.cloud._tag === "Ready",
+  ).length;
   const syncedAt =
     AsyncResult.isSuccess(library) && library.value._tag === "Ready"
       ? library.value.syncedAt
@@ -201,35 +204,38 @@ export function MyGamesPage() {
       ? library.value
       : undefined;
 
+  const hasRecent =
+    filters.q.trim().length === 0 &&
+    AsyncResult.isSuccess(recent) &&
+    recent.value.length > 0;
+
   // «Запускал недавно» и секции сетки: и для обычной библиотеки, и над
-  // «Подключите Steam»/заметкой о закрытом профиле (там — только свои игры).
+  // «Подключите Steam»/заметкой о закрытом профиле (там — только недавние).
   const grid = (
     <>
-      {filters.q.trim().length === 0 &&
-        AsyncResult.isSuccess(recent) &&
-        recent.value.length > 0 && (
-          <GameSection
-            title="Запускал недавно"
-            count={recent.value.length}
-            scroll
-            action={
-              <Link
-                to="/app/time"
-                className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
-              >
-                все сессии →
-              </Link>
-            }
-          >
-            {recent.value.map((entry) => (
-              <GameTile
-                key={entry.appId}
-                game={entry}
-                caption={recentCaption(entry, new Date())}
-              />
-            ))}
-          </GameSection>
-        )}
+      {hasRecent && AsyncResult.isSuccess(recent) && (
+        <GameSection
+          title="Запускал недавно"
+          count={recent.value.length}
+          scroll
+          action={
+            <Link
+              to="/app/time"
+              className="text-sm font-medium text-[#8a90a8] hover:text-[#eef1ff]"
+            >
+              все сессии →
+            </Link>
+          }
+        >
+          {recent.value.map((entry) => (
+            <GameTile
+              key={entry.appId}
+              game={entry}
+              caption={recentCaption(entry, new Date())}
+            />
+          ))}
+        </GameSection>
+      )}
       {applyFilters(entries, filters, { steamProfile }).map((group) => (
         <GameSection
           key={`${group.section}:${filtersKey}`}
@@ -299,25 +305,33 @@ export function MyGamesPage() {
         />
       ) : user.steamId === null ? (
         <>
-          {entries.length > 0 && grid}
+          {hasRecent && grid}
           <ConnectSteam
             onDone={() => {
               reloadMe();
               void onRefresh();
             }}
           />
+          {hasOwnGames && (
+            <Link
+              to="/app/crate"
+              className="mx-auto text-sm font-medium text-[#3cc2ff] hover:text-[#eef1ff]"
+            >
+              Без Steam можно играть в играх «Из ящика» →
+            </Link>
+          )}
         </>
       ) : !AsyncResult.isSuccess(library) ? (
         <LibrarySkeleton />
       ) : library.value._tag === "Private" ? (
         <>
-          {entries.length > 0 && grid}
+          {hasRecent && grid}
           <PrivateProfile
             onRefresh={() => void onRefresh()}
             refreshing={refreshing}
           />
         </>
-      ) : entries.length === 0 ? (
+      ) : entries.length === 0 && !hasRecent ? (
         <EmptyNotice
           view={library.value}
           onRefresh={() => void onRefresh()}

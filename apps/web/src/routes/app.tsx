@@ -5,6 +5,7 @@ import {
   createRoute,
   Navigate,
   Outlet,
+  redirect,
   useMatchRoute,
 } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
@@ -75,6 +76,14 @@ type AppIndexSearch = Partial<
 export const appIndexRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/",
+  // Чип «Играть бесплатно» был фильтром `?status=free`; свои игры переехали на
+  // «Из ящика», старые ссылки ведут туда. `validateSearch` такой статус уже отбросил —
+  // смотрим в сырую строку адреса.
+  beforeLoad: ({ location }) => {
+    if (new URLSearchParams(location.searchStr).get("status") === "free") {
+      throw redirect({ to: "/app/crate", replace: true });
+    }
+  },
   validateSearch: (search: Record<string, unknown>): AppIndexSearch => ({
     ...toSearch(parseSearch(search)),
     ...(search.focus === "q" ? { focus: "q" as const } : {}),

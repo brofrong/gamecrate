@@ -1,5 +1,5 @@
 // «В тренде», «Из ящика», «Время» (`/app/trending`, `/app/crate`, `/app/time`, Task 12):
-// секции тренда с подписями числа игроков, заглушка «Из ящика», сводка месяца
+// секции тренда с подписями числа игроков, свои игры в «Из ящика», сводка месяца
 // с переключателем, долями по играм и лентой сессий (с «показать ещё N»).
 //
 // `../src/rpc` открывает реальный WebSocket, поэтому он подменяется целиком через
@@ -24,6 +24,8 @@
 import { describe, expect, it, mock, spyOn } from "bun:test";
 import type {
   CurrentUserShape,
+  LibraryEntry,
+  LibraryView,
   SessionView,
   TimeSummary,
   TrendingEntry,
@@ -212,6 +214,7 @@ function renderApp(
     me?: CurrentUserShape;
     active?: SessionView | null;
     trending?: { now: TrendingEntry[]; week: TrendingEntry[] };
+    library?: AsyncResult.AsyncResult<LibraryView, { readonly _tag: string }>;
     time?: ReadonlyArray<readonly [string, TimeSummary]>;
   } = {},
 ) {
@@ -223,6 +226,9 @@ function renderApp(
     [meAtom, AsyncResult.success(values.me ?? user)],
     [activeSessionAtom, AsyncResult.success(values.active ?? null)],
   ];
+  if (values.library !== undefined) {
+    initialValues.push([libraryAtom, values.library]);
+  }
   if (values.trending !== undefined) {
     initialValues.push([trendingAtom, AsyncResult.success(values.trending)]);
   }
@@ -353,15 +359,79 @@ describe("TrendingPage", () => {
 });
 
 describe("CratePage", () => {
-  it("shows the «Из ящика» intro and three GC placeholder tiles", async () => {
-    renderApp("/app/crate");
+  const own = (appId: number, name: string): LibraryEntry => ({
+    appId,
+    name,
+    playtimeMinutes: 0,
+    protonTier: "pending",
+    coverUrl: `/own-games/${appId}/cover.jpg`,
+    cloud: { _tag: "Ready" },
+    lastPlayedAt: null,
+  });
+  const portal: LibraryEntry = {
+    ...own(620, "Portal 2"),
+    coverUrl:
+      "https://cdn.cloudflare.steamstatic.com/steam/apps/620/header.jpg",
+  };
+  const library = (entries: LibraryEntry[]) =>
+    AsyncResult.success<LibraryView, { readonly _tag: string }>({
+      _tag: "Ready",
+      entries,
+      syncedAt: null,
+      steamProfile: false,
+    });
+
+  it("показывает свои игры плитками, без игр Steam и заглушек", async () => {
+    renderApp("/app/crate", {
+      library: library([portal, own(1900000001, "Ocarina of Time")]),
+    });
     expect(
       await screen.findByRole("heading", { name: "Из ящика" }),
     ).toBeTruthy();
     expect(
-      screen.getByText("Игры, в которые можно играть без Steam. Скоро"),
+      screen.getByText("Игры, в которые можно играть без Steam"),
     ).toBeTruthy();
-    expect(screen.getAllByText("GC")).toHaveLength(3);
+    const tile = screen.getByRole("link", { name: "Игра: Ocarina of Time" });
+    expect(tile.getAttribute("href")).toBe("/app/game/1900000001");
+    expect(screen.getByText("бесплатно")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Игра: Portal 2" })).toBeNull();
+    expect(screen.queryByText("GC")).toBeNull();
+  });
+
+  it("сортирует игры по названию", async () => {
+    renderApp("/app/crate", {
+      library: library([
+        own(1900000002, "Star Fox 64"),
+        own(1900000001, "Majora's Mask"),
+      ]),
+    });
+    const tiles = await screen.findAllByRole("link", { name: /^Игра: / });
+    expect(tiles.map((t) => t.getAttribute("aria-label"))).toEqual([
+      "Игра: Majora's Mask",
+      "Игра: Star Fox 64",
+    ]);
+  });
+
+  it("без открытых игр — «Пока пусто»", async () => {
+    renderApp("/app/crate", { library: library([portal]) });
+    expect(await screen.findByText("Пока пусто")).toBeTruthy();
+  });
+
+  it("пока библиотека грузится — заготовки плиток", async () => {
+    renderApp("/app/crate");
+    expect(
+      await screen.findByRole("heading", { name: "Из ящика" }),
+    ).toBeTruthy();
+    expect(screen.getAllByTestId("crate-skeleton").length).toBeGreaterThan(0);
+  });
+
+  it("сервер не ответил — «Не удалось связаться с сервером»", async () => {
+    renderApp("/app/crate", {
+      library: AsyncResult.failure(Cause.fail({ _tag: "Boom" })),
+    });
+    expect(
+      await screen.findByText("Не удалось связаться с сервером"),
+    ).toBeTruthy();
   });
 });
 
