@@ -21,7 +21,10 @@ const run = <A, E>(effect: Effect.Effect<A, E, Db>) =>
 
 beforeEach(() => StageNorms.clearCache());
 
-const base = Date.parse("2026-10-01T10:00:00.000Z");
+// От «сейчас», а не фиксированная дата: нормы считают только метки за 30 дней, и фиксированная
+// дата через месяц выпадала из окна (тесты упали 2026-11-05). Запуски идут по часу вперёд —
+// десяти дней хватает на сотни запусков, и все они в прошлом.
+const base = Date.now() - 10 * 24 * 3_600_000;
 /** Счётчик запусков: у каждого свой момент начала (порядок «последних»). */
 let launches = 0;
 
@@ -336,7 +339,17 @@ describe("stage norms", () => {
         yield* seed;
         const old = Date.now() - 40 * 24 * 60 * 60 * 1000;
         // 5 старых запусков по 100 с — вне 30-дневного окна.
-        yield* times(5, launch(10, [["computer", 0], ["steam", 100]], old));
+        yield* times(
+          5,
+          launch(
+            10,
+            [
+              ["computer", 0],
+              ["steam", 100],
+            ],
+            old,
+          ),
+        );
         // 5 свежих по 10 с — без старых они и дают норму.
         yield* times(5, steamLaunch(10, 10));
         return yield* StageNorms.normsFor(10);
