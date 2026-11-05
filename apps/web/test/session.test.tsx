@@ -47,6 +47,7 @@ const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
     hadInstall: false,
     timing: null,
     playedSeconds: 0,
+    previousPlayedAt: null,
     createdAt: "2026-10-17T10:00:00.000Z",
     ...patch,
   }) satisfies SessionView;

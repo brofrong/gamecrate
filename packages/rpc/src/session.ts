@@ -107,6 +107,9 @@ export type SessionTiming = typeof SessionTiming.Type;
  * - `timing` — время этапов экрана загрузки (`SessionTiming`); null — сессия
  *   уже не на экране загрузки (`stage = visible` или терминальное состояние).
  * - `playedSeconds` — игровое время сессии (сумма billable-отрезков, открытый — до текущего момента).
+ * - `previousPlayedAt` — ISO 8601 конца последнего игрового отрезка пользователя в других его
+ *   сессиях (когда он играл до этой), null — других сессий с игрой не было. По нему сайт
+ *   повторяет обучение полному экрану после перерыва.
  * - `createdAt` — ISO 8601.
  */
 export const SessionView = Schema.Struct({
@@ -125,6 +128,7 @@ export const SessionView = Schema.Struct({
   hadInstall: Schema.Boolean,
   timing: Schema.NullOr(SessionTiming),
   playedSeconds: NonNegativeInt,
+  previousPlayedAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
 });
 export type SessionView = typeof SessionView.Type;

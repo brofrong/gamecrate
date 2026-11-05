@@ -500,6 +500,69 @@ describe("session rpc", () => {
     expect(seconds).toBeLessThanOrEqual(92);
   });
 
+  it("previousPlayedAt — конец последнего отрезка в других сессиях пользователя", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const first = yield* rpc["session.start"]({ appId: 10 });
+        const firstView = first.previousPlayedAt;
+        const now = Date.now();
+        const daysAgo = (days: number) => new Date(now - days * 86_400_000);
+        const db = yield* Db;
+        const old = { sessionId: first.id, appId: 10, open: false };
+        yield* db.insert(playSegments).values([
+          // Прошлая сессия alice: позже всего — 20 дней назад (не важно, оплачиваемый ли).
+          {
+            ...old,
+            userId: alice.id,
+            startedAt: daysAgo(21),
+            endedAt: daysAgo(20),
+            billable: true,
+          },
+          {
+            ...old,
+            userId: alice.id,
+            startedAt: daysAgo(20),
+            endedAt: daysAgo(20 - 0.01),
+            billable: false,
+          },
+          // Чужие отрезки не считаются.
+          {
+            ...old,
+            userId: bob.id,
+            startedAt: daysAgo(2),
+            endedAt: daysAgo(1),
+            billable: true,
+          },
+        ]);
+        yield* setSession(first.id, { state: "ended", endedAt: new Date() });
+        const second = yield* rpc["session.start"]({ appId: 10 });
+        // Отрезок текущей сессии — тоже не «прошлая игра».
+        yield* db.insert(playSegments).values({
+          sessionId: second.id,
+          userId: alice.id,
+          appId: 10,
+          startedAt: new Date(now - 60_000),
+          endedAt: new Date(now),
+          billable: true,
+          open: true,
+        });
+        const view = yield* rpc["session.watch"]({ sessionId: second.id }).pipe(
+          Stream.take(1),
+          Stream.runHead,
+        );
+        return {
+          firstView,
+          expected: daysAgo(20 - 0.01).toISOString(),
+          second: Option.getOrThrow(view).previousPlayedAt,
+        };
+      }),
+    );
+    expect(result.firstView).toBeNull();
+    expect(result.second).toBe(result.expected);
+  });
+
   it("idleDeadline is stateSince + idleGraceMinutes in idle_warning", async () => {
     const result = await run(
       Effect.gen(function* () {

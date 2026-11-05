@@ -23,6 +23,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Player } from "../src/components/Player";
+import { afterBreak } from "../src/components/session/SessionControls";
 import type { SelkiesBridge } from "../src/lib/selkiesBridge";
 import type { StreamSettingsControl } from "../src/lib/useStreamSettings";
 
@@ -42,6 +43,7 @@ const view = (patch: Partial<SessionView> = {}): SessionView => ({
   hadInstall: false,
   timing: null,
   playedSeconds: 0,
+  previousPlayedAt: null,
   createdAt: "2026-10-17T10:00:00.000Z",
   ...patch,
 });
@@ -698,6 +700,71 @@ describe("обучение полному экрану", () => {
     const player = renderPlayer({ streamSettings: control({}, true, update) });
     setFullscreen(player.main());
     expect(stepTwo()).toBeNull();
+    expect(update).toHaveBeenCalledWith({ fullscreenTutorialSeen: true });
+  });
+});
+
+describe("обучение после перерыва в игре", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const ago = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+
+  it("afterBreak: больше 14 дней — перерыв; не играл совсем — нет", () => {
+    const now = Date.parse("2026-11-20T12:00:00.000Z");
+    expect(afterBreak(null, now)).toBe(false);
+    expect(afterBreak("2026-11-07T12:00:00.000Z", now)).toBe(false);
+    expect(afterBreak("2026-11-06T11:00:00.000Z", now)).toBe(true);
+  });
+
+  it("пройденное обучение показывается снова после 15 дней без игры, но не после 13", () => {
+    const shown = renderPlayer({
+      view: view({ previousPlayedAt: ago(15) }),
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    expect(tutorialHint()).toBeTruthy();
+    shown.unmount();
+
+    renderPlayer({
+      view: view({ previousPlayedAt: ago(13) }),
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    expect(tutorialHint()).toBeNull();
+  });
+
+  it("после перерыва — один раз за сессию, признак не перезаписывается", () => {
+    setKeyboard(keyboardStub());
+    const update = mock<Update>(() => {});
+    const player = renderPlayer({
+      view: view({ previousPlayedAt: ago(30) }),
+      streamSettings: control({ fullscreenTutorialSeen: true }, true, update),
+    });
+    expect(tutorialHint()).toBeTruthy();
+
+    setFullscreen(player.main());
+    expect(stepTwo()?.textContent).toContain("зажми Esc");
+    setFullscreen(null);
+    expect(tutorialHint()).toBeNull();
+
+    setFullscreen(player.main());
+    expect(stepTwo()).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("× после перерыва убирает плашку до конца сессии", () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({
+      view: view({ previousPlayedAt: ago(30) }),
+      streamSettings: control({ fullscreenTutorialSeen: true }, true, update),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть подсказку" }));
+    expect(tutorialHint()).toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("впервые: × убирает плашку сразу, не дожидаясь сохранения признака", () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({ streamSettings: control({}, true, update) });
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть подсказку" }));
+    expect(tutorialHint()).toBeNull();
     expect(update).toHaveBeenCalledWith({ fullscreenTutorialSeen: true });
   });
 });

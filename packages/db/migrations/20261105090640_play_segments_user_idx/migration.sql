@@ -1,0 +1,1 @@
+CREATE INDEX "play_segments_user_ended_idx" ON "play_segments" ("user_id","ended_at");

@@ -200,6 +200,9 @@ export const playSegments = pgTable(
     uniqueIndex("play_segments_open_session_idx")
       .on(t.sessionId)
       .where(sql`${t.open} = true`),
+    // Когда игрок играл в последний раз (`SessionView.previousPlayedAt`, перечитывается
+    // каждым `session.watch`) — без полного прохода по отрезкам всех игроков.
+    index("play_segments_user_ended_idx").on(t.userId, t.endedAt),
   ],
 );
 

@@ -3,8 +3,9 @@
 // выпадающая панель настроек и подтверждение выхода. Здесь же — клавиши по физическому месту
 // (`localLayout`). Обучение полному экрану (правка владельца 2026-11-05): шаг 1 — плашка «Играй на
 // весь экран» у кнопки, шаг 2 — при первом входе вверху «Чтобы выйти — зажми Esc» (`EscPrompt`);
-// пройдено — `fullscreenTutorialSeen`. В полном экране каждое нажатие Esc показывает ту же полоску
-// со шкалой удержания.
+// пройдено — `fullscreenTutorialSeen`. После перерыва в игре (`TUTORIAL_BREAK_MS`, правка владельца
+// 2026-11-05) обучение повторяется — один раз за сессию. В полном экране каждое нажатие Esc
+// показывает ту же полоску со шкалой удержания.
 // Панель и диалог порталятся в корень экрана сессии (`rootRef`): в полном экране браузер
 // показывает только поддерево полноэкранного элемента. Закрылись — фокус обратно в стрим.
 import { Maximize, Menu, X } from "lucide-react";
@@ -54,6 +55,20 @@ const hintClassName =
 /** Сколько держится шаг 2 обучения («Чтобы выйти — зажми Esc») после первого входа в полный экран. */
 const TUTORIAL_STEP2_MS = 6_000;
 
+/** Перерыв в игре, после которого обучение полному экрану показывается снова (14 дней). */
+export const TUTORIAL_BREAK_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Игрок вернулся после перерыва: до этой сессии он играл (`SessionView.previousPlayedAt`) дольше
+ * `TUTORIAL_BREAK_MS` назад. Не играл совсем — не перерыв: тогда обучение и так не пройдено.
+ */
+export const afterBreak = (
+  previousPlayedAt: string | null,
+  now: number,
+): boolean =>
+  previousPlayedAt !== null &&
+  now - Date.parse(previousPlayedAt) > TUTORIAL_BREAK_MS;
+
 /** Через сколько после отпускания Esc уходит полоска «Зажми Esc». */
 const ESC_PROMPT_LINGER_MS = 3_000;
 
@@ -73,6 +88,7 @@ export function SessionControls({
   onExit,
   rootRef,
   frameRef,
+  returning = false,
 }: {
   control: StreamSettingsControl;
   gameName: string;
@@ -83,6 +99,8 @@ export function SessionControls({
   rootRef: RefObject<HTMLElement | null>;
   /** Iframe стрима: в него возвращается фокус. */
   frameRef: RefObject<HTMLIFrameElement | null>;
+  /** Игрок вернулся после перерыва (`afterBreak`) — обучение ещё раз, даже пройденное. */
+  returning?: boolean;
 }) {
   const { settings, loaded, update } = control;
   const fullscreen = useIsFullscreen();
@@ -94,7 +112,17 @@ export function SessionControls({
   const toConfirm = useRef(false);
   // Пока признак не загрузился — без подсказки (не мигать у тех, кто уже открывал меню).
   const hint = loaded && !settings.menuSeen;
-  const tutorial = loaded && !settings.fullscreenTutorialSeen;
+  // Обучение в этой сессии уже было (вошёл в полный экран или нажал ×) — второй раз не показываем,
+  // даже если признак ещё не записан или игрок вернулся после перерыва.
+  const [tutorialDone, setTutorialDone] = useState(false);
+  const tutorial =
+    loaded && !tutorialDone && (!settings.fullscreenTutorialSeen || returning);
+  // Признак пишем, только если его ещё нет: после перерыва он уже `true`.
+  const finishTutorial = () => {
+    setTutorialDone(true);
+    if (!settings.fullscreenTutorialSeen)
+      update({ fullscreenTutorialSeen: true });
+  };
   const holdable = keyboardLockSupported();
   const [tutorialStep2, setTutorialStep2] = useState(false);
   const [esc, setEsc] = useState<EscPromptState | null>(null);
@@ -106,19 +134,19 @@ export function SessionControls({
     if (open && hint) update({ menuSeen: true });
   };
 
-  // Первый вход в полный экран с непройденным обучением — шаг 2, и обучение пройдено. Признак и
-  // `update` читаются через ref: их смена (запись признака) не должна снимать таймер шага.
+  // Первый вход в полный экран с обучением — шаг 2, и обучение пройдено. Признак и `update`
+  // читаются через ref: их смена (запись признака) не должна снимать таймер шага.
   const tutorialRef = useRef(tutorial);
   tutorialRef.current = tutorial;
-  const updateRef = useRef(update);
-  updateRef.current = update;
+  const finishRef = useRef(finishTutorial);
+  finishRef.current = finishTutorial;
   useEffect(() => {
     if (!fullscreen) {
       setTutorialStep2(false);
       return;
     }
     if (!tutorialRef.current) return;
-    updateRef.current({ fullscreenTutorialSeen: true });
+    finishRef.current();
     if (touchOnly()) return;
     setTutorialStep2(true);
     const timer = setTimeout(() => setTutorialStep2(false), TUTORIAL_STEP2_MS);
@@ -286,7 +314,7 @@ export function SessionControls({
                 <button
                   type="button"
                   aria-label="Скрыть подсказку"
-                  onClick={() => update({ fullscreenTutorialSeen: true })}
+                  onClick={finishTutorial}
                   className="cursor-pointer px-2 py-1.5 text-muted-foreground hover:text-brand-text"
                 >
                   <X className="size-3.5" />

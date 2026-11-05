@@ -30,6 +30,8 @@ import {
   eq,
   isNotNull,
   isNull,
+  max,
+  ne,
   notInArray,
   type SQL,
   sql,
@@ -85,6 +87,7 @@ const sessionWithGame = {
 
 type SessionWithGame = {
   readonly id: string;
+  readonly userId: string;
   readonly appId: number;
   readonly gameName: string;
   readonly state: DbSessionState;
@@ -164,6 +167,25 @@ const playedSeconds = (sessionId: string, now: Date) =>
       return sum + Math.max(0, end.getTime() - segment.startedAt.getTime());
     }, 0);
     return Math.floor(totalMs / 1000);
+  });
+
+/**
+ * Когда пользователь играл до этой сессии: конец последнего его отрезка в других сессиях
+ * (индекс `play_segments_user_ended_idx`), null — не играл.
+ */
+const previousPlayedAt = (userId: string, sessionId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ endedAt: max(playSegments.endedAt) })
+      .from(playSegments)
+      .where(
+        and(
+          eq(playSegments.userId, userId),
+          ne(playSegments.sessionId, sessionId),
+        ),
+      );
+    return row?.endedAt ?? null;
   });
 
 /**
@@ -259,6 +281,8 @@ const toView = (row: SessionWithGame) =>
       hadInstall: row.installJobId !== null,
       timing: yield* timingOf(row, now),
       playedSeconds: yield* playedSeconds(row.id, now),
+      previousPlayedAt:
+        (yield* previousPlayedAt(row.userId, row.id))?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
     } satisfies SessionView;
   });

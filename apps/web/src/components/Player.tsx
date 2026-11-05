@@ -14,7 +14,7 @@ import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { revealDue, showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
 import { LoadingScreen } from "./LoadingScreen";
-import { SessionControls } from "./session/SessionControls";
+import { afterBreak, SessionControls } from "./session/SessionControls";
 import { StatsOverlay } from "./session/StatsOverlay";
 import { SessionStatus } from "./SessionStatus";
 import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
@@ -291,6 +291,7 @@ export function Player({
           onExit={onExit}
           rootRef={rootRef}
           frameRef={frameRef}
+          returning={afterBreak(view.previousPlayedAt, Date.now())}
         />
       )}
     </main>
