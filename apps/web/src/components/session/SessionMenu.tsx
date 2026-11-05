@@ -87,9 +87,13 @@ export function SessionMenu({
   const debugOptions = debugModes.map((mode) => mode.value);
 
   return (
-    <div className="grid gap-5 text-sm">
+    // `grid-cols-1` — колонка шириной панели (`minmax(0, 1fr)`): у неявной колонки ширина не
+    // меньше самого длинного текста, и длинное название игры распирало всё меню.
+    <div className="grid grid-cols-1 gap-5 text-sm">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="truncate font-medium">{gameName}</span>
+        <span className="min-w-0 truncate font-medium" title={gameName}>
+          {gameName}
+        </span>
         <PlayedTime played={played} />
       </div>
       <section className="grid gap-3" aria-labelledby={`${ids}-quality`}>

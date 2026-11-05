@@ -42,6 +42,7 @@ export const saveStreamSettings = (
       debug: value.debug,
       menuSeen: value.menuSeen,
       localLayout: value.localLayout,
+      fullscreenTutorialSeen: value.fullscreenTutorialSeen,
     };
     yield* db
       .insert(userStreamSettings)

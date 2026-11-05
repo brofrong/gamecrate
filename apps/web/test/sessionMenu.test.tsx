@@ -243,8 +243,8 @@ describe("session menu", () => {
       name: "На весь экран",
     });
     // Контейнер кнопок сквозной, клики берут только сами кнопки.
-    const bar = fullscreenButton.parentElement as HTMLElement;
-    expect(bar.contains(menuButton())).toBe(true);
+    const bar = screen.getByTestId("menu-row").parentElement as HTMLElement;
+    expect(bar.contains(fullscreenButton)).toBe(true);
     expect(bar.classList.contains("pointer-events-none")).toBe(true);
     expect(fullscreenButton.classList.contains("pointer-events-auto")).toBe(
       true,
@@ -504,6 +504,36 @@ describe("session menu", () => {
     await waitFor(() => expect(exitPointerLock).toHaveBeenCalledTimes(1));
   });
 
+  it("«На весь экран» — второй строкой под меню", () => {
+    renderPlayer({ streamSettings: control() });
+    const menuRow = screen.getByTestId("menu-row");
+    const fullscreenRow = screen.getByTestId("fullscreen-row");
+    expect(menuRow.contains(menuButton())).toBe(true);
+    expect(
+      fullscreenRow.contains(
+        screen.getByRole("button", { name: "На весь экран" }),
+      ),
+    ).toBe(true);
+    expect(menuRow.nextElementSibling).toBe(fullscreenRow);
+    expect(menuRow.parentElement?.classList.contains("flex-col")).toBe(true);
+  });
+
+  it("длинное название в шапке меню обрезается, а не распирает панель", async () => {
+    const long = "The Legend of Zelda: Ocarina of Time — Master Quest Edition";
+    renderPlayer({
+      view: view({ gameName: long }),
+      streamSettings: control({ menuSeen: true }),
+    });
+    await clickMenu();
+    const name = screen.getByText(long);
+    expect(name.classList.contains("truncate")).toBe(true);
+    expect(name.classList.contains("min-w-0")).toBe(true);
+    expect(name.getAttribute("title")).toBe(long);
+    // Колонка сетки меню — шириной панели, а не по самому длинному тексту.
+    const menu = name.parentElement?.parentElement as HTMLElement;
+    expect(menu.classList.contains("grid-cols-1")).toBe(true);
+  });
+
   it("keyboard switch toggles the local layout", async () => {
     const update = mock<Update>(() => {});
     renderPlayer({
@@ -546,5 +576,212 @@ describe("session menu", () => {
 
     player.unmount();
     expect(bridge.detach).toHaveBeenCalledTimes(1);
+  });
+});
+
+const tutorialHint = () =>
+  screen.queryByRole("button", { name: /Играй на весь экран/ });
+const stepTwo = () => screen.queryByText(/Чтобы выйти/);
+const escBar = () => screen.queryByText(/чтобы выйти из полного экрана/);
+
+/** Документ iframe стрима со своим окном `focus`, чтобы `enterFullscreen` не падал. */
+const frameDocument = (frame: HTMLIFrameElement) => {
+  const doc = document.implementation.createHTMLDocument("stream");
+  Object.defineProperty(frame, "contentDocument", { value: doc });
+  Object.defineProperty(frame, "contentWindow", { value: { focus: noop } });
+  return doc;
+};
+
+const escape = (
+  target: EventTarget,
+  type: "keydown" | "keyup",
+  repeat = false,
+) =>
+  act(() => {
+    target.dispatchEvent(
+      new KeyboardEvent(type, {
+        key: "Escape",
+        code: "Escape",
+        repeat,
+        bubbles: true,
+      }),
+    );
+  });
+
+describe("обучение полному экрану", () => {
+  it("шаг 1 — плашка у кнопки после загрузки настроек; клик по ней разворачивает", async () => {
+    const update = mock<Update>(() => {});
+    const player = renderPlayer({ streamSettings: control({}, false, update) });
+    expect(tutorialHint()).toBeNull();
+
+    player.rerenderWith({ streamSettings: control({}, true, update) });
+    const hint = tutorialHint();
+    expect(hint).toBeTruthy();
+    expect(
+      screen.getByTestId("fullscreen-row").contains(hint as HTMLElement),
+    ).toBe(true);
+
+    fireEvent.click(hint as HTMLElement);
+    await waitFor(() =>
+      expect(calls.map((c) => c.call)).toContain("requestFullscreen"),
+    );
+  });
+
+  it("× на плашке — обучение пройдено", () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({ streamSettings: control({}, true, update) });
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть подсказку" }));
+    expect(update).toHaveBeenCalledWith({ fullscreenTutorialSeen: true });
+  });
+
+  it("пройденное обучение не показывается", () => {
+    const player = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    expect(tutorialHint()).toBeNull();
+    setFullscreen(player.main());
+    expect(stepTwo()).toBeNull();
+  });
+
+  it("шаг 2 — при первом входе «зажми Esc», 6 с, и обучение пройдено", () => {
+    jest.useFakeTimers();
+    try {
+      setKeyboard(keyboardStub());
+      const update = mock<Update>(() => {});
+      const player = renderPlayer({
+        streamSettings: control({}, true, update),
+      });
+      setFullscreen(player.main());
+      expect(update).toHaveBeenCalledWith({ fullscreenTutorialSeen: true });
+      expect(stepTwo()?.textContent).toContain("зажми Esc");
+      expect(tutorialHint()).toBeNull();
+
+      // Признак записан — шаг 2 всё равно держится свои 6 с.
+      player.rerenderWith({
+        streamSettings: control({ fullscreenTutorialSeen: true }, true, update),
+      });
+      act(() => jest.advanceTimersByTime(5_000));
+      expect(stepTwo()).toBeTruthy();
+      act(() => jest.advanceTimersByTime(1_000));
+      expect(stepTwo()).toBeNull();
+      expect(update).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("шаг 2 уходит при выходе из полного экрана", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({ streamSettings: control() });
+    setFullscreen(player.main());
+    expect(stepTwo()).toBeTruthy();
+    setFullscreen(null);
+    expect(stepTwo()).toBeNull();
+  });
+
+  it("без Keyboard Lock API — «нажми Esc», без шкалы", () => {
+    setKeyboard(undefined);
+    const player = renderPlayer({ streamSettings: control() });
+    setFullscreen(player.main());
+    expect(stepTwo()?.textContent).toContain("нажми Esc");
+    expect(screen.queryByTestId("esc-progress")).toBeNull();
+  });
+
+  it("на сенсорном экране без мыши шага 2 нет, но обучение пройдено", () => {
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === "(pointer: coarse)",
+        addEventListener: noop,
+        removeEventListener: noop,
+      }) as unknown as MediaQueryList) as typeof window.matchMedia;
+    const update = mock<Update>(() => {});
+    const player = renderPlayer({ streamSettings: control({}, true, update) });
+    setFullscreen(player.main());
+    expect(stepTwo()).toBeNull();
+    expect(update).toHaveBeenCalledWith({ fullscreenTutorialSeen: true });
+  });
+});
+
+describe("полоска «Зажми Esc» в полном экране", () => {
+  it("нажатие Esc в игре показывает полоску со шкалой; отпустили — уходит через 3 с", () => {
+    jest.useFakeTimers();
+    try {
+      setKeyboard(keyboardStub());
+      const player = renderPlayer({
+        streamSettings: control({ fullscreenTutorialSeen: true }),
+      });
+      const doc = frameDocument(player.frame());
+      setFullscreen(player.main());
+      expect(escBar()).toBeNull();
+
+      escape(doc.body, "keydown");
+      expect(escBar()).toBeTruthy();
+      const progress = screen.getByTestId("esc-progress");
+      expect(progress.style.animation).toContain("gc-fill 1500ms");
+
+      escape(doc.body, "keyup");
+      expect(screen.getByTestId("esc-progress").style.animation).toBe("");
+      act(() => jest.advanceTimersByTime(2_900));
+      expect(escBar()).toBeTruthy();
+      act(() => jest.advanceTimersByTime(100));
+      expect(escBar()).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("Esc в окне страницы тоже показывает полоску и заменяет шаг 2", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({ streamSettings: control() });
+    frameDocument(player.frame());
+    setFullscreen(player.main());
+    expect(stepTwo()).toBeTruthy();
+    escape(document.body, "keydown");
+    expect(escBar()).toBeTruthy();
+    expect(stepTwo()).toBeNull();
+  });
+
+  it("новое нажатие запускает шкалу заново, автоповтор — нет", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    const doc = frameDocument(player.frame());
+    setFullscreen(player.main());
+    escape(doc.body, "keydown");
+    const first = screen.getByTestId("esc-progress");
+    escape(doc.body, "keydown", true);
+    expect(screen.getByTestId("esc-progress")).toBe(first);
+    escape(doc.body, "keyup");
+    escape(doc.body, "keydown");
+    expect(screen.getByTestId("esc-progress")).not.toBe(first);
+  });
+
+  it("вне полного экрана и без Keyboard Lock API полоски нет", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    const doc = frameDocument(player.frame());
+    escape(doc.body, "keydown");
+    expect(escBar()).toBeNull();
+
+    setKeyboard(undefined);
+    setFullscreen(player.main());
+    escape(doc.body, "keydown");
+    expect(escBar()).toBeNull();
+  });
+
+  it("выход из полного экрана убирает полоску", () => {
+    setKeyboard(keyboardStub());
+    const player = renderPlayer({
+      streamSettings: control({ fullscreenTutorialSeen: true }),
+    });
+    const doc = frameDocument(player.frame());
+    setFullscreen(player.main());
+    escape(doc.body, "keydown");
+    expect(escBar()).toBeTruthy();
+    setFullscreen(null);
+    expect(escBar()).toBeNull();
   });
 });

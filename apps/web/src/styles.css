@@ -143,3 +143,33 @@
     transform: scale(7);
   }
 }
+
+/* Экран сессии, подсказка «зажми Esc» (обучение): клавиша нажимается и держится, пока шкала
+   заполняется за 1,5 с (`ESC_HOLD_MS`: 12 %–72 % цикла 2,5 с), потом отпускается. */
+@keyframes gc-esc-press {
+  0%,
+  8%,
+  76%,
+  100% {
+    transform: translateY(0);
+    box-shadow: 0 3px 0 rgb(255 255 255 / 0.25);
+  }
+  12%,
+  72% {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 rgb(255 255 255 / 0.25);
+  }
+}
+@keyframes gc-esc-fill {
+  0%,
+  12% {
+    width: 0;
+  }
+  72% {
+    width: 100%;
+  }
+  76%,
+  100% {
+    width: 0;
+  }
+}

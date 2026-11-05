@@ -16,6 +16,13 @@ describe("StreamSettings schema", () => {
     ).toEqual(defaultStreamSettings);
   });
 
+  it("старый клиент без fullscreenTutorialSeen проходит схему — обучение не пройдено", () => {
+    const { fullscreenTutorialSeen: _, ...old } = defaultStreamSettings;
+    expect(
+      Schema.decodeUnknownSync(StreamSettings)({ ...old, menuSeen: true }),
+    ).toEqual({ ...defaultStreamSettings, menuSeen: true });
+  });
+
   it("rejects bitrate 1, 41 and 2.5", () => {
     for (const bitrateMbps of [1, 41, 2.5]) {
       expect(() =>
@@ -37,6 +44,7 @@ describe("decodeStreamSettings", () => {
         debug: "detailed",
         menuSeen: true,
         localLayout: "yes",
+        fullscreenTutorialSeen: 1,
         extra: 1,
       }),
     ).toEqual({
@@ -45,6 +53,10 @@ describe("decodeStreamSettings", () => {
       menuSeen: true,
     });
     expect(decodeStreamSettings({ localLayout: true }).localLayout).toBe(true);
+    expect(
+      decodeStreamSettings({ fullscreenTutorialSeen: true })
+        .fullscreenTutorialSeen,
+    ).toBe(true);
   });
 
   it("non-objects fall back to defaults entirely", () => {

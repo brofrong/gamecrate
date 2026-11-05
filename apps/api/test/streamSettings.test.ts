@@ -114,6 +114,7 @@ describe("streamSettings.save", () => {
           debug: "short",
           menuSeen: true,
           localLayout: true,
+          fullscreenTutorialSeen: true,
         });
         const second = yield* rpc["streamSettings.save"]({
           quality: "auto",
@@ -122,6 +123,7 @@ describe("streamSettings.save", () => {
           debug: "off",
           menuSeen: true,
           localLayout: false,
+          fullscreenTutorialSeen: false,
         });
         const got = yield* rpc["streamSettings.get"]();
         const rows = yield* db
@@ -140,6 +142,7 @@ describe("streamSettings.save", () => {
       debug: "short",
       menuSeen: true,
       localLayout: true,
+      fullscreenTutorialSeen: true,
     });
     expect(result.second).toEqual({
       quality: "auto",
@@ -148,6 +151,7 @@ describe("streamSettings.save", () => {
       debug: "off",
       menuSeen: true,
       localLayout: false,
+      fullscreenTutorialSeen: false,
     });
     expect(result.got).toEqual(result.second);
     expect(result.rowCount).toBe(1);

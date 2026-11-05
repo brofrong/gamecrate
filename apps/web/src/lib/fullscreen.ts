@@ -3,7 +3,8 @@
 // Esc и системные сочетания уходят в игру, выход — удержанием Esc. Где Keyboard Lock API нет
 // (Safari, Firefox) — просто полный экран. После входа и после закрытия меню фокус — в iframe
 // стрима, чтобы клавиши снова шли в игру. Мышь захватывается сразу при входе (слово владельца
-// 2026-11-03), а отпущенная — снова кликом по игре (`lockPointerOnClick`).
+// 2026-11-03), а отпущенная — снова кликом по игре (`lockPointerOnClick`). Нажатия Esc для
+// подсказки «зажми Esc» — `watchEscape`.
 import { useEffect, useState } from "react";
 
 /** Keyboard Lock API — пока не в `lib.dom.d.ts`, поэтому локальное расширение `Navigator`. */
@@ -15,6 +16,19 @@ type KeyboardLockNavigator = Navigator & {
 };
 
 const keyboard = () => (navigator as KeyboardLockNavigator).keyboard;
+
+/**
+ * Есть Keyboard Lock API (Chrome, Edge, Яндекс Браузер): в полном экране Esc уходит в игру, а
+ * выход — удержанием Esc. Без него (Safari, Firefox) Esc выходит сразу.
+ */
+export const keyboardLockSupported = (): boolean =>
+  typeof keyboard()?.lock === "function";
+
+/**
+ * Сколько держать Esc до выхода из полного экрана с захваченными клавишами: `kHoldEscapeTime`
+ * в Chromium (`chrome/browser/ui/exclusive_access/keyboard_lock_controller.cc`) — 1,5 с.
+ */
+export const ESC_HOLD_MS = 1_500;
 
 /** Отдаёт фокус стриму: сам iframe и его окно (иначе клавиши остаются на странице). */
 export function focusStream(frame: HTMLIFrameElement | null): void {
@@ -161,4 +175,58 @@ export function useIsFullscreen(): boolean {
   }, []);
 
   return fullscreen;
+}
+
+const isEscape = (event: Event): boolean => {
+  const { code, key } = event as KeyboardEvent;
+  return code === "Escape" || key === "Escape";
+};
+
+/**
+ * Нажатие и отпускание Esc — в документе iframe стрима (там фокус в полном экране; подписка
+ * переставляется на каждую загрузку iframe) и в окне страницы (фокус ушёл на наши кнопки).
+ * Автоповтор удержания (`repeat`) — не новое нажатие. Возвращает «стоп».
+ */
+export function watchEscape(
+  frame: HTMLIFrameElement,
+  handlers: { readonly onDown: () => void; readonly onUp: () => void },
+): () => void {
+  const onKeyDown = (event: Event) => {
+    if (isEscape(event) && !(event as KeyboardEvent).repeat) handlers.onDown();
+  };
+  const onKeyUp = (event: Event) => {
+    if (isEscape(event)) handlers.onUp();
+  };
+  const listen = (
+    target: Pick<Document, "addEventListener" | "removeEventListener">,
+  ) => {
+    target.addEventListener("keydown", onKeyDown, true);
+    target.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      target.removeEventListener("keydown", onKeyDown, true);
+      target.removeEventListener("keyup", onKeyUp, true);
+    };
+  };
+
+  let detachDocument = () => {};
+  const attach = () => {
+    detachDocument();
+    detachDocument = () => {};
+    let doc: Document | null;
+    try {
+      doc = frame.contentDocument;
+    } catch {
+      return;
+    }
+    if (doc !== null) detachDocument = listen(doc);
+  };
+
+  attach();
+  frame.addEventListener("load", attach);
+  const detachPage = listen(document);
+  return () => {
+    frame.removeEventListener("load", attach);
+    detachDocument();
+    detachPage();
+  };
 }

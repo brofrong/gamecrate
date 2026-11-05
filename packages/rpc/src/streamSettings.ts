@@ -1,7 +1,8 @@
 // Настройки стрима, хранимые в аккаунте (таблица `user_stream_settings`): качество,
-// битрейт, разрешение, отладка, раскладка клавиатуры и признак «меню уже открывали» (спека §4). Читаются при
+// битрейт, разрешение, отладка, раскладка клавиатуры и признаки «меню уже открывали» и «обучение
+// полному экрану пройдено» (спека §4). Читаются при
 // каждом запуске игры — следующая сессия на любом устройстве открывается с ними.
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { AuthMiddleware } from "./auth";
 
@@ -30,6 +31,9 @@ export const autoBitrateMbps = 20;
  * - `menuSeen` — подсказка новичку («Здесь настройки игры и выход») уже показывалась.
  * - `localLayout` — клавиши уходят в игру символами раскладки игрока (для чатов на русском);
  *   по умолчанию — по физическому месту, как на английской (игры ждут WASD на любой раскладке).
+ * - `fullscreenTutorialSeen` — обучение полному экрану («Играй на весь экран», «зажми Esc»)
+ *   пройдено. Ключ необязателен на входе: вкладки со старым сайтом сохраняют настройки без него,
+ *   и `save` не должен им отказывать (без ключа — `false`, обучение покажется ещё раз).
  */
 export const StreamSettings = Schema.Struct({
   quality: StreamQuality,
@@ -40,10 +44,13 @@ export const StreamSettings = Schema.Struct({
   debug: DebugMode,
   menuSeen: Schema.Boolean,
   localLayout: Schema.Boolean,
+  fullscreenTutorialSeen: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
 });
 export type StreamSettings = typeof StreamSettings.Type;
 
-/** Значения по умолчанию: автобитрейт, 1080p, отладка выкл, подсказка не показана, клавиши по месту. */
+/** Значения по умолчанию: автобитрейт, 1080p, отладка выкл, подсказки не показаны, клавиши по месту. */
 export const defaultStreamSettings: StreamSettings = {
   quality: "auto",
   bitrateMbps: autoBitrateMbps,
@@ -51,6 +58,7 @@ export const defaultStreamSettings: StreamSettings = {
   debug: "off",
   menuSeen: false,
   localLayout: false,
+  fullscreenTutorialSeen: false,
 };
 
 /** Декодирует поле схемой, неизвестное/битое значение — умолчание этого поля. */
@@ -99,6 +107,11 @@ export const decodeStreamSettings = (value: unknown): StreamSettings => {
       Schema.Boolean,
       record["localLayout"],
       defaultStreamSettings.localLayout,
+    ),
+    fullscreenTutorialSeen: decodeField(
+      Schema.Boolean,
+      record["fullscreenTutorialSeen"],
+      defaultStreamSettings.fullscreenTutorialSeen,
     ),
   };
 };
