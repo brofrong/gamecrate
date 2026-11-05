@@ -17,7 +17,7 @@ import type {
   RecentEntry,
   SessionView,
 } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRouter,
@@ -468,5 +468,44 @@ describe("MyGamesPage", () => {
     expect(
       await screen.findByText(/148 игр · 12 готовы · обновлено/),
     ).toBeTruthy();
+  });
+});
+
+describe("активная сессия в узком окне и на планшете", () => {
+  const playing: SessionView = {
+    id: "c4480d07-6418-4dfa-80fc-bd344bfbc027",
+    appId: 1900000001,
+    gameName: "Ocarina of Time",
+    state: "playing",
+    streamReady: true,
+    failReason: null,
+    idleDeadline: null,
+    installPercent: null,
+    stage: "visible",
+    installStage: null,
+    hadInstall: false,
+    timing: null,
+    playedSeconds: 10,
+    previousPlayedAt: null,
+    createdAt: "2026-11-05T09:45:15.000Z",
+  };
+  const library = ready([
+    entry({ appId: 1, name: "Balatro", cloud: { _tag: "Ready" } }),
+  ]);
+
+  it("плашка «Вернуться» закреплена внизу экрана — от md до xl", async () => {
+    renderMyGames("/app", { library, active: playing });
+    await screen.findByRole("heading", { name: /^Готовы к запуску/ });
+    const bar = screen.getByTestId("tablet-session");
+    for (const name of ["fixed", "hidden", "md:block", "xl:hidden"])
+      expect(bar.classList.contains(name)).toBe(true);
+    expect(within(bar).getByText("Ocarina of Time")).toBeTruthy();
+    expect(within(bar).getByRole("button", { name: "Вернуться" })).toBeTruthy();
+  });
+
+  it("без активной сессии плашки нет", async () => {
+    renderMyGames("/app", { library });
+    await screen.findByRole("heading", { name: /^Готовы к запуску/ });
+    expect(screen.queryByTestId("tablet-session")).toBeNull();
   });
 });

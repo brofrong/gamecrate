@@ -373,6 +373,25 @@ export function MyGamesPage() {
           />
         )}
       </StickySlot>
+      {/* От md до xl правой колонки нет — её панели под списком, который догружается при
+          прокрутке, и до «Сессии» не докрутить (владелец, 2026-11-05). Там та же компактная
+          карточка, что на телефоне, — закреплена внизу экрана; распорка не даёт ей закрыть
+          последние плитки. */}
+      {activeSession && (
+        <>
+          <div aria-hidden className="hidden h-16 md:block xl:hidden" />
+          <div
+            data-testid="tablet-session"
+            className="fixed right-3 bottom-4 z-40 hidden w-[380px] md:block xl:hidden"
+          >
+            <ActiveSessionPanel
+              session={activeSession}
+              onResume={play.onResume}
+              compact
+            />
+          </div>
+        </>
+      )}
     </>
   );
 }
