@@ -5,6 +5,7 @@ import {
   AgentNotConnected,
   type AgentReport,
   AgentRpcs,
+  AgentUnauthorized,
   type ProfileCommit,
   type WorkerHardware,
   type WorkerStats,
@@ -14,6 +15,7 @@ import { BunHttpServer } from "@effect/platform-bun";
 import {
   type Cause,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Logger,
@@ -42,7 +44,7 @@ import {
 import { WorkerMonitor, type WorkerMonitorShape } from "../src/WorkerMonitor";
 import { testConfig } from "./fakes";
 
-const token = "link-test-token-0123456789abcdef!";
+const token = `cgw_${"a".repeat(43)}`;
 
 /** Фейковый оркестратор: журнал подключений и отчётов, очереди команд. */
 const server = {
@@ -158,7 +160,7 @@ afterAll(() => runtime.dispose());
 const config = (): AgentConfigValues =>
   testConfig({
     orchestratorUrl: `ws://127.0.0.1:${port}/agent`,
-    agentToken: Redacted.make(token),
+    workerToken: Redacted.make(token),
     slots: 1,
     sessionImage: "cg-session:test",
     gbmAllocatorPath: Option.none(),
@@ -245,6 +247,18 @@ describe("OrchestratorLink", () => {
     expect(report("Failed")).toBe(true);
     expect(report("InstallProgress")).toBe(false);
     expect(report("Heartbeat")).toBe(false);
+  });
+
+  it("isUnauthorized finds AgentUnauthorized among the connection's failures", () => {
+    expect(
+      OrchestratorLink.isUnauthorized(Exit.fail(new AgentUnauthorized())),
+    ).toBe(true);
+    expect(
+      OrchestratorLink.isUnauthorized(Exit.fail(new AgentNotConnected())),
+    ).toBe(false);
+    expect(OrchestratorLink.isUnauthorized(Exit.succeed(undefined))).toBe(
+      false,
+    );
   });
 
   it(

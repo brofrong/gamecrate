@@ -98,13 +98,16 @@ export type WorkerHardware = typeof WorkerHardware.Type;
  * Версии и сборки воркера — снимаются агентом один раз при подключении.
  * `driver` — версия драйвера NVIDIA (`nvidia-smi`), `null` — GPU нет или
  * `nvidia-smi` недоступен; `steamClientBuiltAt` — mtime `STEAM_CLIENT_DIR`
- * (ISO), `null` — каталог не смонтирован или недоступен.
+ * (ISO), `null` — каталог не смонтирован или недоступен. `agentVersion` —
+ * `CG_VERSION` агента (деплой ставит тег релиза, по умолчанию `dev`);
+ * `optional` — поля нет у агента до задачи 4.
  */
 export const WorkerVersions = Schema.Struct({
   agentCommit: Schema.String,
   sessionImage: Schema.String,
   driver: Schema.NullOr(Schema.String),
   steamClientBuiltAt: Schema.NullOr(Schema.String),
+  agentVersion: Schema.optional(Schema.String),
 });
 export type WorkerVersions = typeof WorkerVersions.Type;
 

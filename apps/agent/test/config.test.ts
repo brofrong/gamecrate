@@ -1,18 +1,17 @@
 import { describe, expect, it } from "bun:test";
 import { ConfigProvider, Effect, Option } from "effect";
-import { agentConfig } from "../src/config";
+import { agentConfig, orchestratorHttpBase } from "../src/config";
+
+/** Валидный токен сервера: `cgw_` + 43 символа base64url. */
+const workerToken = `cgw_${"a".repeat(43)}`;
 
 /** Минимальное окружение агента воркера. */
 const base: Record<string, string> = {
   WORKER_ID: "w1",
   ORCHESTRATOR_URL: "ws://cg-orchestrator:3001/agent",
-  AGENT_TOKEN: "x".repeat(32),
+  WORKER_TOKEN: workerToken,
   WORKER_PUBLIC_IP: "203.0.113.7",
   SESSION_IMAGE: "cg-session:550.163.01",
-  S3_ENDPOINT: "http://cg-rustfs:9000",
-  S3_ACCESS_KEY: "access-key-0123456789",
-  S3_SECRET_KEY: "secret-key-0123456789",
-  PROFILE_KEY: Buffer.from(new Uint8Array(32)).toString("base64"),
   LIBRARY_DIR: "/raid/cloud-gaming/library",
   STEAM_CLIENT_DIR: "/raid/cloud-gaming/steam-client",
   SCRATCH_DIR: "/home/brofrong/cloud-gaming/scratch",
@@ -147,9 +146,9 @@ describe("agentConfig GAMES_DIR", () => {
 
   it("must not share a directory tree with the session scratch", async () => {
     for (const dir of [base.SCRATCH_DIR, `${base.SCRATCH_DIR}/games`])
-      expect(
-        await error({ ...base, GAMES_DIR: dir as string }),
-      ).toContain("GAMES_DIR must not be SCRATCH_DIR");
+      expect(await error({ ...base, GAMES_DIR: dir as string })).toContain(
+        "GAMES_DIR must not be SCRATCH_DIR",
+      );
   });
 
   it("must not share a directory tree with the install scratch", async () => {
@@ -188,5 +187,43 @@ describe("agentConfig agentCommit", () => {
       "abc1234",
     );
     expect((await ok({ ...base, CG_COMMIT: " " })).agentCommit).toBe("unknown");
+  });
+});
+
+describe("agentConfig cgVersion", () => {
+  it("defaults to dev", async () => {
+    expect((await ok(base)).cgVersion).toBe("dev");
+  });
+
+  it("reads CG_VERSION", async () => {
+    expect((await ok({ ...base, CG_VERSION: "1.2.3" })).cgVersion).toBe(
+      "1.2.3",
+    );
+  });
+});
+
+describe("agentConfig WORKER_TOKEN", () => {
+  it("accepts the cgw_ token format", async () => {
+    const config = await ok(base);
+    expect(config.workerToken).toBeDefined();
+  });
+
+  it("rejects WORKER_TOKEN without cgw_ prefix", async () => {
+    expect(await error({ ...base, WORKER_TOKEN: "a".repeat(47) })).toContain(
+      "WORKER_TOKEN",
+    );
+  });
+
+  it("rejects WORKER_TOKEN with the wrong length", async () => {
+    expect(
+      await error({ ...base, WORKER_TOKEN: `cgw_${"a".repeat(42)}` }),
+    ).toContain("WORKER_TOKEN");
+  });
+});
+
+describe("orchestratorHttpBase", () => {
+  it("maps wss and ws", () => {
+    expect(orchestratorHttpBase("wss://h/agent")).toBe("https://h");
+    expect(orchestratorHttpBase("ws://h:3001/agent")).toBe("http://h:3001");
   });
 });

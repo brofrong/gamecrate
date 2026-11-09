@@ -1,10 +1,29 @@
 // Конфигурация агента воркера из окружения. Секреты — только Redacted.
+// S3 профилей и PROFILE_KEY больше не читаются из окружения — их отдаёт
+// главный (`GET /agent/config`, см. RemoteConfig.ts); у агента остался
+// только WORKER_TOKEN.
 import { relative } from "node:path";
 import type { AgentRoles } from "@cg/rpc";
-import { Config, Context, Layer, Option, Schema, SchemaIssue } from "effect";
+import {
+  Config,
+  Context,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+  SchemaIssue,
+} from "effect";
+import {
+  fetchRemoteConfig,
+  type RemoteConfigError,
+  type RemoteConfigValues,
+} from "./RemoteConfig";
 
-/** Минимальная длина `AGENT_TOKEN` — та же, что проверяет оркестратор. */
-export const agentTokenMinLength = 32;
+/**
+ * Постоянный токен этого сервера: `cgw_` + 43 символа base64url (32
+ * случайных байта) — формат `newWorkerToken` (`packages/db/src/workerTokens.ts`).
+ */
+const workerTokenPattern = /^cgw_[A-Za-z0-9_-]{43}$/;
 
 /**
  * Абсолютный путь каталога хоста. Без `,` и `:`: пути попадают в опцию `o=`
@@ -61,12 +80,15 @@ const fields = Config.all({
     Schema.String.check(Schema.isPattern(/^wss?:\/\/\S+$/)),
     "ORCHESTRATOR_URL",
   ),
-  /** Общий секрет агентов: `Authorization: Bearer <AGENT_TOKEN>`. */
-  agentToken: Config.schema(
-    Schema.Redacted(
-      Schema.String.check(Schema.isMinLength(agentTokenMinLength)),
-    ),
-    "AGENT_TOKEN",
+  /**
+   * Токен этого сервера (выдаёт обмен кода подключения, `POST
+   * /agent/enroll`): `Authorization: Bearer <WORKER_TOKEN>` апгрейда `GET
+   * /agent`, `agent.connect` и `GET /agent/config`. Общего `AGENT_TOKEN`
+   * агентов больше нет (спека §3).
+   */
+  workerToken: Config.schema(
+    Schema.Redacted(Schema.String.check(Schema.isPattern(workerTokenPattern))),
+    "WORKER_TOKEN",
   ),
   /** Публичный IP воркера: кандидат WebRTC (`SELKIES_WEBRTC_PUBLIC_IP`). */
   publicIp: Config.NonEmptyString("WORKER_PUBLIC_IP"),
@@ -101,21 +123,12 @@ const fields = Config.all({
   dockerSocket: Config.NonEmptyString("DOCKER_SOCKET").pipe(
     Config.withDefault("/var/run/docker.sock"),
   ),
-  /** Endpoint S3-совместимого хранилища профилей (RustFS), напр. `http://cg-rustfs:9000`. */
-  s3Endpoint: Config.NonEmptyString("S3_ENDPOINT"),
-  /** Бакет с зашифрованными профилями. */
-  s3Bucket: Config.NonEmptyString("S3_BUCKET").pipe(
-    Config.withDefault("cg-profiles"),
-  ),
-  /** Ключ доступа S3. */
-  s3AccessKey: Config.Redacted("S3_ACCESS_KEY"),
-  /** Секретный ключ S3. */
-  s3SecretKey: Config.Redacted("S3_SECRET_KEY"),
   /**
-   * Ключ шифрования профилей: base64 ровно 32 байт (AES-256-GCM, см.
-   * `profile/codec.ts`). Видит только агент — никогда в логи/отчёты.
+   * Версия сборки агента (деплой ставит тег релиза) — в
+   * `WorkerVersions.agentVersion` для блока «Версии» админки; не задана —
+   * `dev`.
    */
-  profileKey: Config.Redacted("PROFILE_KEY"),
+  cgVersion: Config.String("CG_VERSION").pipe(Config.withDefault("dev")),
   /** Общая библиотека игр на хосте (внутри — `steamapps/`): lower для `steamapps` сессий. */
   libraryDir: HostDir("LIBRARY_DIR"),
   /** Чистый клиент Steam на хосте: lower для `~/.local/share/Steam` сессий. */
@@ -204,13 +217,49 @@ export const agentConfig = fields.pipe(
   }),
 );
 
-export type AgentConfigValues = Config.Success<typeof agentConfig>;
+/** Переменные окружения агента — без S3/`PROFILE_KEY`, их отдаёт главный. */
+export type AgentEnvValues = Config.Success<typeof agentConfig>;
 
-/** Сервис с прочитанной конфигурацией. */
+/**
+ * Итоговый конфиг агента: переменные окружения плюс S3/`PROFILE_KEY` с
+ * главного (`RemoteConfigValues`) — остальной код агента (`ProfileStore` и
+ * т.п.) их не различает, читает как раньше из `AgentConfig`.
+ */
+export type AgentConfigValues = AgentEnvValues & RemoteConfigValues;
+
+/**
+ * Адрес HTTP(S) оркестратора из адреса его WebSocket (`ORCHESTRATOR_URL`):
+ * схема `ws`/`wss` → `http`/`https`, путь отбрасывается (`RemoteConfig`
+ * сам дописывает `/agent/config`). Например `wss://h/agent` → `https://h`,
+ * `ws://h:3001/agent` → `http://h:3001`.
+ */
+export const orchestratorHttpBase = (orchestratorUrl: string): string => {
+  const url = new URL(orchestratorUrl);
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  return url.origin;
+};
+
+/**
+ * Сервис с прочитанной конфигурацией: сначала окружение, затем конфиг с
+ * главного (`fetchRemoteConfig` сам повторяет сеть/5xx/401 с задержкой;
+ * `RemoteConfigInvalid` — фатальная ошибка данных ответа, без повтора).
+ */
 export class AgentConfig extends Context.Service<
   AgentConfig,
   AgentConfigValues
 >()("@cg/agent/AgentConfig") {
-  static readonly layer: Layer.Layer<AgentConfig, Config.ConfigError> =
-    Layer.effect(AgentConfig, agentConfig);
+  static readonly layer: Layer.Layer<
+    AgentConfig,
+    Config.ConfigError | RemoteConfigError
+  > = Layer.effect(
+    AgentConfig,
+    Effect.gen(function* () {
+      const env = yield* agentConfig;
+      const remote = yield* fetchRemoteConfig(
+        `${orchestratorHttpBase(env.orchestratorUrl)}/agent/config`,
+        env.workerToken,
+      );
+      return { ...env, ...remote };
+    }),
+  );
 }

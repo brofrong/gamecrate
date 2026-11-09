@@ -214,6 +214,7 @@ const make = Effect.gen(function* () {
       sessionImage: config.sessionImage,
       driver: gpus[0]?.driver ?? null,
       steamClientBuiltAt: builtAt?.toISOString() ?? null,
+      agentVersion: config.cgVersion,
     } satisfies WorkerVersions;
 
     return {

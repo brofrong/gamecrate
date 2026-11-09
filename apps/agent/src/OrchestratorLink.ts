@@ -1,12 +1,13 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
-// (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды сессий
-// передаёт SessionSupervisor, команды установки и удаления игр — Installer; их
-// отчёты и снимки загрузки WorkerMonitor отправляет по одному, по порядку
-// (каждого источника); на время соединения через него идут
-// `agent.profileCommit` (ProfileCommitter).
+// (`agent.connect` + `agent.report`, NDJSON, Bearer WORKER_TOKEN — токен
+// этого сервера, задача 4). Команды сессий передаёт SessionSupervisor,
+// команды установки и удаления игр — Installer; их отчёты и снимки загрузки
+// WorkerMonitor отправляет по одному, по порядку (каждого источника); на
+// время соединения через него идут `agent.profileCommit` (ProfileCommitter).
 // `agent.connect` несёт железо и версии воркера (WorkerMonitor).
-// Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
-// переподключение с паузой 1 → 30 с.
+// Обрыв, отказ в отчёте (AgentNotConnected), чужой токен (AgentUnauthorized —
+// WORKER_TOKEN отозван или не принадлежит WORKER_ID) или замена соединения
+// более новым — переподключение с паузой 1 → 30 с.
 import {
   type AgentCommand,
   type AgentConnect,
@@ -21,6 +22,7 @@ import {
   Effect,
   Exit,
   Layer,
+  Option,
   Queue,
   Redacted,
   Stream,
@@ -53,6 +55,19 @@ export const isTerminal = (report: AgentReport) =>
 export const nextDelay = (delay: Duration.Duration) =>
   Duration.min(Duration.times(delay, 2), RECONNECT_MAX);
 
+/**
+ * `exit` — отказ `connection`, и среди его ошибок есть `AgentUnauthorized`
+ * (чужой или отозванный `WORKER_TOKEN`, спека §3): своя причина, не сетевая —
+ * быстрый повтор не поможет, в отличие от обрыва связи.
+ */
+export const isUnauthorized = (exit: Exit.Exit<unknown, unknown>): boolean =>
+  Exit.isFailure(exit) &&
+  Option.exists(
+    Cause.findErrorOption(exit.cause),
+    (error) =>
+      (error as { readonly _tag?: unknown })._tag === "AgentUnauthorized",
+  );
+
 export const run = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const supervisor = yield* SessionSupervisor;
@@ -63,7 +78,7 @@ export const run = Effect.gen(function* () {
     Layer.provide(
       BunSocket.layerWebSocket(config.orchestratorUrl, {
         headers: {
-          authorization: `Bearer ${Redacted.value(config.agentToken)}`,
+          authorization: `Bearer ${Redacted.value(config.workerToken)}`,
         },
       }),
     ),
@@ -101,8 +116,9 @@ export const run = Effect.gen(function* () {
     carry.push(...buffered.filter(isTerminal));
     const { hardware, versions } = yield* monitor.snapshot;
     const payload: AgentConnect = {
-      // Пока — общий AGENT_TOKEN; токен своего сервера (WORKER_TOKEN) — Task 4.
-      token: config.agentToken,
+      // Тот же токен сервера, что на апгрейде `GET /agent` — оркестратор
+      // сверяет, что он принадлежит именно `workerId` (AgentUnauthorized).
+      token: config.workerToken,
       workerId: config.workerId,
       publicIp: config.publicIp,
       slots: config.slots,
@@ -170,7 +186,10 @@ export const run = Effect.gen(function* () {
     const lived = Duration.millis((yield* Clock.currentTimeMillis) - startedAt);
     if (Duration.isGreaterThanOrEqualTo(lived, HEALTHY_CONNECTION))
       delay = RECONNECT_MIN;
-    if (Exit.isSuccess(exit))
+    if (isUnauthorized(exit)) {
+      delay = RECONNECT_MAX;
+      yield* Effect.logError("Worker token rejected by orchestrator");
+    } else if (Exit.isSuccess(exit))
       yield* Effect.logWarning(
         "Orchestrator ended the command stream (another agent with this WORKER_ID connected?)",
         { retryIn: Duration.format(delay) },
