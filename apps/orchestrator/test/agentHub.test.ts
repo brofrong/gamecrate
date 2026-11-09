@@ -29,7 +29,12 @@ import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 import { Tunnels } from "../src/Tunnels";
 import { WorkerAuth } from "../src/WorkerAuth";
 import { testSeedKey } from "./seedKey";
-import { seedWorker, TestOrchestratorConfig, testProfileKey } from "./support";
+import {
+  seedWorker,
+  TestOrchestratorConfig,
+  testProfileKey,
+  testRelaySecret,
+} from "./support";
 
 /** Постоянный токен сервера `workerId` в этих тестах. */
 const tokenOf = (workerId: string) => `cgw_test-token-of-${workerId}`;
@@ -790,6 +795,7 @@ const baseEnv = {
   S3_SECRET_KEY: "secret-key",
   PROFILE_KEY: testProfileKey,
   SEED_KEY: Redacted.value(testSeedKey),
+  RELAY_SECRET: testRelaySecret,
 };
 
 /** Разбор конфига по окружению `env`; `undefined` — переменной нет. */
@@ -833,6 +839,20 @@ describe("config", () => {
     ]) {
       const result = await parse(env);
       expect(result._tag).toBe("Failure");
+    }
+  });
+
+  it("requires RELAY_SECRET of at least 32 characters without echoing it", async () => {
+    const ok = await parse(baseEnv);
+    expect(ok._tag).toBe("Success");
+    if (ok._tag === "Success")
+      expect(Redacted.value(ok.success.relaySecret)).toBe(testRelaySecret);
+    const short = "s".repeat(31);
+    for (const value of [undefined, short]) {
+      const result = await parse({ ...baseEnv, RELAY_SECRET: value });
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(String(result.failure)).not.toContain(short);
     }
   });
 

@@ -10,14 +10,22 @@
 // иначе 502 без команды агенту. Владельца сессии проверяет api.
 //
 // Запрос агенту: путь без префикса `/relay/<id>` + query, заголовки api как
-// есть, кроме hop-by-hop (api уже убрал host/cookie/origin и т. п.). Ответ:
-// статус, заголовки и тело потоком — как прислал агент (переписывает api).
+// есть, кроме hop-by-hop и секрета relay (api уже убрал host/cookie/origin и
+// т. п.). Ответ: статус, заголовки и тело потоком — как прислал агент
+// (переписывает api).
+//
+// Relay слушается и в сети обратного прокси (оркестратор в `proxy` ради
+// маршрута `/agent*`), поэтому любой запрос без общего секрета api
+// (`RELAY_SECRET` в заголовке `x-cg-relay-secret`) — 403 сразу, до разбора
+// пути, БД и `OpenTunnel`.
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Db, sessions } from "@cg/db";
 import {
   encodeTunnelControl,
   decodeTunnelControl,
   isSessionId,
   pipeFrames,
+  RELAY_SECRET_HEADER,
   type TunnelControl,
 } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
@@ -29,6 +37,7 @@ import {
   FiberSet,
   Layer,
   Option,
+  Redacted,
   Schema,
   Stream,
 } from "effect";
@@ -68,6 +77,8 @@ const droppedRequestHeaders = new Set([
   "sec-websocket-version",
   "sec-websocket-extensions",
   "sec-websocket-protocol",
+  // Секрет api ↔ relay агенту и Selkies не нужен.
+  RELAY_SECRET_HEADER,
 ]);
 
 const droppedResponseHeaders = new Set([
@@ -82,6 +93,21 @@ const droppedResponseHeaders = new Set([
 ]);
 
 const notFound = () => HttpServerResponse.text("Not Found", { status: 404 });
+const forbidden = () => HttpServerResponse.text("Forbidden", { status: 403 });
+
+/**
+ * Совпадает ли присланный секрет с `RELAY_SECRET`: сравнение SHA-256 обоих
+ * за постоянное время (`timingSafeEqual` требует равной длины). Нет
+ * заголовка — нет.
+ */
+const relaySecretMatches = (
+  sent: string | undefined,
+  expected: Redacted.Redacted<string>,
+) => {
+  if (sent === undefined) return false;
+  const digest = (value: string) => createHash("sha256").update(value).digest();
+  return timingSafeEqual(digest(sent), digest(Redacted.value(expected)));
+};
 const badGateway = () =>
   HttpServerResponse.text("Стрим недоступен", { status: 502 });
 const tooManyTunnels = () =>
@@ -382,10 +408,11 @@ const relayFailed = (sessionId: string, workerId: string) => (error: unknown) =>
   );
 
 /**
- * Обработчик relay. Зависит от Db, AgentHub и Tunnels; мосты WebSocket —
- * в `runBridge` (живут в scope слоя).
+ * Обработчик relay. Зависит от конфига (`RELAY_SECRET`), Db, AgentHub и
+ * Tunnels; мосты WebSocket — в `runBridge` (живут в scope слоя).
  */
 const handler = Effect.gen(function* () {
+  const { relaySecret } = yield* OrchestratorConfig;
   const db = yield* Db;
   const hub = yield* AgentHub;
   const tunnels = yield* Tunnels;
@@ -397,6 +424,8 @@ const handler = Effect.gen(function* () {
 
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
+    if (!relaySecretMatches(request.headers[RELAY_SECRET_HEADER], relaySecret))
+      return forbidden();
     const url = new URL(request.url, "http://localhost");
     const match = relayPath.exec(url.pathname);
     const sessionId = match?.[1];

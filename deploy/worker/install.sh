@@ -3,7 +3,7 @@
 # с одноразовым кодом показывает админка («Серверы» → «Добавить сервер»):
 #
 #   curl -fsSL https://<домен>/agent/install.sh | sudo bash -s -- <код> [--public-ip <ip>] \
-#     [--data-dir <путь>] [--dry-run]
+#     [--data-dir <путь>] [--sessions-subnet <a.b.c.0/24>] [--dry-run]
 #
 # Скрипт отдаёт оркестратор главного (`GET /agent/install.sh`), подставляя вместо заглушек ниже
 # свой публичный адрес (ORCHESTRATOR_PUBLIC_URL), версию релиза (CG_VERSION) и версии драйвера
@@ -15,21 +15,27 @@
 #    NVIDIA runtime в `docker info` (NVIDIA Container Toolkit), `nvidia-drm modeset=1`, драйвер
 #    из списка релиза, `libnvidia-allocator.so.<драйвер>` (Debian — …/nvidia/current/, Ubuntu —
 #    /usr/lib/x86_64-linux-gnu/), группа сокета Docker (DOCKER_GID), публичный IP
-#    (`curl https://api.ipify.org` или `--public-ip`). SLOTS = число GPU.
+#    (`curl https://api.ipify.org` или `--public-ip`), сеть cg-sessions (если уже есть — с той же
+#    подсетью и ip-range, иначе отказ с инструкцией). SLOTS = число GPU.
 # 2. `POST /agent/enroll` — код меняется на постоянный токен сервера; `docker login` реестра
 #    выданными учётными данными (только чтение; пароль — через stdin); наличие образов релиза в
 #    реестре (`docker manifest inspect`); `docker pull` образа сессии (агент создаёт контейнеры
 #    сессий из локального образа).
 # 3. Каталоги (владелец uid 1000): CG_DATA_DIR (по умолчанию /srv/cloud-gaming: library,
 #    install-scratch, games — одна ФС, перенос игр `rename`), SCRATCH_DIR
-#    /srv/cloud-gaming-scratch, STEAM_CLIENT_PARENT /srv/cloud-gaming-steam; сеть cg-sessions;
+#    /srv/cloud-gaming-scratch, STEAM_CLIENT_PARENT /srv/cloud-gaming-steam; сеть cg-sessions с
+#    фиксированной подсетью (по умолчанию 172.31.240.0/24, `--sessions-subnet`): контейнерам
+#    сессий Docker раздаёт адреса из ip-range .128/25, cg-agent закреплён на .2 вне его;
 #    /opt/cloud-gaming/.env (права 600, root) и compose.yaml, session-isolation.sh,
 #    build-steam-client.sh — с главного.
-# 4. `docker compose pull && up -d` (только cg-agent), затем `session-isolation.sh apply-local`
-#    (правилам нужен IP cg-agent в cg-sessions; не применились — агент останавливается).
+# 4. `session-isolation.sh apply-local --agent-ip <адрес агента>` — до старта агента, вместе с
+#    сохранением правил на перезагрузку (не вышло — уже запущенный агент прежней установки
+#    останавливается, выход 1); затем `docker compose pull && up -d` (только cg-agent).
 # 5. Шаблон клиента Steam (`build-steam-client.sh`), если его ещё нет: ~2,5 ГБ, 10–30 минут.
 #    Пока шаблона нет, сервер сессий не берёт; ошибка сборки установку не отменяет.
-# 6. Итог: «Сервер <id> подключён. Откройте UDP <порты> в файрволе провайдера».
+# 6. До ~60 с ждёт в логе cg-agent «Connected to orchestrator» (первый принятый оркестратором
+#    отчёт). Есть — «Сервер <id> подключён. Откройте UDP <порты> в файрволе провайдера», нет —
+#    предупреждение и как смотреть лог.
 #
 # `--dry-run` выполняет проверки шага 1 и печатает план; код не тратится, ничего не меняется.
 # Повторный запуск с новым кодом (админка «Перевыпустить код») переустанавливает сервер: старый
@@ -37,7 +43,8 @@
 #
 # Для тестов (deploy/test/installScript.test.ts): CG_SYSFS — вместо /sys, CG_INSTALL_ROOT —
 # корень, к которому приписываются /opt, /srv, /usr/lib и /var/run (в .env пишутся пути без
-# него); docker, nvidia-smi, curl, stat, chown, id подменяются через PATH.
+# него), CG_CONNECT_TIMEOUT — сколько секунд ждать подключения агента (60); docker, nvidia-smi,
+# curl, stat, chown, id подменяются через PATH.
 set -euo pipefail
 
 ORCHESTRATOR_PUBLIC_URL="__ORCHESTRATOR_PUBLIC_URL__"
@@ -63,22 +70,28 @@ fail() {
 
 usage() {
   cat >&2 <<'USAGE'
-Использование: install.sh <код подключения> [--public-ip <ip>] [--data-dir <путь>] [--dry-run]
+Использование: install.sh <код подключения> [--public-ip <ip>] [--data-dir <путь>]
+  [--sessions-subnet <a.b.c.0/24>] [--dry-run]
 USAGE
 }
 
 code=""
 public_ip=""
 data_dir=/srv/cloud-gaming
+sessions_subnet=172.31.240.0/24
 dry_run=0
 while [ $# -gt 0 ]; do
   case "$1" in
-  --public-ip | --data-dir)
+  --public-ip | --data-dir | --sessions-subnet)
     [ $# -ge 2 ] || {
       usage
       fail "у $1 нет значения"
     }
-    if [ "$1" = --public-ip ]; then public_ip="$2"; else data_dir="$2"; fi
+    case "$1" in
+    --public-ip) public_ip="$2" ;;
+    --data-dir) data_dir="$2" ;;
+    *) sessions_subnet="$2" ;;
+    esac
     shift 2
     ;;
   --dry-run)
@@ -111,6 +124,11 @@ ORCHESTRATOR_PUBLIC_URL="${ORCHESTRATOR_PUBLIC_URL%/}"
 [[ "${code}" =~ ^[A-Za-z0-9_-]+$ ]] || fail "код подключения — только буквы и цифры, проверьте команду"
 [[ "${data_dir}" =~ ^/[^,:[:space:]]*$ ]] || fail "--data-dir: нужен абсолютный путь без пробелов, «,» и «:»"
 data_dir="${data_dir%/}"
+# Сеть cg-sessions — /24: ip-range контейнеров сессий — верхняя половина (.128/25), cg-agent — .2.
+[[ "${sessions_subnet}" =~ ^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.0/24$ ]] ||
+  fail "--sessions-subnet: нужна подсеть вида a.b.c.0/24, например 172.31.240.0/24"
+sessions_ip_range="${BASH_REMATCH[1]}.128/25"
+agent_ip="${BASH_REMATCH[1]}.2"
 if [ "${CG_VERSION}" = dev ] || ! [[ "${CG_VERSION}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   fail "главный сервер запущен не из релиза (CG_VERSION=${CG_VERSION}) — образов для него в реестре нет"
 fi
@@ -179,6 +197,17 @@ if [ -z "${public_ip}" ]; then
     fail "не удалось узнать публичный IP (api.ipify.org) — укажите его: --public-ip <ip>"
 fi
 is_ipv4 "${public_ip}" || fail "публичный IP не похож на IPv4: ${public_ip}"
+is_ipv4 "${agent_ip}" || fail "--sessions-subnet: не похоже на IPv4-подсеть: ${sessions_subnet}"
+# Сеть cg-sessions уже есть (прошлая установка или чужая) — только с той же подсетью и ip-range:
+# адрес cg-agent и правила изоляции на них завязаны.
+network_exists=0
+if docker network inspect cg-sessions >/dev/null 2>&1; then
+  network_exists=1
+  current="$(docker network inspect cg-sessions -f '{{range .IPAM.Config}}{{.Subnet}} {{.IPRange}};{{end}}')"
+  if [ "${current}" != "${sessions_subnet} ${sessions_ip_range};" ]; then
+    fail "сеть cg-sessions уже есть, но с другой подсетью (${current:-без заданной подсети}), а нужна ${sessions_subnet} с ip-range ${sessions_ip_range}. Пересоздайте её, пока нет сессий и установок: docker ps -a --filter label=cg.session --filter label=cg.install (пусто), docker stop cg-agent, docker network rm cg-sessions — и запустите установку снова (или укажите --sessions-subnet с подсетью этой сети)"
+  fi
+fi
 
 session_image="${CG_REGISTRY}/cg-session:${driver}-${CG_VERSION}"
 app_image="${CG_REGISTRY}/cg-app:${CG_VERSION}"
@@ -201,12 +230,13 @@ if [ "${dry_run}" = 1 ]; then
   GBM:            ${gbm}
   DOCKER_GID:     ${docker_gid}
   публичный IP:   ${public_ip}, UDP ${ports}
+  cg-sessions:    ${sessions_subnet}, ip-range ${sessions_ip_range}, cg-agent ${agent_ip}
   1. POST ${ORCHESTRATOR_PUBLIC_URL}/agent/enroll: код → WORKER_ID=<выдаст главный>,
      WORKER_TOKEN=<выдаст главный>; docker login реестра (учётные данные выдаст главный)
   2. docker pull ${session_image}
   3. каталоги (владелец 1000): ${dirs[*]}
   4. сеть cg-sessions; ${OPT}/.env (600), compose.yaml, session-isolation.sh, build-steam-client.sh
-  5. docker compose pull && up -d (cg-agent); session-isolation.sh apply-local
+  5. session-isolation.sh apply-local --agent-ip ${agent_ip}; docker compose pull && up -d (cg-agent)
   6. шаблон клиента Steam в ${steam_client}, если его нет
 PLAN
   exit 0
@@ -278,8 +308,12 @@ for d in "${dirs[@]}"; do
   echo "    ${d}"
 done
 
-echo "==> сеть cg-sessions"
-docker network inspect cg-sessions >/dev/null 2>&1 || docker network create cg-sessions >/dev/null
+if [ "${network_exists}" = 0 ]; then
+  echo "==> сеть cg-sessions (${sessions_subnet}, ip-range ${sessions_ip_range})"
+  docker network create --subnet "${sessions_subnet}" --ip-range "${sessions_ip_range}" \
+    cg-sessions >/dev/null ||
+    fail "не удалось создать сеть cg-sessions ${sessions_subnet} — подсеть занята другой сетью Docker или сетью хоста? Код уже использован: создайте новый в админке и запустите установку с --sessions-subnet <свободная a.b.c.0/24>"
+fi
 
 echo "==> ${OPT}"
 mkdir -p "${ROOT}${OPT}"
@@ -306,6 +340,9 @@ SCRATCH_DIR=${scratch_dir}
 STEAM_CLIENT_DIR=${steam_client}
 STEAM_CLIENT_PARENT=${steam_parent}
 MIN_FREE_GB=20
+CG_SESSIONS_SUBNET=${sessions_subnet}
+CG_SESSIONS_IP_RANGE=${sessions_ip_range}
+CG_AGENT_IP=${agent_ip}
 ENV
 unset worker_token
 chmod 600 "${env_tmp}"
@@ -328,15 +365,17 @@ chmod 755 "${ROOT}${OPT}/session-isolation.sh" "${ROOT}${OPT}/build-steam-client
 compose() {
   docker compose -f "${ROOT}${OPT}/compose.yaml" --env-file "${ROOT}${OPT}/.env" "$@"
 }
+# Изоляция — до старта агента: его адрес закреплён, и сессий без правил не будет ни секунды.
+# Не применилась или не сохранилась — останавливаем агент прежней установки, если он запущен.
+echo "==> изоляция контейнеров сессий"
+if ! bash "${ROOT}${OPT}/session-isolation.sh" apply-local --agent-ip "${agent_ip}" </dev/null; then
+  compose stop </dev/null >/dev/null 2>&1 || true
+  fail "правила изоляции сессий не применились или не сохранились — агент не запущен, чтобы сервер не брал игроков без изоляции. Исправьте и запустите: ${OPT}/session-isolation.sh apply-local --agent-ip ${agent_ip} && docker compose -f ${OPT}/compose.yaml --env-file ${OPT}/.env up -d"
+fi
+
 echo "==> cg-agent ${CG_VERSION}"
 compose pull </dev/null
 compose up -d </dev/null
-
-echo "==> изоляция контейнеров сессий"
-if ! bash "${ROOT}${OPT}/session-isolation.sh" apply-local </dev/null; then
-  compose stop >/dev/null 2>&1 || true
-  fail "правила изоляции сессий не применились — агент остановлен, чтобы сервер не брал игроков без изоляции. Исправьте и запустите: ${OPT}/session-isolation.sh apply-local && docker compose -f ${OPT}/compose.yaml --env-file ${OPT}/.env up -d"
-fi
 
 # ---------------------------------------------------------------------------------------------
 # 5. Шаблон клиента Steam
@@ -349,8 +388,31 @@ else
     echo "ПРЕДУПРЕЖДЕНИЕ: шаблон клиента Steam не собран — повторить: sudo ${OPT}/build-steam-client.sh" >&2
 fi
 
+# ---------------------------------------------------------------------------------------------
+# 6. Подключился ли агент
+# ---------------------------------------------------------------------------------------------
+# «Connected to orchestrator» агент пишет после первого отчёта, принятого оркестратором (снимок
+# загрузки раз в 5 с) — значит, токен принят и связь есть.
+connected=0
+deadline=$((SECONDS + ${CG_CONNECT_TIMEOUT:-60}))
+while :; do
+  if [ "$(docker inspect -f '{{.State.Running}}' cg-agent 2>/dev/null)" = true ] &&
+    docker logs cg-agent 2>&1 </dev/null | grep -q "Connected to orchestrator"; then
+    connected=1
+    break
+  fi
+  [ "${SECONDS}" -lt "${deadline}" ] || break
+  sleep 2
+done
+
 echo
-echo "Сервер ${worker_id} подключён. Откройте UDP ${ports} в файрволе провайдера."
+if [ "${connected}" = 1 ]; then
+  echo "Сервер ${worker_id} подключён. Откройте UDP ${ports} в файрволе провайдера."
+else
+  echo "ПРЕДУПРЕЖДЕНИЕ: cg-agent не подключился к главному за ${CG_CONNECT_TIMEOUT:-60} с." >&2
+  echo "Лог: docker logs --tail 50 cg-agent (ошибка конфига, токена или сети до ${ORCHESTRATOR_PUBLIC_URL})." >&2
+  echo "Когда подключится — сервер появится в админке. Откройте UDP ${ports} в файрволе провайдера." >&2
+fi
 
 }
 

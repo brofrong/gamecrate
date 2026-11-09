@@ -15,6 +15,7 @@ const base = {
   WEB_DIST_DIR: "unused",
   SMTP_URL: "log://",
   MAIL_FROM: "GameCrate <test@example.com>",
+  RELAY_SECRET: "test-relay-secret-test-relay-secret-0001",
 };
 
 const parse = (env: Record<string, string>) =>
@@ -63,6 +64,16 @@ describe("appConfig", () => {
       expect(Redacted.value(config.telegram.value.clientSecret)).toBe(
         "t-secret",
       );
+    }
+  });
+
+  it("relay secret is required and at least 32 characters", async () => {
+    const config = await Effect.runPromise(parse(base));
+    expect(Redacted.value(config.relaySecret)).toBe(base.RELAY_SECRET);
+    const { RELAY_SECRET: _, ...without } = base;
+    for (const env of [without, { ...base, RELAY_SECRET: "s".repeat(31) }]) {
+      const result = await Effect.runPromise(Effect.result(parse(env)));
+      expect(result._tag).toBe("Failure");
     }
   });
 

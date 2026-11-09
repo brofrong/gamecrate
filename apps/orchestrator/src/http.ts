@@ -147,12 +147,24 @@ const AgentHttpRoutes = Layer.effectDiscard(
 const repoFile = (path: string) =>
   fileURLToPath(new URL(`../../../${path}`, import.meta.url));
 
-/** Что отдаёт `GET /agent/<имя>`: файл репозитория и тип; `script` — с подстановками. */
+/**
+ * Что отдаёт `GET /agent/<имя>`: файл репозитория и тип; `script` — с
+ * подстановками адреса и версии, `drivers` — ещё и драйверов релиза (только
+ * `install.sh`: без `drivers.txt` остальные файлы отдаются как обычно).
+ */
 const workerFiles: Record<
   string,
-  { readonly path: string; readonly script: boolean }
+  {
+    readonly path: string;
+    readonly script: boolean;
+    readonly drivers?: boolean;
+  }
 > = {
-  "install.sh": { path: "deploy/worker/install.sh", script: true },
+  "install.sh": {
+    path: "deploy/worker/install.sh",
+    script: true,
+    drivers: true,
+  },
   "build-steam-client.sh": {
     path: "deploy/worker/build-steam-client.sh",
     script: true,
@@ -179,9 +191,9 @@ const releaseDrivers = (text: string) =>
  * админка), его помощники `build-steam-client.sh` и `session-isolation.sh` и
  * `compose.worker.yaml` (версию образа он берёт из `.env` сервера). Читаются из
  * копии репозитория в образе при каждом запросе. В скриптах заглушки
- * `__ORCHESTRATOR_PUBLIC_URL__`, `__CG_VERSION__` и `__CG_DRIVERS__` заменяются
- * публичным адресом главного, версией релиза и драйверами релиза. Нет файла —
- * 500 (образ собран без него).
+ * `__ORCHESTRATOR_PUBLIC_URL__` и `__CG_VERSION__` заменяются публичным
+ * адресом главного и версией релиза, в `install.sh` ещё `__CG_DRIVERS__` —
+ * драйверами релиза. Нет файла — 500 (образ собран без него).
  */
 const WorkerFileRoutes = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -196,18 +208,21 @@ const WorkerFileRoutes = Layer.effectDiscard(
           const read = (path: string) =>
             Effect.tryPromise(() => Bun.file(repoFile(path)).text());
           const text = yield* read(file.path);
-          const body = file.script
+          const drivers = file.drivers
+            ? releaseDrivers(yield* read("images/session/drivers.txt"))
+            : undefined;
+          const substituted = file.script
             ? text
                 .replaceAll(
                   "__ORCHESTRATOR_PUBLIC_URL__",
                   config.publicUrl.replace(/\/+$/, ""),
                 )
                 .replaceAll("__CG_VERSION__", config.cgVersion)
-                .replaceAll(
-                  "__CG_DRIVERS__",
-                  releaseDrivers(yield* read("images/session/drivers.txt")),
-                )
             : text;
+          const body =
+            drivers === undefined
+              ? substituted
+              : substituted.replaceAll("__CG_DRIVERS__", drivers);
           return HttpServerResponse.text(body, {
             contentType: file.script
               ? "text/x-shellscript; charset=utf-8"

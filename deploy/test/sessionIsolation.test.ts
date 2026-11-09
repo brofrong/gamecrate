@@ -186,20 +186,25 @@ const stub = (dir: string, name: string, body: string) => {
 
 describe("session-isolation.sh apply-local", () => {
   /**
-   * Заглушки docker/iptables/id в PATH: сеть cg-sessions с мостом `br-cg`, `cg-agent` с
-   * IP 172.29.0.2; iptables-restore и iptables пишут, что получили, в `log`.
+   * Заглушки в PATH: сеть cg-sessions с мостом `br-cg` и подсетью 172.31.240.0/24 (адрес
+   * cg-agent у неё закреплён, docker inspect cg-agent не нужен); iptables-restore, iptables,
+   * netfilter-persistent, apt-get и debconf-set-selections пишут, что получили, в `log`.
+   * `persistent` — есть ли уже netfilter-persistent; `aptFails` — apt-get падает.
    */
-  const withStubs = (uid: string, test: (dir: string, log: string) => void) => {
+  const withStubs = (
+    opts: { uid?: string; persistent?: boolean; aptFails?: boolean },
+    test: (dir: string, log: string) => void,
+  ) => {
     const dir = mkdtempSync(join(tmpdir(), "cg-isolation-"));
     const log = join(dir, "log");
+    writeFileSync(log, "");
     try {
-      stub(dir, "id", `[ "$1" = -u ] && echo ${uid}`);
+      stub(dir, "id", `[ "$1" = -u ] && echo ${opts.uid ?? "0"}`);
       stub(
         dir,
         "docker",
         `case "$1 $2" in
-"network inspect") echo 'net0123456789abcdef|{"com.docker.network.bridge.name":"br-cg"}|172.29.0.0/16;' ;;
-"inspect cg-agent") echo 172.29.0.2 ;;
+"network inspect") echo 'net0123456789abcdef|{"com.docker.network.bridge.name":"br-cg"}|172.31.240.0/24;' ;;
 *) echo "unexpected docker $*" >&2; exit 1 ;;
 esac`,
       );
@@ -214,27 +219,43 @@ esac`,
         `{ echo "== ip6tables-restore $*"; cat; } >> "${log}"`,
       );
       stub(dir, "iptables", `echo "iptables $*" >> "${log}"; [ "$1" != -C ]`);
+      const persistent = `echo "netfilter-persistent $*" >> "${log}"`;
+      if (opts.persistent ?? true)
+        stub(dir, "netfilter-persistent", persistent);
+      stub(
+        dir,
+        "debconf-set-selections",
+        `{ echo "== debconf-set-selections"; cat; } >> "${log}"`,
+      );
+      // Установка пакета «кладёт» netfilter-persistent в PATH.
+      stub(
+        dir,
+        "apt-get",
+        `echo "apt-get $* DEBIAN_FRONTEND=$DEBIAN_FRONTEND" >> "${log}"
+${opts.aptFails ? "exit 100" : ""}
+if [ "$1" = install ]; then printf '#!/usr/bin/env bash\\n%s\\n' '${persistent}' > "${dir}/netfilter-persistent"; chmod +x "${dir}/netfilter-persistent"; fi`,
+      );
       test(dir, log);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   };
 
-  const applyLocal = (dir: string) =>
-    Bun.spawnSync(["bash", script, "apply-local"], {
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  const applyLocal = (dir: string, args: string[] = [], env = {}) =>
+    Bun.spawnSync(["bash", script, "apply-local", ...args], {
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env },
     });
 
-  it("applies rules with the cg-agent IP and the INPUT jump on this host", () =>
-    withStubs("0", (dir, log) => {
-      const r = applyLocal(dir);
+  it("applies rules with the pinned cg-agent IP, the INPUT jump and saves them", () =>
+    withStubs({}, (dir, log) => {
+      const r = applyLocal(dir, ["--agent-ip", "172.31.240.2"]);
       expect(r.stderr.toString("utf8")).not.toContain("ОШИБКА");
       expect(r.exitCode).toBe(0);
       const out = readFileSync(log, "utf8");
       const lines = out.split("\n");
       expect(lines).toContain("== iptables-restore -n");
       expect(lines).toContain(
-        "-A DOCKER-USER -i br-cg -o br-cg -s 172.29.0.2 -p tcp --dport 8080 -j RETURN",
+        "-A DOCKER-USER -i br-cg -o br-cg -s 172.31.240.2 -p tcp --dport 8080 -j RETURN",
       );
       // Без IPv6-подсети ip6tables не трогается; переход из INPUT — после проверки -C.
       expect(out).not.toContain("ip6tables-restore");
@@ -246,13 +267,60 @@ esac`,
       );
       expect(check).toBeGreaterThanOrEqual(0);
       expect(insert).toBeGreaterThan(check);
+      expect(lines.at(-2)).toBe("netfilter-persistent save");
+      expect(out).not.toContain("apt-get");
+    }));
+
+  it("takes the agent IP from CG_AGENT_IP and refuses one outside the network subnet", () =>
+    withStubs({}, (dir, log) => {
+      const r = applyLocal(dir, [], { CG_AGENT_IP: "172.31.240.9" });
+      expect(r.exitCode).toBe(0);
+      expect(readFileSync(log, "utf8")).toContain(
+        "-s 172.31.240.9 -p tcp --dport 8080",
+      );
+
+      writeFileSync(log, "");
+      const outside = applyLocal(dir, ["--agent-ip", "172.29.0.2"]);
+      expect(outside.exitCode).toBe(1);
+      expect(outside.stderr.toString("utf8")).toContain("172.31.240.0/24");
+      expect(readFileSync(log, "utf8")).toBe("");
+    }));
+
+  it("installs iptables-persistent without questions when it is missing", () =>
+    withStubs({ persistent: false }, (dir, log) => {
+      const r = applyLocal(dir, ["--agent-ip", "172.31.240.2"]);
+      expect(r.stderr.toString("utf8")).not.toContain("ОШИБКА");
+      expect(r.exitCode).toBe(0);
+      const lines = readFileSync(log, "utf8").split("\n");
+      const debconf = lines.indexOf("== debconf-set-selections");
+      expect(lines[debconf + 1]).toBe(
+        "iptables-persistent iptables-persistent/autosave_v4 boolean false",
+      );
+      expect(lines[debconf + 2]).toBe(
+        "iptables-persistent iptables-persistent/autosave_v6 boolean false",
+      );
+      const install = lines.findIndex((l) =>
+        l.startsWith("apt-get install -y -qq --no-remove iptables-persistent"),
+      );
+      expect(install).toBeGreaterThan(debconf);
+      expect(lines[install]).toContain("DEBIAN_FRONTEND=noninteractive");
+      expect(lines.indexOf("netfilter-persistent save")).toBeGreaterThan(
+        install,
+      );
+    }));
+
+  it("fails when the rules cannot be persisted", () =>
+    withStubs({ persistent: false, aptFails: true }, (dir) => {
+      const r = applyLocal(dir, ["--agent-ip", "172.31.240.2"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr.toString("utf8")).toContain("iptables-persistent");
     }));
 
   it("refuses to apply without root", () =>
-    withStubs("1000", (dir, log) => {
+    withStubs({ uid: "1000" }, (dir, log) => {
       const r = applyLocal(dir);
       expect(r.exitCode).toBe(1);
       expect(r.stderr.toString("utf8")).toContain("root");
-      expect(() => readFileSync(log, "utf8")).toThrow();
+      expect(readFileSync(log, "utf8")).toBe("");
     }));
 });

@@ -12,16 +12,23 @@
 # ломается, если сервер в частной сети (10/8, 192.168/16, 169.254/16…). Подробности — спека §4.4
 # (docs/superpowers/specs/2026-10-27-kiosk-image-design.md).
 #
-#   ./deploy/session-isolation.sh apply-local
-#     на самом сервере, от root: определяет подсеть/мост/IP cg-agent/DNS этого хоста (как
-#     `detect`), применяет правила (`iptables-restore -n`, при IPv6-подсети — и `ip6tables-restore
-#     -n`), ставит переход из INPUT первым правилом (с `-C`, без дублей) и сохраняет правила через
-#     `netfilter-persistent save`, если он есть (иначе предупреждает). Так его запускает
-#     deploy/worker/install.sh после старта cg-agent (агенту нужен IP в cg-sessions).
+#   ./deploy/session-isolation.sh apply-local [--agent-ip <ip>]
+#     на самом сервере, от root. IP cg-agent в cg-sessions закреплён (compose.worker.yaml,
+#     `ipv4_address: ${CG_AGENT_IP}`; сеть создаётся с фиксированной подсетью и ip-range, из
+#     которого Docker раздаёт адреса контейнерам сессий, а адрес агента вне его) — поэтому он
+#     берётся из `--agent-ip`, иначе из переменной CG_AGENT_IP, иначе 172.31.240.2, и должен быть
+#     внутри подсети сети. Подсеть, мост и DNS определяются на этом хосте (как в `detect`), затем:
+#     правила (`iptables-restore -n`, при IPv6-подсети — и `ip6tables-restore -n`), переход из
+#     INPUT первым правилом (с `-C`, без дублей) и сохранение на перезагрузку:
+#     `netfilter-persistent save`; нет его — ставит пакет iptables-persistent без вопросов
+#     (debconf: autosave_v4/v6 = false, `apt-get install --no-remove` — если apt хочет что-то
+#     удалить, например ufw, отказ). Сохранить не удалось — код 1 (правила уже действуют, но
+#     до перезагрузки). deploy/worker/install.sh запускает его до старта cg-agent: адрес известен
+#     заранее, и агент не берёт сессии ни секунды без изоляции.
 #
 #   ./deploy/session-isolation.sh detect [ssh-хост=brofrong]
 #     только читает (ничего не меняет и не применяет) `docker network inspect cg-sessions`,
-#     `docker inspect cg-agent` и DNS-серверы хоста (`/run/systemd/resolve/resolv.conf`, если он
+#     `docker inspect cg-agent` (настоящий адрес агента) и DNS-серверы хоста (`/run/systemd/resolve/resolv.conf`, если он
 #     есть, иначе `/etc/resolv.conf`; 127.x и ::1 пропускаются — их Docker спрашивает из сети
 #     хоста, IPv6-серверы тоже, с предупреждением) на сервере по ssh; печатает готовую строку
 #     аргументов для `print`.
@@ -58,14 +65,15 @@
 #      (или вручную: sudo sh -c 'iptables-save > /etc/iptables/rules.v4' и так же для ip6tables);
 #   5. проверить: ./deploy/check-session-isolation.sh <хост> → код 0, все «закрыто» — закрыто.
 #
-# Если `cg-agent` пересоздан с другим IP в cg-sessions или сменились DNS-серверы хоста — повторить
-# apply-local (или шаги 1–3): цепочки перезапишутся целиком, переход из INPUT останется один.
+# Адрес cg-agent закреплён, пересоздание агента правила не ломает. Если сменились DNS-серверы
+# хоста или сеть cg-sessions пересоздана — повторить apply-local (или шаги 1–3): цепочки
+# перезапишутся целиком, переход из INPUT останется один.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
 Использование:
-  deploy/session-isolation.sh apply-local
+  deploy/session-isolation.sh apply-local [--agent-ip <ip>]
   deploy/session-isolation.sh detect [ssh-хост=brofrong]
   deploy/session-isolation.sh print --subnet <cidr> --bridge <ifname> --agent-ip <ip> \
       [--resolver <ipv4>]... [--subnet6 <cidr>]
@@ -227,14 +235,12 @@ RULES6
 }
 
 # Сбор фактов на сервере (выполняется там: по ssh для detect, локально для apply-local): строка
-# сети cg-sessions, IP cg-agent в ней, DNS-серверы хоста. Одинарные кавычки нарочно: $ раскроет
-# bash на сервере.
+# сети cg-sessions и DNS-серверы хоста. Одинарные кавычки нарочно: $ раскроет bash на сервере.
 # shellcheck disable=SC2016
 COLLECT_SCRIPT='
 set -euo pipefail
 docker network inspect cg-sessions \
   -f "{{.Id}}|{{json .Options}}|{{range .IPAM.Config}}{{.Subnet}};{{end}}"
-docker inspect cg-agent -f "{{(index .NetworkSettings.Networks \"cg-sessions\").IPAddress}}"
 # DNS-серверы хоста, которые Docker отдаёт встроенному резолверу (systemd-resolved — его
 # настоящие серверы, а не заглушка 127.0.0.53). Одной строкой через пробел, может быть пустой.
 conf=/etc/resolv.conf
@@ -242,17 +248,35 @@ conf=/etc/resolv.conf
 awk "\$1 == \"nameserver\" { printf \"%s \", \$2 }" "${conf}"
 echo
 '
+# detect: то же плюс настоящий адрес cg-agent третьей строкой.
+# shellcheck disable=SC2016
+DETECT_AGENT_SCRIPT='
+docker inspect cg-agent -f "{{(index .NetworkSettings.Networks \"cg-sessions\").IPAddress}}"
+'
+
+# IPv4 → число (для проверки «адрес в подсети»).
+ipv4_int() {
+  local IFS=. a b c d
+  read -r a b c d <<<"$1"
+  echo $(((a << 24) + (b << 16) + (c << 8) + d))
+}
+
+# Адрес $1 внутри IPv4-подсети $2 (`a.b.c.d/n`).
+ipv4_in_cidr() {
+  local net="${2%/*}" bits="${2#*/}" mask
+  mask=$(((0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF))
+  [ $(($(ipv4_int "$1") & mask)) = $(($(ipv4_int "${net}") & mask)) ]
+}
 
 # Вывод COLLECT_SCRIPT ($1) → строка аргументов для `print` в stdout; $2 — где собирали (для
-# сообщения об ошибке).
+# сообщения об ошибке), $3 — IP cg-agent.
 parse_collected() {
-  local out="$1" where="$2"
-  local net_line agent_ip net_id options_json subnets subnet="" subnet6="" s
+  local out="$1" where="$2" agent_ip="$3"
+  local net_line net_id options_json subnets subnet="" subnet6="" s
 
   net_line="$(printf '%s\n' "${out}" | sed -n '1p')"
-  agent_ip="$(printf '%s\n' "${out}" | sed -n '2p')"
   local resolver_line resolver resolver_args=""
-  resolver_line="$(printf '%s\n' "${out}" | sed -n '3p')"
+  resolver_line="$(printf '%s\n' "${out}" | sed -n '2p')"
   for resolver in ${resolver_line}; do
     case "${resolver}" in
     127.* | ::1) continue ;; # loopback Docker спрашивает из сети хоста — правило не нужно
@@ -289,6 +313,11 @@ parse_collected() {
     printf '    net_line=%q agent_ip=%q\n' "${net_line}" "${agent_ip}" >&2
     exit 1
   fi
+  if ! is_ipv4 "${agent_ip}" || ! is_ipv4_cidr "${subnet}" || ! ipv4_in_cidr "${agent_ip}" "${subnet}"; then
+    echo "ОШИБКА: IP cg-agent ${agent_ip} не в подсети сети cg-sessions ${subnet} на ${where}" >&2
+    echo "    (CG_AGENT_IP в .env должен быть внутри CG_SESSIONS_SUBNET и вне CG_SESSIONS_IP_RANGE)" >&2
+    exit 1
+  fi
 
   printf -- '--subnet %s --bridge %s --agent-ip %s%s' "${subnet}" "${bridge}" "${agent_ip}" \
     "${resolver_args}"
@@ -300,8 +329,9 @@ parse_collected() {
 
 cmd_detect() {
   local host="${1:-brofrong}" out
-  out="$(ssh "${host}" bash -s <<<"${COLLECT_SCRIPT}")"
-  parse_collected "${out}" "${host}"
+  out="$(ssh "${host}" bash -s <<<"${COLLECT_SCRIPT}${DETECT_AGENT_SCRIPT}")"
+  parse_collected "$(printf '%s\n' "${out}" | sed -n '1,2p')" "${host}" \
+    "$(printf '%s\n' "${out}" | sed -n '3p')"
 }
 
 # Значение флага `name` из строки аргументов detect (`--bridge br-x …` → `br-x`), пусто — нет.
@@ -317,14 +347,62 @@ arg_value() {
   done
 }
 
+# Сохранить правила на перезагрузку: netfilter-persistent, при необходимости — поставить
+# iptables-persistent без вопросов. Не вышло — код 1 с сообщением.
+persist_rules() {
+  if ! command -v netfilter-persistent >/dev/null 2>&1; then
+    if ! command -v apt-get >/dev/null 2>&1 || ! command -v debconf-set-selections >/dev/null 2>&1; then
+      echo "ОШИБКА: нет netfilter-persistent и apt-get — сохраните правила iptables на перезагрузку сами" >&2
+      return 1
+    fi
+    echo "==> iptables-persistent (правила изоляции переживут перезагрузку)"
+    # Не сохранять при установке текущие правила (их сохраняем ниже сами) и не спрашивать.
+    printf '%s\n' \
+      'iptables-persistent iptables-persistent/autosave_v4 boolean false' \
+      'iptables-persistent iptables-persistent/autosave_v6 boolean false' |
+      debconf-set-selections
+    # --no-remove: если пакет потребует удалить другой (ufw конфликтует с iptables-persistent),
+    # apt откажется, а не снесёт файрвол хоста.
+    if ! DEBIAN_FRONTEND=noninteractive apt-get update -qq ||
+      ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-remove iptables-persistent; then
+      echo "ОШИБКА: не удалось поставить iptables-persistent (конфликт с ufw или нет сети?) —" >&2
+      echo "правила действуют до перезагрузки; сохраните их на перезагрузку сами и повторите" >&2
+      return 1
+    fi
+  fi
+  if ! netfilter-persistent save >/dev/null; then
+    echo "ОШИБКА: netfilter-persistent save не сохранил правила" >&2
+    return 1
+  fi
+  echo "==> правила сохранены (netfilter-persistent save)"
+}
+
 cmd_apply_local() {
+  local agent_ip="${CG_AGENT_IP:-172.31.240.2}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --agent-ip)
+      if [ $# -lt 2 ]; then
+        echo "ОШИБКА: у --agent-ip нет значения" >&2
+        exit 2
+      fi
+      agent_ip="$2"
+      shift 2
+      ;;
+    *)
+      echo "ОШИБКА: неизвестный аргумент: $1" >&2
+      usage
+      exit 2
+      ;;
+    esac
+  done
   if [ "$(id -u)" != 0 ]; then
     echo "ОШИБКА: apply-local меняет iptables — запускать от root (sudo)" >&2
     exit 1
   fi
   local out args rules bridge
   out="$(bash -c "${COLLECT_SCRIPT}")"
-  args="$(parse_collected "${out}" "этом сервере")"
+  args="$(parse_collected "${out}" "этом сервере" "${agent_ip}")"
   # Строка аргументов из своих же проверенных значений — word splitting намеренный.
   # shellcheck disable=SC2086
   rules="$(cmd_print ${args})"
@@ -341,13 +419,7 @@ cmd_apply_local() {
       ip6tables -I INPUT 1 -i "${bridge}" -j CG-SESSIONS-IN
     ;;
   esac
-  if command -v netfilter-persistent >/dev/null 2>&1; then
-    netfilter-persistent save >/dev/null
-    echo "==> правила сохранены (netfilter-persistent save)"
-  else
-    echo "ПРЕДУПРЕЖДЕНИЕ: правила действуют до перезагрузки. Чтобы сохранить:" >&2
-    echo "  apt install iptables-persistent && netfilter-persistent save" >&2
-  fi
+  persist_rules || exit 1
 }
 
 case "${1:-}" in

@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db, games, sessions, user, userGames } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { type CurrentUserShape, sessionStreamUrl } from "@cg/rpc";
+import {
+  type CurrentUserShape,
+  RELAY_SECRET_HEADER,
+  sessionStreamUrl,
+} from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import { Effect, Layer, ManagedRuntime, Option, Redacted } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -53,6 +57,9 @@ const fakeAuth = Layer.succeed(BetterAuth, {
 
 const publicOrigin = "http://localhost:3000";
 
+/** `RELAY_SECRET` тестового конфига: прокси шлёт его relay в `x-cg-relay-secret`. */
+const testRelaySecret = "test-relay-secret-test-relay-secret-0001";
+
 /**
  * `upstreamFor` — куда на самом деле подключаться вместо
  * `http://cg-session-<id>:8080` (в тестах нет DNS сети `cg-sessions`).
@@ -81,6 +88,7 @@ const appDeps = (
       pocketIdAdminGroup: "cloud_gaming_admins",
       allowedOrigins: ["http://localhost:5173"],
       orchestratorRelayUrl: "http://cg-orchestrator:3002",
+      relaySecret: Redacted.make(testRelaySecret),
       webDistDir,
       ownGamesDir: "unused",
       smtpUrl: Redacted.make("log://"),
@@ -394,6 +402,26 @@ describe("stream proxy", () => {
     expect(await closed).toBe(1000);
   });
 
+  it("stream proxy sends the relay secret on HTTP and WebSocket", async () => {
+    // Свой заголовок браузера с тем же именем не проходит — его заменяет секрет.
+    const get = await http(`/stream/${ids.alice}/api/status`, {
+      headers: { cookie: "sid=alice", [RELAY_SECRET_HEADER]: "forged" },
+    });
+    expect(get.status).toBe(200);
+    const echo = (await get.json()) as Echo;
+    expect(echo.headers[RELAY_SECRET_HEADER]).toBe(testRelaySecret);
+
+    const { ws, next } = await openWs(
+      `ws://127.0.0.1:${port}/stream/${ids.alice}/api/webrtc/signaling`,
+      { cookie: "sid=alice", origin: publicOrigin },
+    );
+    const hello = JSON.parse(String(await next())) as {
+      headers: Record<string, string>;
+    };
+    expect(hello.headers[RELAY_SECRET_HEADER]).toBe(testRelaySecret);
+    ws.close(1000);
+  });
+
   it("stream proxy rejects foreign session", async () => {
     const status = async (path: string, headers: Record<string, string>) =>
       (await http(path, { headers })).status;
@@ -626,6 +654,7 @@ describe("stream proxy default upstream", () => {
         pocketIdAdminGroup: "cloud_gaming_admins",
         allowedOrigins: ["http://localhost:5173"],
         orchestratorRelayUrl: "http://relay.test:3002",
+        relaySecret: Redacted.make(testRelaySecret),
         webDistDir,
         ownGamesDir: "unused",
         smtpUrl: Redacted.make("log://"),

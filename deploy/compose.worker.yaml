@@ -27,7 +27,11 @@ services:
   # Агент игрового сервера: запускает/останавливает контейнеры сессий (роль worker) и
   # установщиков (роль gamestore) через Docker API и держит тоннель стрима: сам ходит в Selkies
   # сессии `cg-session-<id>:8080` по сети cg-sessions (поэтому он в ней; правила изоляции пускают
-  # к :8080 только его — deploy/session-isolation.sh).
+  # к :8080 только его — deploy/session-isolation.sh). Адрес агента в cg-sessions закреплён
+  # (CG_AGENT_IP, по умолчанию 172.31.240.2): правило изоляции привязано к нему и не ломается
+  # от пересоздания контейнера. Сеть создана с фиксированной подсетью CG_SESSIONS_SUBNET и
+  # ip-range CG_SESSIONS_IP_RANGE (install.sh/deploy-stand.sh): контейнеры сессий агент
+  # подключает без адреса, Docker выдаёт им адреса из ip-range, а адрес агента вне его.
   # Сокет Docker смонтирован; процесс — пользователь bun (1000) с дополнительной группой
   # владельца сокета (DOCKER_GID, install.sh берёт её из `stat -c %g /var/run/docker.sock`), без
   # privileged и без root. `docker compose up/down` контейнеры сессий не трогает, перезапущенный
@@ -113,13 +117,15 @@ services:
     mem_limit: 1g # профиль (до 200 МиБ) сжимается и шифруется в памяти целиком (profile/codec.ts)
     logging: *logging
     networks:
-      - default
-      - cg-sessions
+      default: {}
+      cg-sessions:
+        ipv4_address: ${CG_AGENT_IP:-172.31.240.2}
     # Healthcheck нет: у агента нет HTTP. Связь с главным видна в админке («Серверы») и в логе
     # оркестратора («Agent connected» workerId=<id>).
 
 networks:
-  # Сеть контейнеров сессий. Создаёт install.sh (`docker network create cg-sessions`).
+  # Сеть контейнеров сессий. Создаёт install.sh (deploy-stand.sh на стенде):
+  # `docker network create --subnet $CG_SESSIONS_SUBNET --ip-range $CG_SESSIONS_IP_RANGE cg-sessions`.
   cg-sessions:
     name: cg-sessions
     external: true

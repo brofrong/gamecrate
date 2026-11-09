@@ -121,9 +121,10 @@ beforeEach(() => {
       }
       if (path === "/agent/compose.worker.yaml")
         return new Response("services: {}\n");
+      // Помощник изоляции падает, если в песочнице есть файл isolation-fails.
       if (path === "/agent/session-isolation.sh")
         return new Response(
-          `#!/usr/bin/env bash\necho "isolation $*" >> "${log}"\n`,
+          `#!/usr/bin/env bash\necho "isolation $*" >> "${log}"\n[ ! -e "${dir}/isolation-fails" ]\n`,
         );
       if (path === "/agent/build-steam-client.sh")
         return new Response(
@@ -135,14 +136,18 @@ beforeEach(() => {
   sandbox.url = `http://127.0.0.1:${server.port}`;
 
   // docker: журнал вызовов; NVIDIA runtime есть; пароль `login` — в отдельный файл (stdin).
+  // Сети cg-sessions нет, пока в песочнице нет файла network (тогда его строка — IPAM сети);
+  // cg-agent запущен и в логе подключение, пока нет файла no-connect.
   stub(
     "docker",
     `echo "docker $*" >> "${log}"
 case "$1" in
 info) echo '{"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}}' ;;
 compose) case "$*" in *version*) echo "Docker Compose version v2.30.0" ;; esac ;;
-login) cat > "${sandbox.dir}/login-stdin" ;;
-network) [ "$2" = inspect ] && exit 1 ;;
+login) cat > "${dir}/login-stdin" ;;
+network) if [ "$2" = inspect ]; then [ -e "${dir}/network" ] || exit 1; cat "${dir}/network"; fi ;;
+inspect) echo true ;;
+logs) [ -e "${dir}/no-connect" ] || echo "level=INFO msg=\"Connected to orchestrator\"" ;;
 esac
 exit 0`,
   );
@@ -186,7 +191,7 @@ afterEach(() => {
 });
 
 /** Запуск скрипта с подстановками оркестратора; асинхронно — фейковый главный в этом же процессе. */
-const install = async (args: string[]) => {
+const install = async (args: string[], env: Record<string, string> = {}) => {
   const rendered = join(sandbox.dir, "install.sh");
   writeFileSync(
     rendered,
@@ -201,6 +206,7 @@ const install = async (args: string[]) => {
       PATH: `${sandbox.bin}:${process.env.PATH}`,
       CG_SYSFS: sandbox.sys,
       CG_INSTALL_ROOT: sandbox.root,
+      ...env,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -247,6 +253,9 @@ describe("install.sh", () => {
     expect(sandbox.enrolls).toBe(0);
     expect(r.log).not.toContain("docker login");
     expect(r.log).not.toContain("docker network create");
+    expect(r.stdout).toContain(
+      "cg-sessions:    172.31.240.0/24, ip-range 172.31.240.128/25, cg-agent 172.31.240.2",
+    );
     expect(existsSync(join(sandbox.root, "opt"))).toBe(false);
     expect(existsSync(join(sandbox.root, "srv"))).toBe(false);
   });
@@ -273,6 +282,9 @@ describe("install.sh", () => {
       "SCRATCH_DIR=/srv/cloud-gaming-scratch",
       "STEAM_CLIENT_DIR=/srv/cloud-gaming-steam/client",
       "STEAM_CLIENT_PARENT=/srv/cloud-gaming-steam",
+      "CG_SESSIONS_SUBNET=172.31.240.0/24",
+      "CG_SESSIONS_IP_RANGE=172.31.240.128/25",
+      "CG_AGENT_IP=172.31.240.2",
     ])
       expect(env).toContain(line);
     expect(statSync(envFile()).mode & 0o777).toBe(0o600);
@@ -289,16 +301,22 @@ describe("install.sh", () => {
     expect(r.stdout + r.stderr).not.toContain(TOKEN);
 
     expect(r.log).toContain(`docker pull ${SESSION_IMAGE}`);
-    expect(r.log).toContain("docker network create cg-sessions");
+    expect(r.log).toContain(
+      "docker network create --subnet 172.31.240.0/24 --ip-range 172.31.240.128/25 cg-sessions",
+    );
+    // Изоляция — до старта агента, с его закреплённым адресом.
     const lines = r.log.split("\n");
+    const isolation = lines.findIndex(
+      (l) => l === "isolation apply-local --agent-ip 172.31.240.2",
+    );
     const pull = lines.findIndex((l) => /^docker compose .* pull$/.test(l));
     const up = lines.findIndex((l) => /^docker compose .* up -d$/.test(l));
-    const isolation = lines.findIndex((l) => l === "isolation apply-local");
     const steam = lines.findIndex((l) => l.startsWith("steam-client "));
-    expect(pull).toBeGreaterThanOrEqual(0);
+    expect(isolation).toBeGreaterThanOrEqual(0);
+    expect(pull).toBeGreaterThan(isolation);
     expect(up).toBeGreaterThan(pull);
-    expect(isolation).toBeGreaterThan(up);
-    expect(steam).toBeGreaterThan(isolation);
+    expect(steam).toBeGreaterThan(up);
+    expect(r.log).toContain("docker logs cg-agent");
 
     for (const dir of [
       "srv/cloud-gaming/library/steamapps",
@@ -317,6 +335,47 @@ describe("install.sh", () => {
 
     expect(r.stdout).toContain("Сервер spb-1 подключён");
     expect(r.stdout).toContain("UDP 59000-59001");
+  });
+
+  it("stops the agent and exits 1 when isolation cannot be applied", async () => {
+    writeFileSync(join(sandbox.dir, "isolation-fails"), "");
+    const r = await install(["--public-ip", "203.0.113.7", CODE]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("правила изоляции");
+    const lines = r.log.split("\n");
+    expect(lines.some((l) => /^docker compose .* stop$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^docker compose .* up -d$/.test(l))).toBe(false);
+    expect(r.stdout).not.toContain("подключён");
+  });
+
+  it("refuses an existing cg-sessions network with another subnet, before using the code", async () => {
+    writeFileSync(join(sandbox.dir, "network"), "172.18.0.0/16 ;\n");
+    const r = await install(["--public-ip", "203.0.113.7", CODE]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("172.18.0.0/16");
+    expect(r.stderr).toContain("docker network rm cg-sessions");
+    expect(sandbox.enrolls).toBe(0);
+
+    // Та же подсеть и ip-range — сеть берётся как есть, без create.
+    writeFileSync(
+      join(sandbox.dir, "network"),
+      "172.31.240.0/24 172.31.240.128/25;\n",
+    );
+    const ok = await install(["--public-ip", "203.0.113.7", CODE]);
+    expect(ok.stderr).not.toContain("ОШИБКА");
+    expect(ok.exitCode).toBe(0);
+    expect(ok.log).not.toContain("docker network create");
+  });
+
+  it("warns instead of «подключён» when the agent does not connect", async () => {
+    writeFileSync(join(sandbox.dir, "no-connect"), "");
+    const r = await install(["--public-ip", "203.0.113.7", CODE], {
+      CG_CONNECT_TIMEOUT: "0",
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).not.toContain("подключён");
+    expect(r.stderr).toContain("не подключился");
+    expect(r.stderr).toContain("docker logs --tail 50 cg-agent");
   });
 
   it("stops with a clear message when the code is not accepted", async () => {

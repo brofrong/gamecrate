@@ -17,7 +17,10 @@
 // Origin, а с публичным Origin и чужим `Host` отвечает 403 (проверено в
 // Task 5); cookie (наша сессия Better Auth) и `Referer` не передаются.
 // `Set-Cookie` апстрима браузеру не отдаётся — он не может ставить cookie
-// нашему домену. Апстрим не ответил (relay вернул 502 — сессии нет на
+// нашему домену. Каждый запрос и открытие WebSocket к relay несут общий
+// секрет `RELAY_SECRET` в `x-cg-relay-secret` (заголовок с этим именем от
+// браузера заменяется): relay слушается и в сети обратного прокси и без
+// секрета отвечает 403. Апстрим не ответил (relay вернул 502 — сессии нет на
 // сервере или агент не подключён, отказ соединения, таймаут) — 502.
 //
 // Жёсткие ограничения:
@@ -38,9 +41,11 @@ import {
   isSessionId,
   isSessionStreamUrl,
   pipeFrames,
+  RELAY_SECRET_HEADER,
   sessionStreamUrl,
 } from "@cg/rpc";
-import { Context, Effect, Fiber, FiberSet } from "effect";
+import { BunSocket } from "@effect/platform-bun";
+import { Context, Effect, Fiber, FiberSet, Redacted } from "effect";
 import {
   HttpRouter,
   type HttpServerRequest,
@@ -128,12 +133,15 @@ const upstreamUrl = (base: URL, rest: string, search: string) => {
 
 const forwardRequestHeaders = (
   request: HttpServerRequest.HttpServerRequest,
+  relaySecret: Redacted.Redacted<string>,
 ) => {
   const headers = new globalThis.Headers();
   for (const [name, value] of Object.entries(request.headers)) {
     if (!droppedRequestHeaders.has(name.toLowerCase()))
       headers.set(name, value);
   }
+  // После копирования: заголовок браузера с тем же именем заменяется.
+  headers.set(RELAY_SECRET_HEADER, Redacted.value(relaySecret));
   return headers;
 };
 
@@ -199,6 +207,7 @@ const proxyHttp = (
   target: URL,
   upstream: Upstream,
   sessionId: string,
+  relaySecret: Redacted.Redacted<string>,
 ) =>
   Effect.gen(function* () {
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
@@ -207,7 +216,7 @@ const proxyHttp = (
       try: (signal) =>
         fetch(target, {
           method: request.method,
-          headers: forwardRequestHeaders(request),
+          headers: forwardRequestHeaders(request, relaySecret),
           ...(body === undefined ? {} : { body }),
           redirect: "manual",
           signal,
@@ -241,12 +250,14 @@ const proxyWebSocket = (
   request: HttpServerRequest.HttpServerRequest,
   target: URL,
   sessionId: string,
+  relaySecret: Redacted.Redacted<string>,
 ) =>
   Effect.gen(function* () {
     const wsTarget = new URL(target.href);
     wsTarget.protocol = target.protocol === "https:" ? "wss:" : "ws:";
     const upstream = yield* Socket.makeWebSocket(wsTarget.href, {
       openTimeout: upstreamTimeout,
+      headers: { [RELAY_SECRET_HEADER]: Redacted.value(relaySecret) },
     });
     const opened = yield* Effect.result(upstream.reader);
     if (opened._tag === "Failure") {
@@ -267,7 +278,8 @@ const proxyWebSocket = (
     );
     return HttpServerResponse.empty();
   }).pipe(
-    Effect.provide(Socket.layerWebSocketConstructorGlobal),
+    // Конструктор Bun: глобальный (стандартный) не умеет заголовки апгрейда.
+    Effect.provide(BunSocket.layerWebSocketConstructor),
     Effect.scoped,
     Effect.catch((cause) =>
       Effect.as(
@@ -285,6 +297,7 @@ const handle = (
   auth: BetterAuth["Service"],
   allowedOrigins: ReadonlySet<string>,
   upstreamFor: (sessionId: string) => string,
+  relaySecret: Redacted.Redacted<string>,
   runBridge: (
     bridge: Effect.Effect<HttpServerResponse.HttpServerResponse>,
   ) => Fiber.Fiber<HttpServerResponse.HttpServerResponse>,
@@ -331,8 +344,10 @@ const handle = (
     const target = upstreamUrl(base, rest, url.search);
     return upgrade
       ? // Прерывание ожидания (файбер запроса) мост не останавливает.
-        yield* Fiber.join(runBridge(proxyWebSocket(request, target, sessionId)))
-      : yield* proxyHttp(request, target, upstream, sessionId);
+        yield* Fiber.join(
+          runBridge(proxyWebSocket(request, target, sessionId, relaySecret)),
+        )
+      : yield* proxyHttp(request, target, upstream, sessionId, relaySecret);
   });
 
 /** Маршрут `/stream/:sessionId/*` (и `/stream/:sessionId` — редирект со слэшем). */
@@ -361,9 +376,14 @@ export const StreamProxyRoute = HttpRouter.use((router) =>
       never
     >();
     yield* router.add("*", "/stream/:sessionId/*", (request) =>
-      handle(request, auth, allowedOrigins, upstreamFor, runBridge).pipe(
-        Effect.provideService(Db, db),
-      ),
+      handle(
+        request,
+        auth,
+        allowedOrigins,
+        upstreamFor,
+        config.relaySecret,
+        runBridge,
+      ).pipe(Effect.provideService(Db, db)),
     );
   }),
 );

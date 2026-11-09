@@ -13,9 +13,9 @@
 #   https://<хост S3>        → cg-rustfs:9000       (профили; отдельный хост — S3 плохо живёт под
 #                                                     префиксом пути)
 # Порты на хост не публикуются. Relay стрима оркестратора (RELAY_PORT, 3002) — внутренний: в
-# маршруты прокси его не добавлять. Для api он в сети cg; в сети proxy оркестратор тоже слушает
-# его (Docker не делит порты контейнера по сетям), поэтому в proxy не должно быть чужих
-# недоверенных контейнеров — на главном там только обратный прокси.
+# маршруты прокси его не добавлять. Docker не делит порты контейнера по сетям, так что в сети
+# proxy relay тоже слушается; поэтому каждый запрос к нему несёт общий секрет api и оркестратора
+# (RELAY_SECRET, заголовок x-cg-relay-secret), без него relay отвечает 403.
 name: cloud-gaming
 
 # Ротация логов docker: без неё json-file растёт без ограничений.
@@ -59,6 +59,8 @@ services:
       # Прокси стрима /stream/<id>/ ходит в relay оркестратора (а тот — по тоннелю агента в
       # Selkies сессии); в сети cg-sessions api больше нет.
       ORCHESTRATOR_RELAY_URL: http://cg-orchestrator:${RELAY_PORT:-3002}
+      # Общий секрет с relay (тот же у cg-orchestrator), не короче 32 символов.
+      RELAY_SECRET: ${RELAY_SECRET:?RELAY_SECRET is required}
     mem_limit: 512m
     logging: *logging
     networks:
@@ -83,7 +85,7 @@ services:
   # агентов игровых серверов (токен сервера в Authorization: Bearer), тоннели стрима
   # /agent/tunnel/<id>, обмен кода подключения /agent/enroll, конфиг /agent/config и файлы
   # установки /agent/install.sh и др. — это маршрут прокси https://<домен>/agent*, поэтому он в
-  # сети proxy. На RELAY_PORT (3002) — relay стрима для cg-api (внутренний, см. шапку).
+  # сети proxy. На RELAY_PORT (3002) — relay стрима для cg-api (только с RELAY_SECRET, см. шапку).
   cg-orchestrator:
     image: *app-image
     container_name: cg-orchestrator
@@ -92,6 +94,8 @@ services:
     environment:
       ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-3001}
       RELAY_PORT: ${RELAY_PORT:-3002}
+      # Relay пускает только запросы с этим секретом (заголовок x-cg-relay-secret от cg-api).
+      RELAY_SECRET: ${RELAY_SECRET:?RELAY_SECRET is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       # Публичный адрес главного (https://<домен>): из него адрес WebSocket агентов
       # (wss://<домен>/agent) в ответе обмена кода и адрес в скрипте установки.

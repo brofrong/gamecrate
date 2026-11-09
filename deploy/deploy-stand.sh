@@ -14,13 +14,16 @@
 #    cg.install или cg.template (сборка клиента Steam): пересоздание cg-agent и смена образа под
 #    ними рвут сессии и установки. Остановленные (exited, например profile-unsaved) не мешают.
 # 2. Есть ли ~/cloud-gaming/.env (его деплой не создаёт; см. deploy/README.md, «Стенд brofrong»).
-# 3. Драйвер NVIDIA на brofrong должен быть в images/session/drivers.txt; в .env пишутся
-#    CG_VERSION=<тег> и SESSION_IMAGE=<реестр>/cg-session:<драйвер>-<тег> (строки заменяются,
-#    остальное в .env не читается и не меняется).
-# 4. Каталоги хоста (владелец uid 1000, без sudo) и сеть cg-sessions — если их нет.
+# 3. Драйвер NVIDIA на brofrong должен быть в images/session/drivers.txt.
+# 4. Пути стенда (CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR, STEAM_CLIENT_PARENT) — в .env, если их
+#    там нет; каталоги хоста (владелец uid 1000, без sudo); сеть cg-sessions с фиксированной
+#    подсетью и ip-range (есть с другой — отказ с инструкцией).
 # 5. Копирует три compose-файла в ~/cloud-gaming/, проверяет конфиг (`docker compose config -q`:
-#    нет обязательной переменной — ошибка до скачивания образов), `docker pull` образа сессии,
-#    `docker compose pull`, бакет профилей (`run --rm cg-rustfs-bucket`), `up -d`.
+#    нет обязательной переменной — ошибка до скачивания образов) и скачивает образы (образ
+#    сессии и `docker compose pull`) с новыми CG_VERSION/SESSION_IMAGE из окружения; только
+#    потом пишет в .env CG_VERSION=<тег> и SESSION_IMAGE=<реестр>/cg-session:<драйвер>-<тег>
+#    (строки заменяются, остальное в .env не читается и не меняется); бакет профилей
+#    (`run --rm cg-rustfs-bucket`), `up -d`.
 # Реестр приватный: на brofrong один раз `docker login registry.imtechnologies.ru` токеном на
 # чтение (см. README).
 # Команды ssh собираются на этой машине нарочно (тег, пути, COMPOSE) — SC2029 не про ошибку.
@@ -114,10 +117,12 @@ session_image="${CG_REGISTRY}/cg-session:${driver}-${TAG}"
 echo "    ${session_image}"
 
 # Заменить (или дописать) строку <ключ>=<значение> в серверном .env; значения не секретные.
+# set_env_default — только если ключа в .env ещё нет.
 set_env() {
-  ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" "$1" "$2" <<'REMOTE'
+  ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" "$1" "$2" "${3:-replace}" <<'REMOTE'
 set -euo pipefail
 f=~/"$1"/.env
+if [ "$4" = default ] && grep -q "^$2=" "${f}"; then exit 0; fi
 tmp="$(mktemp "${f}.XXXXXX")"
 chmod --reference="${f}" "${tmp}"
 grep -v "^$2=" "${f}" >"${tmp}" || true
@@ -125,11 +130,20 @@ printf '%s=%s\n' "$2" "$3" >>"${tmp}"
 mv -f "${tmp}" "${f}"
 REMOTE
 }
-set_env CG_VERSION "${TAG}"
-set_env SESSION_IMAGE "${session_image}"
+set_env_default() { set_env "$1" "$2" default; }
 
-echo "==> каталоги библиотеки, своих игр, клиента Steam и scratch"
-# Владелец — brofrong (uid 1000), без sudo. Значения по умолчанию — как в compose.stand.yaml.
+echo "==> пути стенда в .env (если их там нет)"
+# Их читают bind-ы и переменные compose.worker.yaml (там по умолчанию пути /srv игрового сервера).
+set_env_default CG_DATA_DIR /raid/cloud-gaming
+set_env_default SCRATCH_DIR /home/brofrong/cloud-gaming-scratch
+set_env_default STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client
+set_env_default STEAM_CLIENT_PARENT /home/brofrong/cloud-gaming-steam
+
+echo "==> каталоги, сеть cg-sessions"
+# Владелец — brofrong (uid 1000), без sudo. Сеть cg-sessions — с фиксированной подсетью и
+# ip-range (CG_SESSIONS_SUBNET/CG_SESSIONS_IP_RANGE, по умолчанию как в install.sh): адрес cg-agent
+# CG_AGENT_IP (172.31.240.2) закреплён в compose.worker.yaml вне ip-range. Есть с другой
+# подсетью — отказ: пересоздать её можно только без сессий.
 ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" <<'REMOTE'
 set -euo pipefail
 REMOTE_DIR="$1"
@@ -138,6 +152,8 @@ data="$(envval CG_DATA_DIR /raid/cloud-gaming)"
 scratch="$(envval SCRATCH_DIR /home/brofrong/cloud-gaming-scratch)"
 client="$(envval STEAM_CLIENT_DIR /home/brofrong/cloud-gaming-steam/client)"
 client_parent="$(envval STEAM_CLIENT_PARENT /home/brofrong/cloud-gaming-steam)"
+subnet="$(envval CG_SESSIONS_SUBNET 172.31.240.0/24)"
+ip_range="$(envval CG_SESSIONS_IP_RANGE 172.31.240.128/25)"
 dirs=("${data}" "${data}/library" "${data}/library/steamapps" "${data}/install-scratch"
   "${data}/games" "${scratch}" "${client_parent}")
 mkdir -p "${dirs[@]}"
@@ -151,18 +167,41 @@ if [ ! -x "${client}/ubuntu12_32/steam" ]; then
   echo "    ВНИМАНИЕ: клиент Steam в ${client} не собран — ./deploy/build-steam-client.sh" >&2
   echo "    (пока шаблона нет, сервер сессий не берёт)." >&2
 fi
-docker network inspect cg-sessions >/dev/null 2>&1 || docker network create cg-sessions >/dev/null
+if docker network inspect cg-sessions >/dev/null 2>&1; then
+  current="$(docker network inspect cg-sessions -f '{{range .IPAM.Config}}{{.Subnet}} {{.IPRange}};{{end}}')"
+  if [ "${current}" != "${subnet} ${ip_range};" ]; then
+    echo "ОШИБКА: сеть cg-sessions есть, но с подсетью «${current}», а нужна ${subnet} с ip-range ${ip_range}." >&2
+    echo "Пересоздать, пока нет сессий и установок (см. README, «Стенд brofrong»):" >&2
+    echo "  cd ~/${REMOTE_DIR} && docker stop cg-agent && docker network rm cg-sessions" >&2
+    echo "и повторить деплой. Подсеть занята — свои CG_SESSIONS_SUBNET, CG_SESSIONS_IP_RANGE, CG_AGENT_IP в .env." >&2
+    exit 1
+  fi
+else
+  docker network create --subnet "${subnet}" --ip-range "${ip_range}" cg-sessions >/dev/null || {
+    echo "ОШИБКА: не удалось создать cg-sessions ${subnet} — подсеть занята? Свои CG_SESSIONS_SUBNET," >&2
+    echo "CG_SESSIONS_IP_RANGE и CG_AGENT_IP (внутри подсети, вне ip-range) в ~/${REMOTE_DIR}/.env." >&2
+    exit 1
+  }
+fi
 REMOTE
 
 echo "==> compose-файлы -> ${REMOTE_HOST}:~/${REMOTE_DIR}/"
 scp -q "${REPO_ROOT}/deploy/compose.main.yaml" "${REPO_ROOT}/deploy/compose.worker.yaml" \
   "${REPO_ROOT}/deploy/compose.stand.yaml" "${REMOTE_HOST}:${REMOTE_DIR}/"
 
+# Проверка и скачивание — с новыми CG_VERSION/SESSION_IMAGE из окружения compose (оно главнее
+# --env-file): в .env они попадают, только когда конфиг верен и образы скачались.
+NEXT="cd ~/${REMOTE_DIR} && CG_VERSION=${TAG} SESSION_IMAGE=${session_image} DOCKER_GID=\$(stat -c %g /var/run/docker.sock) docker compose ${COMPOSE_FILES} --env-file .env"
+
 echo "==> проверка конфигурации compose"
-ssh "${REMOTE_HOST}" "${COMPOSE} config -q"
+ssh "${REMOTE_HOST}" "${NEXT} config -q"
 
 echo "==> образы ${TAG}"
-ssh "${REMOTE_HOST}" "docker pull -q ${session_image} >/dev/null && ${COMPOSE} pull -q"
+ssh "${REMOTE_HOST}" "docker pull -q ${session_image} >/dev/null && ${NEXT} pull -q"
+
+echo "==> CG_VERSION и SESSION_IMAGE в .env"
+set_env CG_VERSION "${TAG}"
+set_env SESSION_IMAGE "${session_image}"
 
 echo "==> бакет профилей (cg-rustfs, идемпотентно)"
 ssh "${REMOTE_HOST}" "${COMPOSE} run --rm cg-rustfs-bucket"

@@ -1,6 +1,14 @@
 // Конфигурация сервера из окружения (`.env`). Секреты — только Redacted.
 import { fileURLToPath } from "node:url";
-import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect";
+import {
+  Config,
+  ConfigProvider,
+  Context,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 
 /** Адрес с явной схемой `http://` или `https://` и хостом (как в apps/orchestrator/src/config.ts). */
 const httpUrlPattern = /^https?:\/\/[^\s/?#]+/;
@@ -81,6 +89,17 @@ export const appConfig = Config.all({
             ),
           ),
     ),
+  ),
+  /**
+   * Общий секрет с relay оркестратора (`RELAY_SECRET`, не короче 32
+   * символов, тот же, что у оркестратора): прокси стрима ставит его в
+   * заголовок `x-cg-relay-secret` каждого запроса и открытия WebSocket к
+   * relay, без него relay отвечает 403. Нет или короче — ConfigError без
+   * значения.
+   */
+  relaySecret: Config.schema(
+    Schema.Redacted(Schema.String.check(Schema.isMinLength(32))),
+    "RELAY_SECRET",
   ),
   /** Папка собранной SPA (`apps/web/dist`). */
   webDistDir: Config.String("WEB_DIST_DIR"),

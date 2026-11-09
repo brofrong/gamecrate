@@ -11,6 +11,7 @@ import {
   AgentRpcs,
   decodeTunnelControl,
   encodeTunnelControl,
+  RELAY_SECRET_HEADER,
   type TunnelControl,
 } from "@cg/rpc";
 import { BunHttpServer, BunSocket } from "@effect/platform-bun";
@@ -43,6 +44,7 @@ import {
   seedUsers,
   seedWorker,
   TestOrchestratorConfig,
+  testRelaySecret,
 } from "./support";
 
 const tokenOf = (workerId: string) => `cgw_tunnel-test-token-of-${workerId}`;
@@ -312,6 +314,16 @@ afterAll(async () => {
 const relayUrl = (sessionId: string, rest: string) =>
   `http://127.0.0.1:${relayPort}/relay/${sessionId}${rest}`;
 
+/** Секрет relay, как его ставит api (`x-cg-relay-secret`). */
+const secret = { [RELAY_SECRET_HEADER]: testRelaySecret };
+
+/** Запрос к relay от имени api (с секретом). */
+const relayFetch = (url: string, init: RequestInit = {}) =>
+  fetch(url, {
+    ...init,
+    headers: { ...secret, ...(init.headers as Record<string, string>) },
+  });
+
 /** Запрос к relay, за которым можно следить, не дожидаясь ответа. */
 const tracked = (promise: Promise<Response>) => {
   const state: { response?: Response } = {};
@@ -328,7 +340,7 @@ describe("relay", () => {
   it("relays an HTTP GET through the agent", async () => {
     const sessionId = await run(liveSession("w1"));
     const before = agent.requests.length;
-    const response = await fetch(relayUrl(sessionId, "/index.html?x=1"), {
+    const response = await relayFetch(relayUrl(sessionId, "/index.html?x=1"), {
       headers: { accept: "text/html", "x-forwarded-by": "api" },
     });
     expect(response.status).toBe(200);
@@ -355,10 +367,12 @@ describe("relay", () => {
     // Hop-by-hop и host relay не передаёт.
     expect(headers.has("host")).toBe(false);
     expect(headers.has("connection")).toBe(false);
+    // Секрет api ↔ relay агенту не уходит.
+    expect(headers.has(RELAY_SECRET_HEADER)).toBe(false);
     expect(agent.opened.at(-1)?.sessionId).toBe(sessionId);
 
     // Тело запроса — отдельным бинарным сообщением.
-    const posted = await fetch(relayUrl(sessionId, "/api"), {
+    const posted = await relayFetch(relayUrl(sessionId, "/api"), {
       method: "POST",
       body: "abc",
     });
@@ -373,6 +387,8 @@ describe("relay", () => {
     const sessionId = await run(liveSession("w1"));
     const ws = new WebSocket(
       `ws://127.0.0.1:${relayPort}/relay/${sessionId}/websocket?x=1`,
+      // Bun принимает заголовки апгрейда, тип DOM — нет.
+      { headers: secret } as unknown as string[],
     );
     ws.binaryType = "arraybuffer";
     const received: Array<string | number[]> = [];
@@ -403,13 +419,42 @@ describe("relay", () => {
     expect(await closed).toEqual({ code: 4001, reason: "bye" });
   });
 
+  it("refuses requests without the relay secret before any lookup", async () => {
+    const sessionId = await run(liveSession("w1"));
+    const before = agent.opened.length;
+    for (const headers of [
+      {},
+      { [RELAY_SECRET_HEADER]: "wrong" },
+      { [RELAY_SECRET_HEADER]: `${testRelaySecret}x` },
+    ]) {
+      const response = await fetch(relayUrl(sessionId, "/index.html"), {
+        headers,
+      });
+      expect(response.status).toBe(403);
+    }
+    // Даже не путь relay — 403, а не 404: без секрета relay ничего не раскрывает.
+    expect((await fetch(`http://127.0.0.1:${relayPort}/anything`)).status).toBe(
+      403,
+    );
+    // WebSocket без секрета не открывается.
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${relayPort}/relay/${sessionId}/websocket`,
+    );
+    const opened = await new Promise<boolean>((resolve) => {
+      ws.onopen = () => resolve(true);
+      ws.onerror = () => resolve(false);
+    });
+    expect(opened).toBe(false);
+    expect(agent.opened.length).toBe(before);
+  });
+
   it("refuses a session on another worker or not active", async () => {
     const before = agent.opened.length;
     const elsewhere = await run(liveSession("w2"));
     const ended = await run(liveSession("w1", { state: "ended" }));
     const notReady = await run(liveSession("w1", { streamUrl: null }));
     for (const sessionId of [elsewhere, ended, notReady, crypto.randomUUID()]) {
-      const response = await fetch(relayUrl(sessionId, "/index.html"));
+      const response = await relayFetch(relayUrl(sessionId, "/index.html"));
       expect(response.status).toBe(502);
     }
     expect(agent.opened.length).toBe(before);
@@ -420,7 +465,7 @@ describe("relay", () => {
     agent.dials = false;
     try {
       const before = agent.opened.length;
-      const relay = tracked(fetch(relayUrl(sessionId, "/index.html")));
+      const relay = tracked(relayFetch(relayUrl(sessionId, "/index.html")));
       await until(() => agent.opened.length > before);
       const tunnelId = agent.opened.at(-1)!.tunnelId;
       const path = `/agent/tunnel/${tunnelId}`;
@@ -450,7 +495,7 @@ describe("relay", () => {
     agent.dials = false;
     try {
       const before = agent.opened.length;
-      const relay = tracked(fetch(relayUrl(sessionId, "/index.html")));
+      const relay = tracked(relayFetch(relayUrl(sessionId, "/index.html")));
       await until(() => agent.opened.length > before);
 
       await adjust("9 seconds");

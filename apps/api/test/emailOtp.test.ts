@@ -35,6 +35,7 @@ const baseConfig = () => ({
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
   orchestratorRelayUrl: "http://cg-orchestrator:3002",
+  relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
   webDistDir: "unused",
   ownGamesDir: "unused",
   smtpUrl: Redacted.make("log://"),

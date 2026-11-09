@@ -180,6 +180,14 @@ export const run = Effect.gen(function* () {
       ),
     );
 
+    /**
+     * Первый принятый отчёт соединения — признак, что оркестратор принял
+     * `agent.connect` (без него `agent.report` отклоняется): строка
+     * «Connected to orchestrator» в логе, её ждёт deploy/worker/install.sh.
+     * Снимок загрузки уходит раз в STATS_INTERVAL, так что строка появляется
+     * в первые секунды.
+     */
+    let confirmed = false;
     /** Один отчёт; не дошедший итоговый возвращается в `carry`. */
     const sendNext = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -191,6 +199,12 @@ export const run = Effect.gen(function* () {
               : Effect.sync(() => carry.unshift(report)),
           ),
         );
+        if (!confirmed) {
+          confirmed = true;
+          yield* Effect.logInfo("Connected to orchestrator", {
+            workerId: config.workerId,
+          });
+        }
       }),
     );
 

@@ -19,6 +19,15 @@
 // на своём сервере), в канале его нет — защита от SSRF.
 import { Option, Schema } from "effect";
 
+/**
+ * Заголовок общего секрета relay (`RELAY_SECRET` api и оркестратора): api
+ * ставит его в каждый запрос и открытие WebSocket к relay, relay без него
+ * (или с другим значением) отвечает 403 до обращения к БД и агенту. Relay
+ * слушается и в сети обратного прокси (`proxy`), а сам владельца сессии не
+ * проверяет. Дальше relay заголовок не передаёт.
+ */
+export const RELAY_SECRET_HEADER = "x-cg-relay-secret";
+
 /** Заголовки как пары: повторяющиеся (`set-cookie`) не склеиваются. */
 const HeaderPairs = Schema.Array(Schema.Tuple([Schema.String, Schema.String]));
 

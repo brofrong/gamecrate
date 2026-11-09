@@ -47,12 +47,16 @@ import { SteamLoginSeedsTest, testSeedKey } from "./seedKey";
 /** Тестовый `PROFILE_KEY`: 32 байта 0x02 в base64. */
 export const testProfileKey = Buffer.alloc(32, 2).toString("base64");
 
+/** `RELAY_SECRET` тестового конфига (заголовок `x-cg-relay-secret` к relay). */
+export const testRelaySecret = "test-relay-secret-test-relay-secret-0001";
+
 /** Конфиг оркестратора для тестов HTTP: все секреты — заметные строки-метки. */
 export const TestOrchestratorConfig = Layer.succeed(OrchestratorConfig, {
   port: 0,
   databaseUrl: Redacted.make("postgres://unused"),
   publicUrl: "https://game.example.ru",
   relayPort: 0,
+  relaySecret: Redacted.make(testRelaySecret),
   s3PublicEndpoint: "https://s3.game.example.ru",
   s3Bucket: "cg-profiles",
   s3AccessKey: Redacted.make("test-s3-access"),

@@ -23,6 +23,12 @@ const base64Key32 = (name: string) =>
     name,
   );
 
+/** `RELAY_SECRET`: не короче 32 символов; нет или короче — ConfigError без значения. */
+export const relaySecret = Config.schema(
+  Schema.Redacted(Schema.String.check(Schema.isMinLength(32))),
+  "RELAY_SECRET",
+);
+
 /** Адрес с явной схемой `http://` или `https://` и хостом. */
 const httpUrlPattern = /^https?:\/\/[^\s/?#]+/;
 
@@ -90,6 +96,13 @@ export const orchestratorConfig = Config.all({
   ),
   /** Внутренний порт тоннеля стрима для api (`/relay/<sessionId>/…`, спека §4); наружу не публикуется. */
   relayPort: Config.Port("RELAY_PORT").pipe(Config.withDefault(3002)),
+  /**
+   * Общий секрет relay с api (`RELAY_SECRET`, не короче 32 символов,
+   * `openssl rand -hex 32`): без него в заголовке `x-cg-relay-secret` relay
+   * отвечает 403. Нужен, потому что оркестратор в сети `proxy` (маршрут
+   * `/agent*`) и relay слушается и там.
+   */
+  relaySecret: relaySecret,
   /**
    * Хранилище профилей, как его видят игровые серверы (`/agent/config`):
    * публичный адрес S3 главного (`S3_PUBLIC_ENDPOINT`), бакет и ключи.
