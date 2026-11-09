@@ -111,12 +111,13 @@ function DeleteCell({
  */
 function OwnGamesTable({
   games,
-  expandedAppId,
+  expandedKey,
   onToggle,
   onSetPublished,
 }: {
   games: ReadonlyArray<AdminOwnGame>;
-  expandedAppId: number | null;
+  /** Ключ раскрытой строки — здесь просто `String(appId)` (своя сборка не дублируется по серверам). */
+  expandedKey: string | null;
   onToggle: (appId: number) => void;
   onSetPublished: (game: AdminOwnGame, published: boolean) => void;
 }) {
@@ -184,7 +185,7 @@ function OwnGamesTable({
                     </Button>
                   </td>
                 </tr>
-                {expandedAppId === game.appId && (
+                {expandedKey === String(game.appId) && (
                   <tr className="border-t bg-muted/30">
                     <td className={td} colSpan={columns}>
                       <GameRequirementsPanel appId={game.appId} />
@@ -204,14 +205,17 @@ function GamesTable({
   games,
   service,
   onDelete,
-  expandedAppId,
+  expandedKey,
   onToggle,
 }: {
   games: ReadonlyArray<AdminGame>;
   service: AdminGames["service"];
   onDelete: (game: AdminGame) => void;
-  expandedAppId: number | null;
-  onToggle: (appId: number) => void;
+  /** Ключ раскрытой строки — `${workerId}:${appId}`: та же игра на двух серверах — две
+   * разные строки, раскрытие одной не должно раскрывать требования под обеими (была
+   * ошибка — ключ был просто `appId`, общий для обеих строк). */
+  expandedKey: string | null;
+  onToggle: (game: AdminGame) => void;
 }) {
   const th = "px-2 py-1.5 text-left font-medium";
   const td = "px-2 py-2";
@@ -235,8 +239,10 @@ function GamesTable({
             <React.Fragment key={`${game.workerId}:${game.appId}`}>
               <tr
                 className="cursor-pointer border-t hover:bg-muted/40"
-                aria-expanded={expandedAppId === game.appId}
-                onClick={() => onToggle(game.appId)}
+                aria-expanded={
+                  expandedKey === `${game.workerId}:${game.appId}`
+                }
+                onClick={() => onToggle(game)}
               >
                 <td className={td}>
                   <div className="flex flex-col gap-0.5">
@@ -277,7 +283,7 @@ function GamesTable({
                   <DeleteCell game={game} onDelete={onDelete} />
                 </td>
               </tr>
-              {expandedAppId === game.appId && (
+              {expandedKey === `${game.workerId}:${game.appId}` && (
                 <tr className="border-t bg-muted/30">
                   <td className={td} colSpan={columns}>
                     <GameRequirementsPanel appId={game.appId} />
@@ -319,8 +325,11 @@ export function GamesTab() {
   usePolling(adminGamesAtom);
   const [toDelete, setToDelete] = React.useState<AdminGame | null>(null);
   // Общий на оба раздела: диапазоны appId своих сборок и игр библиотеки не
-  // пересекаются, раскрытая строка в одном разделе не мешает другому.
-  const [expandedAppId, setExpandedAppId] = React.useState<number | null>(null);
+  // пересекаются, раскрытая строка в одном разделе не мешает другому. Ключ —
+  // `String(appId)` для своих сборок (строка на appId, дублей нет) и
+  // `${workerId}:${appId}` для игр библиотеки (та же игра на двух серверах —
+  // две строки, иначе раскрытие одной раскрывало бы требования под обеими).
+  const [expandedKey, setExpandedKey] = React.useState<string | null>(null);
   const deleteGame = useAtomSet(adminDeleteGameAtom, { mode: "promiseExit" });
   const setOwnGamePublished = useAtomSet(adminSetOwnGamePublishedAtom, {
     mode: "promiseExit",
@@ -335,8 +344,15 @@ export function GamesTab() {
     else deleteToast(exit.value);
   };
 
-  const onToggle = (appId: number) =>
-    setExpandedAppId((current) => (current === appId ? null : appId));
+  const onToggleOwn = (appId: number) => {
+    const key = String(appId);
+    setExpandedKey((current) => (current === key ? null : key));
+  };
+
+  const onToggleGame = (game: AdminGame) => {
+    const key = `${game.workerId}:${game.appId}`;
+    setExpandedKey((current) => (current === key ? null : key));
+  };
 
   const onSetPublished = async (game: AdminOwnGame, published: boolean) => {
     const exit = await setOwnGamePublished(
@@ -372,8 +388,8 @@ export function GamesTab() {
               ) : (
                 <OwnGamesTable
                   games={value.own}
-                  expandedAppId={expandedAppId}
-                  onToggle={onToggle}
+                  expandedKey={expandedKey}
+                  onToggle={onToggleOwn}
                   onSetPublished={(game, published) =>
                     void onSetPublished(game, published)
                   }
@@ -409,8 +425,8 @@ export function GamesTab() {
                   games={value.games}
                   service={value.service}
                   onDelete={setToDelete}
-                  expandedAppId={expandedAppId}
-                  onToggle={onToggle}
+                  expandedKey={expandedKey}
+                  onToggle={onToggleGame}
                 />
               )
             }

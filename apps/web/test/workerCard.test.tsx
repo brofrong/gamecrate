@@ -2,8 +2,13 @@
 // слоты с сессиями, выбор класса (спека §5.1) и кнопки — на фикстуре brofrong; без
 // снимка/офлайн — «нет данных».
 import { describe, expect, it, mock } from "bun:test";
-import type { AdminSession, AdminWorker, AdminWorkerClass } from "@cg/rpc";
-import { fireEvent, render, screen } from "@testing-library/react";
+import type {
+  AdminRegion,
+  AdminSession,
+  AdminWorker,
+  AdminWorkerClass,
+} from "@cg/rpc";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { WorkerCard } from "../src/components/admin/WorkerCard";
 
 const GiB = 2 ** 30;
@@ -29,6 +34,11 @@ const session: AdminSession = {
 const classes: ReadonlyArray<AdminWorkerClass> = [
   { id: "c-fast", name: "Быстрое", rank: 2, workers: 0 },
   { id: "c-standard", name: "Стандарт", rank: 1, workers: 1 },
+];
+
+const regions: ReadonlyArray<AdminRegion> = [
+  { id: "r-msk", code: "msk", name: "Москва", position: 0, workers: 1 },
+  { id: "r-spb", code: "spb", name: "Питер", position: 1, workers: 1 },
 ];
 
 const brofrong: AdminWorker = {
@@ -114,17 +124,24 @@ const renderCard = (worker: AdminWorker = brofrong) => {
   const onStop = mock((_sessionId: string) => {});
   const onDraining = mock((_draining: boolean) => {});
   const onSetClass = mock((_classId: string | null) => {});
+  const onSetRegion = mock((_regionId: string | null) => {});
+  const onIssueCode = mock(() => {});
+  const onRevoke = mock(() => {});
   render(
     <WorkerCard
       worker={worker}
       now={now}
       classes={classes}
+      regions={regions}
       onStop={onStop}
       onDraining={onDraining}
       onSetClass={onSetClass}
+      onSetRegion={onSetRegion}
+      onIssueCode={onIssueCode}
+      onRevoke={onRevoke}
     />,
   );
-  return { onStop, onDraining, onSetClass };
+  return { onStop, onDraining, onSetClass, onSetRegion, onIssueCode, onRevoke };
 };
 
 /** Значения строк «Железа» с подписью `label` (`dt` → соседний `dd`). */
@@ -175,6 +192,65 @@ describe("WorkerCard", () => {
 
     renderCard({ ...brofrong, classId: null });
     expect(screen.getByText("Без класса — сессий не берёт")).toBeTruthy();
+  });
+
+  it("выбор региона зовёт onSetRegion, без региона — «Без региона»", () => {
+    const { onSetRegion } = renderCard({ ...brofrong, regionId: "r-msk" });
+    const select = screen.getByLabelText("Регион сервера") as HTMLSelectElement;
+    expect(select.value).toBe("r-msk");
+
+    fireEvent.change(select, { target: { value: "r-spb" } });
+    expect(onSetRegion).toHaveBeenCalledWith("r-spb");
+
+    renderCard({ ...brofrong, regionId: null });
+    const withoutRegion = screen.getAllByLabelText(
+      "Регион сервера",
+    )[1] as HTMLSelectElement;
+    expect(withoutRegion.value).toBe("");
+  });
+
+  it("lastSeenAt null — бейдж «Ждёт подключения»", () => {
+    renderCard({ ...brofrong, lastSeenAt: null });
+    expect(screen.getByText("Ждёт подключения")).toBeTruthy();
+    cleanup();
+
+    renderCard({ ...brofrong, lastSeenAt: ago(1000) });
+    expect(screen.queryByText("Ждёт подключения")).toBeNull();
+  });
+
+  it("steamClientBuiltAt пуст — предупреждение «Клиент Steam не собран»", () => {
+    const versions = brofrong.versions;
+    if (versions === null) throw new Error("fixture");
+    renderCard({
+      ...brofrong,
+      versions: { ...versions, steamClientBuiltAt: null },
+    });
+    expect(screen.getByText("Клиент Steam не собран")).toBeTruthy();
+    cleanup();
+
+    renderCard();
+    expect(screen.queryByText("Клиент Steam не собран")).toBeNull();
+  });
+
+  it("versions.agentVersion — строка «Версия»", () => {
+    const versions = brofrong.versions;
+    if (versions === null) throw new Error("fixture");
+    renderCard({ ...brofrong, versions: { ...versions, agentVersion: "1.4.0" } });
+    expect(screen.getByText("Версия 1.4.0")).toBeTruthy();
+    cleanup();
+
+    renderCard();
+    expect(screen.queryByText(/^Версия /)).toBeNull();
+  });
+
+  it("«Новый код подключения» и «Отозвать доступ» зовут колбэки", () => {
+    const { onIssueCode, onRevoke } = renderCard();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Новый код подключения" }),
+    );
+    expect(onIssueCode).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать доступ" }));
+    expect(onRevoke).toHaveBeenCalledTimes(1);
   });
 
   it("«Остановить» и «На обслуживание» зовут колбэки", () => {
