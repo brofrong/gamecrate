@@ -40,6 +40,9 @@ const brofrong: AdminWorker = {
   lastSeenAt: ago(3000),
   draining: false,
   classId: "c-standard",
+  regionId: null,
+  enrolled: true,
+  pendingCode: null,
   hardware: {
     cpuModel: "AMD Ryzen 5 2600X Six-Core Processor",
     cpuCores: 6,
