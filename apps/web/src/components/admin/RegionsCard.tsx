@@ -236,7 +236,9 @@ export function RegionsCard() {
       update(adminUpdateRegionArgs(region.id, region.name, neighbor.position)),
       update(adminUpdateRegionArgs(neighbor.id, neighbor.name, region.position)),
     ]);
-    if (Exit.isFailure(exitRegion) || Exit.isFailure(exitNeighbor)) {
+    const failed = (exit: typeof exitRegion) =>
+      Exit.isFailure(exit) || exit.value === "notFound";
+    if (failed(exitRegion) || failed(exitNeighbor)) {
       toast.error("Не удалось изменить порядок");
     }
   };

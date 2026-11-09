@@ -356,6 +356,36 @@ describe("GamesTab", () => {
     expect(screen.getByRole("columnheader", { name: "Сервер" })).toBeTruthy();
   });
 
+  it("expanding one server's row does not expand the same game's row on another server", async () => {
+    // Та же игра на двух серверах — две строки с одним appId, но разным workerId:
+    // ключ раскрытой строки должен различать их (была ошибка — ключ был просто appId,
+    // раскрытие одной строки раскрывало требования под обеими).
+    requirementsStore[1794681] = {
+      requirements: null,
+      rows: [],
+      overall: { sessions: 0, vramP95: null, ramP95: null, cpuP95: null },
+    };
+    const onW1 = game({ appId: 1794681, name: "Dup Game", workerId: "w1" });
+    const onW2 = game({ appId: 1794681, name: "Dup Game", workerId: "w2" });
+    renderGames({ games: [onW1, onW2], service: null });
+
+    const [row1, row2] = (await screen.findAllByText("Dup Game")).map((el) =>
+      el.closest("tr"),
+    );
+    if (row1 === null || row1 === undefined || row2 === null || row2 === undefined) {
+      throw new Error("row not found");
+    }
+
+    fireEvent.click(row1);
+
+    expect(row1.getAttribute("aria-expanded")).toBe("true");
+    expect(row2.getAttribute("aria-expanded")).toBe("false");
+    // Панель требований открылась ровно один раз (под строкой w1), а не под обеими.
+    expect(
+      screen.getAllByText("нет данных, запускается только на самом сильном классе"),
+    ).toHaveLength(1);
+  });
+
   it("opens the confirm dialog on click and sends the server and appId on confirm", async () => {
     renderGames({
       games: [vampire, peglin, katana, balatro],

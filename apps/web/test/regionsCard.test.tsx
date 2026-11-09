@@ -1,11 +1,12 @@
 // Блок «Регионы» на вкладке «Серверы» (спека §6/§7): список, добавление, переименование,
 // порядок, удаление. `../src/rpc` подменяется целиком (приём как в `adminClasses.test.tsx`).
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, mock, spyOn } from "bun:test";
 import type { AdminRegion } from "@cg/rpc";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { RegistryProvider } from "@effect/atom-react";
+import { toast } from "sonner";
 import { rpcStub } from "./moduleStubs";
 
 type InitialValue =
@@ -23,14 +24,21 @@ const createCalls: Array<unknown> = [];
 const updateCalls: Array<unknown> = [];
 const deleteCalls: Array<unknown> = [];
 
-const createResult: { id: string; code: string; name: string; position: number; workers: number } | "codeTaken" | "invalid" = {
+type CreateResult =
+  | { id: string; code: string; name: string; position: number; workers: number }
+  | "codeTaken"
+  | "invalid";
+
+/** Меняется перед каждым тестом — читает её замыкание `Atom.fn` ниже при вызове. */
+let createResult: CreateResult = {
   id: "r-new",
   code: "nsk",
   name: "Новосибирск",
   position: 2,
   workers: 0,
 };
-const updateResult: "ok" | "notFound" = "ok";
+/** Меняется перед тестом с «notFound» — читает её замыкание `adminUpdateRegionAtom`. */
+let updateResult: "ok" | "notFound" = "ok";
 const deleteResult: "ok" | "notEmpty" | "notFound" = "ok";
 
 const adminCreateRegionAtom = Atom.fn((arg: unknown) => {
@@ -122,6 +130,64 @@ describe("RegionsCard", () => {
     });
   });
 
+  it("shows a message when the region code is already taken", async () => {
+    createResult = "codeTaken";
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    renderRegions();
+
+    fireEvent.change(screen.getByLabelText("Имя нового региона"), {
+      target: { value: "Новосибирск" },
+    });
+    fireEvent.change(screen.getByLabelText("Код нового региона"), {
+      target: { value: "msk" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить регион" }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Такой код региона уже занят");
+    });
+    toastError.mockRestore();
+    createResult = {
+      id: "r-new",
+      code: "nsk",
+      name: "Новосибирск",
+      position: 2,
+      workers: 0,
+    };
+  });
+
+  it("shows a message when the region code is invalid", async () => {
+    createResult = "invalid";
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    renderRegions();
+
+    fireEvent.change(screen.getByLabelText("Имя нового региона"), {
+      target: { value: "Новосибирск" },
+    });
+    fireEvent.change(screen.getByLabelText("Код нового региона"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить регион" }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        "Код региона: латиница в нижнем регистре, цифры и дефис, от 2 до 16 символов, начинается с буквы",
+      );
+    });
+    toastError.mockRestore();
+    createResult = {
+      id: "r-new",
+      code: "nsk",
+      name: "Новосибирск",
+      position: 2,
+      workers: 0,
+    };
+  });
+
   it("deletes a region without servers", async () => {
     renderRegions();
 
@@ -152,6 +218,23 @@ describe("RegionsCard", () => {
         reactivityKeys: ["admin"],
       });
     });
+  });
+
+  it("shows an error when a leg of the move reports notFound", async () => {
+    updateResult = "notFound";
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    renderRegions();
+
+    const upButtons = screen.getAllByRole("button", { name: "Поднять" });
+    fireEvent.click(upButtons[1]!); // Питер — вверх
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Не удалось изменить порядок");
+    });
+    toastError.mockRestore();
+    updateResult = "ok";
   });
 
   it("renames a region", async () => {
