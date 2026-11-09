@@ -1,4 +1,4 @@
-# Docker build context = repo root (deploy/compose.yaml: build.context: ..).
+# Docker build context = repo root (CI: docker build -f deploy/Dockerfile . в .gitlab-ci.yml).
 # Без этого файла `COPY . .` в deploy/Dockerfile тащит в слой образа всё дерево,
 # включая боевой .env на сервере (~/cloud-gaming/.env) — секреты попадали бы в образ.
 #

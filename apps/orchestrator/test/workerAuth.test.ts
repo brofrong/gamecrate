@@ -416,3 +416,46 @@ describe("worker token", () => {
       }),
     ));
 });
+
+describe("worker install files", () => {
+  it("install.sh is served with the public URL and version substituted", () =>
+    run((http) =>
+      Effect.gen(function* () {
+        const response = yield* http(getRequest("/agent/install.sh"));
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toStartWith(
+          "text/x-shellscript",
+        );
+        const body = yield* Effect.promise(() => response.text());
+        expect(body.startsWith("#!/usr/bin/env bash\n")).toBe(true);
+        expect(body).toContain(
+          'ORCHESTRATOR_PUBLIC_URL="https://game.example.ru"',
+        );
+        expect(body).toContain('CG_VERSION="1.2.3"');
+        // Драйверы релиза — из images/session/drivers.txt образа.
+        expect(body).toMatch(/CG_DRIVERS="[^"]*550\.163\.01[^"]*"/);
+        expect(body).not.toContain("__ORCHESTRATOR_PUBLIC_URL__");
+        expect(body).not.toContain("__CG_VERSION__");
+        expect(body).not.toContain("__CG_DRIVERS__");
+      }),
+    ));
+
+  it("serves the helper scripts and the worker compose without auth", () =>
+    run((http) =>
+      Effect.gen(function* () {
+        for (const [path, type, marker] of [
+          ["/agent/build-steam-client.sh", "text/x-shellscript", "cg.template"],
+          ["/agent/session-isolation.sh", "text/x-shellscript", "apply-local"],
+          ["/agent/compose.worker.yaml", "text/yaml", "cg-agent:"],
+        ] as const) {
+          const response = yield* http(getRequest(path));
+          expect(response.status).toBe(200);
+          expect(response.headers.get("content-type")).toStartWith(type);
+          expect(yield* Effect.promise(() => response.text())).toContain(
+            marker,
+          );
+        }
+        expect((yield* http(getRequest("/agent/deploy.sh"))).status).toBe(404);
+      }),
+    ));
+});

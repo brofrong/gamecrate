@@ -1,0 +1,125 @@
+# Игровой сервер: только cg-agent (спека 2026-11-09 §2). Контейнеры сессий cg-session-<id> и
+# установщиков cg-install-<jobId> агент запускает сам через Docker API, в compose-проект они не
+# входят. Зависимостей от сервисов главного здесь нет: агент ходит к оркестратору по
+# ORCHESTRATOR_URL (wss://<домен>/agent), S3 профилей и PROFILE_KEY получает от него же
+# (GET /agent/config).
+#
+# Ставит deploy/worker/install.sh: этот файл лежит в /opt/cloud-gaming/compose.yaml (скачан с
+# главного, GET /agent/compose.worker.yaml), переменные — в /opt/cloud-gaming/.env (права 600):
+#   docker compose -f /opt/cloud-gaming/compose.yaml --env-file /opt/cloud-gaming/.env up -d
+# На стенде brofrong — вместе с compose.main.yaml и оверлеем compose.stand.yaml (deploy-stand.sh).
+#
+# Обязательны CG_VERSION (тег образа), SESSION_IMAGE и DOCKER_GID. ORCHESTRATOR_URL, WORKER_ID,
+# WORKER_TOKEN, WORKER_PUBLIC_IP и GBM_ALLOCATOR_PATH здесь без `:?`, хотя агенту они нужны: на
+# стенде их задаёт оверлей compose.stand.yaml, а `:?` проверяется в каждом файле до слияния. На
+# игровом сервере их всегда пишет install.sh; пустое значение агент отвергает при старте (лог
+# cg-agent).
+name: cloud-gaming
+
+# Ротация логов docker: без неё json-file растёт без ограничений.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # Агент игрового сервера: запускает/останавливает контейнеры сессий (роль worker) и
+  # установщиков (роль gamestore) через Docker API и держит тоннель стрима: сам ходит в Selkies
+  # сессии `cg-session-<id>:8080` по сети cg-sessions (поэтому он в ней; правила изоляции пускают
+  # к :8080 только его — deploy/session-isolation.sh).
+  # Сокет Docker смонтирован; процесс — пользователь bun (1000) с дополнительной группой
+  # владельца сокета (DOCKER_GID, install.sh берёт её из `stat -c %g /var/run/docker.sock`), без
+  # privileged и без root. `docker compose up/down` контейнеры сессий не трогает, перезапущенный
+  # агент подхватывает живые сессии по метке cg.session.
+  #
+  # Каталоги хоста (владелец uid 1000, создаёт install.sh) монтируются в агент по тем же путям:
+  # агент передаёт их dockerd как lower/upper overlay-томов и bind помощников, а сам создаёт в
+  # них upper/work и переносит готовые игры. Перенос `rename` из INSTALL_SCRATCH_DIR в
+  # LIBRARY_DIR работает только в пределах одной точки монтирования (между двумя bind даже одной
+  # ФС — EXDEV), поэтому библиотека, scratch установок и свои игры лежат в одном CG_DATA_DIR и
+  # монтируются одним bind. SCRATCH_DIR (scratch сессий, лучше NVMe) — отдельный bind.
+  # create_host_path: false — без заранее созданного каталога контейнер не стартует (иначе
+  # Docker создал бы его от root, и агент с uid 1000 не смог бы в нём писать).
+  # STEAM_CLIENT_DIR (шаблон клиента Steam, NVMe: с HDD Steam стартовал 50–90 с вместо ~16)
+  # агент передаёт dockerd как lower overlay по пути хоста, а в сам агент нужен только на
+  # чтение — mtime каталога для даты сборки шаблона в блоке «Версии» админки. Смонтирован не
+  # сам STEAM_CLIENT_DIR, а его родитель STEAM_CLIENT_PARENT (read_only): build-steam-client.sh
+  # заменяет каталог переименованием, а bind конкретного пути держал бы старый inode после
+  # обмена (bind-mount помнит дентри на момент монтирования, а не путь). Bind родителя при
+  # каждом обращении резолвит имя заново и видит актуальный каталог.
+  # Значения по умолчанию CG_DATA_DIR, SCRATCH_DIR, STEAM_CLIENT_DIR и STEAM_CLIENT_PARENT
+  # повторены в deploy/worker/install.sh и deploy/worker/build-steam-client.sh — менять вместе.
+  # GPU (capabilities: [utility], без него у cg-agent GPU нет) — только чтобы NVIDIA Container
+  # Toolkit подложил nvidia-smi и NVML для метрик админки; видеопамять и вычисления агент не
+  # занимает (это не сессия).
+  cg-agent:
+    image: ${CG_REGISTRY:-registry.imtechnologies.ru/gamecrate/imt-cloud-gaming}/cg-app:${CG_VERSION:?CG_VERSION is required}
+    container_name: cg-agent
+    command: ["bun", "apps/agent/src/main.ts"]
+    restart: unless-stopped
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required}"
+    # CG_COMMIT и CG_VERSION зашиты в образ (deploy/Dockerfile); CG_VERSION здесь — тот же тег,
+    # что у образа.
+    environment:
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-}
+      WORKER_ID: ${WORKER_ID:-}
+      # Постоянный токен этого сервера (cgw_…, выдаёт обмен кода подключения). Секрет.
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+      WORKER_PUBLIC_IP: ${WORKER_PUBLIC_IP:-}
+      SLOTS: ${SLOTS:-1}
+      UDP_PORT_BASE: ${UDP_PORT_BASE:-59000}
+      CG_VERSION: ${CG_VERSION}
+      SESSION_IMAGE: ${SESSION_IMAGE:?SESSION_IMAGE is required}
+      SESSION_NETWORK: cg-sessions
+      GBM_ALLOCATOR_PATH: ${GBM_ALLOCATOR_PATH:-}
+      DOCKER_SOCKET: /var/run/docker.sock
+      ROLES: ${ROLES:-worker,gamestore}
+      LIBRARY_DIR: ${CG_DATA_DIR:-/srv/cloud-gaming}/library
+      INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/srv/cloud-gaming}/install-scratch
+      # Пакеты своих игр <GAMES_DIR>/<slug>/<version>/ (deploy/add-game.sh), внутри того же bind.
+      GAMES_DIR: ${CG_DATA_DIR:-/srv/cloud-gaming}/games
+      STEAM_CLIENT_DIR: ${STEAM_CLIENT_DIR:-/srv/cloud-gaming-steam/client}
+      SCRATCH_DIR: ${SCRATCH_DIR:-/srv/cloud-gaming-scratch}
+      # Меньше стольких ГиБ свободно на ФС scratch — старт сессии/установки отклоняется.
+      MIN_FREE_GB: ${MIN_FREE_GB:-20}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${CG_DATA_DIR:-/srv/cloud-gaming}
+        target: ${CG_DATA_DIR:-/srv/cloud-gaming}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SCRATCH_DIR:-/srv/cloud-gaming-scratch}
+        target: ${SCRATCH_DIR:-/srv/cloud-gaming-scratch}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${STEAM_CLIENT_PARENT:-/srv/cloud-gaming-steam}
+        target: ${STEAM_CLIENT_PARENT:-/srv/cloud-gaming-steam}
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]
+    mem_limit: 1g # профиль (до 200 МиБ) сжимается и шифруется в памяти целиком (profile/codec.ts)
+    logging: *logging
+    networks:
+      - default
+      - cg-sessions
+    # Healthcheck нет: у агента нет HTTP. Связь с главным видна в админке («Серверы») и в логе
+    # оркестратора («Agent connected» workerId=<id>).
+
+networks:
+  # Сеть контейнеров сессий. Создаёт install.sh (`docker network create cg-sessions`).
+  cg-sessions:
+    name: cg-sessions
+    external: true

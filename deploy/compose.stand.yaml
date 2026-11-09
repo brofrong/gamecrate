@@ -1,0 +1,51 @@
+# Оверлей стенда brofrong (game.brofrong.ru): главный и игровой сервер на одной машине.
+#   docker compose -f compose.main.yaml -f compose.worker.yaml -f compose.stand.yaml --env-file .env …
+# (так запускает deploy/deploy-stand.sh; .env — ~/cloud-gaming/.env).
+#
+# Агент ходит к оркестратору тем же протоколом, что удалённые серверы (WebSocket /agent с токеном
+# сервера, тоннель стрима /agent/tunnel), только напрямую по внутренней сети cg, а не через
+# обратный прокси: ORCHESTRATOR_URL=ws://cg-orchestrator:3001/agent. S3 профилей он получает от
+# оркестратора (/agent/config), поэтому в .env стенда S3_PUBLIC_ENDPOINT=http://cg-rustfs:9000 —
+# тоже по сети cg.
+#
+# Пути и железо brofrong — значения по умолчанию ниже (переопределяются в .env). Они повторены в
+# deploy/build-steam-client.sh (обёртка для стенда) и deploy/deploy-stand.sh — менять вместе.
+# volumes заменяются целиком (`!override`, Docker Compose ≥ 2.24.4): иначе к bind-ам стенда
+# добавились бы bind-ы /srv/… из compose.worker.yaml (слияние идёт по пути в контейнере).
+services:
+  cg-agent:
+    environment:
+      ORCHESTRATOR_URL: ws://cg-orchestrator:${ORCHESTRATOR_PORT:-3001}/agent
+      WORKER_ID: ${WORKER_ID:-brofrong}
+      WORKER_PUBLIC_IP: ${WORKER_PUBLIC_IP:-37.153.14.138}
+      GBM_ALLOCATOR_PATH: ${GBM_ALLOCATOR_PATH:-/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01}
+      LIBRARY_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/library
+      INSTALL_SCRATCH_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/install-scratch
+      GAMES_DIR: ${CG_DATA_DIR:-/raid/cloud-gaming}/games
+      STEAM_CLIENT_DIR: ${STEAM_CLIENT_DIR:-/home/brofrong/cloud-gaming-steam/client}
+      SCRATCH_DIR: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${CG_DATA_DIR:-/raid/cloud-gaming}
+        target: ${CG_DATA_DIR:-/raid/cloud-gaming}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
+        target: ${SCRATCH_DIR:-/home/brofrong/cloud-gaming-scratch}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${STEAM_CLIENT_PARENT:-/home/brofrong/cloud-gaming-steam}
+        target: ${STEAM_CLIENT_PARENT:-/home/brofrong/cloud-gaming-steam}
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - cg
+    depends_on:
+      cg-orchestrator:
+        condition: service_healthy
+      cg-rustfs:
+        condition: service_healthy

@@ -1,7 +1,9 @@
 // HTTP-роутер оркестратора: /healthz, RPC агентов по WebSocket (/agent), обмен
-// кода подключения (/agent/enroll), конфиг агента (/agent/config) и каналы
-// тоннеля стрима (/agent/tunnel/:tunnelId, `Tunnels.ts`). Relay для api — не
-// здесь, а на своём внутреннем порту (`relay.ts`).
+// кода подключения (/agent/enroll), конфиг агента (/agent/config), файлы
+// установки игрового сервера (/agent/install.sh и др.) и каналы тоннеля стрима
+// (/agent/tunnel/:tunnelId, `Tunnels.ts`). Relay для api — не здесь, а на своём
+// внутреннем порту (`relay.ts`).
+import { fileURLToPath } from "node:url";
 import { Db } from "@cg/db";
 import { AgentNotConnected, AgentRpcs, type ProfileCommit } from "@cg/rpc";
 import { DateTime, Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -141,6 +143,93 @@ const AgentHttpRoutes = Layer.effectDiscard(
   }),
 );
 
+/** Файл репозитория (копия в образе: `/app/<путь>`) по пути от корня. */
+const repoFile = (path: string) =>
+  fileURLToPath(new URL(`../../../${path}`, import.meta.url));
+
+/** Что отдаёт `GET /agent/<имя>`: файл репозитория и тип; `script` — с подстановками. */
+const workerFiles: Record<
+  string,
+  { readonly path: string; readonly script: boolean }
+> = {
+  "install.sh": { path: "deploy/worker/install.sh", script: true },
+  "build-steam-client.sh": {
+    path: "deploy/worker/build-steam-client.sh",
+    script: true,
+  },
+  "session-isolation.sh": { path: "deploy/session-isolation.sh", script: true },
+  "compose.worker.yaml": { path: "deploy/compose.worker.yaml", script: false },
+};
+
+/**
+ * Версии драйвера NVIDIA, для которых релиз собирает образ сессии
+ * (`images/session/drivers.txt`, как `deploy/ci/build-session-images.sh`:
+ * пустые строки и `#`-комментарии пропускаются), через пробел.
+ */
+const releaseDrivers = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .join(" ");
+
+/**
+ * Файлы установки игрового сервера — без авторизации (секретов в них нет,
+ * спека §3 «Добавление сервера»): `install.sh` (команду с ним показывает
+ * админка), его помощники `build-steam-client.sh` и `session-isolation.sh` и
+ * `compose.worker.yaml` (версию образа он берёт из `.env` сервера). Читаются из
+ * копии репозитория в образе при каждом запросе. В скриптах заглушки
+ * `__ORCHESTRATOR_PUBLIC_URL__`, `__CG_VERSION__` и `__CG_DRIVERS__` заменяются
+ * публичным адресом главного, версией релиза и драйверами релиза. Нет файла —
+ * 500 (образ собран без него).
+ */
+const WorkerFileRoutes = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const router = yield* HttpRouter.HttpRouter;
+    const config = yield* OrchestratorConfig;
+
+    for (const [name, file] of Object.entries(workerFiles))
+      yield* router.add(
+        "GET",
+        `/agent/${name}`,
+        Effect.gen(function* () {
+          const read = (path: string) =>
+            Effect.tryPromise(() => Bun.file(repoFile(path)).text());
+          const text = yield* read(file.path);
+          const body = file.script
+            ? text
+                .replaceAll(
+                  "__ORCHESTRATOR_PUBLIC_URL__",
+                  config.publicUrl.replace(/\/+$/, ""),
+                )
+                .replaceAll("__CG_VERSION__", config.cgVersion)
+                .replaceAll(
+                  "__CG_DRIVERS__",
+                  releaseDrivers(yield* read("images/session/drivers.txt")),
+                )
+            : text;
+          return HttpServerResponse.text(body, {
+            contentType: file.script
+              ? "text/x-shellscript; charset=utf-8"
+              : "text/yaml; charset=utf-8",
+            headers: { "cache-control": "no-store" },
+          });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logError("Worker file is unavailable", {
+              name,
+              error: String(error),
+            }).pipe(
+              Effect.as(
+                HttpServerResponse.text("Файл недоступен", { status: 500 }),
+              ),
+            ),
+          ),
+        ),
+      );
+  }),
+);
+
 /**
  * Коммит профиля (`SessionRepo.commitProfile`), затем — если его как раз
  * приняли и он был посеян (`steamLoginSeeded`) — `SteamLoginSeeds.clear`:
@@ -255,6 +344,7 @@ const AgentRpcRoute = RpcServer.layer(AgentRpcs).pipe(
 export const HttpApp = Layer.mergeAll(
   HealthRoute,
   AgentHttpRoutes,
+  WorkerFileRoutes,
   AgentRpcRoute,
   TunnelRoute,
 );

@@ -1,10 +1,12 @@
-# Образ приложения (тег cloud-gaming/cg-api): ставит зависимости (включая патчи drizzle-orm и
+# Образ приложения (cg-app:<тег> в реестре проекта): ставит зависимости (включая патчи drizzle-orm и
 # better-auth-steam из patches/), собирает SPA (apps/web/dist). Все сервисы запускаются напрямую
 # через bun из исходников (без транспиляции): по умолчанию api, а cg-orchestrator и cg-agent в
-# compose.yaml переопределяют `command` (apps/orchestrator/src/main.ts, apps/agent/src/main.ts).
+# compose.main.yaml/compose.worker.yaml переопределяют `command` (apps/orchestrator/src/main.ts,
+# apps/agent/src/main.ts). Копия репозитория в образе нужна и оркестратору: он отдаёт из неё
+# deploy/worker/install.sh и другие файлы установки игрового сервера (GET /agent/install.sh).
 #
-# Собирается из корня репозитория: docker compose (см. compose.yaml) передаёт
-# context: .. — так Dockerfile видит apps/, packages/ и patches/.
+# Собирается из корня репозитория (CI, .gitlab-ci.yml: docker build -f deploy/Dockerfile .) —
+# так Dockerfile видит apps/, packages/ и patches/.
 FROM oven/bun:1.4
 
 WORKDIR /app

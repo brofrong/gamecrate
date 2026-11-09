@@ -1,0 +1,236 @@
+# Главный сервер (спека 2026-11-09 §2): cg-api (сайт и api), cg-orchestrator, cg-postgres,
+# cg-rustfs. GPU не нужен. Образ приложения — из реестра по тегу релиза CG_VERSION, без `build`
+# (собирает CI на тег vX.Y.Z, .gitlab-ci.yml). Переменные — из .env рядом:
+#   docker compose -f compose.main.yaml --env-file .env up -d
+# (на стенде brofrong — вместе с compose.worker.yaml и compose.stand.yaml, см. deploy-stand.sh).
+# Бакет профилей — один раз: docker compose -f compose.main.yaml --env-file .env run --rm cg-rustfs-bucket
+#
+# Наружу через обратный прокси владельца (Caddy/Arcane во внешней сети proxy, не наша забота)
+# открыты три маршрута:
+#   https://<домен>          → cg-api:3000          (сайт, /rpc, /stream/<id>/)
+#   https://<домен>/agent*   → cg-orchestrator:3001 (WebSocket агентов, /agent/tunnel, обмен кода,
+#                                                     /agent/install.sh — WebSocket включён)
+#   https://<хост S3>        → cg-rustfs:9000       (профили; отдельный хост — S3 плохо живёт под
+#                                                     префиксом пути)
+# Порты на хост не публикуются. Relay стрима оркестратора (RELAY_PORT, 3002) — внутренний: в
+# маршруты прокси его не добавлять. Для api он в сети cg; в сети proxy оркестратор тоже слушает
+# его (Docker не делит порты контейнера по сетям), поэтому в proxy не должно быть чужих
+# недоверенных контейнеров — на главном там только обратный прокси.
+name: cloud-gaming
+
+# Ротация логов docker: без неё json-file растёт без ограничений.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Один образ приложения на api, оркестратор и агента (разные `command`); CG_COMMIT и CG_VERSION
+# зашиты в него (deploy/Dockerfile).
+x-app-image: &app-image ${CG_REGISTRY:-registry.imtechnologies.ru/gamecrate/imt-cloud-gaming}/cg-app:${CG_VERSION:?CG_VERSION is required}
+
+services:
+  cg-api:
+    image: *app-image
+    container_name: cg-api
+    restart: unless-stopped
+    # Только нужные api переменные, а не весь .env: POSTGRES_PASSWORD сюда не попадает
+    # (пароль уже внутри DATABASE_URL). Значения подставляются из --env-file .env.
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      PORT: ${PORT:-3000}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      STEAM_API_KEY: ${STEAM_API_KEY:?STEAM_API_KEY is required}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
+      POCKET_ID_URL: ${POCKET_ID_URL:?POCKET_ID_URL is required}
+      POCKET_ID_CLIENT_ID: ${POCKET_ID_CLIENT_ID:?POCKET_ID_CLIENT_ID is required}
+      POCKET_ID_CLIENT_SECRET: ${POCKET_ID_CLIENT_SECRET:?POCKET_ID_CLIENT_SECRET is required}
+      POCKET_ID_ADMIN_GROUP: ${POCKET_ID_ADMIN_GROUP:?POCKET_ID_ADMIN_GROUP is required}
+      WEB_DIST_DIR: ${WEB_DIST_DIR:-/app/apps/web/dist}
+      SMTP_URL: ${SMTP_URL:?SMTP_URL is required}
+      MAIL_FROM: ${MAIL_FROM:?MAIL_FROM is required}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
+      YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
+      TELEGRAM_CLIENT_ID: ${TELEGRAM_CLIENT_ID:-}
+      TELEGRAM_CLIENT_SECRET: ${TELEGRAM_CLIENT_SECRET:-}
+      # Прокси стрима /stream/<id>/ ходит в relay оркестратора (а тот — по тоннелю агента в
+      # Selkies сессии); в сети cg-sessions api больше нет.
+      ORCHESTRATOR_RELAY_URL: http://cg-orchestrator:${RELAY_PORT:-3002}
+    mem_limit: 512m
+    logging: *logging
+    networks:
+      - cg
+      - proxy
+    depends_on:
+      cg-postgres:
+        condition: service_healthy
+    healthcheck:
+      # В образе нет curl/wget — используем встроенный fetch через `bun -e`.
+      test:
+        - "CMD"
+        - "bun"
+        - "-e"
+        - "fetch('http://localhost:'+(process.env.PORT||3000)+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Оркестратор: планировщик и таймеры сессий; на ORCHESTRATOR_PORT (3001) — WebSocket /agent
+  # агентов игровых серверов (токен сервера в Authorization: Bearer), тоннели стрима
+  # /agent/tunnel/<id>, обмен кода подключения /agent/enroll, конфиг /agent/config и файлы
+  # установки /agent/install.sh и др. — это маршрут прокси https://<домен>/agent*, поэтому он в
+  # сети proxy. На RELAY_PORT (3002) — relay стрима для cg-api (внутренний, см. шапку).
+  cg-orchestrator:
+    image: *app-image
+    container_name: cg-orchestrator
+    command: ["bun", "apps/orchestrator/src/main.ts"]
+    restart: unless-stopped
+    environment:
+      ORCHESTRATOR_PORT: ${ORCHESTRATOR_PORT:-3001}
+      RELAY_PORT: ${RELAY_PORT:-3002}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      # Публичный адрес главного (https://<домен>): из него адрес WebSocket агентов
+      # (wss://<домен>/agent) в ответе обмена кода и адрес в скрипте установки.
+      ORCHESTRATOR_PUBLIC_URL: ${ORCHESTRATOR_PUBLIC_URL:?ORCHESTRATOR_PUBLIC_URL is required}
+      # Версия релиза, которую ставят новые игровые серверы (тот же тег, что у образа).
+      CG_VERSION: ${CG_VERSION}
+      # Хранилище профилей, как его видят игровые серверы (GET /agent/config): публичный адрес
+      # cg-rustfs (https://<хост S3>; на стенде — http://cg-rustfs:9000), бакет и корневые ключи
+      # RustFS.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?S3_PUBLIC_ENDPOINT is required}
+      S3_BUCKET: ${S3_BUCKET:-cg-profiles}
+      S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
+      # Ключ шифрования профилей (base64 ровно 32 байт): только оркестратору, агенты получают
+      # его через /agent/config.
+      PROFILE_KEY: ${PROFILE_KEY:?PROFILE_KEY is required}
+      # Ключ шифрования посеянных входов Steam в БД (steam_login_seeds), base64 ровно 32 байт.
+      SEED_KEY: ${SEED_KEY:?SEED_KEY is required}
+      # Реестр образов для агентов (токен только на чтение): все три или ни одной.
+      REGISTRY_SERVER: ${REGISTRY_SERVER:-}
+      REGISTRY_USERNAME: ${REGISTRY_USERNAME:-}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD:-}
+    mem_limit: 256m
+    logging: *logging
+    networks:
+      - cg
+      - proxy
+    depends_on:
+      cg-postgres:
+        condition: service_healthy
+      # api и оркестратор оба применяют миграции при старте; api healthy = его миграции
+      # уже прошли, так они не идут параллельно.
+      cg-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "bun"
+        - "-e"
+        - "fetch('http://localhost:'+(process.env.ORCHESTRATOR_PORT||3001)+'/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Хранилище профилей (S3-совместимое): зашифрованные архивы profiles/<userId>/<uuid>.cgp в
+  # бакете S3_BUCKET. Пишут и читают агенты игровых серверов по маршруту прокси https://<хост S3>
+  # (поэтому сеть proxy). Проверено на образе 1.0.3: S3 API на :9000, данные в /data
+  # (RUSTFS_VOLUMES), ключи — RUSTFS_ACCESS_KEY/RUSTFS_SECRET_KEY, процесс — пользователь rustfs
+  # (10001).
+  cg-rustfs:
+    image: rustfs/rustfs:1.0.3
+    container_name: cg-rustfs
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
+      # Пусто — лог в stdout (docker logs с ротацией x-logging), а не в файл /logs
+      # в слое контейнера (по умолчанию в образе RUSTFS_OBS_LOG_DIRECTORY=/logs).
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+    mem_limit: 512m
+    logging: *logging
+    volumes:
+      - cg-rustfs-data:/data
+    networks:
+      - cg
+      - proxy
+    healthcheck:
+      # В образе есть curl; /health отвечает 200, когда S3 API готов.
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fsS",
+          "-o",
+          "/dev/null",
+          "http://localhost:9000/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  # Одноразовый: создать бакет профилей, если его нет (`docker compose … run --rm
+  # cg-rustfs-bucket`, по `up` не стартует — профиль tools). Пиннутый AWS CLI в сети cg; ключи —
+  # через окружение, в аргументы и вывод не попадают.
+  cg-rustfs-bucket:
+    image: amazon/aws-cli:2.38.4
+    profiles: ["tools"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY is required}
+      AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY is required}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://cg-rustfs:9000
+      BUCKET: ${S3_BUCKET:-cg-profiles}
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        if aws s3api head-bucket --bucket "$$BUCKET" >/dev/null 2>&1;
+        then echo "bucket $$BUCKET exists";
+        else aws s3api create-bucket --bucket "$$BUCKET" >/dev/null && echo "bucket $$BUCKET created";
+        fi
+    networks:
+      - cg
+    depends_on:
+      cg-rustfs:
+        condition: service_healthy
+
+  cg-postgres:
+    image: postgres:18
+    container_name: cg-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: cloud_gaming
+    mem_limit: 512m
+    logging: *logging
+    volumes:
+      - cg-postgres-data:/var/lib/postgresql
+    networks:
+      - cg
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cg -d cloud_gaming"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порты наружу не публикуются и сеть proxy не подключена — только внутренняя cg.
+
+networks:
+  cg:
+    name: cg
+  # Сеть обратного прокси владельца (создаётся им; на brofrong — ingressi).
+  proxy:
+    external: true
+
+volumes:
+  cg-postgres-data:
+    name: cg-postgres-data
+  cg-rustfs-data:
+    name: cg-rustfs-data
