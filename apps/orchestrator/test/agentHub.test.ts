@@ -848,7 +848,7 @@ describe("config", () => {
       ["https://game.example.ru/", "https://game.example.ru"],
       ["http://127.0.0.1:3001", "http://127.0.0.1:3001"],
       ["http://127.0.0.1:3001/", "http://127.0.0.1:3001"],
-    ]) {
+    ] as const) {
       const result = await parse({
         ...baseEnv,
         ORCHESTRATOR_PUBLIC_URL: value,
