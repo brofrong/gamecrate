@@ -31,8 +31,18 @@ COPY . .
 # они запускаются прямо из исходников через bun).
 RUN bun run build
 
+# CG_COMMIT и CG_VERSION зашивает CI (.gitlab-ci.yml, джоба build-app) на сборке по тегу:
+# --build-arg CG_COMMIT=$CI_COMMIT_SHORT_SHA --build-arg CG_VERSION=$CI_COMMIT_TAG. Как ENV они
+# становятся умолчанием для cg-api/cg-orchestrator/cg-agent (apps/*/src/config.ts), которое видно
+# в блоке «Версии» админки без переменных окружения в compose; локальная сборка без --build-arg
+# даёт те же значения, что и раньше ("unknown"/"dev").
+ARG CG_COMMIT=unknown
+ARG CG_VERSION=dev
+
 ENV PORT=3000 \
-    WEB_DIST_DIR=/app/apps/web/dist
+    WEB_DIST_DIR=/app/apps/web/dist \
+    CG_COMMIT=${CG_COMMIT} \
+    CG_VERSION=${CG_VERSION}
 
 EXPOSE 3000
 
