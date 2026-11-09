@@ -28,12 +28,13 @@
 # 5. Замена каталога переименованием (`mv --exchange`, а где coreutils старше 9.5 — два `mv`
 #    подряд), старый удаляется контейнером-помощником от root (в старом шаблоне могут быть файлы
 #    root).
+# 6. Перезапуск запущенного cg-agent: дату шаблона он сообщает главному только при подключении.
 #
 # Из .env читаются только несекретные STEAM_CLIENT_DIR, SESSION_IMAGE (обязателен) и
 # GBM_ALLOCATOR_PATH; чего в .env нет — из `--default`, иначе STEAM_CLIENT_DIR =
 # /srv/cloud-gaming-steam/client (как в deploy/compose.worker.yaml). Ничего, кроме своего
-# каталога, своих контейнеров с меткой cg.template и сети cg-sessions (создаётся, если её нет), не
-# меняет.
+# каталога, своих контейнеров с меткой cg.template, сети cg-sessions (создаётся, если её нет) и
+# перезапуска cg-agent, не меняет.
 set -euo pipefail
 
 env_file=/opt/cloud-gaming/.env
@@ -281,3 +282,14 @@ else
   mv -T "${new}" "${target}"
 fi
 echo "==> готово: $(du -sh "${target}" | cut -f1) в ${target}"
+
+# Дату шаблона (versions.steamClientBuiltAt) агент сообщает главному только при подключении, а
+# без неё placement не даёт серверу игры Steam: после первой сборки (install.sh запускает агент
+# раньше неё) и после ручной пересборки — перезапуск cg-agent, он переподключится со свежей датой.
+# Безопасно: сессий, установок и сборок сейчас нет (refuse_if_busy выше). Остановленный агент не
+# трогаем — его остановили намеренно.
+if [ "$(docker inspect -f '{{.State.Running}}' cg-agent 2>/dev/null || true)" = true ]; then
+  echo "==> перезапуск cg-agent (дата шаблона для главного)"
+  docker restart cg-agent >/dev/null ||
+    echo "ПРЕДУПРЕЖДЕНИЕ: cg-agent не перезапустился — сервер не возьмёт игры Steam до перезапуска: docker restart cg-agent" >&2
+fi

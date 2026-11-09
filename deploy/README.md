@@ -194,7 +194,7 @@ cd /opt/cloud-gaming
 sudo docker compose -f compose.yaml --env-file .env logs -f cg-agent
 sudo docker compose -f compose.yaml --env-file .env up -d          # после правки .env
 sudo ./session-isolation.sh apply-local --agent-ip "$(sudo sed -n 's/^CG_AGENT_IP=//p' .env)"   # если сменились DNS хоста
-sudo ./build-steam-client.sh                 # пересобрать шаблон клиента Steam (без сессий)
+sudo ./build-steam-client.sh                 # пересобрать шаблон клиента Steam (без сессий; в конце перезапустит cg-agent)
 ```
 
 Обновление агента (пока руками, кнопка «Обновить» — третья часть): без живых сессий и установок

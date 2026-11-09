@@ -26,6 +26,8 @@ const CODE = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const TOKEN = `cgw_${"A".repeat(43)}`;
 const PASSWORD = "pull-secret-123";
 const DRIVER = "550.163.01";
+/** StartedAt контейнера cg-agent у заглушки docker. */
+const STARTED_AT = "2026-11-09T10:00:00.123456789Z";
 const SESSION_IMAGE = `registry.imtechnologies.ru/gamecrate/imt-cloud-gaming/cg-session:${DRIVER}-v1.2.3`;
 
 /** Песочница одного запуска: заглушки команд, корень ФС, sysfs, журнал вызовов. */
@@ -139,6 +141,7 @@ beforeEach(() => {
   // Сети cg-sessions нет, пока в песочнице нет файла network (тогда его строка — IPAM сети);
   // cg-agent запущен и в логе подключение, пока нет файла no-connect; за ним ещё 500 строк —
   // `docker logs | grep -q` под pipefail на таком логе ловил SIGPIPE (ложное «не подключился»).
+  // StartedAt cg-agent — STARTED_AT: лог проверяется только с последнего старта.
   stub(
     "docker",
     `echo "docker $*" >> "${log}"
@@ -147,7 +150,7 @@ info) echo '{"nvidia":{"path":"nvidia-container-runtime"},"runc":{"path":"runc"}
 compose) case "$*" in *version*) echo "Docker Compose version v2.30.0" ;; esac ;;
 login) cat > "${dir}/login-stdin" ;;
 network) if [ "$2" = inspect ]; then [ -e "${dir}/network" ] || exit 1; cat "${dir}/network"; fi ;;
-inspect) echo true ;;
+inspect) case "$*" in *StartedAt*) echo "${STARTED_AT}" ;; *) echo true ;; esac ;;
 logs) [ -e "${dir}/no-connect" ] || echo "level=INFO msg=\"Connected to orchestrator\""; i=0; while [ $i -lt 500 ]; do i=$((i + 1)); echo "level=INFO msg=\"Command received\" n=$i"; done ;;
 esac
 exit 0`,
@@ -317,7 +320,12 @@ describe("install.sh", () => {
     expect(pull).toBeGreaterThan(isolation);
     expect(up).toBeGreaterThan(pull);
     expect(steam).toBeGreaterThan(up);
-    expect(r.log).toContain("docker logs cg-agent");
+    // Подключение — после сборки шаблона (она перезапускает агент) и по логу с последнего
+    // старта, а не по «Connected» запуска до перезапуска.
+    const connect = lines.findIndex(
+      (l) => l === `docker logs --since ${STARTED_AT} cg-agent`,
+    );
+    expect(connect).toBeGreaterThan(steam);
 
     for (const dir of [
       "srv/cloud-gaming/library/steamapps",
