@@ -1,14 +1,15 @@
-// HTTP-роутер оркестратора: /healthz и RPC агентов по WebSocket (/agent).
-import { createHash, timingSafeEqual } from "node:crypto";
+// HTTP-роутер оркестратора: /healthz, RPC агентов по WebSocket (/agent), обмен
+// кода подключения (/agent/enroll) и конфиг агента (/agent/config).
 import { Db } from "@cg/db";
 import { AgentNotConnected, AgentRpcs, type ProfileCommit } from "@cg/rpc";
-import { Effect, Layer, Redacted } from "effect";
+import { DateTime, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentHub } from "./AgentHub";
-import { OrchestratorConfig } from "./config";
+import { agentWebsocketUrl, OrchestratorConfig } from "./config";
 import * as SessionRepo from "./SessionRepo";
 import { SteamLoginSeeds } from "./SteamLoginSeeds";
+import { bearerToken, WorkerAuth, type WorkerAuthShape } from "./WorkerAuth";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -16,26 +17,32 @@ const HealthRoute = HttpRouter.add(
   HttpServerResponse.text("ok"),
 );
 
-const sha256 = (value: string) => createHash("sha256").update(value).digest();
+const unauthorized = () =>
+  HttpServerResponse.text("Unauthorized", { status: 401 });
+
+/** Ответ с секретами: ни прокси, ни клиент его не кэшируют. */
+const secretJson = (body: unknown, status = 200) =>
+  HttpServerResponse.jsonUnsafe(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
+
+/** Сервер по `Authorization: Bearer <токен сервера>`; нет или не действует — `None`. */
+const workerOfRequest = (
+  auth: WorkerAuthShape,
+  request: HttpServerRequest.HttpServerRequest,
+) => {
+  const token = bearerToken(request.headers.authorization);
+  return token === undefined
+    ? Effect.succeed(Option.none<string>())
+    : auth.workerOfToken(token);
+};
 
 /**
- * Проверка `Authorization: Bearer <AGENT_TOKEN>` за постоянное время: сравниваются
- * SHA-256 обеих строк (одинаковой длины), так что время не зависит ни от
- * совпадающего префикса, ни от длины токена.
- */
-export const isAgentAuthorized = (
-  authorization: string | undefined,
-  agentToken: Redacted.Redacted<string>,
-): boolean =>
-  timingSafeEqual(
-    sha256(authorization ?? ""),
-    sha256(`Bearer ${Redacted.value(agentToken)}`),
-  );
-
-/**
- * WebSocket-протокол RPC на `GET /agent`: без верного Bearer-токена → 401 до
- * апгрейда. Проверять можно только на апгрейде: заголовки RPC-сообщений
- * контролирует клиент.
+ * WebSocket-протокол RPC на `GET /agent`: без действующего токена сервера в
+ * `Authorization: Bearer` → 401 до апгрейда. Какому серверу принадлежит
+ * соединение, решает токен внутри `agent.connect` (сверка с `workerId` в
+ * хабе): заголовки RPC-сообщений контролирует клиент.
  */
 const AgentWebsocketProtocol = Layer.effect(
   RpcServer.Protocol,
@@ -43,19 +50,91 @@ const AgentWebsocketProtocol = Layer.effect(
     const { protocol, httpEffect } =
       yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
     const router = yield* HttpRouter.HttpRouter;
-    const { agentToken } = yield* OrchestratorConfig;
+    const auth = yield* WorkerAuth;
 
     yield* router.add(
       "GET",
       "/agent",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (!isAgentAuthorized(request.headers.authorization, agentToken))
-          return HttpServerResponse.text("Unauthorized", { status: 401 });
+        if (Option.isNone(yield* workerOfRequest(auth, request)))
+          return unauthorized();
         return yield* httpEffect;
       }),
     );
     return protocol;
+  }),
+);
+
+const EnrollRequest = Schema.Struct({ code: Schema.String });
+
+/**
+ * HTTP-маршруты агента вне RPC:
+ * - `POST /agent/enroll` `{ code }` — скрипт установки меняет одноразовый
+ *   код на постоянный токен сервера (`WorkerAuth.enroll`) и получает всё,
+ *   что нужно для первого запуска: адрес WebSocket оркестратора, версию
+ *   релиза и учётные данные реестра (только на чтение; `null` — реестр не
+ *   задан). Код не подошёл, истёк или тело не то — 403.
+ * - `GET /agent/config` с Bearer-токеном сервера — S3 профилей и
+ *   `PROFILE_KEY` (спека §3 «Конфиг с главного»: секреты лежат только на
+ *   главном); без действующего токена — 401.
+ */
+const AgentHttpRoutes = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const router = yield* HttpRouter.HttpRouter;
+    const auth = yield* WorkerAuth;
+    const config = yield* OrchestratorConfig;
+
+    yield* router.add(
+      "POST",
+      "/agent/enroll",
+      Effect.gen(function* () {
+        const body = yield* HttpServerRequest.schemaBodyJson(
+          EnrollRequest,
+        ).pipe(Effect.option);
+        const enrolled = Option.isNone(body)
+          ? Option.none()
+          : yield* auth.enroll(body.value.code, yield* DateTime.nowAsDate);
+        if (Option.isNone(enrolled))
+          return secretJson({ error: "Код недействителен или истёк" }, 403);
+        const { workerId, token, regionCode } = enrolled.value;
+        yield* Effect.logInfo("Worker enrolled", { workerId, regionCode });
+        return secretJson({
+          workerId,
+          token,
+          regionCode,
+          orchestratorUrl: agentWebsocketUrl(config.publicUrl),
+          version: config.cgVersion,
+          registry: Option.match(config.registry, {
+            onNone: () => null,
+            onSome: ({ server, username, password }) => ({
+              server,
+              username,
+              password: Redacted.value(password),
+            }),
+          }),
+        });
+      }),
+    );
+
+    yield* router.add(
+      "GET",
+      "/agent/config",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (Option.isNone(yield* workerOfRequest(auth, request)))
+          return unauthorized();
+        return secretJson({
+          s3: {
+            endpoint: config.s3PublicEndpoint,
+            bucket: config.s3Bucket,
+            accessKey: Redacted.value(config.s3AccessKey),
+            secretKey: Redacted.value(config.s3SecretKey),
+          },
+          profileKey: Redacted.value(config.profileKey),
+        });
+      }),
+    );
   }),
 );
 
@@ -170,4 +249,8 @@ const AgentRpcRoute = RpcServer.layer(AgentRpcs).pipe(
 );
 
 /** Всё приложение оркестратора; запускается через `HttpRouter.serve` (main.ts). */
-export const HttpApp = Layer.mergeAll(HealthRoute, AgentRpcRoute);
+export const HttpApp = Layer.mergeAll(
+  HealthRoute,
+  AgentHttpRoutes,
+  AgentRpcRoute,
+);

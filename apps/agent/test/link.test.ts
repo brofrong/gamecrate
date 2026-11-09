@@ -306,7 +306,10 @@ describe("OrchestratorLink", () => {
 
         yield* waitUntil(() => server.connects.length === 1);
         expect(server.authorizations.at(-1)).toBe(`Bearer ${token}`);
+        // Токен в agent.connect — тот же, что на апгрейде.
+        expect(Redacted.value(server.connects[0]!.token)).toBe(token);
         expect(server.connects[0]).toEqual({
+          token: expect.anything(),
           workerId: "w1",
           publicIp: "203.0.113.7",
           slots: 1,

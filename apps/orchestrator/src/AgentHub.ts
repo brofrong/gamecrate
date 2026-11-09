@@ -1,24 +1,27 @@
 // AgentHub: подключённые агенты воркеров. Держит по одному потоку команд на воркер,
 // отправляет команды и публикует события (подключение, отчёты, отключение) в PubSub.
-import { Db, workers } from "@cg/db";
+import { Db, sha256Hex, workerOfTokenHash, workers } from "@cg/db";
 import {
   type AgentCommand,
   type AgentConnect,
   AgentNotConnected,
   type AgentReport,
   type AgentRoles,
+  AgentUnauthorized,
   type RunningSession,
   type WorkerHardware,
   type WorkerVersions,
 } from "@cg/rpc";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   type Cause,
   Context,
   Effect,
   Layer,
+  Option,
   PubSub,
   Queue,
+  Redacted,
   type Scope,
   Semaphore,
   Stream,
@@ -44,8 +47,9 @@ export interface WorkerInfo {
  *   записана; `running` — сессии, которые уже идут на воркере, `installs` —
  *   id задач установки, чьи контейнеры у агента ещё живы.
  * - `Report` — отчёт агента текущего соединения воркера.
- * - `Disconnected` — соединение воркера оборвалось и более нового нет.
- *   Замена соединения более новым `Disconnected` не публикует.
+ * - `Disconnected` — соединение воркера оборвалось и более нового нет, либо
+ *   хаб закрыл его сам (`disconnect`: токен сервера отозван). Замена
+ *   соединения более новым `Disconnected` не публикует.
  */
 export type AgentHubEvent =
   | (WorkerInfo & {
@@ -72,6 +76,18 @@ export interface AgentHubShape {
   readonly info: (workerId: string) => WorkerInfo | undefined;
   /** Воркер текущего соединения WebSocket-клиента `clientId` (`undefined` — нет `agent.connect`). */
   readonly workerOf: (clientId: number) => string | undefined;
+  /**
+   * SHA-256 токена, с которым подключено текущее соединение воркера
+   * (`undefined` — не подключён): по нему `WorkerAuth` раз в
+   * `REVOKE_CHECK_MS` проверяет, действует ли ещё этот токен.
+   */
+  readonly tokenHash: (workerId: string) => string | undefined;
+  /**
+   * Закрыть текущее соединение воркера, как при вытеснении (поток команд
+   * завершается, агент закрывает WebSocket и переподключается), но с
+   * `Disconnected`: более нового соединения нет. Не подключён — ничего.
+   */
+  readonly disconnect: (workerId: string) => Effect.Effect<void>;
   /** PubSub событий хаба (неограниченный). */
   readonly events: PubSub.PubSub<AgentHubEvent>;
   /** Подписка на события с этого момента; живёт в scope. */
@@ -81,13 +97,16 @@ export interface AgentHubShape {
     Scope.Scope
   >;
   /**
-   * Обработчик `agent.connect`: upsert `workers`, регистрация соединения,
-   * поток команд. `clientId` — id WebSocket-клиента RPC-сервера.
+   * Обработчик `agent.connect`: сверка токена с `workerId`, регистрация
+   * соединения, обновление строки `workers`, поток команд. Токен не
+   * действует или принадлежит другому серверу — поток падает с
+   * `AgentUnauthorized`, ни соединения, ни записи в БД. `clientId` — id
+   * WebSocket-клиента RPC-сервера.
    */
   readonly connect: (
     clientId: number,
     payload: AgentConnect,
-  ) => Stream.Stream<AgentCommand>;
+  ) => Stream.Stream<AgentCommand, AgentUnauthorized>;
   /** Обработчик `agent.report` от WebSocket-клиента `clientId`. */
   readonly report: (
     clientId: number,
@@ -96,9 +115,12 @@ export interface AgentHubShape {
 }
 
 interface Connection {
+  /** Порядковый номер `agent.connect` по приходу: больше — новее. */
   readonly id: number;
   readonly clientId: number;
   readonly info: WorkerInfo;
+  /** `sha256Hex` токена из `agent.connect` (для проверки отзыва). */
+  readonly tokenHash: string;
   readonly commands: Queue.Queue<AgentCommand, Cause.Done>;
 }
 
@@ -113,44 +135,46 @@ const make = Effect.gen(function* () {
   const announced = new Set<string>();
   let nextId = 0;
 
-  const upsertWorker = (info: WorkerInfo) => {
-    const now = new Date();
-    return db
-      .insert(workers)
-      .values({
-        id: info.workerId,
+  /**
+   * Обновляет строку `workers` тем, что сообщил агент. Только обновление:
+   * строку (вместе с учётными данными) заводит админка, а у неизвестного
+   * `workerId` нет и токена — до сюда он не доходит. Строки нет (сервер
+   * удалили, пока шёл connect) — `false`.
+   */
+  const updateWorker = (info: WorkerInfo) =>
+    db
+      .update(workers)
+      .set({
         publicIp: info.publicIp,
         slots: info.slots,
         roles: [...info.roles],
         hardware: info.hardware ?? null,
         versions: info.versions ?? null,
-        lastSeenAt: now,
+        lastSeenAt: new Date(),
       })
-      .onConflictDoUpdate({
-        target: workers.id,
-        set: {
-          publicIp: sql`excluded.public_ip`,
-          slots: sql`excluded.slots`,
-          roles: sql`excluded.roles`,
-          hardware: sql`excluded.hardware`,
-          versions: sql`excluded.versions`,
-          lastSeenAt: now,
-        },
-      });
-  };
+      .where(eq(workers.id, info.workerId))
+      .returning({ id: workers.id })
+      .pipe(Effect.map((rows) => rows.length > 0));
 
   /** Соединение всё ещё текущее для своего воркера. */
   const isCurrent = (connection: Connection) =>
     byWorker.get(connection.info.workerId)?.id === connection.id;
 
   /**
-   * Регистрирует соединение (синхронно, в порядке прихода `agent.connect`):
-   * побеждает самое новое, прежнее соединение воркера завершается.
+   * Регистрирует соединение: побеждает самое новое по порядку прихода
+   * `agent.connect` (`id`), прежнее соединение воркера завершается. Номер
+   * берётся до проверки токена (поход в БД), поэтому более старое
+   * соединение, чья проверка закончилась позже, не вытесняет более новое, а
+   * само завершается сразу.
    */
   const register = (connection: Connection) =>
     Effect.gen(function* () {
       const { workerId } = connection.info;
       const previous = byWorker.get(workerId);
+      if (previous !== undefined && previous.id > connection.id) {
+        yield* Queue.end(connection.commands);
+        return;
+      }
       // Сначала убрать маршрут прежнего соединения: у повторного connect по тому
       // же сокету clientId совпадает, и удаление после set стёрло бы новый маршрут.
       if (
@@ -178,15 +202,19 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Upsert'ы `workers` по одному: соединение пишет строку, только если оно ещё
+   * Записи `workers` по одной: соединение пишет строку, только если оно ещё
    * текущее, поэтому вытесненное (более старое) соединение не перезапишет
    * `publicIp`/`slots` более нового.
    */
   const upsertLock = yield* Semaphore.make(1);
 
   /**
-   * Upsert `workers`, затем `Connected` — строка воркера уже есть (на неё ссылаются
-   * сессии). Вытесненное за это время соединение ничего не пишет и не публикует.
+   * Обновление `workers`, затем `Connected` — строка воркера уже обновлена (на
+   * неё ссылаются сессии). Вытесненное за это время соединение ничего не
+   * пишет и не публикует. Строки нет — `Connected` тоже нет: без неё
+   * планировщику на этом воркере делать нечего, а токен удалённого сервера
+   * перестал действовать (учётные данные удалены каскадом) — фоновая
+   * проверка `WorkerAuth` закроет и соединение.
    */
   const announce = (
     connection: Connection,
@@ -195,7 +223,16 @@ const make = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       if (!isCurrent(connection)) return;
-      yield* upsertWorker(connection.info).pipe(Effect.orDie);
+      const updated = yield* updateWorker(connection.info).pipe(Effect.orDie);
+      if (!updated) {
+        yield* Effect.logWarning(
+          "Agent connected, but its worker row is gone",
+          {
+            workerId: connection.info.workerId,
+          },
+        );
+        return;
+      }
       if (!isCurrent(connection)) return;
       announced.add(connection.info.workerId);
       yield* PubSub.publish(events, {
@@ -215,15 +252,33 @@ const make = Effect.gen(function* () {
   const connect: AgentHubShape["connect"] = (clientId, payload) =>
     Stream.unwrap(
       Effect.gen(function* () {
-        const { running, installs, ...info } = payload;
+        const { running, installs, token, ...info } = payload;
+        // Номер — в порядке прихода, до похода в БД (см. `register`).
+        const id = nextId++;
+        // Токен уже пустили на апгрейде, но апгрейд пускает любой действующий
+        // токен, а `workerId` приходит только здесь (заголовки RPC-сообщений
+        // контролирует клиент): токен должен принадлежать именно этому
+        // серверу (спека §3). Сам токен в лог не попадает.
+        const tokenHash = sha256Hex(Redacted.value(token));
+        const owner = yield* workerOfTokenHash(tokenHash).pipe(
+          Effect.provideService(Db, db),
+        );
+        if (Option.getOrUndefined(owner) !== info.workerId) {
+          yield* Effect.logWarning(
+            "Agent connect refused: token does not belong to this worker",
+            { workerId: info.workerId },
+          );
+          return yield* new AgentUnauthorized();
+        }
         // Scope этого эффекта — время жизни потока: release срабатывает при обрыве
         // соединения (сервер прерывает поток) или замене более новым соединением.
         const connection = yield* Effect.acquireRelease(
           Effect.gen(function* () {
             const connection: Connection = {
-              id: nextId++,
+              id,
               clientId,
               info,
+              tokenHash,
               commands: yield* Queue.unbounded<AgentCommand, Cause.Done>(),
             };
             yield* register(connection);
@@ -273,11 +328,25 @@ const make = Effect.gen(function* () {
       return Queue.offer(connection.commands, command);
     });
 
+  const disconnect: AgentHubShape["disconnect"] = (workerId) =>
+    Effect.suspend(() => {
+      const connection = byWorker.get(workerId);
+      if (connection === undefined) return Effect.void;
+      // Сначала снять как текущее (с `Disconnected`), потом закрыть поток:
+      // release самого потока затем видит, что соединение уже не текущее.
+      return unregister(connection).pipe(
+        Effect.andThen(Queue.end(connection.commands)),
+        Effect.asVoid,
+      );
+    });
+
   return {
     send,
     connected: () => new Set(byWorker.keys()),
     info: (workerId) => byWorker.get(workerId)?.info,
     workerOf: (clientId) => byClient.get(clientId),
+    tokenHash: (workerId) => byWorker.get(workerId)?.tokenHash,
+    disconnect,
     events,
     subscribe: PubSub.subscribe(events),
     connect,

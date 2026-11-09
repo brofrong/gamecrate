@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { connect } from "node:net";
-import { Db, profiles, user, workerClasses, workers } from "@cg/db";
+import { Db, profiles, regions, user, workerClasses, workers } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type AgentCommand, type AgentConnect, AgentRpcs } from "@cg/rpc";
 import { BunHttpServer, BunSocket } from "@effect/platform-bun";
@@ -23,29 +23,30 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 import { RpcClient, RpcSerialization } from "effect/rpc";
 import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
-import { OrchestratorConfig, orchestratorConfig } from "../src/config";
+import { agentWebsocketUrl, orchestratorConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { WorkerAuth } from "../src/WorkerAuth";
 import { testSeedKey } from "./seedKey";
+import { seedWorker, TestOrchestratorConfig, testProfileKey } from "./support";
 
-const token = "test-agent-token-0123456789abcdef";
+/** Постоянный токен сервера `workerId` в этих тестах. */
+const tokenOf = (workerId: string) => `cgw_test-token-of-${workerId}`;
 
-const TestConfig = Layer.succeed(OrchestratorConfig, {
-  port: 0,
-  databaseUrl: Redacted.make("postgres://unused"),
-  agentToken: Redacted.make(token),
-  seedKey: testSeedKey,
-});
+/** Сервер `workerId`, заведённый админкой и уже получивший токен `tokenOf(workerId)`. */
+const seeded = (workerId: string) =>
+  seedWorker(workerId, { token: tokenOf(workerId) });
 
 /** Настоящий Bun-сервер на свободном порту + AgentHub на временной БД. */
 const TestServer = HttpRouter.serve(HttpApp, {
   disableLogger: true,
   disableListenLog: true,
 }).pipe(
+  Layer.provideMerge(WorkerAuth.layer),
   Layer.provideMerge(AgentHub.layer),
   Layer.provideMerge(SteamLoginSeeds.layer),
   Layer.provideMerge(DbTest),
-  Layer.provide(TestConfig),
+  Layer.provide(TestOrchestratorConfig),
   Layer.provideMerge(BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 })),
   Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
 );
@@ -63,6 +64,7 @@ beforeAll(async () => {
   );
   if (!("port" in address)) throw new Error("expected a TCP address");
   port = address.port;
+  await runtime.runPromise(seeded("w-http"));
 });
 afterAll(() => runtime.dispose());
 
@@ -96,22 +98,29 @@ const rawUpgrade = (authorization?: string) =>
     socket.once("error", reject);
   });
 
-/** RPC-клиент агента по WebSocket `/agent` (NDJSON), живёт в текущем scope. */
-const agentClient = Effect.gen(function* () {
-  const context = yield* Layer.build(
-    RpcClient.layerProtocolSocket().pipe(
-      Layer.provide(
-        BunSocket.layerWebSocket(`ws://127.0.0.1:${port}/agent`, {
-          headers: { authorization: `Bearer ${token}` },
-        }),
+/**
+ * RPC-клиент агента по WebSocket `/agent` (NDJSON) с токеном `token` на
+ * апгрейде, живёт в текущем scope.
+ */
+const agentClient = (token: string) =>
+  Effect.gen(function* () {
+    const context = yield* Layer.build(
+      RpcClient.layerProtocolSocket().pipe(
+        Layer.provide(
+          BunSocket.layerWebSocket(`ws://127.0.0.1:${port}/agent`, {
+            headers: { authorization: `Bearer ${token}` },
+          }),
+        ),
+        Layer.provide(RpcSerialization.layerNdjson),
       ),
-      Layer.provide(RpcSerialization.layerNdjson),
-    ),
-  );
-  return yield* RpcClient.make(AgentRpcs).pipe(Effect.provideContext(context));
-});
+    );
+    return yield* RpcClient.make(AgentRpcs).pipe(
+      Effect.provideContext(context),
+    );
+  });
 
 const hello = (workerId: string): AgentConnect => ({
+  token: Redacted.make(tokenOf(workerId)),
   workerId,
   publicIp: "203.0.113.7",
   slots: 1,
@@ -128,15 +137,16 @@ const hello = (workerId: string): AgentConnect => ({
   installs: ["job-1"],
 });
 
-type AgentClient = Effect.Success<typeof agentClient>;
+type AgentClient = Effect.Success<ReturnType<typeof agentClient>>;
 
 /**
- * Подключает агента (новый WebSocket или уже открытый `client`): команды из
- * потока `agent.connect` складываются в очередь.
+ * Подключает агента (новый WebSocket с токеном из `payload` или уже открытый
+ * `client`): команды из потока `agent.connect` складываются в очередь.
  */
 const connectAgent = (payload: AgentConnect, existing?: AgentClient) =>
   Effect.gen(function* () {
-    const client = existing ?? (yield* agentClient);
+    const client =
+      existing ?? (yield* agentClient(Redacted.value(payload.token)));
     const commands = yield* Queue.unbounded<AgentCommand>();
     const fiber = yield* client["agent.connect"](payload).pipe(
       Stream.runForEach((command) => Queue.offer(commands, command)),
@@ -169,20 +179,23 @@ describe("http", () => {
     expect(await response.text()).toBe("ok");
   });
 
-  it("agent without token gets 401 before upgrade", async () => {
+  it("agent without its server token gets 401 before upgrade", async () => {
+    const token = tokenOf("w-http");
     expect(await rawUpgrade()).toContain(" 401 ");
     expect(await rawUpgrade("Bearer wrong-token")).toContain(" 401 ");
     expect(await rawUpgrade(token)).toContain(" 401 ");
+    expect(await rawUpgrade(`Basic ${token}`)).toContain(" 401 ");
     expect(await rawUpgrade(`Bearer ${token}`)).toContain(" 101 ");
   });
 });
 
 describe("agent hub", () => {
-  it("connect upserts worker and send delivers command to its stream", () =>
+  it("connect updates the worker row and send delivers command to its stream", () =>
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
         const db = yield* Db;
+        yield* seeded("w-connect");
         const events = yield* hub.subscribe;
         const { commands } = yield* connectAgent(hello("w-connect"));
 
@@ -241,6 +254,7 @@ describe("agent hub", () => {
       Effect.gen(function* () {
         const hub = yield* AgentHub;
         const db = yield* Db;
+        yield* seeded("w-upsert");
         const events = yield* hub.subscribe;
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -264,11 +278,19 @@ describe("agent hub", () => {
       }),
     ));
 
-  it("hub upsert keeps class_id", () =>
+  it("hub update keeps class_id and region_id", () =>
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
         const db = yield* Db;
+        const [region] = yield* db
+          .insert(regions)
+          .values({ code: "spb", name: "Санкт-Петербург" })
+          .returning();
+        yield* seedWorker("w-class", {
+          token: tokenOf("w-class"),
+          regionId: region!.id,
+        });
         const events = yield* hub.subscribe;
         yield* connectAgent(hello("w-class"));
         yield* waitEvent(events, isTag("Connected", "w-class"));
@@ -292,6 +314,52 @@ describe("agent hub", () => {
           .from(workers)
           .where(eq(workers.id, "w-class"));
         expect(row?.classId).toBe(classId);
+        expect(row?.regionId).toBe(region!.id);
+      }),
+    ));
+
+  it("agent.connect with another server's token fails with AgentUnauthorized", () =>
+    run(
+      Effect.gen(function* () {
+        const hub = yield* AgentHub;
+        const db = yield* Db;
+        yield* seeded("w-owner");
+        yield* seeded("w-victim");
+        const events = yield* hub.subscribe;
+        const victim = yield* connectAgent(hello("w-victim"));
+        yield* waitEvent(events, isTag("Connected", "w-victim"));
+
+        // Действующий токен w-owner пускает на апгрейде, но выдать себя за
+        // w-victim по нему нельзя: поток падает, текущее соединение w-victim
+        // и его строка `workers` не тронуты.
+        const client = yield* agentClient(tokenOf("w-owner"));
+        const spoofed = yield* client["agent.connect"]({
+          ...hello("w-victim"),
+          token: Redacted.make(tokenOf("w-owner")),
+          publicIp: "198.51.100.66",
+        }).pipe(
+          Stream.runDrain,
+          Effect.flip,
+          Effect.timeout(Duration.seconds(5)),
+        );
+        expect(spoofed._tag).toBe("AgentUnauthorized");
+        expect(hub.info("w-victim")?.publicIp).toBe("203.0.113.7");
+        const [row] = yield* db
+          .select()
+          .from(workers)
+          .where(eq(workers.id, "w-victim"));
+        expect(row?.publicIp).toBe("203.0.113.7");
+        const command: AgentCommand = { _tag: "StopSession", sessionId: "s" };
+        expect(yield* hub.send("w-victim", command)).toBe(true);
+        expect(
+          yield* Queue.take(victim.commands).pipe(
+            Effect.timeout(Duration.seconds(5)),
+          ),
+        ).toEqual(command);
+
+        // По тому же сокету — своим id и своим токеном — подключиться можно.
+        yield* connectAgent(hello("w-owner"), client);
+        yield* waitEvent(events, isTag("Connected", "w-owner"));
       }),
     ));
 
@@ -311,6 +379,7 @@ describe("agent hub", () => {
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
+        yield* seeded("w-report");
         const events = yield* hub.subscribe;
         const { client } = yield* connectAgent(hello("w-report"));
         yield* waitEvent(events, isTag("Connected", "w-report"));
@@ -344,6 +413,8 @@ describe("agent hub", () => {
       Effect.gen(function* () {
         const hub = yield* AgentHub;
         const db = yield* Db;
+        yield* seeded("w-snapshot");
+        yield* seeded("w-plain");
         const events = yield* hub.subscribe;
         const hardware = {
           cpuModel: "AMD Ryzen 9 5950X",
@@ -430,6 +501,7 @@ describe("agent hub", () => {
       Effect.gen(function* () {
         const hub = yield* AgentHub;
         const db = yield* Db;
+        yield* seeded("w-stats-write-fails");
         const events = yield* hub.subscribe;
         const { client } = yield* connectAgent(hello("w-stats-write-fails"));
         yield* waitEvent(events, isTag("Connected", "w-stats-write-fails"));
@@ -475,7 +547,8 @@ describe("agent hub", () => {
   it("report without connect is AgentNotConnected", () =>
     run(
       Effect.gen(function* () {
-        const client = yield* agentClient;
+        yield* seeded("w-early");
+        const client = yield* agentClient(tokenOf("w-early"));
         const result = yield* client["agent.report"]({
           _tag: "Heartbeat",
           sessionIds: [],
@@ -506,7 +579,8 @@ describe("agent hub", () => {
         };
 
         // Соединение без agent.connect — не обработан (агент повторит).
-        const client = yield* agentClient;
+        yield* seeded("w-commit");
+        const client = yield* agentClient(tokenOf("w-commit"));
         const early = yield* client["agent.profileCommit"](commit).pipe(
           Effect.result,
         );
@@ -550,6 +624,7 @@ describe("agent hub", () => {
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
+        yield* seeded("w-gone");
         const events = yield* hub.subscribe;
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -570,6 +645,7 @@ describe("agent hub", () => {
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
+        yield* seeded("w-twice");
         const events = yield* hub.subscribe;
         const first = yield* connectAgent(hello("w-twice"));
         yield* waitEvent(events, isTag("Connected", "w-twice"));
@@ -603,6 +679,7 @@ describe("agent hub", () => {
     run(
       Effect.gen(function* () {
         const hub = yield* AgentHub;
+        yield* seeded("w-same");
         const events = yield* hub.subscribe;
         const first = yield* connectAgent(hello("w-same"));
         yield* waitEvent(events, isTag("Connected", "w-same"));
@@ -640,9 +717,7 @@ describe("agent hub", () => {
         const events = yield* hub.subscribe;
         const older = { ...hello("w-race"), publicIp: "192.0.2.1", slots: 1 };
         const newer = { ...hello("w-race"), publicIp: "192.0.2.2", slots: 2 };
-        yield* db
-          .insert(workers)
-          .values({ id: "w-race", publicIp: "192.0.2.0", slots: 1 });
+        yield* seeded("w-race");
 
         // Блокировка строки воркера: upsert старшего соединения повисает в БД.
         const locked = yield* Deferred.make<void>();
@@ -704,76 +779,133 @@ describe("agent hub", () => {
     ));
 });
 
-describe("config AGENT_TOKEN", () => {
-  const parse = (env: Record<string, string>) =>
-    Effect.runPromise(
-      orchestratorConfig
-        .parse(
-          ConfigProvider.fromUnknown({
-            DATABASE_URL: "postgres://unused",
-            SEED_KEY: Redacted.value(testSeedKey),
-            ...env,
-          }),
-        )
-        .pipe(Effect.result),
-    );
+/** Минимальное окружение, с которым оркестратор стартует. */
+const baseEnv = {
+  DATABASE_URL: "postgres://unused",
+  ORCHESTRATOR_PUBLIC_URL: "https://game.example.ru",
+  S3_PUBLIC_ENDPOINT: "https://s3.game.example.ru",
+  S3_ACCESS_KEY: "access-key",
+  S3_SECRET_KEY: "secret-key",
+  PROFILE_KEY: testProfileKey,
+  SEED_KEY: Redacted.value(testSeedKey),
+};
 
-  it("rejects a missing, empty or short token", async () => {
+/** Разбор конфига по окружению `env`; `undefined` — переменной нет. */
+const parse = (env: Record<string, string | undefined>) =>
+  Effect.runPromise(
+    orchestratorConfig
+      .parse(
+        ConfigProvider.fromUnknown(
+          Object.fromEntries(
+            Object.entries(env).filter(([, value]) => value !== undefined),
+          ),
+        ),
+      )
+      .pipe(Effect.result),
+  );
+
+describe("config", () => {
+  it("starts without AGENT_TOKEN; defaults for ports, bucket, version and registry", async () => {
+    const result = await parse(baseEnv);
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success.port).toBe(3001);
+    expect(result.success.relayPort).toBe(3002);
+    expect(result.success.s3Bucket).toBe("cg-profiles");
+    expect(result.success.cgVersion).toBe("dev");
+    expect(result.success.registry._tag).toBe("None");
+    expect(result.success.publicUrl).toBe("https://game.example.ru");
+    expect(result.success.s3PublicEndpoint).toBe("https://s3.game.example.ru");
+    expect(Redacted.value(result.success.s3SecretKey)).toBe("secret-key");
+    expect(Redacted.value(result.success.profileKey)).toBe(testProfileKey);
+  });
+
+  it("requires the public URL with an http(s) scheme, S3 and PROFILE_KEY", async () => {
     for (const env of [
-      {},
-      { AGENT_TOKEN: "" },
-      { AGENT_TOKEN: "x".repeat(31) },
+      { ...baseEnv, ORCHESTRATOR_PUBLIC_URL: undefined },
+      { ...baseEnv, ORCHESTRATOR_PUBLIC_URL: "game.example.ru" },
+      { ...baseEnv, S3_PUBLIC_ENDPOINT: undefined },
+      { ...baseEnv, S3_ACCESS_KEY: undefined },
+      { ...baseEnv, S3_SECRET_KEY: undefined },
+      { ...baseEnv, PROFILE_KEY: undefined },
     ]) {
       const result = await parse(env);
       expect(result._tag).toBe("Failure");
+    }
+  });
+
+  it("rejects a PROFILE_KEY that is not base64 of 32 bytes without echoing it", async () => {
+    const short = Buffer.alloc(31, 7).toString("base64");
+    for (const key of [short, "x".repeat(44)]) {
+      const result = await parse({ ...baseEnv, PROFILE_KEY: key });
+      expect(result._tag).toBe("Failure");
       if (result._tag === "Failure") {
         expect(result.failure._tag).toBe("ConfigError");
-        if ("AGENT_TOKEN" in env)
-          expect(String(result.failure)).not.toContain(env.AGENT_TOKEN || "∅");
+        expect(String(result.failure)).not.toContain(key);
       }
     }
   });
 
-  it("accepts a token of 32+ characters, port defaults to 3001", async () => {
-    const result = await parse({ AGENT_TOKEN: "a".repeat(64) });
-    expect(result._tag).toBe("Success");
-    if (result._tag === "Success") {
-      expect(Redacted.value(result.success.agentToken)).toBe("a".repeat(64));
-      expect(result.success.port).toBe(3001);
+  it("registry needs all three REGISTRY_* or none", async () => {
+    const registry = {
+      REGISTRY_SERVER: "registry.example.ru",
+      REGISTRY_USERNAME: "cg-pull",
+      REGISTRY_PASSWORD: "registry-s3cr3t",
+    };
+    const full = await parse({ ...baseEnv, ...registry, CG_VERSION: "1.4.0" });
+    expect(full._tag).toBe("Success");
+    if (full._tag === "Success") {
+      expect(full.success.cgVersion).toBe("1.4.0");
+      const value = full.success.registry;
+      expect(value._tag).toBe("Some");
+      if (value._tag === "Some") {
+        expect(value.value.server).toBe("registry.example.ru");
+        expect(value.value.username).toBe("cg-pull");
+        expect(Redacted.value(value.value.password)).toBe("registry-s3cr3t");
+      }
     }
+    for (const missing of Object.keys(registry)) {
+      const result = await parse({
+        ...baseEnv,
+        ...registry,
+        [missing]: undefined,
+      });
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure")
+        expect(String(result.failure)).not.toContain("registry-s3cr3t");
+    }
+  });
+
+  it("agent WebSocket URL follows the public URL scheme", () => {
+    expect(agentWebsocketUrl("https://g.example")).toBe(
+      "wss://g.example/agent",
+    );
+    expect(agentWebsocketUrl("https://g.example/")).toBe(
+      "wss://g.example/agent",
+    );
+    expect(agentWebsocketUrl("http://127.0.0.1:3001")).toBe(
+      "ws://127.0.0.1:3001/agent",
+    );
   });
 });
 
 describe("config SEED_KEY", () => {
-  const parse = (env: Record<string, string>) =>
-    Effect.runPromise(
-      orchestratorConfig
-        .parse(
-          ConfigProvider.fromUnknown({
-            DATABASE_URL: "postgres://unused",
-            AGENT_TOKEN: "a".repeat(64),
-            ...env,
-          }),
-        )
-        .pipe(Effect.result),
-    );
-
   it("rejects a missing, empty or non-32-byte key without echoing it", async () => {
     const short = Buffer.alloc(31, 7).toString("base64");
     const long = Buffer.alloc(33, 7).toString("base64");
     const notBase64 = `${"!".repeat(43)}=`;
     for (const env of [
-      {},
+      { SEED_KEY: undefined },
       { SEED_KEY: "" },
       { SEED_KEY: short },
       { SEED_KEY: long },
       { SEED_KEY: notBase64 },
     ]) {
-      const result = await parse(env);
+      const result = await parse({ ...baseEnv, ...env });
       expect(result._tag).toBe("Failure");
       if (result._tag === "Failure") {
         expect(result.failure._tag).toBe("ConfigError");
-        if ("SEED_KEY" in env && env.SEED_KEY !== "")
+        if (env.SEED_KEY !== undefined && env.SEED_KEY !== "")
           expect(String(result.failure)).not.toContain(env.SEED_KEY);
       }
     }
@@ -781,7 +913,7 @@ describe("config SEED_KEY", () => {
 
   it("accepts base64 of exactly 32 bytes", async () => {
     const key = Buffer.alloc(32, 9).toString("base64");
-    const result = await parse({ SEED_KEY: key });
+    const result = await parse({ ...baseEnv, SEED_KEY: key });
     expect(result._tag).toBe("Success");
     if (result._tag === "Success")
       expect(Redacted.value(result.success.seedKey)).toBe(key);

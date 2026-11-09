@@ -117,9 +117,8 @@ export const workers = pgTable("workers", {
  * оркестратор сверяет `Authorization: Bearer` с хэшем токена и `workerId` —
  * с владельцем (Task 3 — аутентификация агента). `revokedAt` — админ отозвал
  * токен, оркестратор рвёт соединение этого воркера; новый код подключения
- * выпускается отдельно. Хэши — `sha256`, как `AGENT_TOKEN` сейчас
- * (`apps/orchestrator/src/http.ts`), секрет в базе не хранится в открытом
- * виде.
+ * выпускается отдельно. Хэши — `sha256Hex` (`workerTokens.ts`), секрет в
+ * базе не хранится в открытом виде.
  */
 export const workerCredentials = pgTable("worker_credentials", {
   workerId: text("worker_id")

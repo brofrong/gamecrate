@@ -1,13 +1,16 @@
 // Общие помощники тестов оркестратора: фейковый хаб, окружение `run`,
-// фикстуры БД (пользователи, воркеры, сессии) и сравнение через JSON.
+// фикстуры БД (пользователи, воркеры, сессии), тестовый конфиг и сравнение
+// через JSON.
 import { expect } from "bun:test";
 import {
   Db,
   gamestoreApps,
   games,
   sessions,
+  sha256Hex,
   user,
   workerClasses,
+  workerCredentials,
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
@@ -18,16 +21,70 @@ import type {
   WorkerStats,
 } from "@cg/rpc";
 import { eq } from "drizzle-orm";
-import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
+import {
+  Effect,
+  Layer,
+  Option,
+  PubSub,
+  Redacted,
+  References,
+  type Scope,
+  Stream,
+} from "effect";
 import {
   AgentHub,
   type AgentHubEvent,
   type AgentHubShape,
   type WorkerInfo,
 } from "../src/AgentHub";
+import { OrchestratorConfig } from "../src/config";
 import { SessionRunner, type SessionRunnerOptions } from "../src/SessionRunner";
 import type { SteamLoginSeeds } from "../src/SteamLoginSeeds";
-import { SteamLoginSeedsTest } from "./seedKey";
+import { SteamLoginSeedsTest, testSeedKey } from "./seedKey";
+
+/** Тестовый `PROFILE_KEY`: 32 байта 0x02 в base64. */
+export const testProfileKey = Buffer.alloc(32, 2).toString("base64");
+
+/** Конфиг оркестратора для тестов HTTP: все секреты — заметные строки-метки. */
+export const TestOrchestratorConfig = Layer.succeed(OrchestratorConfig, {
+  port: 0,
+  databaseUrl: Redacted.make("postgres://unused"),
+  publicUrl: "https://game.example.ru",
+  relayPort: 0,
+  s3PublicEndpoint: "https://s3.game.example.ru",
+  s3Bucket: "cg-profiles",
+  s3AccessKey: Redacted.make("test-s3-access"),
+  s3SecretKey: Redacted.make("test-s3-secret"),
+  profileKey: Redacted.make(testProfileKey),
+  cgVersion: "1.2.3",
+  registry: Option.some({
+    server: "registry.example.ru",
+    username: "cg-pull",
+    password: Redacted.make("test-registry-password"),
+  }),
+  seedKey: testSeedKey,
+});
+
+/**
+ * Сервер, как его заводит админка (строка `workers` без IP и слотов, по
+ * желанию — в регионе), уже обменявший код на постоянный токен `token`
+ * (в `worker_credentials` — только его хэш).
+ */
+export const seedWorker = (
+  id: string,
+  opts: { readonly regionId?: string; readonly token: string },
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(workers)
+      .values({ id, publicIp: "", slots: 0, regionId: opts.regionId ?? null });
+    yield* db.insert(workerCredentials).values({
+      workerId: id,
+      tokenHash: sha256Hex(opts.token),
+      tokenIssuedAt: new Date(),
+    });
+  });
 
 /** Фейковый хаб: подключённые воркеры и отправленные команды — в памяти. */
 export const makeFakeHub = () => {
@@ -53,6 +110,8 @@ export const makeFakeHub = () => {
     connected: () => new Set(infos.keys()),
     info: (workerId) => infos.get(workerId),
     workerOf: () => undefined,
+    tokenHash: () => undefined,
+    disconnect: () => Effect.die("fake hub"),
     events,
     subscribe: PubSub.subscribe(events),
     connect: () => Stream.die("fake hub"),

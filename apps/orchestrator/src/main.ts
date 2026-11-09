@@ -13,6 +13,7 @@ import * as Scheduler from "./Scheduler";
 import { SessionRunner } from "./SessionRunner";
 import { SteamLoginRunner, SteamQr } from "./SteamLoginRunner";
 import { SteamLoginSeeds } from "./SteamLoginSeeds";
+import { WorkerAuth } from "./WorkerAuth";
 
 const BunServer = Layer.unwrap(
   OrchestratorConfig.useSync((config) =>
@@ -39,9 +40,11 @@ const Sessions = Layer.mergeAll(
 // (SteamLoginRunner), приложенный к запуску сессии/установки
 // (Scheduler/InstallDispatcher) и очищенный принятым посеянным коммитом
 // профиля (http.ts) — одна и та же строка `steam_login_seeds` (ключ `SEED_KEY`
-// из конфига; Db и конфиг подаются ниже).
+// из конфига; Db и конфиг подаются ниже). WorkerAuth (токены серверов и
+// фоновое отключение отозванных) — на том же хабе.
 const Server = HttpRouter.serve(HttpApp).pipe(
   Layer.provide(Sessions),
+  Layer.provide(WorkerAuth.layer),
   Layer.provide(AgentHub.layer),
   Layer.provide(SteamLoginSeeds.layer),
   Layer.provide(Db.layer),

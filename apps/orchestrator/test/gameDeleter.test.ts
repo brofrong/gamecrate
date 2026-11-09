@@ -31,6 +31,8 @@ const makeFakeHub = () => {
     connected: () => new Set(infos.keys()),
     info: (workerId) => infos.get(workerId),
     workerOf: () => undefined,
+    tokenHash: () => undefined,
+    disconnect: () => Effect.die("fake hub"),
     events,
     subscribe: PubSub.subscribe(events),
     connect: () => Stream.die("fake hub"),

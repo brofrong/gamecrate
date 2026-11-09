@@ -101,6 +101,8 @@ export const run = Effect.gen(function* () {
     carry.push(...buffered.filter(isTerminal));
     const { hardware, versions } = yield* monitor.snapshot;
     const payload: AgentConnect = {
+      // Пока — общий AGENT_TOKEN; токен своего сервера (WORKER_TOKEN) — Task 4.
+      token: config.agentToken,
       workerId: config.workerId,
       publicIp: config.publicIp,
       slots: config.slots,

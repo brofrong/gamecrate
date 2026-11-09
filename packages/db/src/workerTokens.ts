@@ -6,10 +6,40 @@
 // `enroll_code_hash`), сам код/токен виден вызывающему только один раз,
 // в момент выдачи.
 import { createHash, randomBytes } from "node:crypto";
+import { and, eq, isNull } from "drizzle-orm";
+import { Effect, Option } from "effect";
+import { Db } from "./Db";
+import { workerCredentials } from "./schema";
 
 /** SHA-256 значения в hex — то, что хранится в БД и с чем сравнивают присланный секрет. */
 export const sha256Hex = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
+
+/**
+ * Сервер, которому принадлежит действующий токен с хэшем `tokenHash`
+ * (`sha256Hex` присланного токена): хэш совпал и токен не отозван
+ * (`revoked_at is null`). Единственное определение «действующего токена» у
+ * оркестратора — им пользуются и `WorkerAuth.workerOfToken` (апгрейд
+ * `GET /agent`, `/agent/config`, фоновая проверка отзыва), и сверка
+ * `agent.connect` в хабе (хаб не может зависеть от `WorkerAuth`: фоновая
+ * проверка отзыва сама зависит от хаба). Сбой БД — дефект.
+ */
+export const workerOfTokenHash = (
+  tokenHash: string,
+): Effect.Effect<Option.Option<string>, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const [row] = yield* db
+      .select({ workerId: workerCredentials.workerId })
+      .from(workerCredentials)
+      .where(
+        and(
+          eq(workerCredentials.tokenHash, tokenHash),
+          isNull(workerCredentials.revokedAt),
+        ),
+      );
+    return Option.fromNullishOr(row?.workerId);
+  }).pipe(Effect.orDie);
 
 /** Постоянный токен сервера: `cgw_` + 43 символа base64url (32 случайных байта). */
 export const newWorkerToken = (): string =>

@@ -65,6 +65,7 @@ describe("agent protocol", () => {
 
   it("rejects AgentConnect with unknown role", () => {
     const base = {
+      token: "cgw_test",
       workerId: "w1",
       publicIp: "203.0.113.7",
       slots: 1,
@@ -108,6 +109,7 @@ describe("agent protocol", () => {
 
   it("AgentConnect без hardware/versions декодируется (старый агент совместим)", () => {
     const base = {
+      token: "cgw_test",
       workerId: "w1",
       publicIp: "203.0.113.7",
       slots: 1,
@@ -116,11 +118,41 @@ describe("agent protocol", () => {
       roles: ["worker"],
       installs: [],
     } as const;
-    expect(Schema.decodeUnknownSync(AgentConnect)(base)).toEqual(base);
+    expect(
+      Schema.encodeSync(AgentConnect)(
+        Schema.decodeUnknownSync(AgentConnect)(base),
+      ),
+    ).toEqual(base);
+  });
+
+  it("AgentConnect требует токен сервера и прячет его в Redacted", () => {
+    const { token: _, ...withoutToken } = {
+      token: "cgw_s3cr3t",
+      workerId: "w1",
+      publicIp: "203.0.113.7",
+      slots: 1,
+      udpPortBase: 59000,
+      running: [],
+      roles: ["worker"],
+      installs: [],
+    } as const;
+    expect(() =>
+      Schema.decodeUnknownSync(AgentConnect)(withoutToken),
+    ).toThrow();
+    const decoded = Schema.decodeUnknownSync(AgentConnect)({
+      ...withoutToken,
+      token: "cgw_s3cr3t",
+    });
+    expect(Redacted.isRedacted(decoded.token)).toBe(true);
+    expect(Redacted.value(decoded.token)).toBe("cgw_s3cr3t");
+    expect(JSON.stringify(decoded)).not.toContain("cgw_s3cr3t");
+    // По проводу токен уходит исходной строкой.
+    expect(Schema.encodeSync(AgentConnect)(decoded).token).toBe("cgw_s3cr3t");
   });
 
   it("AgentConnect с hardware/versions декодируется", () => {
     const withExtras = {
+      token: "cgw_test",
       workerId: "w1",
       publicIp: "203.0.113.7",
       slots: 1,
@@ -156,9 +188,11 @@ describe("agent protocol", () => {
         steamClientBuiltAt: "2026-10-28T00:00:00.000Z",
       },
     } as const;
-    expect(Schema.decodeUnknownSync(AgentConnect)(withExtras)).toEqual(
-      withExtras,
-    );
+    expect(
+      Schema.encodeSync(AgentConnect)(
+        Schema.decodeUnknownSync(AgentConnect)(withExtras),
+      ),
+    ).toEqual(withExtras);
   });
 
   it("AgentReport WorkerStats декодируется", () => {
