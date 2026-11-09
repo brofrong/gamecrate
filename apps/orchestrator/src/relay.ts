@@ -11,8 +11,9 @@
 //
 // Запрос агенту: путь без префикса `/relay/<id>` + query, заголовки api как
 // есть, кроме hop-by-hop и секрета relay (api уже убрал host/cookie/origin и
-// т. п.). Ответ: статус, заголовки и тело потоком — как прислал агент
-// (переписывает api).
+// т. п.). Тело запроса — одним сообщением канала, поэтому буферизуется, не
+// больше `MAX_STREAM_BODY_BYTES` (больше — 413 без канала). Ответ: статус,
+// заголовки и тело потоком — как прислал агент (переписывает api).
 //
 // Relay слушается и в сети обратного прокси (оркестратор в `proxy` ради
 // маршрута `/agent*`), поэтому любой запрос без общего секрета api
@@ -26,6 +27,7 @@ import {
   isSessionId,
   pipeFrames,
   RELAY_SECRET_HEADER,
+  readStreamBody,
   type TunnelControl,
 } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
@@ -110,6 +112,9 @@ const relaySecretMatches = (
 };
 const badGateway = () =>
   HttpServerResponse.text("Стрим недоступен", { status: 502 });
+/** Тело запроса больше `MAX_STREAM_BODY_BYTES` — агент не трогаем. */
+const payloadTooLarge = () =>
+  HttpServerResponse.text("Слишком большой запрос", { status: 413 });
 const tooManyTunnels = () =>
   HttpServerResponse.text("Слишком много соединений со стримом", {
     status: 503,
@@ -295,9 +300,8 @@ const relayHttp = (
 ) =>
   Effect.gen(function* () {
     const withBody = request.method !== "GET" && request.method !== "HEAD";
-    const body = withBody
-      ? new Uint8Array(yield* request.arrayBuffer)
-      : undefined;
+    // До канала: тело сверх предела (`readStreamBody`) — 413 без агента.
+    const body = withBody ? yield* readStreamBody(request) : undefined;
     const hasBody = body !== undefined && body.byteLength > 0;
 
     const channel = yield* tunnels.open(workerId, sessionId);
@@ -449,6 +453,9 @@ const handler = Effect.gen(function* () {
         ),
       );
     return yield* relayHttp(tunnels, request, workerId, sessionId, path).pipe(
+      Effect.catchTag("StreamBodyTooLarge", () =>
+        Effect.succeed(payloadTooLarge()),
+      ),
       Effect.catch(relayFailed(sessionId, workerId)),
     );
   });

@@ -17,6 +17,7 @@ export * from "./ownGames";
 export * from "./session";
 export * from "./settings";
 export * from "./steamLogin";
+export * from "./streamBody";
 export * from "./streamSettings";
 export * from "./time";
 export * from "./tunnel";

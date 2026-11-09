@@ -11,6 +11,7 @@ import {
   AgentRpcs,
   decodeTunnelControl,
   encodeTunnelControl,
+  MAX_STREAM_BODY_BYTES,
   RELAY_SECRET_HEADER,
   type TunnelControl,
 } from "@cg/rpc";
@@ -446,6 +447,42 @@ describe("relay", () => {
     });
     expect(opened).toBe(false);
     expect(agent.opened.length).toBe(before);
+  });
+
+  it("caps the request body at MAX_STREAM_BODY_BYTES before opening a tunnel", async () => {
+    const sessionId = await run(liveSession("w1"));
+    const post = (body: BodyInit) =>
+      relayFetch(relayUrl(sessionId, "/api/upload"), { method: "POST", body });
+    const before = agent.opened.length;
+
+    // Content-Length больше предела — 413, агенту `OpenTunnel` не уходит.
+    const declared = await post(new Uint8Array(MAX_STREAM_BODY_BYTES + 1));
+    expect(declared.status).toBe(413);
+    expect(agent.opened.length).toBe(before);
+
+    // Chunked без Content-Length — предел считается по факту чтения.
+    const chunk = new Uint8Array(256 * 1024);
+    let sent = 0;
+    const chunked = await post(
+      new ReadableStream({
+        pull(controller) {
+          if (sent > MAX_STREAM_BODY_BYTES) controller.close();
+          else {
+            sent += chunk.byteLength;
+            controller.enqueue(chunk);
+          }
+        },
+      }),
+    );
+    expect(chunked.status).toBe(413);
+    expect(agent.opened.length).toBe(before);
+
+    // Ровно предел проходит до агента целиком.
+    const atLimit = await post(new Uint8Array(MAX_STREAM_BODY_BYTES).fill(97));
+    expect(atLimit.status).toBe(201);
+    expect(agent.opened.length).toBe(before + 1);
+    expect(agent.bodies.at(-1)?.length).toBe(MAX_STREAM_BODY_BYTES);
+    await atLimit.text();
   });
 
   it("refuses a session on another worker or not active", async () => {

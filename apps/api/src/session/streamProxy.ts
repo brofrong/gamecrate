@@ -42,7 +42,9 @@ import {
   isSessionStreamUrl,
   pipeFrames,
   RELAY_SECRET_HEADER,
+  readStreamBody,
   sessionStreamUrl,
+  StreamBodyTooLarge,
 } from "@cg/rpc";
 import { BunSocket } from "@effect/platform-bun";
 import { Context, Effect, Fiber, FiberSet, Redacted } from "effect";
@@ -114,6 +116,9 @@ const badGateway = HttpServerResponse.text("Стрим ещё не готов", 
 });
 const streamUnavailable = HttpServerResponse.text("Стрим недоступен", {
   status: 502,
+});
+const payloadTooLarge = HttpServerResponse.text("Слишком большой запрос", {
+  status: 413,
 });
 
 const isSafeMethod = (method: string) =>
@@ -201,7 +206,11 @@ const forwardResponse = (response: Response, upstream: Upstream) => {
   );
 };
 
-/** HTTP-запрос к Selkies; нет соединения/таймаут — 502. */
+/**
+ * HTTP-запрос к Selkies; нет соединения/таймаут — 502. Тело больше
+ * `MAX_STREAM_BODY_BYTES` — 413 без запроса к relay (тело буферизуется для
+ * fetch целиком).
+ */
 const proxyHttp = (
   request: HttpServerRequest.HttpServerRequest,
   target: URL,
@@ -211,7 +220,7 @@ const proxyHttp = (
 ) =>
   Effect.gen(function* () {
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    const body = hasBody ? yield* request.arrayBuffer : undefined;
+    const body = hasBody ? yield* readStreamBody(request) : undefined;
     const response = yield* Effect.tryPromise({
       try: (signal) =>
         fetch(target, {
@@ -226,13 +235,15 @@ const proxyHttp = (
     return forwardResponse(response, upstream);
   }).pipe(
     Effect.catch((cause) =>
-      Effect.as(
-        Effect.logWarning("Stream upstream HTTP request failed", {
-          sessionId,
-          cause: String(cause),
-        }),
-        badGateway,
-      ),
+      cause instanceof StreamBodyTooLarge
+        ? Effect.succeed(payloadTooLarge)
+        : Effect.as(
+            Effect.logWarning("Stream upstream HTTP request failed", {
+              sessionId,
+              cause: String(cause),
+            }),
+            badGateway,
+          ),
     ),
   );
 

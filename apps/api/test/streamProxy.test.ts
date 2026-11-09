@@ -9,6 +9,7 @@ import { Db, games, sessions, user, userGames } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import {
   type CurrentUserShape,
+  MAX_STREAM_BODY_BYTES,
   RELAY_SECRET_HEADER,
   sessionStreamUrl,
 } from "@cg/rpc";
@@ -478,6 +479,46 @@ describe("stream proxy", () => {
         origin: publicOrigin,
       }),
     ).toContain(" 101 ");
+  });
+
+  it("stream proxy caps the request body at MAX_STREAM_BODY_BYTES", async () => {
+    const post = (body: BodyInit) =>
+      http(`/stream/${ids.alice}/api/upload`, {
+        method: "POST",
+        headers: { cookie: "sid=alice", origin: publicOrigin },
+        body,
+      });
+    const before = seen.requests;
+
+    // Content-Length больше предела — 413, relay не спрашиваем.
+    const declared = await post(new Uint8Array(MAX_STREAM_BODY_BYTES + 1));
+    expect(declared.status).toBe(413);
+    expect(seen.requests).toBe(before);
+
+    // Chunked без Content-Length — предел считается по факту чтения.
+    const chunk = new Uint8Array(256 * 1024);
+    let sent = 0;
+    const chunked = await post(
+      new ReadableStream({
+        pull(controller) {
+          if (sent > MAX_STREAM_BODY_BYTES) controller.close();
+          else {
+            sent += chunk.byteLength;
+            controller.enqueue(chunk);
+          }
+        },
+      }),
+    );
+    expect(chunked.status).toBe(413);
+    expect(seen.requests).toBe(before);
+
+    // Ровно предел проходит.
+    const atLimit = await post(new Uint8Array(MAX_STREAM_BODY_BYTES).fill(97));
+    expect(atLimit.status).toBe(200);
+    expect(((await atLimit.json()) as Echo).body.length).toBe(
+      MAX_STREAM_BODY_BYTES,
+    );
+    expect(seen.requests).toBe(before + 1);
   });
 
   it("stream proxy answers 502 while the upstream is down", async () => {
