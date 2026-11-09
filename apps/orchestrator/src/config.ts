@@ -29,8 +29,13 @@ export const relaySecret = Config.schema(
   "RELAY_SECRET",
 );
 
-/** Адрес с явной схемой `http://` или `https://` и хостом. */
-const httpUrlPattern = /^https?:\/\/[^\s/?#]+/;
+/**
+ * Только origin: схема `http://` или `https://`, хост и необязательный порт,
+ * допустим один хвостовой `/`; без пути, query, `#` и `user@`. Адрес
+ * подставляется в скрипт установки (`…/agent/<файл>`) и в `wss://…/agent`, так
+ * что путь в нём дал бы чужие адреса.
+ */
+const originPattern = /^https?:\/\/[^\s/?#@]+\/?$/;
 
 /** Учётные данные реестра образов (только на чтение), которые получают агенты. */
 export interface RegistryCredentials {
@@ -88,12 +93,13 @@ export const orchestratorConfig = Config.all({
   /**
    * Публичный адрес главного сервера (`https://game.example.ru`): отсюда
    * `orchestratorUrl` агента в ответе обмена кода (`wss://…/agent`, см.
-   * `agentWebsocketUrl`). Без схемы `http(s)://` — ConfigError при старте.
+   * `agentWebsocketUrl`). Только origin (`originPattern`), хвостовой `/`
+   * отбрасывается; без схемы `http(s)://` или с путём — ConfigError при старте.
    */
   publicUrl: Config.schema(
-    Schema.String.check(Schema.isPattern(httpUrlPattern)),
+    Schema.String.check(Schema.isPattern(originPattern)),
     "ORCHESTRATOR_PUBLIC_URL",
-  ),
+  ).pipe(Config.map((url) => url.replace(/\/$/, ""))),
   /** Внутренний порт тоннеля стрима для api (`/relay/<sessionId>/…`, спека §4); наружу не публикуется. */
   relayPort: Config.Port("RELAY_PORT").pipe(Config.withDefault(3002)),
   /**

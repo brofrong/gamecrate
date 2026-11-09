@@ -842,6 +842,40 @@ describe("config", () => {
     }
   });
 
+  it("public URL is an origin only, a trailing slash is dropped", async () => {
+    for (const [value, expected] of [
+      ["https://game.example.ru", "https://game.example.ru"],
+      ["https://game.example.ru/", "https://game.example.ru"],
+      ["http://127.0.0.1:3001", "http://127.0.0.1:3001"],
+      ["http://127.0.0.1:3001/", "http://127.0.0.1:3001"],
+    ]) {
+      const result = await parse({
+        ...baseEnv,
+        ORCHESTRATOR_PUBLIC_URL: value,
+      });
+      expect(result._tag).toBe("Success");
+      if (result._tag === "Success")
+        expect(result.success.publicUrl).toBe(expected);
+    }
+    for (const value of [
+      "https://game.example.ru/app",
+      "https://game.example.ru//",
+      "https://game.example.ru?x=1",
+      "https://game.example.ru/?x=1",
+      "https://game.example.ru#top",
+      "https://user@game.example.ru",
+      "https://game.example.ru /",
+      "ftp://game.example.ru",
+      "https://",
+    ]) {
+      const result = await parse({
+        ...baseEnv,
+        ORCHESTRATOR_PUBLIC_URL: value,
+      });
+      expect(result._tag).toBe("Failure");
+    }
+  });
+
   it("requires RELAY_SECRET of at least 32 characters without echoing it", async () => {
     const ok = await parse(baseEnv);
     expect(ok._tag).toBe("Success");

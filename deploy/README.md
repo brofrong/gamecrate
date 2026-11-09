@@ -84,7 +84,7 @@
 - Необязательно, парами: `GOOGLE_CLIENT_ID`/`_SECRET`, `YANDEX_CLIENT_ID`/`_SECRET`,
   `TELEGRAM_CLIENT_ID`/`_SECRET`; `ALLOWED_ORIGINS`.
 - `ORCHESTRATOR_PUBLIC_URL=https://<домен>` — из него адрес агентов `wss://<домен>/agent` и адрес
-  в скрипте установки.
+  в скрипте установки. Только origin (схема, хост, порт), без пути: иначе оркестратор не стартует.
 - `S3_PUBLIC_ENDPOINT=https://<хост S3>`, `S3_BUCKET=cg-profiles` (по умолчанию).
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — по `openssl rand -hex 24` (корневые ключи RustFS, они
   же S3-ключи, которые оркестратор выдаёт агентам).
