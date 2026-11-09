@@ -2,6 +2,9 @@
 import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect";
 
+/** Адрес с явной схемой `http://` или `https://` и хостом (как в apps/orchestrator/src/config.ts). */
+const httpUrlPattern = /^https?:\/\/[^\s/?#]+/;
+
 /**
  * Пара переменных окружения, которые должны быть заданы вместе (id/secret
  * OAuth-провайдера): `None`, если обе не заданы —
@@ -55,6 +58,29 @@ export const appConfig = Config.all({
         .filter((origin) => origin.length > 0),
     ),
     Config.withDefault<ReadonlyArray<string>>([]),
+  ),
+  /**
+   * Адрес relay оркестратора (спека §4): прокси стрима (`/stream/<id>/…`,
+   * `session/streamProxy.ts`) ходит сюда (`<orchestratorRelayUrl>/relay/<id>/…`),
+   * а не в сеть `cg-sessions` напрямую — многосерверный деплой разносит api и
+   * сессии по разным хостам. Без схемы `http(s)://` — ConfigError при старте;
+   * завершающий `/` обрезается, иначе в пути апстрима вышел бы двойной слэш.
+   */
+  orchestratorRelayUrl: Config.String("ORCHESTRATOR_RELAY_URL").pipe(
+    Config.withDefault("http://cg-orchestrator:3002"),
+    Config.map((value) => value.replace(/\/+$/, "")),
+    Config.mapEffect((value) =>
+      httpUrlPattern.test(value)
+        ? Effect.succeed(value)
+        : Effect.fail(
+            new Config.ConfigError(
+              new ConfigProvider.SourceError({
+                message:
+                  "ORCHESTRATOR_RELAY_URL: нужен адрес http(s)://host[:port]",
+              }),
+            ),
+          ),
+    ),
   ),
   /** Папка собранной SPA (`apps/web/dist`). */
   webDistDir: Config.String("WEB_DIST_DIR"),

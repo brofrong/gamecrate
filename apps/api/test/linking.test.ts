@@ -143,6 +143,7 @@ beforeAll(async () => {
     pocketIdClientSecret: Redacted.make("unused"),
     pocketIdAdminGroup: "cloud_gaming_admins",
     allowedOrigins: [],
+    orchestratorRelayUrl: "http://cg-orchestrator:3002",
     webDistDir: "unused",
     ownGamesDir: "unused",
     smtpUrl: Redacted.make("log://"),
@@ -347,13 +348,15 @@ describe("account linking", () => {
     // Посев входа (Task 5, QR): отвязка должна убрать его сразу (M3), а не
     // только помечать сброс на будущее — строку не расшифровываем (это делает
     // только оркестратор своим `SEED_KEY`), для проверки важно только её наличие.
-    await drizzle({ client: db }).insert(steamLoginSeeds).values({
-      userId: "u-mail",
-      steamId: "76500000000000001",
-      sealed: "unused-ciphertext",
-      putAt: new Date(),
-      expiresAt: new Date(Date.now() + 3_600_000),
-    });
+    await drizzle({ client: db })
+      .insert(steamLoginSeeds)
+      .values({
+        userId: "u-mail",
+        steamId: "76500000000000001",
+        sealed: "unused-ciphertext",
+        putAt: new Date(),
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
     const response = await auth.handler(
       new Request(`${origin}/api/auth/unlink-account`, {
         method: "POST",
@@ -378,7 +381,10 @@ describe("account linking", () => {
     expect(removed).toBeUndefined();
 
     const [mailUser] = await orm
-      .select({ steamId: user.steamId, steamLoginResetAt: user.steamLoginResetAt })
+      .select({
+        steamId: user.steamId,
+        steamLoginResetAt: user.steamLoginResetAt,
+      })
       .from(user)
       .where(eq(user.id, "u-mail"));
     expect(mailUser?.steamId).toBeNull();

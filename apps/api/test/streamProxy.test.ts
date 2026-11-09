@@ -35,6 +35,7 @@ const users: Record<string, CurrentUserShape> = {
   "sid=erin": player("u-erin"),
   "sid=alice": player("u-alice"),
   "sid=bob": player("u-bob"),
+  "sid=frank": player("u-frank"),
 };
 
 /** Better Auth-заглушка: пользователь по cookie `sid=<имя>`. */
@@ -79,6 +80,7 @@ const appDeps = (
       pocketIdClientSecret: Redacted.make("unused"),
       pocketIdAdminGroup: "cloud_gaming_admins",
       allowedOrigins: ["http://localhost:5173"],
+      orchestratorRelayUrl: "http://cg-orchestrator:3002",
       webDistDir,
       ownGamesDir: "unused",
       smtpUrl: Redacted.make("log://"),
@@ -583,5 +585,108 @@ describe("stream proxy", () => {
     expect(await location("https://example.com/x")).toBe(
       "https://example.com/x",
     );
+  });
+});
+
+describe("stream proxy default upstream", () => {
+  // Без подмены `StreamUpstream` слоем (как делает `appDeps` выше):
+  // апстрим — relay оркестратора из `AppConfig.orchestratorRelayUrl`.
+  it("upstream defaults to the orchestrator relay", async () => {
+    const webDistDir = await mkdtemp(join(tmpdir(), "cg-web-"));
+    const sessionId = crypto.randomUUID();
+    const relayRequests: Array<string> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      relayRequests.push(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    const deps = Layer.mergeAll(
+      fakeAuth,
+      DbTest,
+      Layer.mock(SteamApi)({}),
+      Layer.mock(ProtonDb)({}),
+      Layer.mock(SteamStoreApi)({}),
+      OwnGameCatalog.fromManifests([]),
+      Layer.succeed(AppConfig, {
+        port: 0,
+        publicUrl: `${publicOrigin}/app`,
+        databaseUrl: Redacted.make("postgres://unused"),
+        steamApiKey: Redacted.make("unused"),
+        authSecret: Redacted.make("unused"),
+        pocketIdUrl: "https://sso.example.invalid",
+        pocketIdClientId: "unused",
+        pocketIdClientSecret: Redacted.make("unused"),
+        pocketIdAdminGroup: "cloud_gaming_admins",
+        allowedOrigins: ["http://localhost:5173"],
+        orchestratorRelayUrl: "http://relay.test:3002",
+        webDistDir,
+        ownGamesDir: "unused",
+        smtpUrl: Redacted.make("log://"),
+        mailFrom: "GameCrate <test@example.com>",
+        google: Option.none(),
+        yandex: Option.none(),
+        telegram: Option.none(),
+      }),
+    );
+
+    const runtime = ManagedRuntime.make(
+      HttpRouter.serve(HttpApp, {
+        disableLogger: true,
+        disableListenLog: true,
+      }).pipe(
+        Layer.provideMerge(deps),
+        Layer.provideMerge(
+          BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 }),
+        ),
+      ),
+    );
+
+    try {
+      const address = await runtime.runPromise(
+        HttpServer.HttpServer.useSync((server) => server.address),
+      );
+      if (!("port" in address)) throw new Error("expected a TCP address");
+
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Db;
+          yield* db.insert(user).values({
+            id: "u-frank",
+            name: "u-frank",
+            email: "u-frank@example.test",
+          });
+          yield* db.insert(games).values({ appId: 11, name: "Hollow Knight" });
+          yield* db.insert(userGames).values({ userId: "u-frank", appId: 11 });
+          yield* db.insert(sessions).values({
+            id: sessionId,
+            userId: "u-frank",
+            appId: 11,
+            state: "playing",
+            streamUrl: sessionStreamUrl(sessionId),
+          });
+        }),
+      );
+
+      // По TCP, а не `fetch`: глобальный `fetch` подменён и обслуживает
+      // только внутренний запрос прокси к апстриму (см. выше).
+      const status = await rawGet(address.port, `/stream/${sessionId}/`, {
+        cookie: "sid=frank",
+      });
+      expect(status).toContain(" 200 ");
+      expect(relayRequests).toEqual([
+        `http://relay.test:3002/relay/${sessionId}/`,
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await runtime.dispose();
+      await rm(webDistDir, { recursive: true, force: true });
+    }
   });
 });

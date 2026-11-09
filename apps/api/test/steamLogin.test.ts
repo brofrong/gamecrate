@@ -36,6 +36,7 @@ beforeAll(async () => {
     pocketIdClientSecret: Redacted.make("unused"),
     pocketIdAdminGroup: "cloud_gaming_admins",
     allowedOrigins: [],
+    orchestratorRelayUrl: "http://cg-orchestrator:3002",
     webDistDir: "unused",
     ownGamesDir: "unused",
     smtpUrl: Redacted.make("log://"),
