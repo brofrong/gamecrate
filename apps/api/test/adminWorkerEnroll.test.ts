@@ -124,6 +124,28 @@ describe("admin.workers.create", () => {
     );
     expect(result).toBe("invalid");
   });
+
+  it('unknown or non-uuid region is "regionNotFound", no worker row', async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const rpc = yield* client;
+        const unknown = yield* rpc["admin.workers.create"]({
+          id: "spb-01",
+          regionId: crypto.randomUUID(),
+        });
+        const malformed = yield* rpc["admin.workers.create"]({
+          id: "spb-02",
+          regionId: "not-a-uuid",
+        });
+        const rows = yield* db.select({ id: workers.id }).from(workers);
+        return { unknown, malformed, rows };
+      }),
+    );
+    expect(result.unknown).toBe("regionNotFound");
+    expect(result.malformed).toBe("regionNotFound");
+    expect(result.rows).toEqual([]);
+  });
 });
 
 describe("admin.workers.issueCode", () => {

@@ -17,10 +17,12 @@ import {
 } from "@cg/db";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect } from "effect";
-import { violatedConstraint } from "./dbErrors";
+import { isUuid, violatedConstraint } from "./dbErrors";
 
 /** `workers.id` — первичный ключ без явного имени, Postgres называет его так (см. `violatedConstraint` в `./dbErrors`). */
 const WORKERS_PKEY_CONSTRAINT = "workers_pkey";
+/** FK `workers.region_id → regions.id` (имя из миграции `multi_server`). */
+export const WORKERS_REGION_FK_CONSTRAINT = "workers_region_id_regions_id_fkey";
 
 /** Код + момент истечения для ответа админке. */
 type EnrollCode = { readonly code: string; readonly expiresAt: string };
@@ -59,7 +61,9 @@ const issueEnrollCode = (
  * и код подключения, одной транзакцией. Id не по `WORKER_ID_PATTERN` —
  * `"invalid"` (проверяем до похода в БД); занятый id — `"idTaken"`, ловим
  * нарушение первичного ключа на самом `insert` (не отдельным
- * `select`-check — та же гонка, что в `classes.ts`/`createClass`).
+ * `select`-check — та же гонка, что в `classes.ts`/`createClass`). Регион
+ * не uuid (до БД) или его нет (нарушение FK на том же `insert`, например
+ * регион удалили, пока открыт диалог) — `"regionNotFound"`.
  *
  * `insert` воркера — в своей вложенной транзакции (`db.transaction` внутри
  * `db.transaction` даёт `SAVEPOINT` у `@effect/sql`): Postgres считает всю
@@ -73,9 +77,14 @@ const issueEnrollCode = (
 export const createWorker = (
   id: string,
   regionId: string,
-): Effect.Effect<EnrollCode | "idTaken" | "invalid", never, Db> =>
+): Effect.Effect<
+  EnrollCode | "idTaken" | "invalid" | "regionNotFound",
+  never,
+  Db
+> =>
   Effect.gen(function* () {
     if (!WORKER_ID_PATTERN.test(id)) return "invalid" as const;
+    if (!isUuid(regionId)) return "regionNotFound" as const;
     const db = yield* Db;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
@@ -84,14 +93,17 @@ export const createWorker = (
             db.insert(workers).values({ id, publicIp: "", slots: 0, regionId }),
           )
           .pipe(
-            Effect.as(true as const),
-            Effect.catch((error) =>
-              violatedConstraint(error) === WORKERS_PKEY_CONSTRAINT
-                ? Effect.succeed(false as const)
-                : Effect.die(error),
-            ),
+            Effect.as("created" as const),
+            Effect.catch((error) => {
+              const constraint = violatedConstraint(error);
+              return constraint === WORKERS_PKEY_CONSTRAINT
+                ? Effect.succeed("idTaken" as const)
+                : constraint === WORKERS_REGION_FK_CONSTRAINT
+                  ? Effect.succeed("regionNotFound" as const)
+                  : Effect.die(error);
+            }),
           );
-        if (!created) return "idTaken" as const;
+        if (created !== "created") return created;
         return yield* issueEnrollCode(id);
       }),
     );

@@ -13,7 +13,8 @@ const createCalls: Array<unknown> = [];
 let createResult:
   | { code: string; expiresAt: string }
   | "idTaken"
-  | "invalid" = { code: "ABC123", expiresAt: "2026-11-10T12:00:00Z" };
+  | "invalid"
+  | "regionNotFound" = { code: "ABC123", expiresAt: "2026-11-10T12:00:00Z" };
 
 const adminCreateWorkerAtom = Atom.fn((arg: unknown) => {
   createCalls.push(arg);
@@ -29,9 +30,8 @@ mock.module("../src/rpc", () => ({
   }),
 }));
 
-const { AddWorkerDialog } = await import(
-  "../src/components/admin/AddWorkerDialog"
-);
+const { AddWorkerDialog } =
+  await import("../src/components/admin/AddWorkerDialog");
 
 const regions: ReadonlyArray<AdminRegion> = [
   { id: "r-msk", code: "msk", name: "Москва", position: 0, workers: 1 },
@@ -80,6 +80,25 @@ describe("AddWorkerDialog", () => {
 
     await waitFor(() => {
       expect(toastError).toHaveBeenCalledWith("Сервер с таким именем уже есть");
+    });
+    expect(screen.queryByText(/\/agent\/install\.sh/)).toBeNull();
+    toastError.mockRestore();
+  });
+
+  it("shows regionNotFound message", async () => {
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    createResult = "regionNotFound";
+    openDialog();
+
+    fireEvent.change(screen.getByLabelText("Имя сервера"), {
+      target: { value: "spb-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Получить команду" }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Регион не найден");
     });
     expect(screen.queryByText(/\/agent\/install\.sh/)).toBeNull();
     toastError.mockRestore();

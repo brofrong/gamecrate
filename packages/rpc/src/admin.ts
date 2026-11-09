@@ -370,7 +370,8 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // региона — `"notFound"`, иначе `"ok"`.
 // `admin.workers.create` — завести сервер (`workers(id, publicIp: "",
 // slots: 0, regionId)`) и одноразовый код подключения на 24 часа; занятый
-// id — `"idTaken"`, id не по `WORKER_ID_PATTERN` — `"invalid"`.
+// id — `"idTaken"`, id не по `WORKER_ID_PATTERN` — `"invalid"`, региона нет
+// (или `regionId` не uuid) — `"regionNotFound"`.
 // `admin.workers.issueCode` — новый код подключения для существующего
 // сервера (текущий токен, если он уже есть, продолжает действовать, пока
 // код не обменяли) — нет сервера — `"notFound"`.
@@ -378,7 +379,7 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // (`token_hash`/`enroll_code_hash = null`, `revoked_at = now`) — есть
 // учётные данные сервера — `true`, нет — `false`.
 // `admin.workers.setRegion` — привязать сервер к региону (`null` — без
-// региона) — нет сервера — `false`.
+// региона) — нет сервера или региона — `false`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -498,7 +499,7 @@ export const AdminRpcs = RpcGroup.make(
     payload: Schema.Struct({ id: Schema.String, regionId: Schema.String }),
     success: Schema.Union([
       Schema.Struct({ code: Schema.String, expiresAt: Schema.String }),
-      Schema.Literals(["idTaken", "invalid"]),
+      Schema.Literals(["idTaken", "invalid", "regionNotFound"]),
     ]),
   }),
   Rpc.make("admin.workers.issueCode", {

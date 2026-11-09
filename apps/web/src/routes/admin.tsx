@@ -286,7 +286,8 @@ function groupWorkersByRegion(
   const noRegion = workers.filter(
     (worker) => worker.regionId === null || !regionIds.has(worker.regionId),
   );
-  if (noRegion.length > 0) groups.push({ label: "Без региона", workers: noRegion });
+  if (noRegion.length > 0)
+    groups.push({ label: "Без региона", workers: noRegion });
   return groups;
 }
 
@@ -366,9 +367,11 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   });
   // Опрос перерисовывает вкладку раз в 5 с — «сигнал … назад» и «Идёт» считаются от этого.
   const now = Date.now();
-  const [issuedCode, setIssuedCode] = React.useState<
-    { readonly workerId: string; readonly code: string; readonly expiresAt: string } | null
-  >(null);
+  const [issuedCode, setIssuedCode] = React.useState<{
+    readonly workerId: string;
+    readonly code: string;
+    readonly expiresAt: string;
+  } | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<AdminWorker | null>(
     null,
   );
@@ -400,7 +403,7 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
       adminSetWorkerRegionArgs(worker.id, regionId),
     );
     if (Exit.isFailure(exit)) toast.error("Не удалось назначить регион");
-    else if (!exit.value) toast.error("Воркер не найден");
+    else if (!exit.value) toast.error("Сервер или регион не найден");
     else toast.success(`${worker.id}: регион обновлён`);
   };
 
@@ -464,7 +467,10 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
       >
         {(value) => <FailuresCard sessions={value.recent} />}
       </Polled>
-      <IssueCodeDialog worker={issuedCode} onClose={() => setIssuedCode(null)} />
+      <IssueCodeDialog
+        worker={issuedCode}
+        onClose={() => setIssuedCode(null)}
+      />
       <RevokeWorkerDialog
         worker={revokeTarget}
         onClose={() => setRevokeTarget(null)}

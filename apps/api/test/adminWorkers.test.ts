@@ -244,6 +244,36 @@ describe("admin.workers", () => {
     expect(result.unknown).toBe(false);
   });
 
+  it("setRegion returns false for an unknown or non-uuid region and keeps the old one", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const [region] = yield* db
+          .insert(regions)
+          .values({ code: "spb", name: "Питер" })
+          .returning({ id: regions.id });
+        yield* insertWorker(db, { id: "w1", regionId: region!.id });
+        const rpc = yield* client;
+        const unknown = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: crypto.randomUUID(),
+        });
+        const malformed = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: "not-a-uuid",
+        });
+        const [after] = yield* db
+          .select({ regionId: workers.regionId })
+          .from(workers)
+          .where(eq(workers.id, "w1"));
+        return { unknown, malformed, after, regionId: region!.id };
+      }),
+    );
+    expect(result.unknown).toBe(false);
+    expect(result.malformed).toBe(false);
+    expect(result.after?.regionId).toBe(result.regionId);
+  });
+
   it("setDraining persists and returns false for unknown worker", async () => {
     const result = await run(
       Effect.gen(function* () {

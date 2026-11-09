@@ -200,15 +200,16 @@ export const adminDeleteRegionAtom = Api.mutation("admin.regions.delete");
 export const adminDeleteRegionArgs = (id: string) =>
   ({ payload: { id }, reactivityKeys: adminKeys }) as const;
 
-/** Завести сервер и одноразовый код подключения («Добавить сервер»); занятый id — `"idTaken"`, не по шаблону — `"invalid"`. */
+/**
+ * Завести сервер и одноразовый код подключения («Добавить сервер»); занятый id — `"idTaken"`,
+ * не по шаблону — `"invalid"`, региона уже нет — `"regionNotFound"`.
+ */
 export const adminCreateWorkerAtom = Api.mutation("admin.workers.create");
 export const adminCreateWorkerArgs = (id: string, regionId: string) =>
   ({ payload: { id, regionId }, reactivityKeys: adminKeys }) as const;
 
 /** Новый код подключения для уже заведённого сервера («Новый код подключения»). */
-export const adminIssueWorkerCodeAtom = Api.mutation(
-  "admin.workers.issueCode",
-);
+export const adminIssueWorkerCodeAtom = Api.mutation("admin.workers.issueCode");
 export const adminIssueWorkerCodeArgs = (workerId: string) =>
   ({ payload: { workerId }, reactivityKeys: adminKeys }) as const;
 
@@ -217,10 +218,8 @@ export const adminRevokeWorkerAtom = Api.mutation("admin.workers.revoke");
 export const adminRevokeWorkerArgs = (workerId: string) =>
   ({ payload: { workerId }, reactivityKeys: adminKeys }) as const;
 
-/** Привязать сервер к региону (выбор региона в карточке сервера; `null` — без региона). */
-export const adminSetWorkerRegionAtom = Api.mutation(
-  "admin.workers.setRegion",
-);
+/** Привязать сервер к региону (выбор региона в карточке сервера; `null` — без региона); нет сервера или региона — `false`. */
+export const adminSetWorkerRegionAtom = Api.mutation("admin.workers.setRegion");
 export const adminSetWorkerRegionArgs = (
   workerId: string,
   regionId: string | null,

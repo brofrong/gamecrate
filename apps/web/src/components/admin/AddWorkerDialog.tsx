@@ -109,6 +109,9 @@ export function AddWorkerDialog({
       toast.error("Сервер с таким именем уже есть");
     } else if (exit.value === "invalid") {
       toast.error(INVALID_NAME);
+    } else if (exit.value === "regionNotFound") {
+      // Регион удалили, пока диалог был открыт.
+      toast.error("Регион не найден");
     } else {
       setResult(exit.value);
     }
@@ -128,7 +131,10 @@ export function AddWorkerDialog({
             <form onSubmit={(event) => void onSubmit(event)}>
               <div className="flex flex-col gap-4">
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="add-worker-name" className="text-sm font-medium">
+                  <label
+                    htmlFor="add-worker-name"
+                    className="text-sm font-medium"
+                  >
                     Имя сервера
                   </label>
                   <input
@@ -140,7 +146,10 @@ export function AddWorkerDialog({
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
-                  <label htmlFor="add-worker-region" className="text-sm font-medium">
+                  <label
+                    htmlFor="add-worker-region"
+                    className="text-sm font-medium"
+                  >
                     Регион
                   </label>
                   {regions.length === 0 ? (

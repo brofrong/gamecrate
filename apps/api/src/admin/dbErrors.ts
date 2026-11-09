@@ -30,3 +30,13 @@ export const violatedConstraint = (error: unknown): string | undefined => {
   if (reason?._tag === "ConstraintError") return reason.cause?.constraint;
   return undefined;
 };
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Похоже ли `id` на uuid (ключи `regions`, `worker_classes`): проверяется до
+ * запроса — иначе Postgres отвечает на `uuid`-колонку ошибкой разбора
+ * («invalid input syntax for type uuid»), и она ушла бы дефектом.
+ */
+export const isUuid = (id: string): boolean => uuidPattern.test(id);

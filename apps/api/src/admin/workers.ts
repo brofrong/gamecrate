@@ -7,7 +7,9 @@ import { type AdminSession, type AdminWorker, WORKER_ONLINE_MS } from "@cg/rpc";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { isActive } from "../session/SessionRepo";
+import { isUuid, violatedConstraint } from "./dbErrors";
 import { toAdminSession } from "./sessions";
+import { WORKERS_REGION_FK_CONSTRAINT } from "./workerEnroll";
 
 /**
  * Воркеры + их активные сессии одним select'ом: `left join` сессий (иначе
@@ -156,17 +158,29 @@ export const setClass = (
     return updated.length > 0;
   }).pipe(Effect.orDie);
 
-/** Привязать воркер к региону (`null` — без региона, игрокам не показывается); нет воркера — `false`. */
+/**
+ * Привязать воркер к региону (`null` — без региона); нет воркера — `false`.
+ * Нет региона — тоже `false`: не uuid — до БД, удалённый — по нарушению FK на
+ * самом `update` (не отдельным `select`-check, см. `./dbErrors`).
+ */
 export const setRegion = (
   workerId: string,
   regionId: string | null,
 ): Effect.Effect<boolean, never, Db> =>
   Effect.gen(function* () {
+    if (regionId !== null && !isUuid(regionId)) return false;
     const db = yield* Db;
-    const updated = yield* db
+    return yield* db
       .update(workers)
       .set({ regionId })
       .where(eq(workers.id, workerId))
-      .returning({ id: workers.id });
-    return updated.length > 0;
+      .returning({ id: workers.id })
+      .pipe(
+        Effect.map((updated) => updated.length > 0),
+        Effect.catch((error) =>
+          violatedConstraint(error) === WORKERS_REGION_FK_CONSTRAINT
+            ? Effect.succeed(false)
+            : Effect.die(error),
+        ),
+      );
   }).pipe(Effect.orDie);
