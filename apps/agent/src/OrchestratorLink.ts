@@ -144,6 +144,12 @@ export const run = Effect.gen(function* () {
           return installer.cancel(command.jobId);
         case "DeleteGame":
           return installer.deleteGame(command.appId);
+        case "OpenTunnel":
+          // Канал тоннеля стрима агент откроет в задаче 6; до тех пор relay
+          // оркестратора отвечает api 502 по тайм-ауту.
+          return Effect.logWarning("Stream tunnel is not supported yet", {
+            tunnelId: command.tunnelId,
+          });
         default:
           return supervisor.handle(command);
       }

@@ -1,5 +1,7 @@
 // HTTP-роутер оркестратора: /healthz, RPC агентов по WebSocket (/agent), обмен
-// кода подключения (/agent/enroll) и конфиг агента (/agent/config).
+// кода подключения (/agent/enroll), конфиг агента (/agent/config) и каналы
+// тоннеля стрима (/agent/tunnel/:tunnelId, `Tunnels.ts`). Relay для api — не
+// здесь, а на своём внутреннем порту (`relay.ts`).
 import { Db } from "@cg/db";
 import { AgentNotConnected, AgentRpcs, type ProfileCommit } from "@cg/rpc";
 import { DateTime, Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -9,6 +11,7 @@ import { AgentHub } from "./AgentHub";
 import { agentWebsocketUrl, OrchestratorConfig } from "./config";
 import * as SessionRepo from "./SessionRepo";
 import { SteamLoginSeeds } from "./SteamLoginSeeds";
+import { TunnelRoute } from "./Tunnels";
 import { bearerToken, WorkerAuth, type WorkerAuthShape } from "./WorkerAuth";
 
 const HealthRoute = HttpRouter.add(
@@ -253,4 +256,5 @@ export const HttpApp = Layer.mergeAll(
   HealthRoute,
   AgentHttpRoutes,
   AgentRpcRoute,
+  TunnelRoute,
 );

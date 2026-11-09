@@ -26,6 +26,7 @@ import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
 import { agentWebsocketUrl, orchestratorConfig } from "../src/config";
 import { HttpApp } from "../src/http";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
+import { Tunnels } from "../src/Tunnels";
 import { WorkerAuth } from "../src/WorkerAuth";
 import { testSeedKey } from "./seedKey";
 import { seedWorker, TestOrchestratorConfig, testProfileKey } from "./support";
@@ -42,6 +43,7 @@ const TestServer = HttpRouter.serve(HttpApp, {
   disableLogger: true,
   disableListenLog: true,
 }).pipe(
+  Layer.provide(Tunnels.layer),
   Layer.provideMerge(WorkerAuth.layer),
   Layer.provideMerge(AgentHub.layer),
   Layer.provideMerge(SteamLoginSeeds.layer),

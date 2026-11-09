@@ -259,6 +259,10 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * `StartSession.ownGame` — есть, значит `appId` — своя игра (запускать пакет
  * `<slug>/<version>` из `ownGame`, а не Steam); нет поля — обычный Steam-запуск,
  * как раньше.
+ * `OpenTunnel` — открыть канал тоннеля стрима (спека 2026-11-09 §4):
+ * WebSocket `/agent/tunnel/<tunnelId>` к оркестратору со своим токеном в
+ * `Authorization: Bearer`, по нему — одно соединение с Selkies сессии
+ * `sessionId` (`cg-session-<id>:8080` на этом сервере, протокол — `tunnel.ts`).
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -287,6 +291,10 @@ export const AgentCommand = Schema.Union([
   }),
   Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
   Schema.TaggedStruct("DeleteGame", { appId: Schema.Int }),
+  Schema.TaggedStruct("OpenTunnel", {
+    tunnelId: Schema.String,
+    sessionId: Schema.String,
+  }),
 ]);
 export type AgentCommand = typeof AgentCommand.Type;
 

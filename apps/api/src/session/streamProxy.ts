@@ -26,7 +26,12 @@
 //   `X-Frame-Options: SAMEORIGIN`); `Location` на абсолютный путь или на сам
 //   Selkies переписывается под префикс `/stream/<id>`.
 import { Db } from "@cg/db";
-import { isSessionId, isSessionStreamUrl, sessionStreamUrl } from "@cg/rpc";
+import {
+  isSessionId,
+  isSessionStreamUrl,
+  pipeFrames,
+  sessionStreamUrl,
+} from "@cg/rpc";
 import { Context, Effect, Fiber, FiberSet } from "effect";
 import {
   HttpRouter,
@@ -209,42 +214,6 @@ const proxyHttp = (
         badGateway,
       ),
     ),
-  );
-
-/** Коды закрытия, которые можно отправить в кадре Close (RFC 6455 §7.4). */
-const sendableCloseCode = (code: number, browserApi: boolean) =>
-  code === 1000 ||
-  (code >= 3000 && code <= 4999) ||
-  (!browserApi &&
-    ((code >= 1001 && code <= 1003) || (code >= 1007 && code <= 1014)));
-
-/**
- * Закрытие для второй стороны, когда первая закрылась или упала. `browserApi` —
- * сторона за WebSocket-клиентом (Selkies): его `close()` принимает только
- * 1000 и 3000–4999.
- */
-const closeFor = (error: Socket.SocketError, browserApi: boolean) => {
-  const reason = error.reason;
-  if (reason._tag === "SocketCloseError") {
-    if (sendableCloseCode(reason.code, browserApi))
-      return new Socket.CloseEvent(reason.code, reason.closeReason);
-    if (browserApi || reason.code === 1005) return new Socket.CloseEvent(1000);
-    if (reason.code === 1006) return new Socket.CloseEvent(1001);
-  }
-  return new Socket.CloseEvent(browserApi ? 1000 : 1011);
-};
-
-/** Кадры из `from` в `to`, пока `from` не закроется; затем закрывает `to`. */
-const pipeFrames = (
-  from: Socket.Reader,
-  to: Socket.Writer,
-  browserApi: boolean,
-) =>
-  Effect.forever(
-    Effect.flatMap(from.pull, (chunks) => to.writeAll(chunks)),
-  ).pipe(
-    Effect.catch((error) => to.write(closeFor(error, browserApi))),
-    Effect.ignore,
   );
 
 /**

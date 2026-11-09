@@ -20,6 +20,7 @@ import { HttpRouter } from "effect/http";
 import { TestClock } from "effect/testing";
 import { AgentHub, type AgentHubEvent } from "../src/AgentHub";
 import { HttpApp } from "../src/http";
+import { Tunnels } from "../src/Tunnels";
 import { WorkerAuth } from "../src/WorkerAuth";
 import { SteamLoginSeedsTest } from "./seedKey";
 import { seedWorker, TestOrchestratorConfig, testProfileKey } from "./support";
@@ -50,6 +51,7 @@ const run = <A, E>(body: (http: Http) => Effect.Effect<A, E, Env>) =>
         const web = HttpRouter.toWebHandler(
           HttpApp.pipe(
             Layer.provide(SteamLoginSeedsTest),
+            Layer.provide(Tunnels.layer),
             Layer.provide(
               Layer.succeedContext(Context.add(services, WorkerAuth, auth)),
             ),
