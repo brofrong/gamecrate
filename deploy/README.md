@@ -167,16 +167,16 @@ curl -fsSL https://<домен>/agent/install.sh | sudo bash -s -- <код>
 
 Файлы на сервере:
 
-| Путь                                                              | Что                                                                                                                                        |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Путь                                                              | Что                                                                                                                                                                                                   |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/opt/cloud-gaming/.env`                                          | `WORKER_ID`, `WORKER_TOKEN` (секрет), `ORCHESTRATOR_URL`, `CG_VERSION`, `SESSION_IMAGE`, пути, `SLOTS`, `DOCKER_GID`, `GBM_ALLOCATOR_PATH`, `CG_SESSIONS_SUBNET`/`CG_SESSIONS_IP_RANGE`/`CG_AGENT_IP` |
-| `/opt/cloud-gaming/compose.yaml`                                  | `compose.worker.yaml` с главного                                                                                                           |
-| `/opt/cloud-gaming/session-isolation.sh`, `build-steam-client.sh` | помощники с главного                                                                                                                       |
-| `/srv/cloud-gaming/library`                                       | библиотека игр этого сервера (`steamapps/…`, шаблоны префикса Proton); lower сессий                                                        |
-| `/srv/cloud-gaming/install-scratch`                               | upper/work установщиков; та же ФС и тот же bind, что библиотека (перенос `rename`)                                                         |
-| `/srv/cloud-gaming/games`                                         | пакеты своих игр `<slug>/<version>/`                                                                                                       |
-| `/srv/cloud-gaming-scratch`                                       | upper/work сессий (лучше NVMe); после сессии пусто                                                                                         |
-| `/srv/cloud-gaming-steam/client`                                  | шаблон клиента Steam (NVMe); в агент смонтирован родитель, только на чтение                                                                |
+| `/opt/cloud-gaming/compose.yaml`                                  | `compose.worker.yaml` с главного                                                                                                                                                                      |
+| `/opt/cloud-gaming/session-isolation.sh`, `build-steam-client.sh` | помощники с главного                                                                                                                                                                                  |
+| `/srv/cloud-gaming/library`                                       | библиотека игр этого сервера (`steamapps/…`, шаблоны префикса Proton); lower сессий                                                                                                                   |
+| `/srv/cloud-gaming/install-scratch`                               | upper/work установщиков; та же ФС и тот же bind, что библиотека (перенос `rename`)                                                                                                                    |
+| `/srv/cloud-gaming/games`                                         | пакеты своих игр `<slug>/<version>/`                                                                                                                                                                  |
+| `/srv/cloud-gaming-scratch`                                       | upper/work сессий (лучше NVMe); после сессии пусто                                                                                                                                                    |
+| `/srv/cloud-gaming-steam/client`                                  | шаблон клиента Steam (NVMe); в агент смонтирован родитель, только на чтение                                                                                                                           |
 
 S3 профилей и `PROFILE_KEY` в `.env` нет: агент получает их от главного (`GET /agent/config`).
 
@@ -489,9 +489,9 @@ D-состоянии (непрерываемое ожидание ядра, на
   `docker stop`, контейнер со слоями остаётся (см. «Профиль не сохранён»).
 - Пока идут повторы, сессия остаётся в heartbeat агента, и слот держится: на её GPU и UDP-порт
   новую сессию не назначат. Убрал — ближайший heartbeat без сессии освобождает слот. Если в это
-  время агент переподключился или перезапустился, в логе оркестратора будет `Stopping container
-  of an unknown session` для уже закончившейся сессии — это нормально: агент на этот `StopSession`
-  ничего не делает, уборка идёт своим чередом.
+  время агент переподключился или перезапустился, в логе оркестратора будет
+  `Stopping container of an unknown session` для уже закончившейся сессии — это нормально: агент
+  на этот `StopSession` ничего не делает, уборка идёт своим чередом.
 - Сразу после сохранения профиля агент пишет метку `<SCRATCH_DIR>/<id>/profile-saved`.
   Перезапуск агента такой контейнер (запущенный или нет) удалит вместе со слоями, профиль второй
   раз не снимается.
@@ -791,8 +791,8 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep "Seeded Steam login was not accep
 - входные файлы — 8 частей параллельно, каждая с докачкой после обрыва, на хосте склейка и сверка
   SHA-256. Канал с мака до brofrong бывает 5–20 КиБ/с на соединение и рвётся каждые 10–20 минут:
   одним потоком ROM 32 МиБ шёл около двух часов, scp падал по таймауту. Мак показывает лог сборки
-  и после обрыва переподключается. Связь пропала совсем — сборка доходит до конца там же (`ssh
-  brofrong tail -f ~/cg-games-src/<slug>.XXXXXX/build.log`). Ctrl-C на маке останавливает её;
+  и после обрыва переподключается. Связь пропала совсем — сборка доходит до конца там же
+  (`ssh brofrong tail -f ~/cg-games-src/<slug>.XXXXXX/build.log`). Ctrl-C на маке останавливает её;
 - образ `cg-game-builder-<slug>:<version>` из `builder.Dockerfile` (`FROM ${SESSION_IMAGE}`);
 - `docker run --rm --init --user 1000:1000` сборщика: `/game` (ro), `/input` (ro),
   `/out = <GAMES_DIR>/<slug>/.build-<version>`. После него входные файлы удаляются сразу. Если

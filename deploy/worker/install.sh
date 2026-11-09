@@ -392,12 +392,15 @@ fi
 # 6. Подключился ли агент
 # ---------------------------------------------------------------------------------------------
 # «Connected to orchestrator» агент пишет после первого отчёта, принятого оркестратором (снимок
-# загрузки раз в 5 с) — значит, токен принят и связь есть.
+# загрузки раз в 5 с) — значит, токен принят и связь есть. Лог — сначала в переменную: с
+# `docker logs | grep -q` grep выходит на первом совпадении, docker logs получает SIGPIPE, и под
+# pipefail конвейер давал 141 — ложное «не подключился».
 connected=0
 deadline=$((SECONDS + ${CG_CONNECT_TIMEOUT:-60}))
 while :; do
+  agent_log="$(docker logs cg-agent 2>&1 </dev/null || true)"
   if [ "$(docker inspect -f '{{.State.Running}}' cg-agent 2>/dev/null)" = true ] &&
-    docker logs cg-agent 2>&1 </dev/null | grep -q "Connected to orchestrator"; then
+    [[ "${agent_log}" == *"Connected to orchestrator"* ]]; then
     connected=1
     break
   fi

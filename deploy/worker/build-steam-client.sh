@@ -262,7 +262,9 @@ done
 echo "==> замена ${target}"
 refuse_if_busy
 if [ -e "${target}" ]; then
-  if mv --help 2>&1 | grep -q -- --exchange; then
+  # Справка — в переменную, а не `| grep -q`: под pipefail SIGPIPE у mv дал бы ложный «нет».
+  mv_help="$(mv --help 2>&1 || true)"
+  if [[ "${mv_help}" == *--exchange* ]]; then
     mv -T --exchange "${new}" "${target}"
   else
     # coreutils < 9.5 (Ubuntu 24.04): без атомарного обмена — два переименования подряд; между

@@ -137,7 +137,8 @@ beforeEach(() => {
 
   // docker: журнал вызовов; NVIDIA runtime есть; пароль `login` — в отдельный файл (stdin).
   // Сети cg-sessions нет, пока в песочнице нет файла network (тогда его строка — IPAM сети);
-  // cg-agent запущен и в логе подключение, пока нет файла no-connect.
+  // cg-agent запущен и в логе подключение, пока нет файла no-connect; за ним ещё 500 строк —
+  // `docker logs | grep -q` под pipefail на таком логе ловил SIGPIPE (ложное «не подключился»).
   stub(
     "docker",
     `echo "docker $*" >> "${log}"
@@ -147,7 +148,7 @@ compose) case "$*" in *version*) echo "Docker Compose version v2.30.0" ;; esac ;
 login) cat > "${dir}/login-stdin" ;;
 network) if [ "$2" = inspect ]; then [ -e "${dir}/network" ] || exit 1; cat "${dir}/network"; fi ;;
 inspect) echo true ;;
-logs) [ -e "${dir}/no-connect" ] || echo "level=INFO msg=\"Connected to orchestrator\"" ;;
+logs) [ -e "${dir}/no-connect" ] || echo "level=INFO msg=\"Connected to orchestrator\""; i=0; while [ $i -lt 500 ]; do i=$((i + 1)); echo "level=INFO msg=\"Command received\" n=$i"; done ;;
 esac
 exit 0`,
   );
