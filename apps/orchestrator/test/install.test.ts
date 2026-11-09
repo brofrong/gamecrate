@@ -1,3 +1,5 @@
+// Задачи установки: привязка к серверу (библиотека своя у каждого сервера,
+// спека 2026-11-09 §5), выдача агенту, итоги, отмена и этапы.
 import { describe, expect, it } from "bun:test";
 import {
   Db,
@@ -37,7 +39,14 @@ import * as Scheduler from "../src/Scheduler";
 import { RECONCILE_GRACE_MS, SessionRunner } from "../src/SessionRunner";
 import { SteamLoginSeeds } from "../src/SteamLoginSeeds";
 import { SteamLoginSeedsTest, sentToken } from "./seedKey";
-import { at, type FakeHub, like, makeFakeHub } from "./support";
+import {
+  at,
+  type FakeHub,
+  installOn,
+  like,
+  makeFakeHub,
+  versionsWithSteamClient,
+} from "./support";
 
 type Env =
   | Db
@@ -91,8 +100,11 @@ const standardClassId = () =>
 
 /**
  * Агент подключён (как и раньше); воркеру всегда назначается класс
- * «Стандарт» — планировщик (§2.1) без класса сессий не размещает, а эти
- * тесты проверяют именно размещение/установку, а не классы.
+ * «Стандарт» и собранный клиент Steam — планировщик (§2.1, спека 2026-11-09
+ * §5) без них сессий не размещает и игр не ставит, а эти тесты проверяют
+ * именно размещение/установку, а не классы. Игровой сервер — роли `worker` и
+ * `gamestore` разом (`GAME_SERVER`): игра ставится туда, где потом будет
+ * сессия.
  */
 const connectAgent = (
   fake: FakeHub,
@@ -105,7 +117,14 @@ const connectAgent = (
     const classId = yield* standardClassId();
     yield* db
       .insert(workers)
-      .values({ id: workerId, publicIp: "203.0.113.7", slots, classId })
+      .values({
+        id: workerId,
+        publicIp: "203.0.113.7",
+        slots,
+        classId,
+        roles: [...roles],
+        versions: versionsWithSteamClient,
+      })
       .onConflictDoNothing();
     fake.infos.set(workerId, {
       workerId,
@@ -114,6 +133,21 @@ const connectAgent = (
       udpPortBase: 59000,
       roles,
     });
+  });
+
+/** Роли игрового сервера: и сессии, и установки в свою библиотеку. */
+const GAME_SERVER: AgentRoles = ["worker", "gamestore"];
+
+/**
+ * Проход планировщика, пока на связи только `workerId`: новая задача
+ * установки встаёт на него (остальные агенты на время прохода «отключены»).
+ */
+const tickWithOnly = (fake: FakeHub, workerId: string, now: Date) =>
+  Effect.gen(function* () {
+    const saved = new Map(fake.infos);
+    for (const id of saved.keys()) if (id !== workerId) fake.infos.delete(id);
+    yield* Scheduler.tick(now);
+    for (const [id, info] of saved) fake.infos.set(id, info);
   });
 
 const seed = (...userIds: string[]) =>
@@ -130,14 +164,6 @@ const seed = (...userIds: string[]) =>
         email: `${id}@steam.invalid`,
         emailVerified: false,
       });
-  });
-
-const markInstalled = (appId: number) =>
-  Effect.gen(function* () {
-    const db = yield* Db;
-    yield* db
-      .insert(gamestoreApps)
-      .values({ appId, sizeBytes: 1_000, buildId: "1" });
   });
 
 const insertSession = (values: {
@@ -232,8 +258,8 @@ describe("install jobs", () => {
         const t0 = new Date();
         const db = yield* Db;
         yield* seed("u1", "u2");
-        yield* markInstalled(PORTAL);
-        yield* connectAgent(fake, "w1", ["worker"], 2);
+        yield* connectAgent(fake, "w1", GAME_SERVER, 2);
+        yield* installOn("w1", PORTAL);
         yield* db.insert(profiles).values({
           userId: "u2",
           version: 3,
@@ -259,7 +285,7 @@ describe("install jobs", () => {
           appId: DOTA,
           userId: "u1",
           state: "queued",
-          workerId: null,
+          workerId: "w1",
         });
         like(yield* sessionRow("s1"), {
           state: "installing",
@@ -287,7 +313,8 @@ describe("install jobs", () => {
           },
         ]);
 
-        // Установке не нужен воркер: без агентов сессия тоже уходит в installing.
+        // Без подходящего сервера на связи ставить игру некуда — сессия
+        // ждёт в очереди; сервер вернулся — она присоединяется к задаче на нём.
         fake.infos.clear();
         yield* db
           .update(sessions)
@@ -295,6 +322,9 @@ describe("install jobs", () => {
           .where(eq(sessions.id, "s2"));
         yield* insertSession({ id: "s3", userId: "u2", appId: DOTA });
         yield* Scheduler.tick(at(t0, 2));
+        like(yield* sessionRow("s3"), { state: "queued", installJobId: null });
+        yield* connectAgent(fake, "w1", GAME_SERVER, 2);
+        yield* Scheduler.tick(at(t0, 4));
         like(yield* sessionRow("s3"), {
           state: "installing",
           installJobId: job.id,
@@ -308,7 +338,8 @@ describe("install jobs", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        // gs — игровой сервер (ставит игры), w1 — только сессии.
+        yield* connectAgent(fake, "gs", GAME_SERVER, 2);
         yield* connectAgent(fake, "w1", ["worker"], 2);
         yield* insertSession({ id: "s1", userId: "u1" });
 
@@ -376,21 +407,22 @@ describe("install jobs", () => {
         );
         like(yield* onlyJob(), { state: "done" });
         const db = yield* Db;
-        const [app] = yield* db
+        const [app, ...otherApps] = yield* db
           .select()
           .from(gamestoreApps)
           .where(eq(gamestoreApps.appId, DOTA));
-        like(app, { sizeBytes: 50_000, buildId: "777" });
+        expect(otherApps).toEqual([]);
+        like(app, { workerId: "gs", sizeBytes: 50_000, buildId: "777" });
         for (const id of ["s1", "s2"])
           like(yield* sessionRow(id), {
             state: "queued",
             stateSince: finishedAt,
           });
 
-        // Дальше — обычное размещение на воркер.
+        // Дальше — размещение на сервер, где игра теперь стоит (не на w1).
         yield* Scheduler.tick(at(t0, 62));
-        like(yield* sessionRow("s1"), { state: "starting", workerId: "w1" });
-        like(yield* sessionRow("s2"), { state: "starting", workerId: "w1" });
+        like(yield* sessionRow("s1"), { state: "starting", workerId: "gs" });
+        like(yield* sessionRow("s2"), { state: "starting", workerId: "gs" });
       }),
     ));
 
@@ -418,15 +450,14 @@ describe("install jobs", () => {
         const putAt = (yield* seeds.get("userA"))?.putAt;
         expect(putAt).toBeString();
 
-        // Два разных appid — две отдельные задачи, можно дать их двум агентам
-        // за один проход диспетчера (claimNext выбирает воркер по возрастанию id).
+        // Два разных appid на двух серверах — две задачи, по одной каждому
+        // агенту за один проход диспетчера.
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-b", GAME_SERVER, 0);
         yield* insertSession({ id: "sA", userId: "userA" });
-        yield* Scheduler.tick(t0);
+        yield* tickWithOnly(fake, "gs-a", t0);
         yield* insertSession({ id: "sB", userId: "userB", appId: CS });
-        yield* Scheduler.tick(at(t0, 2));
-
-        yield* connectAgent(fake, "gs-a", ["gamestore"], 0);
-        yield* connectAgent(fake, "gs-b", ["gamestore"], 0);
+        yield* tickWithOnly(fake, "gs-b", at(t0, 2));
         yield* dispatcher.tick(at(t0, 4));
 
         const [jobA, jobB] = yield* jobs();
@@ -495,17 +526,17 @@ describe("install jobs", () => {
           .set({ steamLoginResetAt: resetNew })
           .where(eq(user.id, "u-new"));
 
-        // Три разных appid — три задачи, по одной на агента за проход.
+        // Три разных appid на трёх серверах — три задачи, по одной на агента
+        // за проход.
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-b", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-c", GAME_SERVER, 0);
         yield* insertSession({ id: "s-old", userId: "u-old" });
-        yield* Scheduler.tick(t0);
+        yield* tickWithOnly(fake, "gs-a", t0);
         yield* insertSession({ id: "s-new", userId: "u-new", appId: PORTAL });
-        yield* Scheduler.tick(at(t0, 2));
+        yield* tickWithOnly(fake, "gs-b", at(t0, 2));
         yield* insertSession({ id: "s-none", userId: "u-none", appId: CS });
-        yield* Scheduler.tick(at(t0, 4));
-
-        yield* connectAgent(fake, "gs-a", ["gamestore"], 0);
-        yield* connectAgent(fake, "gs-b", ["gamestore"], 0);
-        yield* connectAgent(fake, "gs-c", ["gamestore"], 0);
+        yield* tickWithOnly(fake, "gs-c", at(t0, 4));
         yield* dispatcher.tick(at(t0, 6));
 
         const [jobOld, jobNew, jobNone] = yield* jobs();
@@ -574,8 +605,9 @@ describe("install jobs", () => {
         const db = yield* Db;
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u-blocked", "u-joined", "u-other");
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
         // Задача DOTA владельца u-blocked, к ней присоединился u-joined;
-        // за ней — задача PORTAL другого пользователя.
+        // за ней — задача PORTAL другого пользователя (обе — на gs-a).
         yield* insertSession({ id: "s-owner", userId: "u-blocked" });
         yield* Scheduler.tick(t0);
         yield* insertSession({ id: "s-joined", userId: "u-joined" });
@@ -600,7 +632,6 @@ describe("install jobs", () => {
           .update(user)
           .set({ blockedAt: at(t0, 3) })
           .where(eq(user.id, "u-blocked"));
-        yield* connectAgent(fake, "gs-a", ["gamestore"], 0);
         yield* dispatcher.tick(at(t0, 4));
 
         like(yield* jobs(), [
@@ -608,7 +639,7 @@ describe("install jobs", () => {
             id: blockedJob.id,
             state: "failed",
             error: accessDeniedReason,
-            workerId: null,
+            workerId: "gs-a",
           },
           { id: otherJob.id, state: "running", workerId: "gs-a" },
         ]);
@@ -647,10 +678,11 @@ describe("install jobs", () => {
           return yield* Effect.die("expected a new job");
         expect(newJob.userId).toBe("u-joined");
         expect(newJob.state).toBe("queued");
+        expect(newJob.workerId).toBe("gs-a");
       }),
     ));
 
-  it("dispatcher sends InstallGame only to a gamestore agent", () =>
+  it("install jobs go only to gamestore servers", () =>
     run((fake) =>
       Effect.gen(function* () {
         const t0 = new Date();
@@ -673,27 +705,29 @@ describe("install jobs", () => {
         });
         yield* Scheduler.tick(t0);
 
-        // Только агент сессий — задачи ждут в очереди.
+        // Только агент сессий — ставить некуда: сессии ждут, задач нет.
         yield* dispatcher.tick(t0);
-        expect(installCommands(fake)).toEqual([]);
-        for (const job of yield* jobs())
-          like(job, { state: "queued", workerId: null });
+        expect(yield* jobs()).toEqual([]);
+        for (const id of ["s1", "s2"])
+          like(yield* sessionRow(id), { state: "queued" });
 
-        // Агент gamestore есть, но команда не дошла — задача снова в очереди.
-        yield* connectAgent(fake, "gs", ["worker", "gamestore"], 1);
+        // Игровой сервер есть — задачи на нём, но команда не дошла —
+        // задача снова в очереди на том же сервере.
+        yield* connectAgent(fake, "gs", GAME_SERVER, 1);
+        yield* Scheduler.tick(at(t0, 1));
         fake.state.refuse = (_workerId, command) =>
           command._tag === "InstallGame";
         yield* dispatcher.tick(at(t0, 2));
         expect(installCommands(fake)).toEqual([]);
         for (const job of yield* jobs())
-          like(job, { state: "queued", workerId: null });
+          like(job, { state: "queued", workerId: "gs" });
 
         // Дошла: самая старая задача, с профилем пользователя; одна на агента.
         fake.state.refuse = () => false;
         yield* dispatcher.tick(at(t0, 4));
         const [first, second] = yield* jobs();
         like(first, { appId: DOTA, state: "running", workerId: "gs" });
-        like(second, { appId: PORTAL, state: "queued", workerId: null });
+        like(second, { appId: PORTAL, state: "queued", workerId: "gs" });
         expect(installCommands(fake)).toEqual([
           {
             workerId: "gs",
@@ -720,19 +754,20 @@ describe("install jobs", () => {
         const db = yield* Db;
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1");
-        yield* connectAgent(fake, "gs", ["gamestore"], 1);
-        yield* db
-          .update(workers)
-          .set({ draining: true })
-          .where(eq(workers.id, "gs"));
+        yield* connectAgent(fake, "gs", GAME_SERVER, 1);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
 
         yield* Scheduler.tick(t0);
         const job = yield* onlyJob();
-        like(job, { appId: DOTA, state: "queued", workerId: null });
+        like(job, { appId: DOTA, state: "queued", workerId: "gs" });
 
+        // Сервер ушёл на обслуживание до выдачи — задача ждёт.
+        yield* db
+          .update(workers)
+          .set({ draining: true })
+          .where(eq(workers.id, "gs"));
         yield* dispatcher.tick(at(t0, 2));
-        like(yield* onlyJob(), { state: "queued", workerId: null });
+        like(yield* onlyJob(), { state: "queued", workerId: "gs" });
         expect(installCommands(fake)).toEqual([]);
       }),
     ));
@@ -743,7 +778,7 @@ describe("install jobs", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
         yield* Scheduler.tick(t0);
@@ -782,7 +817,7 @@ describe("install jobs", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2", "u3");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
         yield* Scheduler.tick(t0);
@@ -869,7 +904,7 @@ describe("install jobs", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -940,7 +975,7 @@ describe("install jobs", () => {
         Effect.gen(function* () {
           const dispatcher = yield* InstallDispatcher;
           yield* seed("u1");
-          yield* connectAgent(fake, "gs", ["gamestore"], 0);
+          yield* connectAgent(fake, "gs", GAME_SERVER, 0);
           yield* insertSession({ id: "s1", userId: "u1" });
           yield* Scheduler.tick(t0);
           yield* dispatcher.tick(t0);
@@ -978,7 +1013,7 @@ describe("install jobs", () => {
         const dispatcher = yield* InstallDispatcher;
         const runner = yield* SessionRunner;
         yield* seed("u1", "u2", "u3");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
         yield* Scheduler.tick(t0);
@@ -1025,10 +1060,10 @@ describe("install jobs", () => {
         );
         like(yield* onlyJob(), { state: "failed" });
 
-        // Задача ещё в очереди (агенту не отправлена) — просто отменяется.
-        fake.infos.delete("gs");
+        // Задача ещё в очереди (агент отключился до выдачи) — просто отменяется.
         yield* insertSession({ id: "s3", userId: "u3", appId: PORTAL });
         yield* Scheduler.tick(at(t0, 30));
+        fake.infos.delete("gs");
         const [, queued] = yield* jobs();
         if (queued === undefined) return yield* Effect.die("no job");
         like(queued, { state: "queued" });
@@ -1049,7 +1084,7 @@ describe("install jobs", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1120,9 +1155,9 @@ describe("install jobs", () => {
         const dispatcher = yield* InstallDispatcher;
         const runner = yield* SessionRunner;
         yield* seed("u1", "u2");
-        yield* markInstalled(PORTAL);
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 1);
         yield* connectAgent(fake, "w1", ["worker"], 2);
+        yield* installOn("w1", PORTAL);
         // u1 начал установку Dota, u2 ждёт ту же задачу.
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
@@ -1157,7 +1192,8 @@ describe("install jobs", () => {
         );
         yield* Scheduler.tick(at(t0, 62));
         like(yield* sessionRow("s3"), { state: "starting", workerId: "w1" });
-        like(yield* sessionRow("s2"), { state: "starting", workerId: "w1" });
+        // Dota теперь стоит только на gs — туда и s2.
+        like(yield* sessionRow("s2"), { state: "starting", workerId: "gs" });
       }),
     ));
 
@@ -1169,7 +1205,7 @@ describe("install jobs", () => {
         const dispatcher = yield* InstallDispatcher;
         const runner = yield* SessionRunner;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1222,6 +1258,101 @@ describe("install jobs", () => {
     ));
 });
 
+describe("install jobs per server (спека 2026-11-09 §5)", () => {
+  it("claimNext only gives a job to its own worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-b", GAME_SERVER, 0);
+        const dota = yield* InstallRepo.createJob("gs-b", DOTA, "u1");
+        const portal = yield* InstallRepo.createJob("gs-b", PORTAL, "u2");
+
+        // Задачи gs-b агенту gs-a не выдаются, даже если он свободен.
+        expect(yield* InstallRepo.claimNext(["gs-a"], t0)).toBeUndefined();
+        like(yield* jobs(), [
+          { id: dota, state: "queued", workerId: "gs-b" },
+          { id: portal, state: "queued", workerId: "gs-b" },
+        ]);
+
+        const claim = yield* InstallRepo.claimNext(["gs-a", "gs-b"], t0);
+        expect(claim?.job.id).toBe(dota);
+        expect(claim?.workerId).toBe("gs-b");
+        // На gs-b уже идёт установка — вторая его задача ждёт.
+        expect(
+          yield* InstallRepo.claimNext(["gs-a", "gs-b"], t0),
+        ).toBeUndefined();
+        like(yield* jobs(), [
+          { id: dota, state: "running", workerId: "gs-b" },
+          { id: portal, state: "queued", workerId: "gs-b" },
+        ]);
+      }),
+    ));
+
+  it("one active job per (worker, app): the same game installs on two servers separately", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-b", GAME_SERVER, 0);
+        const onA = yield* InstallRepo.createJob("gs-a", DOTA, "u1");
+        const onB = yield* InstallRepo.createJob("gs-b", DOTA, "u2");
+        expect(onB).not.toBe(onA);
+        // Повторная задача той же игры на том же сервере — уже существующая.
+        expect(yield* InstallRepo.createJob("gs-a", DOTA, "u2")).toBe(onA);
+        expect(yield* jobs()).toHaveLength(2);
+      }),
+    ));
+
+  it("finish records the game for the job's worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seed("u1");
+        yield* connectAgent(fake, "gs-a", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs-b", GAME_SERVER, 0);
+        yield* installOn("gs-a", DOTA);
+        const jobId = yield* InstallRepo.createJob("gs-b", DOTA, "u1");
+        const claim = yield* InstallRepo.claimNext(["gs-b"], t0);
+        expect(claim?.job.id).toBe(jobId);
+
+        // Итог от чужого агента не принимается.
+        expect(
+          yield* InstallRepo.finish(
+            "gs-a",
+            jobId,
+            { sizeBytes: 1, buildId: "x" },
+            at(t0, 1),
+          ),
+        ).toBeUndefined();
+
+        yield* InstallRepo.finish(
+          "gs-b",
+          jobId,
+          { sizeBytes: 77, buildId: "9" },
+          at(t0, 2),
+        );
+        like(
+          yield* db
+            .select({
+              workerId: gamestoreApps.workerId,
+              sizeBytes: gamestoreApps.sizeBytes,
+              buildId: gamestoreApps.buildId,
+            })
+            .from(gamestoreApps)
+            .where(eq(gamestoreApps.appId, DOTA))
+            .orderBy(asc(gamestoreApps.workerId)),
+          [
+            { workerId: "gs-a", sizeBytes: 1, buildId: "1" },
+            { workerId: "gs-b", sizeBytes: 77, buildId: "9" },
+          ],
+        );
+      }),
+    ));
+});
+
 describe("admin cancel", () => {
   it("admin cancel of a queued job fails it with the admin reason and fails waiters", () =>
     run((fake) =>
@@ -1229,16 +1360,16 @@ describe("admin cancel", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
-        // Агента gamestore нет — задача ждёт в очереди.
+        // Диспетчер ещё не проходил — задача ждёт в очереди.
         yield* Scheduler.tick(t0);
         const job = yield* onlyJob();
         like(job, { state: "queued" });
 
+        // Отменённую задачу агенту не выдают.
         yield* requestCancel(job.id, at(t0, 1));
-        // Агент появился, но отменённую задачу ему не выдают.
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
         const cancelledAt = at(t0, 2);
         yield* dispatcher.tick(cancelledAt);
 
@@ -1262,7 +1393,7 @@ describe("admin cancel", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, -5) });
         yield* Scheduler.tick(t0);
@@ -1323,7 +1454,7 @@ describe("admin cancel", () => {
         const db = yield* Db;
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1364,6 +1495,7 @@ describe("admin cancel", () => {
       Effect.gen(function* () {
         const t0 = new Date();
         yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* insertSession({
           id: "s2",
@@ -1378,10 +1510,9 @@ describe("admin cancel", () => {
         like(dota, { appId: DOTA, state: "queued" });
         yield* requestCancel(dota.id, at(t0, 1));
 
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
         const claim = yield* InstallRepo.claimNext(["gs"], at(t0, 2));
         expect(claim?.job.id).toBe(portal.id);
-        like((yield* jobs())[0], { state: "queued", workerId: null });
+        like((yield* jobs())[0], { state: "queued", workerId: "gs" });
       }),
     ));
 
@@ -1391,7 +1522,7 @@ describe("admin cancel", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1", "u2");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1446,6 +1577,7 @@ describe("admin cancel", () => {
       Effect.gen(function* () {
         const t0 = new Date();
         yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* Scheduler.tick(t0);
         const dotaJob = yield* onlyJob();
@@ -1498,10 +1630,11 @@ describe("admin cancel", () => {
       Effect.gen(function* () {
         const t0 = new Date();
         yield* seed("u1", "u2");
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -9) });
         yield* Scheduler.tick(t0);
         const job = yield* onlyJob();
-        like(job, { appId: DOTA, state: "queued" });
+        like(job, { appId: DOTA, state: "queued", workerId: "gs" });
 
         // The admin's `cancelInstall` UPDATE commits strictly between
         // `lockOldestQueued`'s `appInstallCancelling` read (not yet seeing
@@ -1516,11 +1649,12 @@ describe("admin cancel", () => {
         yield* requestCancel(job.id, at(t0, 1));
         yield* insertSession({ id: "s2", userId: "u2", createdAt: at(t0, 2) });
 
-        const outcome = yield* Scheduler.startInstall(at(t0, 3), {
-          id: "s2",
-          userId: "u2",
-          appId: DOTA,
-        });
+        const outcome = yield* Scheduler.startInstall(
+          at(t0, 3),
+          { id: "s2", userId: "u2", appId: DOTA },
+          ["gs"],
+          ["gs"],
+        );
         expect(outcome).toEqual({ _tag: "Retry" });
 
         // No attachment: s2 is untouched, and the cancelling job got neither
@@ -1548,8 +1682,8 @@ describe("install stage", () => {
         const t0 = new Date();
         const dispatcher = yield* InstallDispatcher;
         yield* seed("u1");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
-        yield* connectAgent(fake, "gs2", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
+        yield* connectAgent(fake, "gs2", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1616,7 +1750,7 @@ describe("install stage", () => {
         const dispatcher = yield* InstallDispatcher;
         const t0 = new Date();
         yield* seed("u1");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);
@@ -1665,7 +1799,7 @@ describe("install stage", () => {
         const dispatcher = yield* InstallDispatcher;
         const t0 = new Date();
         yield* seed("u1");
-        yield* connectAgent(fake, "gs", ["gamestore"], 0);
+        yield* connectAgent(fake, "gs", GAME_SERVER, 0);
         yield* insertSession({ id: "s1", userId: "u1" });
         yield* Scheduler.tick(t0);
         yield* dispatcher.tick(t0);

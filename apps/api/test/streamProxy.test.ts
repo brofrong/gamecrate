@@ -7,7 +7,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db, games, sessions, user, userGames } from "@cg/db";
 import { DbTest } from "@cg/db/test";
-import { type CurrentUserShape, sessionStreamUrl } from "@cg/rpc";
+import {
+  type CurrentUserShape,
+  MAX_STREAM_BODY_BYTES,
+  RELAY_SECRET_HEADER,
+  sessionStreamUrl,
+} from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
 import { Effect, Layer, ManagedRuntime, Option, Redacted } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -35,6 +40,7 @@ const users: Record<string, CurrentUserShape> = {
   "sid=erin": player("u-erin"),
   "sid=alice": player("u-alice"),
   "sid=bob": player("u-bob"),
+  "sid=frank": player("u-frank"),
 };
 
 /** Better Auth-заглушка: пользователь по cookie `sid=<имя>`. */
@@ -51,6 +57,9 @@ const fakeAuth = Layer.succeed(BetterAuth, {
 });
 
 const publicOrigin = "http://localhost:3000";
+
+/** `RELAY_SECRET` тестового конфига: прокси шлёт его relay в `x-cg-relay-secret`. */
+const testRelaySecret = "test-relay-secret-test-relay-secret-0001";
 
 /**
  * `upstreamFor` — куда на самом деле подключаться вместо
@@ -79,6 +88,8 @@ const appDeps = (
       pocketIdClientSecret: Redacted.make("unused"),
       pocketIdAdminGroup: "cloud_gaming_admins",
       allowedOrigins: ["http://localhost:5173"],
+      orchestratorRelayUrl: "http://cg-orchestrator:3002",
+      relaySecret: Redacted.make(testRelaySecret),
       webDistDir,
       ownGamesDir: "unused",
       smtpUrl: Redacted.make("log://"),
@@ -392,6 +403,26 @@ describe("stream proxy", () => {
     expect(await closed).toBe(1000);
   });
 
+  it("stream proxy sends the relay secret on HTTP and WebSocket", async () => {
+    // Свой заголовок браузера с тем же именем не проходит — его заменяет секрет.
+    const get = await http(`/stream/${ids.alice}/api/status`, {
+      headers: { cookie: "sid=alice", [RELAY_SECRET_HEADER]: "forged" },
+    });
+    expect(get.status).toBe(200);
+    const echo = (await get.json()) as Echo;
+    expect(echo.headers[RELAY_SECRET_HEADER]).toBe(testRelaySecret);
+
+    const { ws, next } = await openWs(
+      `ws://127.0.0.1:${port}/stream/${ids.alice}/api/webrtc/signaling`,
+      { cookie: "sid=alice", origin: publicOrigin },
+    );
+    const hello = JSON.parse(String(await next())) as {
+      headers: Record<string, string>;
+    };
+    expect(hello.headers[RELAY_SECRET_HEADER]).toBe(testRelaySecret);
+    ws.close(1000);
+  });
+
   it("stream proxy rejects foreign session", async () => {
     const status = async (path: string, headers: Record<string, string>) =>
       (await http(path, { headers })).status;
@@ -448,6 +479,46 @@ describe("stream proxy", () => {
         origin: publicOrigin,
       }),
     ).toContain(" 101 ");
+  });
+
+  it("stream proxy caps the request body at MAX_STREAM_BODY_BYTES", async () => {
+    const post = (body: BodyInit) =>
+      http(`/stream/${ids.alice}/api/upload`, {
+        method: "POST",
+        headers: { cookie: "sid=alice", origin: publicOrigin },
+        body,
+      });
+    const before = seen.requests;
+
+    // Content-Length больше предела — 413, relay не спрашиваем.
+    const declared = await post(new Uint8Array(MAX_STREAM_BODY_BYTES + 1));
+    expect(declared.status).toBe(413);
+    expect(seen.requests).toBe(before);
+
+    // Chunked без Content-Length — предел считается по факту чтения.
+    const chunk = new Uint8Array(256 * 1024);
+    let sent = 0;
+    const chunked = await post(
+      new ReadableStream({
+        pull(controller) {
+          if (sent > MAX_STREAM_BODY_BYTES) controller.close();
+          else {
+            sent += chunk.byteLength;
+            controller.enqueue(chunk);
+          }
+        },
+      }),
+    );
+    expect(chunked.status).toBe(413);
+    expect(seen.requests).toBe(before);
+
+    // Ровно предел проходит.
+    const atLimit = await post(new Uint8Array(MAX_STREAM_BODY_BYTES).fill(97));
+    expect(atLimit.status).toBe(200);
+    expect(((await atLimit.json()) as Echo).body.length).toBe(
+      MAX_STREAM_BODY_BYTES,
+    );
+    expect(seen.requests).toBe(before + 1);
   });
 
   it("stream proxy answers 502 while the upstream is down", async () => {
@@ -583,5 +654,109 @@ describe("stream proxy", () => {
     expect(await location("https://example.com/x")).toBe(
       "https://example.com/x",
     );
+  });
+});
+
+describe("stream proxy default upstream", () => {
+  // Без подмены `StreamUpstream` слоем (как делает `appDeps` выше):
+  // апстрим — relay оркестратора из `AppConfig.orchestratorRelayUrl`.
+  it("upstream defaults to the orchestrator relay", async () => {
+    const webDistDir = await mkdtemp(join(tmpdir(), "cg-web-"));
+    const sessionId = crypto.randomUUID();
+    const relayRequests: Array<string> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      relayRequests.push(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      return new Response("", { status: 200 });
+    }) as typeof fetch;
+
+    const deps = Layer.mergeAll(
+      fakeAuth,
+      DbTest,
+      Layer.mock(SteamApi)({}),
+      Layer.mock(ProtonDb)({}),
+      Layer.mock(SteamStoreApi)({}),
+      OwnGameCatalog.fromManifests([]),
+      Layer.succeed(AppConfig, {
+        port: 0,
+        publicUrl: `${publicOrigin}/app`,
+        databaseUrl: Redacted.make("postgres://unused"),
+        steamApiKey: Redacted.make("unused"),
+        authSecret: Redacted.make("unused"),
+        pocketIdUrl: "https://sso.example.invalid",
+        pocketIdClientId: "unused",
+        pocketIdClientSecret: Redacted.make("unused"),
+        pocketIdAdminGroup: "cloud_gaming_admins",
+        allowedOrigins: ["http://localhost:5173"],
+        orchestratorRelayUrl: "http://relay.test:3002",
+        relaySecret: Redacted.make(testRelaySecret),
+        webDistDir,
+        ownGamesDir: "unused",
+        smtpUrl: Redacted.make("log://"),
+        mailFrom: "GameCrate <test@example.com>",
+        google: Option.none(),
+        yandex: Option.none(),
+        telegram: Option.none(),
+      }),
+    );
+
+    const runtime = ManagedRuntime.make(
+      HttpRouter.serve(HttpApp, {
+        disableLogger: true,
+        disableListenLog: true,
+      }).pipe(
+        Layer.provideMerge(deps),
+        Layer.provideMerge(
+          BunHttpServer.layer({ hostname: "127.0.0.1", port: 0 }),
+        ),
+      ),
+    );
+
+    try {
+      const address = await runtime.runPromise(
+        HttpServer.HttpServer.useSync((server) => server.address),
+      );
+      if (!("port" in address)) throw new Error("expected a TCP address");
+
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Db;
+          yield* db.insert(user).values({
+            id: "u-frank",
+            name: "u-frank",
+            email: "u-frank@example.test",
+          });
+          yield* db.insert(games).values({ appId: 11, name: "Hollow Knight" });
+          yield* db.insert(userGames).values({ userId: "u-frank", appId: 11 });
+          yield* db.insert(sessions).values({
+            id: sessionId,
+            userId: "u-frank",
+            appId: 11,
+            state: "playing",
+            streamUrl: sessionStreamUrl(sessionId),
+          });
+        }),
+      );
+
+      // По TCP, а не `fetch`: глобальный `fetch` подменён и обслуживает
+      // только внутренний запрос прокси к апстриму (см. выше).
+      const status = await rawGet(address.port, `/stream/${sessionId}/`, {
+        cookie: "sid=frank",
+      });
+      expect(status).toContain(" 200 ");
+      expect(relayRequests).toEqual([
+        `http://relay.test:3002/relay/${sessionId}/`,
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await runtime.dispose();
+      await rm(webDistDir, { recursive: true, force: true });
+    }
   });
 });

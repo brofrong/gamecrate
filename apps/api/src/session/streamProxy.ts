@@ -1,5 +1,9 @@
-// Прокси стрима: `ANY /stream/<sessionId>/*` → Selkies сессии (`streamUrl`,
-// внутренний адрес в сети `cg-sessions`), HTTP и WebSocket.
+// Прокси стрима: `ANY /stream/<sessionId>/*` → relay оркестратора (спека
+// 2026-11-09 §4, `http://cg-orchestrator:3002/relay/<sessionId>/…`, оркестратор
+// слушает его на `RELAY_PORT`), который тоннелирует запрос до Selkies сессии на
+// сервере, где она реально запущена. Многосерверный деплой: api больше не
+// ходит в локальную сеть `cg-sessions` напрямую (там нет сессий с других
+// серверов). HTTP и WebSocket.
 //
 // Доступ: только владелец (cookie Better Auth), только активная сессия с готовым
 // стримом. WebSocket-апгрейд и небезопасные методы (POST и т. п.) — только с
@@ -7,27 +11,43 @@
 // соседних поддоменов). Любой отказ — 403 (не 404: существование чужих сессий
 // не раскрывается).
 //
-// Запрос к Selkies (решение R2): путь без префикса `/stream/<id>`; `Host` —
-// хост `streamUrl` (его ставит HTTP/WS-клиент по URL); `Origin` браузера
-// убирается после нашей проверки — Selkies пропускает WS без Origin, а с
-// публичным Origin и `Host` контейнера отвечает 403 (проверено в Task 5);
-// cookie (наша сессия Better Auth) и `Referer` не передаются. `Set-Cookie`
-// Selkies браузеру не отдаётся — контейнер не может ставить cookie нашему домену.
-// Selkies ещё не поднялся (отказ соединения, таймаут) — 502.
+// Запрос к апстриму (решение R2): путь без префикса `/stream/<id>`; `Host` —
+// хост апстрима (его ставит HTTP/WS-клиент по URL); `Origin` браузера
+// убирается после нашей проверки — relay/Selkies пропускает запрос без
+// Origin, а с публичным Origin и чужим `Host` отвечает 403 (проверено в
+// Task 5); cookie (наша сессия Better Auth) и `Referer` не передаются.
+// `Set-Cookie` апстрима браузеру не отдаётся — он не может ставить cookie
+// нашему домену. Каждый запрос и открытие WebSocket к relay несут общий
+// секрет `RELAY_SECRET` в `x-cg-relay-secret` (заголовок с этим именем от
+// браузера заменяется): relay слушается и в сети обратного прокси и без
+// секрета отвечает 403. Апстрим не ответил (relay вернул 502 — сессии нет на
+// сервере или агент не подключён, отказ соединения, таймаут) — 502.
 //
 // Жёсткие ограничения:
 // - id в пути — только формат `isSessionId` (uuid), иначе 403 до запроса к БД;
 //   путь нормализуется (`..`, `%2e%2e`) до разбора, так что обход в чужую
 //   сессию упирается в проверку владельца;
-// - подключаемся только к `http://cg-session-<id>:8080` этой сессии: `streamUrl`
-//   в БД, не равный ему (`isSessionStreamUrl`), — 502 и предупреждение в логе
-//   (защита от SSRF через подделанный отчёт агента);
-// - ответы Selkies нельзя встроить в чужой сайт (`frame-ancestors 'self'`,
-//   `X-Frame-Options: SAMEORIGIN`); `Location` на абсолютный путь или на сам
-//   Selkies переписывается под префикс `/stream/<id>`.
+// - подключаемся только к relay оркестратора (`StreamUpstream`/
+//   `orchestratorRelayUrl`), а не по адресу из БД: `streamUrl` сессии
+//   (`isSessionStreamUrl`) проверяется отдельно и только как признак
+//   готовности стрима (не тот формат — 502 и предупреждение в логе, защита
+//   от SSRF через подделанный отчёт агента остаётся на стороне проверки);
+// - ответы апстрима нельзя встроить в чужой сайт (`frame-ancestors 'self'`,
+//   `X-Frame-Options: SAMEORIGIN`); `Location` на абсолютный путь, на relay
+//   или на адрес Selkies из `streamUrl` переписывается под префикс
+//   `/stream/<id>`.
 import { Db } from "@cg/db";
-import { isSessionId, isSessionStreamUrl, sessionStreamUrl } from "@cg/rpc";
-import { Context, Effect, Fiber, FiberSet } from "effect";
+import {
+  isSessionId,
+  isSessionStreamUrl,
+  pipeFrames,
+  RELAY_SECRET_HEADER,
+  readStreamBody,
+  sessionStreamUrl,
+  StreamBodyTooLarge,
+} from "@cg/rpc";
+import { BunSocket } from "@effect/platform-bun";
+import { Context, Effect, Fiber, FiberSet, Redacted } from "effect";
 import {
   HttpRouter,
   type HttpServerRequest,
@@ -39,9 +59,12 @@ import { AppConfig, rpcAllowedOrigins } from "../config";
 import { streamUrlOf } from "./SessionRepo";
 
 /**
- * Куда подключаться для сессии. По умолчанию — `http://cg-session-<id>:8080`
- * (`sessionStreamUrl`); тесты подменяют адресом фейкового Selkies (в них нет
- * DNS сети `cg-sessions`). Подключение всегда идёт сюда, а не по строке из БД.
+ * Тестовый крюк для подмены апстрима (в тестах нет TCP до `cg-orchestrator`,
+ * поэтому подменяют адресом фейкового Selkies). `Context.Reference` не может
+ * прочитать `AppConfig` в своём `defaultValue`, так что его значение здесь —
+ * только заглушка: `StreamProxyRoute` читает подмену напрямую из контекста
+ * (`Context.getOrUndefined`, без разрешения этого значения по умолчанию) и
+ * без неё сам считает адрес из `AppConfig.orchestratorRelayUrl`.
  */
 export const StreamUpstream = Context.Reference<(sessionId: string) => string>(
   "@cg/api/StreamUpstream",
@@ -94,6 +117,9 @@ const badGateway = HttpServerResponse.text("Стрим ещё не готов", 
 const streamUnavailable = HttpServerResponse.text("Стрим недоступен", {
   status: 502,
 });
+const payloadTooLarge = HttpServerResponse.text("Слишком большой запрос", {
+  status: 413,
+});
 
 const isSafeMethod = (method: string) =>
   method === "GET" || method === "HEAD" || method === "OPTIONS";
@@ -112,12 +138,15 @@ const upstreamUrl = (base: URL, rest: string, search: string) => {
 
 const forwardRequestHeaders = (
   request: HttpServerRequest.HttpServerRequest,
+  relaySecret: Redacted.Redacted<string>,
 ) => {
   const headers = new globalThis.Headers();
   for (const [name, value] of Object.entries(request.headers)) {
     if (!droppedRequestHeaders.has(name.toLowerCase()))
       headers.set(name, value);
   }
+  // После копирования: заголовок браузера с тем же именем заменяется.
+  headers.set(RELAY_SECRET_HEADER, Redacted.value(relaySecret));
   return headers;
 };
 
@@ -177,21 +206,26 @@ const forwardResponse = (response: Response, upstream: Upstream) => {
   );
 };
 
-/** HTTP-запрос к Selkies; нет соединения/таймаут — 502. */
+/**
+ * HTTP-запрос к Selkies; нет соединения/таймаут — 502. Тело больше
+ * `MAX_STREAM_BODY_BYTES` — 413 без запроса к relay (тело буферизуется для
+ * fetch целиком).
+ */
 const proxyHttp = (
   request: HttpServerRequest.HttpServerRequest,
   target: URL,
   upstream: Upstream,
   sessionId: string,
+  relaySecret: Redacted.Redacted<string>,
 ) =>
   Effect.gen(function* () {
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    const body = hasBody ? yield* request.arrayBuffer : undefined;
+    const body = hasBody ? yield* readStreamBody(request) : undefined;
     const response = yield* Effect.tryPromise({
       try: (signal) =>
         fetch(target, {
           method: request.method,
-          headers: forwardRequestHeaders(request),
+          headers: forwardRequestHeaders(request, relaySecret),
           ...(body === undefined ? {} : { body }),
           redirect: "manual",
           signal,
@@ -201,50 +235,16 @@ const proxyHttp = (
     return forwardResponse(response, upstream);
   }).pipe(
     Effect.catch((cause) =>
-      Effect.as(
-        Effect.logWarning("Stream upstream HTTP request failed", {
-          sessionId,
-          cause: String(cause),
-        }),
-        badGateway,
-      ),
+      cause instanceof StreamBodyTooLarge
+        ? Effect.succeed(payloadTooLarge)
+        : Effect.as(
+            Effect.logWarning("Stream upstream HTTP request failed", {
+              sessionId,
+              cause: String(cause),
+            }),
+            badGateway,
+          ),
     ),
-  );
-
-/** Коды закрытия, которые можно отправить в кадре Close (RFC 6455 §7.4). */
-const sendableCloseCode = (code: number, browserApi: boolean) =>
-  code === 1000 ||
-  (code >= 3000 && code <= 4999) ||
-  (!browserApi &&
-    ((code >= 1001 && code <= 1003) || (code >= 1007 && code <= 1014)));
-
-/**
- * Закрытие для второй стороны, когда первая закрылась или упала. `browserApi` —
- * сторона за WebSocket-клиентом (Selkies): его `close()` принимает только
- * 1000 и 3000–4999.
- */
-const closeFor = (error: Socket.SocketError, browserApi: boolean) => {
-  const reason = error.reason;
-  if (reason._tag === "SocketCloseError") {
-    if (sendableCloseCode(reason.code, browserApi))
-      return new Socket.CloseEvent(reason.code, reason.closeReason);
-    if (browserApi || reason.code === 1005) return new Socket.CloseEvent(1000);
-    if (reason.code === 1006) return new Socket.CloseEvent(1001);
-  }
-  return new Socket.CloseEvent(browserApi ? 1000 : 1011);
-};
-
-/** Кадры из `from` в `to`, пока `from` не закроется; затем закрывает `to`. */
-const pipeFrames = (
-  from: Socket.Reader,
-  to: Socket.Writer,
-  browserApi: boolean,
-) =>
-  Effect.forever(
-    Effect.flatMap(from.pull, (chunks) => to.writeAll(chunks)),
-  ).pipe(
-    Effect.catch((error) => to.write(closeFor(error, browserApi))),
-    Effect.ignore,
   );
 
 /**
@@ -261,12 +261,14 @@ const proxyWebSocket = (
   request: HttpServerRequest.HttpServerRequest,
   target: URL,
   sessionId: string,
+  relaySecret: Redacted.Redacted<string>,
 ) =>
   Effect.gen(function* () {
     const wsTarget = new URL(target.href);
     wsTarget.protocol = target.protocol === "https:" ? "wss:" : "ws:";
     const upstream = yield* Socket.makeWebSocket(wsTarget.href, {
       openTimeout: upstreamTimeout,
+      headers: { [RELAY_SECRET_HEADER]: Redacted.value(relaySecret) },
     });
     const opened = yield* Effect.result(upstream.reader);
     if (opened._tag === "Failure") {
@@ -287,7 +289,8 @@ const proxyWebSocket = (
     );
     return HttpServerResponse.empty();
   }).pipe(
-    Effect.provide(Socket.layerWebSocketConstructorGlobal),
+    // Конструктор Bun: глобальный (стандартный) не умеет заголовки апгрейда.
+    Effect.provide(BunSocket.layerWebSocketConstructor),
     Effect.scoped,
     Effect.catch((cause) =>
       Effect.as(
@@ -305,6 +308,7 @@ const handle = (
   auth: BetterAuth["Service"],
   allowedOrigins: ReadonlySet<string>,
   upstreamFor: (sessionId: string) => string,
+  relaySecret: Redacted.Redacted<string>,
   runBridge: (
     bridge: Effect.Effect<HttpServerResponse.HttpServerResponse>,
   ) => Fiber.Fiber<HttpServerResponse.HttpServerResponse>,
@@ -351,8 +355,10 @@ const handle = (
     const target = upstreamUrl(base, rest, url.search);
     return upgrade
       ? // Прерывание ожидания (файбер запроса) мост не останавливает.
-        yield* Fiber.join(runBridge(proxyWebSocket(request, target, sessionId)))
-      : yield* proxyHttp(request, target, upstream, sessionId);
+        yield* Fiber.join(
+          runBridge(proxyWebSocket(request, target, sessionId, relaySecret)),
+        )
+      : yield* proxyHttp(request, target, upstream, sessionId, relaySecret);
   });
 
 /** Маршрут `/stream/:sessionId/*` (и `/stream/:sessionId` — редирект со слэшем). */
@@ -360,8 +366,20 @@ export const StreamProxyRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* BetterAuth;
     const db = yield* Db;
-    const allowedOrigins = rpcAllowedOrigins(yield* AppConfig);
-    const upstreamFor = yield* StreamUpstream;
+    const config = yield* AppConfig;
+    const allowedOrigins = rpcAllowedOrigins(config);
+    // Подмена тестов (если провели слоем) — без неё адрес из конфига:
+    // `Context.getOrUndefined` не разрешает `defaultValue` `StreamUpstream`
+    // (`Context.Reference` не умеет прочитать `AppConfig` в своём
+    // `defaultValue`), так что в проде это именно relay оркестратора.
+    const override = Context.getOrUndefined(
+      yield* Effect.context<never>(),
+      StreamUpstream,
+    );
+    const upstreamFor =
+      override ??
+      ((sessionId: string) =>
+        `${config.orchestratorRelayUrl}/relay/${sessionId}`);
     // Мосты WebSocket живут в scope слоя: при остановке сервера прерываются.
     const runBridge = yield* FiberSet.makeRuntime<
       never,
@@ -369,9 +387,14 @@ export const StreamProxyRoute = HttpRouter.use((router) =>
       never
     >();
     yield* router.add("*", "/stream/:sessionId/*", (request) =>
-      handle(request, auth, allowedOrigins, upstreamFor, runBridge).pipe(
-        Effect.provideService(Db, db),
-      ),
+      handle(
+        request,
+        auth,
+        allowedOrigins,
+        upstreamFor,
+        config.relaySecret,
+        runBridge,
+      ).pipe(Effect.provideService(Db, db)),
     );
   }),
 );

@@ -1,14 +1,20 @@
-// HTTP-роутер оркестратора: /healthz и RPC агентов по WebSocket (/agent).
-import { createHash, timingSafeEqual } from "node:crypto";
+// HTTP-роутер оркестратора: /healthz, RPC агентов по WebSocket (/agent), обмен
+// кода подключения (/agent/enroll), конфиг агента (/agent/config), файлы
+// установки игрового сервера (/agent/install.sh и др.) и каналы тоннеля стрима
+// (/agent/tunnel/:tunnelId, `Tunnels.ts`). Relay для api — не здесь, а на своём
+// внутреннем порту (`relay.ts`).
+import { fileURLToPath } from "node:url";
 import { Db } from "@cg/db";
 import { AgentNotConnected, AgentRpcs, type ProfileCommit } from "@cg/rpc";
-import { Effect, Layer, Redacted } from "effect";
+import { DateTime, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AgentHub } from "./AgentHub";
-import { OrchestratorConfig } from "./config";
+import { agentWebsocketUrl, OrchestratorConfig } from "./config";
 import * as SessionRepo from "./SessionRepo";
 import { SteamLoginSeeds } from "./SteamLoginSeeds";
+import { TunnelRoute } from "./Tunnels";
+import { bearerToken, WorkerAuth, type WorkerAuthShape } from "./WorkerAuth";
 
 const HealthRoute = HttpRouter.add(
   "GET",
@@ -16,26 +22,32 @@ const HealthRoute = HttpRouter.add(
   HttpServerResponse.text("ok"),
 );
 
-const sha256 = (value: string) => createHash("sha256").update(value).digest();
+const unauthorized = () =>
+  HttpServerResponse.text("Unauthorized", { status: 401 });
+
+/** Ответ с секретами: ни прокси, ни клиент его не кэшируют. */
+const secretJson = (body: unknown, status = 200) =>
+  HttpServerResponse.jsonUnsafe(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
+
+/** Сервер по `Authorization: Bearer <токен сервера>`; нет или не действует — `None`. */
+const workerOfRequest = (
+  auth: WorkerAuthShape,
+  request: HttpServerRequest.HttpServerRequest,
+) => {
+  const token = bearerToken(request.headers.authorization);
+  return token === undefined
+    ? Effect.succeed(Option.none<string>())
+    : auth.workerOfToken(token);
+};
 
 /**
- * Проверка `Authorization: Bearer <AGENT_TOKEN>` за постоянное время: сравниваются
- * SHA-256 обеих строк (одинаковой длины), так что время не зависит ни от
- * совпадающего префикса, ни от длины токена.
- */
-export const isAgentAuthorized = (
-  authorization: string | undefined,
-  agentToken: Redacted.Redacted<string>,
-): boolean =>
-  timingSafeEqual(
-    sha256(authorization ?? ""),
-    sha256(`Bearer ${Redacted.value(agentToken)}`),
-  );
-
-/**
- * WebSocket-протокол RPC на `GET /agent`: без верного Bearer-токена → 401 до
- * апгрейда. Проверять можно только на апгрейде: заголовки RPC-сообщений
- * контролирует клиент.
+ * WebSocket-протокол RPC на `GET /agent`: без действующего токена сервера в
+ * `Authorization: Bearer` → 401 до апгрейда. Какому серверу принадлежит
+ * соединение, решает токен внутри `agent.connect` (сверка с `workerId` в
+ * хабе): заголовки RPC-сообщений контролирует клиент.
  */
 const AgentWebsocketProtocol = Layer.effect(
   RpcServer.Protocol,
@@ -43,19 +55,193 @@ const AgentWebsocketProtocol = Layer.effect(
     const { protocol, httpEffect } =
       yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
     const router = yield* HttpRouter.HttpRouter;
-    const { agentToken } = yield* OrchestratorConfig;
+    const auth = yield* WorkerAuth;
 
     yield* router.add(
       "GET",
       "/agent",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (!isAgentAuthorized(request.headers.authorization, agentToken))
-          return HttpServerResponse.text("Unauthorized", { status: 401 });
+        if (Option.isNone(yield* workerOfRequest(auth, request)))
+          return unauthorized();
         return yield* httpEffect;
       }),
     );
     return protocol;
+  }),
+);
+
+const EnrollRequest = Schema.Struct({ code: Schema.String });
+
+/**
+ * HTTP-маршруты агента вне RPC:
+ * - `POST /agent/enroll` `{ code }` — скрипт установки меняет одноразовый
+ *   код на постоянный токен сервера (`WorkerAuth.enroll`) и получает всё,
+ *   что нужно для первого запуска: адрес WebSocket оркестратора, версию
+ *   релиза и учётные данные реестра (только на чтение; `null` — реестр не
+ *   задан). Код не подошёл, истёк или тело не то — 403.
+ * - `GET /agent/config` с Bearer-токеном сервера — S3 профилей и
+ *   `PROFILE_KEY` (спека §3 «Конфиг с главного»: секреты лежат только на
+ *   главном); без действующего токена — 401.
+ */
+const AgentHttpRoutes = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const router = yield* HttpRouter.HttpRouter;
+    const auth = yield* WorkerAuth;
+    const config = yield* OrchestratorConfig;
+
+    yield* router.add(
+      "POST",
+      "/agent/enroll",
+      Effect.gen(function* () {
+        const body = yield* HttpServerRequest.schemaBodyJson(
+          EnrollRequest,
+        ).pipe(Effect.option);
+        const enrolled = Option.isNone(body)
+          ? Option.none()
+          : yield* auth.enroll(body.value.code, yield* DateTime.nowAsDate);
+        if (Option.isNone(enrolled))
+          return secretJson({ error: "Код недействителен или истёк" }, 403);
+        const { workerId, token, regionCode } = enrolled.value;
+        yield* Effect.logInfo("Worker enrolled", { workerId, regionCode });
+        return secretJson({
+          workerId,
+          token,
+          regionCode,
+          orchestratorUrl: agentWebsocketUrl(config.publicUrl),
+          version: config.cgVersion,
+          registry: Option.match(config.registry, {
+            onNone: () => null,
+            onSome: ({ server, username, password }) => ({
+              server,
+              username,
+              password: Redacted.value(password),
+            }),
+          }),
+        });
+      }),
+    );
+
+    yield* router.add(
+      "GET",
+      "/agent/config",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (Option.isNone(yield* workerOfRequest(auth, request)))
+          return unauthorized();
+        return secretJson({
+          s3: {
+            endpoint: config.s3PublicEndpoint,
+            bucket: config.s3Bucket,
+            accessKey: Redacted.value(config.s3AccessKey),
+            secretKey: Redacted.value(config.s3SecretKey),
+          },
+          profileKey: Redacted.value(config.profileKey),
+        });
+      }),
+    );
+  }),
+);
+
+/** Файл репозитория (копия в образе: `/app/<путь>`) по пути от корня. */
+const repoFile = (path: string) =>
+  fileURLToPath(new URL(`../../../${path}`, import.meta.url));
+
+/**
+ * Что отдаёт `GET /agent/<имя>`: файл репозитория и тип; `script` — с
+ * подстановками адреса и версии, `drivers` — ещё и драйверов релиза (только
+ * `install.sh`: без `drivers.txt` остальные файлы отдаются как обычно).
+ */
+const workerFiles: Record<
+  string,
+  {
+    readonly path: string;
+    readonly script: boolean;
+    readonly drivers?: boolean;
+  }
+> = {
+  "install.sh": {
+    path: "deploy/worker/install.sh",
+    script: true,
+    drivers: true,
+  },
+  "build-steam-client.sh": {
+    path: "deploy/worker/build-steam-client.sh",
+    script: true,
+  },
+  "session-isolation.sh": { path: "deploy/session-isolation.sh", script: true },
+  "compose.worker.yaml": { path: "deploy/compose.worker.yaml", script: false },
+};
+
+/**
+ * Версии драйвера NVIDIA, для которых релиз собирает образ сессии
+ * (`images/session/drivers.txt`, как `deploy/ci/build-session-images.sh`:
+ * пустые строки и `#`-комментарии пропускаются), через пробел.
+ */
+const releaseDrivers = (text: string) =>
+  text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .join(" ");
+
+/**
+ * Файлы установки игрового сервера — без авторизации (секретов в них нет,
+ * спека §3 «Добавление сервера»): `install.sh` (команду с ним показывает
+ * админка), его помощники `build-steam-client.sh` и `session-isolation.sh` и
+ * `compose.worker.yaml` (версию образа он берёт из `.env` сервера). Читаются из
+ * копии репозитория в образе при каждом запросе. В скриптах заглушки
+ * `__ORCHESTRATOR_PUBLIC_URL__` и `__CG_VERSION__` заменяются публичным
+ * адресом главного и версией релиза, в `install.sh` ещё `__CG_DRIVERS__` —
+ * драйверами релиза. Нет файла — 500 (образ собран без него).
+ */
+const WorkerFileRoutes = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const router = yield* HttpRouter.HttpRouter;
+    const config = yield* OrchestratorConfig;
+
+    for (const [name, file] of Object.entries(workerFiles))
+      yield* router.add(
+        "GET",
+        `/agent/${name}`,
+        Effect.gen(function* () {
+          const read = (path: string) =>
+            Effect.tryPromise(() => Bun.file(repoFile(path)).text());
+          const text = yield* read(file.path);
+          const drivers = file.drivers
+            ? releaseDrivers(yield* read("images/session/drivers.txt"))
+            : undefined;
+          const substituted = file.script
+            ? text
+                .replaceAll(
+                  "__ORCHESTRATOR_PUBLIC_URL__",
+                  config.publicUrl.replace(/\/+$/, ""),
+                )
+                .replaceAll("__CG_VERSION__", config.cgVersion)
+            : text;
+          const body =
+            drivers === undefined
+              ? substituted
+              : substituted.replaceAll("__CG_DRIVERS__", drivers);
+          return HttpServerResponse.text(body, {
+            contentType: file.script
+              ? "text/x-shellscript; charset=utf-8"
+              : "text/yaml; charset=utf-8",
+            headers: { "cache-control": "no-store" },
+          });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logError("Worker file is unavailable", {
+              name,
+              error: String(error),
+            }).pipe(
+              Effect.as(
+                HttpServerResponse.text("Файл недоступен", { status: 500 }),
+              ),
+            ),
+          ),
+        ),
+      );
   }),
 );
 
@@ -170,4 +356,10 @@ const AgentRpcRoute = RpcServer.layer(AgentRpcs).pipe(
 );
 
 /** Всё приложение оркестратора; запускается через `HttpRouter.serve` (main.ts). */
-export const HttpApp = Layer.mergeAll(HealthRoute, AgentRpcRoute);
+export const HttpApp = Layer.mergeAll(
+  HealthRoute,
+  AgentHttpRoutes,
+  WorkerFileRoutes,
+  AgentRpcRoute,
+  TunnelRoute,
+);

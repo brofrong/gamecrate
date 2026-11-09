@@ -1,12 +1,15 @@
 // OrchestratorLink: исходящее WebSocket-соединение агента с оркестратором
-// (`agent.connect` + `agent.report`, NDJSON, Bearer AGENT_TOKEN). Команды сессий
-// передаёт SessionSupervisor, команды установки и удаления игр — Installer; их
-// отчёты и снимки загрузки WorkerMonitor отправляет по одному, по порядку
-// (каждого источника); на время соединения через него идут
-// `agent.profileCommit` (ProfileCommitter).
+// (`agent.connect` + `agent.report`, NDJSON, Bearer WORKER_TOKEN — токен
+// этого сервера, задача 4). Команды сессий передаёт SessionSupervisor,
+// команды установки и удаления игр — Installer; их отчёты и снимки загрузки
+// WorkerMonitor отправляет по одному, по порядку (каждого источника); на
+// время соединения через него идут `agent.profileCommit` (ProfileCommitter).
+// `OpenTunnel` (канал тоннеля стрима) уходит TunnelClient в фоне: поток команд
+// он не держит, а каналы переживают переподключение к оркестратору.
 // `agent.connect` несёт железо и версии воркера (WorkerMonitor).
-// Обрыв, отказ в отчёте (AgentNotConnected) или замена соединения более новым —
-// переподключение с паузой 1 → 30 с.
+// Обрыв, отказ в отчёте (AgentNotConnected), чужой токен (AgentUnauthorized —
+// WORKER_TOKEN отозван или не принадлежит WORKER_ID) или замена соединения
+// более новым — переподключение с паузой 1 → 30 с.
 import {
   type AgentCommand,
   type AgentConnect,
@@ -20,7 +23,9 @@ import {
   Duration,
   Effect,
   Exit,
+  FiberSet,
   Layer,
+  Option,
   Queue,
   Redacted,
   Stream,
@@ -30,6 +35,7 @@ import { AgentConfig } from "./config";
 import { Installer } from "./Installer";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { SessionSupervisor } from "./SessionSupervisor";
+import { TunnelClient } from "./TunnelClient";
 import { WorkerMonitor } from "./WorkerMonitor";
 
 export const RECONNECT_MIN = Duration.seconds(1);
@@ -53,17 +59,36 @@ export const isTerminal = (report: AgentReport) =>
 export const nextDelay = (delay: Duration.Duration) =>
   Duration.min(Duration.times(delay, 2), RECONNECT_MAX);
 
+/**
+ * `exit` — отказ `connection`, и среди его ошибок есть `AgentUnauthorized`
+ * (чужой или отозванный `WORKER_TOKEN`, спека §3): своя причина, не сетевая —
+ * быстрый повтор не поможет, в отличие от обрыва связи.
+ */
+export const isUnauthorized = (exit: Exit.Exit<unknown, unknown>): boolean =>
+  Exit.isFailure(exit) &&
+  Option.exists(
+    Cause.findErrorOption(exit.cause),
+    (error) =>
+      (error as { readonly _tag?: unknown })._tag === "AgentUnauthorized",
+  );
+
 export const run = Effect.gen(function* () {
   const config = yield* AgentConfig;
   const supervisor = yield* SessionSupervisor;
   const installer = yield* Installer;
   const committer = yield* ProfileCommitter;
   const monitor = yield* WorkerMonitor;
+  const tunnels = yield* TunnelClient;
+  /**
+   * Каналы тоннелей — в scope слоя, а не соединения: WebSocket стрима живёт
+   * всю игру и не должен рваться из-за переподключения команд.
+   */
+  const tunnelFibers = yield* FiberSet.make();
   const protocol = RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
       BunSocket.layerWebSocket(config.orchestratorUrl, {
         headers: {
-          authorization: `Bearer ${Redacted.value(config.agentToken)}`,
+          authorization: `Bearer ${Redacted.value(config.workerToken)}`,
         },
       }),
     ),
@@ -101,6 +126,9 @@ export const run = Effect.gen(function* () {
     carry.push(...buffered.filter(isTerminal));
     const { hardware, versions } = yield* monitor.snapshot;
     const payload: AgentConnect = {
+      // Тот же токен сервера, что на апгрейде `GET /agent` — оркестратор
+      // сверяет, что он принадлежит именно `workerId` (AgentUnauthorized).
+      token: config.workerToken,
       workerId: config.workerId,
       publicIp: config.publicIp,
       slots: config.slots,
@@ -126,24 +154,40 @@ export const run = Effect.gen(function* () {
           return installer.cancel(command.jobId);
         case "DeleteGame":
           return installer.deleteGame(command.appId);
+        case "OpenTunnel":
+          return FiberSet.run(tunnelFibers, tunnels.open(command)).pipe(
+            Effect.asVoid,
+          );
         default:
           return supervisor.handle(command);
       }
     };
     const commands = client["agent.connect"](payload).pipe(
       Stream.runForEach((command) =>
-        Effect.logInfo("Command received", {
-          command: command._tag,
-          id:
-            "sessionId" in command
-              ? command.sessionId
-              : "jobId" in command
-                ? command.jobId
-                : command.appId,
-        }).pipe(Effect.andThen(route(command))),
+        // Тоннелей — десяток на загрузку плеера: в обычном логе это шум.
+        (command._tag === "OpenTunnel" ? Effect.logDebug : Effect.logInfo)(
+          "Command received",
+          {
+            command: command._tag,
+            id:
+              "sessionId" in command
+                ? command.sessionId
+                : "jobId" in command
+                  ? command.jobId
+                  : command.appId,
+          },
+        ).pipe(Effect.andThen(route(command))),
       ),
     );
 
+    /**
+     * Первый принятый отчёт соединения — признак, что оркестратор принял
+     * `agent.connect` (без него `agent.report` отклоняется): строка
+     * «Connected to orchestrator» в логе, её ждёт deploy/worker/install.sh.
+     * Снимок загрузки уходит раз в STATS_INTERVAL, так что строка появляется
+     * в первые секунды.
+     */
+    let confirmed = false;
     /** Один отчёт; не дошедший итоговый возвращается в `carry`. */
     const sendNext = Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -155,6 +199,12 @@ export const run = Effect.gen(function* () {
               : Effect.sync(() => carry.unshift(report)),
           ),
         );
+        if (!confirmed) {
+          confirmed = true;
+          yield* Effect.logInfo("Connected to orchestrator", {
+            workerId: config.workerId,
+          });
+        }
       }),
     );
 
@@ -168,7 +218,10 @@ export const run = Effect.gen(function* () {
     const lived = Duration.millis((yield* Clock.currentTimeMillis) - startedAt);
     if (Duration.isGreaterThanOrEqualTo(lived, HEALTHY_CONNECTION))
       delay = RECONNECT_MIN;
-    if (Exit.isSuccess(exit))
+    if (isUnauthorized(exit)) {
+      delay = RECONNECT_MAX;
+      yield* Effect.logError("Worker token rejected by orchestrator");
+    } else if (Exit.isSuccess(exit))
       yield* Effect.logWarning(
         "Orchestrator ended the command stream (another agent with this WORKER_ID connected?)",
         { retryIn: Duration.format(delay) },
@@ -187,5 +240,10 @@ export const run = Effect.gen(function* () {
 export const layer: Layer.Layer<
   never,
   never,
-  AgentConfig | SessionSupervisor | Installer | ProfileCommitter | WorkerMonitor
+  | AgentConfig
+  | SessionSupervisor
+  | Installer
+  | ProfileCommitter
+  | WorkerMonitor
+  | TunnelClient
 > = Layer.effectDiscard(run.pipe(Effect.forkScoped));

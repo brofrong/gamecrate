@@ -8,6 +8,7 @@ import {
   sessions,
   steamLogins,
   user,
+  workers,
 } from "../src/index";
 import { DbTest } from "./testDb";
 
@@ -25,21 +26,33 @@ const insertUser = (db: Db["Service"], id: string) =>
 const insertGame = (db: Db["Service"]) =>
   db.insert(games).values({ appId: 570, name: "Dota 2" });
 
+const insertWorker = (db: Db["Service"], id: string) =>
+  db.insert(workers).values({ id, publicIp: "203.0.113.1", slots: 1 });
+
 describe("install_jobs", () => {
-  it("second active install job for an app violates unique index", () =>
+  it("second active install job for the same worker and app violates unique index", () =>
     run(
       Effect.gen(function* () {
         const db = yield* Db;
         yield* insertUser(db, "u1");
         yield* insertGame(db);
+        yield* insertWorker(db, "w1");
 
-        yield* db
-          .insert(installJobs)
-          .values({ id: crypto.randomUUID(), appId: 570, userId: "u1" });
+        yield* db.insert(installJobs).values({
+          id: crypto.randomUUID(),
+          appId: 570,
+          userId: "u1",
+          workerId: "w1",
+        });
 
         const result = yield* db
           .insert(installJobs)
-          .values({ id: crypto.randomUUID(), appId: 570, userId: "u1" })
+          .values({
+            id: crypto.randomUUID(),
+            appId: 570,
+            userId: "u1",
+            workerId: "w1",
+          })
           .pipe(Effect.exit);
 
         expect(Exit.isFailure(result)).toBe(true);

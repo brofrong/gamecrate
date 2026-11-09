@@ -2,7 +2,12 @@
 // выбором класса (спека §5.1) и кнопкой обслуживания, слева «Железо» и «Версии», справа
 // «Загрузка сейчас» полосами, снизу слоты с сессиями. Нет снимка или воркер офлайн —
 // вместо полос «нет данных»: старый снимок за текущую загрузку не выдаём.
-import type { AdminWorker, AdminWorkerClass, WorkerStats } from "@cg/rpc";
+import type {
+  AdminRegion,
+  AdminWorker,
+  AdminWorkerClass,
+  WorkerStats,
+} from "@cg/rpc";
 import type * as React from "react";
 import { AdminSessionsTable } from "@/components/admin/AdminSessionsTable";
 import { Badge } from "@/components/ui/badge";
@@ -95,6 +100,9 @@ function Versions({
   uptimeSeconds: number | null;
 }) {
   const line = "text-sm text-muted-foreground";
+  // «Пуст» — нет ни снимка версий вовсе, ни самого поля в нём (старые агенты до
+  // этой задачи, Steam ещё качается впервые и т. п.).
+  const steamNotBuilt = versions === null || versions.steamClientBuiltAt === null;
   return (
     <>
       {versions === null ? (
@@ -111,7 +119,13 @@ function Versions({
                 : `от ${formatShortDate(versions.steamClientBuiltAt)}`
             }`}
           </p>
+          {versions.agentVersion !== undefined && (
+            <p className={line}>{`Версия ${versions.agentVersion}`}</p>
+          )}
         </>
+      )}
+      {steamNotBuilt && (
+        <p className="text-sm text-destructive">Клиент Steam не собран</p>
       )}
       {uptimeSeconds !== null && (
         <p className={line}>
@@ -196,6 +210,37 @@ function ClassPicker({
   );
 }
 
+/** Выбор региона сервера (спека §6/§7): пусто — «Без региона». */
+function RegionPicker({
+  worker,
+  regions,
+  onChange,
+}: {
+  worker: AdminWorker;
+  regions: ReadonlyArray<AdminRegion>;
+  onChange: (regionId: string | null) => void;
+}) {
+  return (
+    <select
+      aria-label="Регион сервера"
+      value={worker.regionId ?? ""}
+      onChange={(event) =>
+        onChange(
+          event.currentTarget.value === "" ? null : event.currentTarget.value,
+        )
+      }
+      className="h-8 rounded-md border bg-transparent px-2 text-sm shadow-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+    >
+      <option value="">Без региона</option>
+      {regions.map((region) => (
+        <option key={region.id} value={region.id}>
+          {region.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 const ratio = (part: number, total: number) => (total > 0 ? part / total : 0);
 
 /** Проценты/градусы GPU, пропуская то, что не удалось измерить. */
@@ -262,18 +307,29 @@ export function WorkerCard({
   worker,
   now,
   classes,
+  regions,
   onStop,
   onDraining,
   onSetClass,
+  onSetRegion,
+  onIssueCode,
+  onRevoke,
 }: {
   worker: AdminWorker;
   /** Текущее время, мс — для «сигнал … назад» и столбцов таблицы сессий. */
   now: number;
   /** Классы воркеров для выбора (спека §5.1), по силе — порядок задаёт вызывающая сторона. */
   classes: ReadonlyArray<AdminWorkerClass>;
+  /** Регионы для выбора (спека §6), порядок задаёт вызывающая сторона (по `position`). */
+  regions: ReadonlyArray<AdminRegion>;
   onStop: (sessionId: string) => void;
   onDraining: (draining: boolean) => void;
   onSetClass: (classId: string | null) => void;
+  onSetRegion: (regionId: string | null) => void;
+  /** «Новый код подключения»: сразу выпускает новый код и показывает его (без подтверждения). */
+  onIssueCode: () => void;
+  /** «Отозвать доступ»: подтверждение и сам запрос — у вызывающей стороны. */
+  onRevoke: () => void;
 }) {
   const signal =
     worker.lastSeenAt === null
@@ -301,7 +357,11 @@ export function WorkerCard({
         />
         <h3 className="text-lg font-semibold">{worker.id}</h3>
         <span className="text-sm text-muted-foreground">{status}</span>
+        {worker.lastSeenAt === null && (
+          <Badge variant="secondary">Ждёт подключения</Badge>
+        )}
         <span className="flex-1" />
+        <RegionPicker worker={worker} regions={regions} onChange={onSetRegion} />
         <ClassPicker worker={worker} classes={classes} onChange={onSetClass} />
         {worker.draining && <Badge variant="secondary">на обслуживании</Badge>}
         <Button
@@ -310,6 +370,17 @@ export function WorkerCard({
           onClick={() => onDraining(!worker.draining)}
         >
           {worker.draining ? "Вернуть в работу" : "На обслуживание"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={onIssueCode}>
+          Новый код подключения
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive/50"
+          onClick={onRevoke}
+        >
+          Отозвать доступ
         </Button>
       </CardContent>
 

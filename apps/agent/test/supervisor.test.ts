@@ -1091,6 +1091,19 @@ describe("SessionSupervisor", () => {
       }),
     ));
 
+  it("hasStream only for its own session with a ready stream, until stop", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        expect(h.supervisor.hasStream("s1")).toBe(false);
+        yield* startReady(h);
+        expect(h.supervisor.hasStream("s1")).toBe(true);
+        expect(h.supervisor.hasStream("s2")).toBe(false);
+        yield* h.supervisor.handle({ _tag: "StopSession", sessionId: "s1" });
+        yield* h.tick("0 seconds");
+        expect(h.supervisor.hasStream("s1")).toBe(false);
+      }),
+    ));
+
   it("docker failure reports Failed", () =>
     run(
       (h) =>

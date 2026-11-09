@@ -280,6 +280,7 @@ describe("WorkerMonitor", () => {
           sessionImage: "cg-session:550.163.01",
           driver: "550.163.01",
           steamClientBuiltAt: "2026-10-27T23:11:00.000Z",
+          agentVersion: "dev",
         });
       }),
     ));

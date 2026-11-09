@@ -1,8 +1,10 @@
+// Удаление игр с сервера: DeleteGame агенту сервера строки, итоги — к паре
+// (сервер, игра) (библиотека своя у каждого сервера, спека 2026-11-09 §5).
 import { describe, expect, it } from "bun:test";
-import { Db, gamestoreApps, games } from "@cg/db";
+import { Db, gamestoreApps, games, workers } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import type { AgentCommand, AgentReport, AgentRoles } from "@cg/rpc";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Effect, Layer, PubSub, References, type Scope, Stream } from "effect";
 import {
   AgentHub,
@@ -31,6 +33,8 @@ const makeFakeHub = () => {
     connected: () => new Set(infos.keys()),
     info: (workerId) => infos.get(workerId),
     workerOf: () => undefined,
+    tokenHash: () => undefined,
+    disconnect: () => Effect.die("fake hub"),
     events,
     subscribe: PubSub.subscribe(events),
     connect: () => Stream.die("fake hub"),
@@ -87,28 +91,47 @@ const report = (workerId: string, agentReport: AgentReport): AgentHubEvent => ({
   report: agentReport,
 });
 
-/** Dota помечена к удалению, Portal просто установлена. */
+/**
+ * Библиотеки серверов: на gs-b Dota помечена к удалению, Portal просто
+ * установлена; на gs-c та же Dota стоит без пометки.
+ */
 const seed = Effect.gen(function* () {
   const db = yield* Db;
   yield* db.insert(games).values([
     { appId: DOTA, name: "Dota 2" },
     { appId: PORTAL, name: "Portal" },
   ]);
+  for (const id of ["gs-b", "gs-c"])
+    yield* db.insert(workers).values({
+      id,
+      publicIp: "203.0.113.8",
+      slots: 0,
+      roles: ["worker", "gamestore"],
+    });
   yield* db.insert(gamestoreApps).values([
-    { appId: DOTA, sizeBytes: 1, buildId: "1", deletingAt: new Date() },
-    { appId: PORTAL, sizeBytes: 1, buildId: "1" },
+    {
+      workerId: "gs-b",
+      appId: DOTA,
+      sizeBytes: 1,
+      buildId: "1",
+      deletingAt: new Date(),
+    },
+    { workerId: "gs-b", appId: PORTAL, sizeBytes: 1, buildId: "1" },
+    { workerId: "gs-c", appId: DOTA, sizeBytes: 1, buildId: "1" },
   ]);
 });
 
+/** Строки библиотек: сервер, игра, пометка удаления. */
 const apps = Effect.gen(function* () {
   const db = yield* Db;
   return yield* db
     .select({
+      workerId: gamestoreApps.workerId,
       appId: gamestoreApps.appId,
       deletingAt: gamestoreApps.deletingAt,
     })
     .from(gamestoreApps)
-    .orderBy(asc(gamestoreApps.appId));
+    .orderBy(asc(gamestoreApps.workerId), asc(gamestoreApps.appId));
 });
 
 const deleteDota = {
@@ -117,18 +140,18 @@ const deleteDota = {
 };
 
 describe("game deleter", () => {
-  it("deleting app → DeleteGame to the gamestore agent once per connection, resent after reconnect", () =>
+  it("deleting app → DeleteGame to the agent of its server once per connection, resent after reconnect", () =>
     run((fake) =>
       Effect.gen(function* () {
         const deleter = yield* GameDeleter;
         yield* seed;
-        // Нет агентов gamestore — некому отправить.
-        connectAgent(fake, "a-worker", ["worker"]);
+        // Сервера строки нет на связи — некому отправить (чужим — не шлём).
+        connectAgent(fake, "a-worker", ["worker", "gamestore"]);
+        connectAgent(fake, "gs-c", ["worker", "gamestore"]);
         yield* deleter.tick;
         expect(fake.sent).toEqual([]);
 
-        // Первый по id агент gamestore; не доставлено — повтор на следующем проходе.
-        connectAgent(fake, "gs-c", ["gamestore"]);
+        // Агент gs-b; не доставлено — повтор на следующем проходе.
         connectAgent(fake, "gs-b", ["worker", "gamestore"]);
         fake.state.refuse = () => true;
         yield* deleter.tick;
@@ -165,7 +188,10 @@ describe("game deleter", () => {
         yield* deleter.handle(
           report("gs-b", { _tag: "GameDeleted", appId: PORTAL }),
         );
-        expect(yield* apps).toEqual([{ appId: PORTAL, deletingAt: null }]);
+        expect(yield* apps).toEqual([
+          { workerId: "gs-b", appId: PORTAL, deletingAt: null },
+          { workerId: "gs-c", appId: DOTA, deletingAt: null },
+        ]);
 
         // Удалять больше нечего — и после переподключения тоже.
         yield* deleter.handle(connected("gs-b"));
@@ -191,13 +217,19 @@ describe("game deleter", () => {
           }),
         );
         expect(yield* apps).toEqual([
-          { appId: PORTAL, deletingAt: null },
-          { appId: DOTA, deletingAt: null },
+          { workerId: "gs-b", appId: PORTAL, deletingAt: null },
+          { workerId: "gs-b", appId: DOTA, deletingAt: null },
+          { workerId: "gs-c", appId: DOTA, deletingAt: null },
         ]);
         const [dota] = yield* db
           .select()
           .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, DOTA));
+          .where(
+            and(
+              eq(gamestoreApps.workerId, "gs-b"),
+              eq(gamestoreApps.appId, DOTA),
+            ),
+          );
         expect(dota?.buildId).toBe("1");
 
         yield* deleter.handle(connected("gs-b"));
@@ -222,15 +254,58 @@ describe("game deleter", () => {
             reason: "Игра запущена",
           }),
         );
-        const [dota] = yield* db
+        const rows = yield* db
           .select({
+            workerId: gamestoreApps.workerId,
             deletingAt: gamestoreApps.deletingAt,
             deleteError: gamestoreApps.deleteError,
           })
           .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, DOTA));
-        expect(dota?.deletingAt).toBeNull();
-        expect(dota?.deleteError).toBe("Игра запущена");
+          .where(eq(gamestoreApps.appId, DOTA))
+          .orderBy(asc(gamestoreApps.workerId));
+        // Причина — только у строки сервера, где удаление не удалось.
+        expect(rows).toEqual([
+          { workerId: "gs-b", deletingAt: null, deleteError: "Игра запущена" },
+          { workerId: "gs-c", deletingAt: null, deleteError: null },
+        ]);
+      }),
+    ));
+
+  it("deletes only on the requested worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const deleter = yield* GameDeleter;
+        yield* seed;
+        connectAgent(fake, "gs-b", ["worker", "gamestore"]);
+        connectAgent(fake, "gs-c", ["worker", "gamestore"]);
+        yield* deleter.tick;
+        // Dota помечена к удалению только на gs-b — команда только ему.
+        expect(fake.sent).toEqual([deleteDota]);
+
+        // Итог от gs-c про ту же игру (у него она не помечена) — не в счёт,
+        // и пометку на gs-b он не трогает.
+        yield* deleter.handle(
+          report("gs-c", { _tag: "GameDeleted", appId: DOTA }),
+        );
+        yield* deleter.handle(
+          report("gs-c", {
+            _tag: "GameDeleteFailed",
+            appId: DOTA,
+            reason: "Игра запущена",
+          }),
+        );
+        const deletingOnB = (yield* apps).find(
+          (a) => a.workerId === "gs-b" && a.appId === DOTA,
+        );
+        expect(deletingOnB?.deletingAt).toBeInstanceOf(Date);
+
+        yield* deleter.handle(
+          report("gs-b", { _tag: "GameDeleted", appId: DOTA }),
+        );
+        expect(yield* apps).toEqual([
+          { workerId: "gs-b", appId: PORTAL, deletingAt: null },
+          { workerId: "gs-c", appId: DOTA, deletingAt: null },
+        ]);
       }),
     ));
 });

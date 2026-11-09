@@ -1,132 +1,329 @@
-# Деплой на brofrong — game.brofrong.ru
+# Деплой GameCrate: главный сервер, игровые серверы, стенд brofrong
+
+Схема (спека `docs/superpowers/specs/2026-11-09-multi-server-deploy-design.md`): один **главный**
+сервер (сайт, api, оркестратор, база, хранилище профилей, без GPU) и **игровые** серверы с GPU, на
+каждом только агент. Образы собирает GitLab CI на тег релиза и кладёт в реестр
+`registry.imtechnologies.ru/gamecrate/imt-cloud-gaming`; на серверах ничего не собирается.
+**brofrong** (`game.brofrong.ru`) — тестовый стенд: главный и игровой на одной машине, своя база.
 
 ## Что здесь
 
-- `Dockerfile` — один образ приложения `cloud-gaming/cg-api:latest`: `bun install --frozen-lockfile`
-  (включает патч `drizzle-orm` из `patches/`), `bun run build` (собирает SPA в `apps/web/dist`).
-  По умолчанию запускает `bun apps/api/src/main.ts`; `cg-orchestrator` и `cg-agent` в compose берут
-  тот же образ со своим `command` (`apps/orchestrator/src/main.ts`, `apps/agent/src/main.ts`).
-  Всё запускается из исходников, без транспиляции; секретов в образе нет (`.dockerignore`).
-- `compose.yaml` — боевой compose-проект `cloud-gaming` на сервере: `cg-api`, `cg-postgres`,
-  `cg-orchestrator`, `cg-agent`, `cg-rustfs`; одноразовый `cg-rustfs-bucket` (профиль `tools`,
-  запускает `deploy.sh`).
-- `deploy.sh` — отказ при живых сессиях/установках, rsync репозитория на `brofrong:~/cloud-gaming`,
-  `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`, `SEED_KEY` в серверный
-  `.env` (если их там нет), каталоги хоста, сеть `cg-sessions` (если нет), бакет профилей,
-  `docker compose up -d --build`.
-- `build-session-image.sh` — сборка образа сессии `cg-session:<версия драйвера>` на воркере
-  (см. `images/session/README.md` и раздел «Обновление драйвера NVIDIA» ниже).
-- `add-game.sh <slug> [--host <ssh-хост>] [--input <name>=<путь>]... [--rebuild]` — сборка пакета
-  своей игры (`games/<slug>`) на воркере в `<GAMES_DIR>/<slug>/<version>/` (раздел «Свои игры:
-  сборка пакета» ниже, `games/README.md`).
-- `build-steam-client.sh` — сборка шаблона клиента Steam `STEAM_CLIENT_DIR` на воркере (раздел
-  «Клиент Steam: пересборка шаблона» ниже).
-- `measure-session-start.sh <userId> <appId> [запусков]` — замер запуска установленной игры
-  (от «Играть» до `Game started`, медиана); запускает настоящие сессии пользователя, только на
-  свободном воркере.
-- `compose.dev.yaml` — локальный Postgres для разработки/тестов (не трогать, не относится к проду).
+- `Dockerfile` — один образ приложения `cg-app:<тег>`: `bun install --frozen-lockfile` (с патчами
+  из `patches/`), `bun run build` (SPA в `apps/web/dist`), `CG_COMMIT`/`CG_VERSION` зашиты (CI
+  передаёт коммит и тег). По умолчанию запускает api; `cg-orchestrator` и `cg-agent` берут тот же
+  образ со своим `command`. Всё запускается из исходников; копия репозитория в образе нужна и
+  оркестратору — он отдаёт из неё файлы установки игрового сервера. Секретов в образе нет
+  (`.dockerignore`).
+- `compose.main.yaml` — главный сервер: `cg-api`, `cg-orchestrator`, `cg-postgres`, `cg-rustfs`;
+  одноразовый `cg-rustfs-bucket` (профиль `tools`).
+- `compose.worker.yaml` — игровой сервер: только `cg-agent`.
+- `compose.stand.yaml` — оверлей стенда brofrong поверх двух предыдущих (агент по внутренней сети
+  `cg`, пути brofrong).
+- `worker/install.sh` — установка игрового сервера одной командой (её показывает админка);
+  `worker/build-steam-client.sh` — сборка шаблона клиента Steam на самом сервере. Оба отдаёт
+  оркестратор: `GET /agent/install.sh`, `/agent/build-steam-client.sh`, а также
+  `/agent/session-isolation.sh` и `/agent/compose.worker.yaml`.
+- `deploy-stand.sh <тег>` — деплой стенда brofrong по тегу; `deploy-stand.sh enroll <код>` —
+  токен сервера brofrong.
+- `build-steam-client.sh [ssh-хост=brofrong]` — обёртка: `worker/build-steam-client.sh` на стенде
+  по ssh.
+- `session-isolation.sh` — правила iptables для сети `cg-sessions` (`apply-local` на сервере,
+  `detect`/`print` с машины разработчика); `check-session-isolation.sh` — проверка без sudo.
+- `ci/build-session-images.sh` — сборка образов сессии в CI (по версиям из
+  `images/session/drivers.txt`); `build-session-image.sh` — прежняя сборка образа сессии прямо на
+  brofrong (для опытов, см. «Смена образа сессии»).
+- `add-game.sh <slug> [--host <ssh-хост>] …` — сборка пакета своей игры на сервере (раздел «Свои
+  игры: сборка пакета» ниже; пока рассчитан на стенд: читает `~/cloud-gaming/.env`).
+- `measure-session-start.sh` — замер запуска установленной игры; `compose.dev.yaml` — локальный
+  Postgres для разработки и тестов.
 
-## Топология на сервере
+## Главный сервер
 
-- Compose-проект `cloud-gaming` в `~/cloud-gaming`.
-- `cg-postgres` (`postgres:18`, volume `cg-postgres-data`) — только во внутренней сети `cg`, порт
-  наружу не публикуется.
-- `cg-api` — сети `cg` (к базе и оркестратору), внешняя `proxy` (к реверс-прокси ingressi) и
-  внешняя `cg-sessions` (к Selkies контейнеров сессий, `http://cg-session-<id>:8080`, для прокси
-  `/stream/<id>/`). Порт наружу не публикуется. Healthcheck: `GET /healthz`.
-- `cg-orchestrator` — только сеть `cg`, порт `3001` (`ORCHESTRATOR_PORT`) наружу не публикуется.
-  Планировщик сессий, таймеры, WebSocket `/agent` (агенты с `Authorization: Bearer <AGENT_TOKEN>`).
-  Healthcheck: `GET /healthz`. `mem_limit` 256m. Стартует после `cg-api` (healthy): оба применяют
-  миграции, так они не идут одновременно. Посеянные входы Steam (вход по QR, ждущий следующего
-  запуска) хранит в таблице `steam_login_seeds`: имя аккаунта и refresh-токен — только
-  зашифрованными (AES-256-GCM, ключ `SEED_KEY`), в открытом виде — `user_id`, `steam_id` и время;
-  строка живёт до 24 ч, удаляется при использовании и при сбросе входа.
-- `cg-agent` — агент воркера `brofrong`, только сеть `cg`, подключается к
-  `ws://cg-orchestrator:3001/agent`. Смонтирован `/var/run/docker.sock`; процесс — пользователь
-  `1000` (bun) с дополнительной группой владельца сокета (`DOCKER_GID`, `deploy.sh` берёт её из
-  `stat -c %g /var/run/docker.sock`, на brofrong `995`), без `privileged`. Healthcheck нет (нет HTTP):
-  связь видна в логе оркестратора и в `workers.last_seen_at`. `mem_limit` 1g (профиль до 200 МиБ сжимается и шифруется в памяти целиком). Роли
-  `ROLES=worker,gamestore`: сессии и установка игр в общую библиотеку. Стартует после
-  `cg-rustfs` (healthy).
-  GPU: `deploy.resources.reservations.devices` с `capabilities: [utility]` (не `all`/`compute`
-  и не весь набор по умолчанию) — NVIDIA Container Toolkit подкладывает только `nvidia-smi` и
-  NVML для метрик админки, видеопамять и вычисления агент не занимает (это не контейнер сессии).
-  **Из-за этой резервации `cg-agent` не стартует, если NVIDIA Container Toolkit или NVML на
-  хосте не работают** (например, после обновления драйвера без перезагрузки — см. «Обновление
-  драйвера NVIDIA» ниже): `docker compose up`/`docker inspect cg-agent` в этом случае покажет
-  ошибку про `nvidia`/`could not select device driver`/недоступное устройство, а не тихо
-  запустится без GPU. Чинится на уровне хоста (перезагрузка/переустановка toolkit), не в
-  compose — сессиям эта же GPU нужна всё равно, слабже требование тут не поможет.
-  Переменные (значения по умолчанию в `compose.yaml` — для brofrong; переопределяются в `.env`):
-  `WORKER_ID=brofrong`, `WORKER_PUBLIC_IP=37.153.14.138`, `SLOTS=1`, `UDP_PORT_BASE=59000`,
-  `SESSION_IMAGE=cg-session:550.163.01`,
-  `GBM_ALLOCATOR_PATH=/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.550.163.01`,
-  `SESSION_NETWORK=cg-sessions`, `DOCKER_SOCKET=/var/run/docker.sock`, `ROLES=worker,gamestore`,
-  `CG_DATA_DIR=/raid/cloud-gaming`, `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`,
-  `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client`,
-  `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam` (родитель `STEAM_CLIENT_DIR` — см. ниже),
-  `S3_BUCKET=cg-profiles`, `MIN_FREE_GB=20` (см. «Место на диске»). Задаёт сам compose: `S3_ENDPOINT=http://cg-rustfs:9000`,
-  `S3_ACCESS_KEY`/`S3_SECRET_KEY` = `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY`, `PROFILE_KEY` из
-  `.env`, `LIBRARY_DIR`, `INSTALL_SCRATCH_DIR`, `GAMES_DIR` — внутри `CG_DATA_DIR`, а также `CG_COMMIT`
-  (по умолчанию `unknown`) — коммит этого деплоя для блока «Версии» админки: `deploy.sh` считает
-  его локально (`git rev-parse --short HEAD`, суффикс `-dirty` при незакоммиченных изменениях —
-  `.git` в образ и на сервер не попадает, см. `rsync --exclude ".git/"` ниже) и передаёт
-  `CG_COMMIT=<значение>` в окружении `docker compose up` на сервере — в `.env` эта переменная не
-  пишется и не должна.
-- Каталоги хоста (владелец `brofrong`, uid 1000; создаёт `deploy.sh` без sudo):
+`compose.main.yaml`, compose-проект `cloud-gaming`. Образ `cg-app:${CG_VERSION}` из реестра
+(`CG_REGISTRY` переопределяет реестр). Порты на хост не публикуются.
 
-  | Каталог                                                  | Что                                                                                       |
-  | -------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-  | `LIBRARY_DIR=/raid/cloud-gaming/library`                 | общая библиотека: `steamapps/appmanifest_*.acf`, `steamapps/common/<игра>` и шаблоны префикса Proton `steamapps/compatdata/<appid>` (см. «Шаблоны префикса Proton»); lower сессий |
-  | `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client` | шаблон клиента Steam (`build-steam-client.sh`, NVMe), внутри пустой `steamapps/`; lower сессий и установщиков |
-  | `STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam`  | родитель `STEAM_CLIENT_DIR` — то, что реально монтируется в `cg-agent` (см. ниже), сам не используется агентом |
-  | `GAMES_DIR=/raid/cloud-gaming/games`                     | пакеты своих игр `<slug>/<version>/` (`add-game.sh`); в сессии — `/opt/cg-game`, только чтение |
-  | `INSTALL_SCRATCH_DIR=/raid/cloud-gaming/install-scratch` | upper/work слоя `steamapps` установщиков; та же ФС, что библиотека (перенос `rename`)     |
-  | `SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`        | upper/work сессий (NVMe), `<SCRATCH_DIR>/<sessionId>/…`, и слоя клиента Steam установщиков, `<SCRATCH_DIR>/.install/<jobId>/…`; после сессии/установки пусто |
+- `cg-postgres` (`postgres:18`, том `cg-postgres-data`) — только сеть `cg`.
+- `cg-api` — сети `cg` и `proxy` (обратный прокси владельца). Прокси стрима `/stream/<id>/` ходит
+  в relay оркестратора (`ORCHESTRATOR_RELAY_URL=http://cg-orchestrator:3002`), в сети
+  `cg-sessions` api больше нет. Healthcheck `GET /healthz`, `mem_limit` 512m.
+- `cg-orchestrator` — сети `cg` и `proxy`. На `3001`: WebSocket `/agent` агентов (токен сервера в
+  `Authorization: Bearer`), тоннели стрима `/agent/tunnel/<id>`, обмен кода `/agent/enroll`,
+  конфиг агента `/agent/config`, файлы установки `/agent/install.sh` и др. На `3002` — relay
+  стрима для `cg-api`: пускает только запросы с общим секретом `RELAY_SECRET` (заголовок
+  `x-cg-relay-secret`, его ставит `cg-api`), остальные — 403 до обращения к БД и агенту. Стартует
+  после `cg-api` (healthy): оба применяют миграции.
+  Посеянные входы Steam (вход по QR) хранит в `steam_login_seeds` зашифрованными (`SEED_KEY`).
+- `cg-rustfs` (`rustfs/rustfs:1.0.3`, том `cg-rustfs-data`) — сети `cg` и `proxy`, S3 на `:9000`.
+  В бакете `cg-profiles` — `profiles/<userId>/<uuid>.cgp` (`CGP1` + AES-256-GCM, ключ
+  `PROFILE_KEY`); пишут и читают агенты игровых серверов.
 
-  В `cg-agent` они смонтированы по тем же путям: `CG_DATA_DIR` (`/raid/cloud-gaming`) — **одним**
-  bind (перенос `rename` между двумя bind даже одной ФС невозможен — `EXDEV`) и `SCRATCH_DIR` —
-  отдельным; оба с `create_host_path: false` (нет каталога — агент не стартует, а не получает
-  каталог root). Для `STEAM_CLIENT_DIR` в агент смонтирован (**`read_only: true`**) не он сам, а
-  его родитель `STEAM_CLIENT_PARENT`: агенту нужна только mtime каталога (дата сборки шаблона в
-  блоке «Версии» админки) — bind самого `STEAM_CLIENT_DIR` держал бы старый каталог после
-  `build-steam-client.sh` (он меняет каталог через `mv -T --exchange`, а bind-mount помнит
-  дентри на момент монтирования, а не путь — после обмена агент читал бы mtime прошлой сборки
-  до пересоздания контейнера); bind родителя резолвит путь заново при каждом обращении. dockerd
-  клиент передаётся как lower overlay по пути хоста, не через этот bind. Шаблон лежит на NVMe, а
-  не в `CG_DATA_DIR`: с холодного кэша (его вытесняют соседние нагрузки) Steam читал его с RAID
-  на HDD и стартовал 50–90 с вместо ~16. `SCRATCH_DIR` — вне каталога деплоя `~/cloud-gaming`
-  (его `rsync --delete` и контекст сборки не должны задевать слои сессий). В библиотеку пишет
-  только агент (перенос установленных игр и шаблонов префикса); руками туда ничего не класть.
+Маршруты обратного прокси (настраивает владелец, WebSocket включён):
 
-- `cg-rustfs` (`rustfs/rustfs:1.0.3`, volume `cg-rustfs-data` → `/data`) — хранилище профилей
-  (S3, `:9000`), только сеть `cg`, порты наружу не публикуются, `mem_limit` 512m. Ключи —
-  `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` из `.env` (корневые ключи RustFS; агент ходит с ними же).
-  Лог — в `docker logs` (`RUSTFS_OBS_LOG_DIRECTORY` пуст). Healthcheck: `GET /health`. В бакете
-  `cg-profiles` — `profiles/<userId>/<uuid>.cgp` (`CGP1` + AES-256-GCM, ключ `PROFILE_KEY`), версия
-  профиля — в таблице `profiles`. На сервере есть чужие RustFS (`brotracker-prod-rustfs`,
-  `exam-platform-rustfs`, образ 1.0.1) — не наши, не трогать.
-- Контейнеры сессий `cg-session-<sessionId>` создаёт агент (не compose): сеть `cg-sessions`, метки
-  `cg.session`/`cg.slot`/`cg.app`/`cg.user`/`cg.base-version`, наружу опубликован только UDP-порт
-  слота (`59000/udp` для слота 0). Дом — слой контейнера (профиль кладётся до старта, снимается при
-  остановке), `~/.local/share/Steam` и `steamapps` — overlay-тома `cg-s-<id>-client`/`cg-s-<id>-apps`
-  (lower — шаблон клиента и библиотека, upper — `SCRATCH_DIR/<id>`). `docker compose up/down` их не
-  трогает; агент после перезапуска подхватывает живые по метке `cg.session`.
-- Установщики `cg-install-<jobId>` (роль `gamestore`, метка `cg.install`): тот же образ, без
-  UDP-порта, тома `cg-i-<jobId>-*`: upper клиента Steam — в `SCRATCH_DIR/.install/<jobId>` (NVMe:
-  pressure-vessel при старте копирует туда рантайм мелкими файлами с fsync, на RAID Steam не
-  успевает запуститься), upper `steamapps` — в `INSTALL_SCRATCH_DIR/<jobId>`. Steam ставит игру,
-  агент переносит новые приложения в библиотеку и удаляет контейнер и слои. Установки, прерванные
-  перезапуском агента, не продолжаются: агент убирает их остатки при старте.
-- Права в контейнере сессии: агент создаёт его с `--security-opt no-new-privileges:true` (в
-  базовом образе у `ubuntu` `NOPASSWD: ALL` в sudoers и свой `/etc/shadow`; с флагом `sudo`, `su`,
-  `pkexec` права не поднимают), `--tmpfs /dev/input:mode=1777` (каталог для интерпозера геймпадов,
-  без sudo entrypoint его не создаст) и случайным `PASSWD` на каждый контейнер.
-  Сетевая изоляция контейнеров сессий — см. раздел «Сетевая изоляция контейнеров сессий (новый
-  сервер)» ниже.
-- Реверс-прокси (Caddy, `ingressi`) снаружи сети `proxy` проксирует `https://game.brofrong.ru` на
-  `http://cg-api:3000` — это настраивает владелец сервера (см. шаг 2 ниже), наш деплой этого не
-  делает и не трогает чужие контейнеры/сети/конфиг Caddy.
+| Маршрут                  | Куда                   | Что                                                          |
+| ------------------------ | ---------------------- | ------------------------------------------------------------ |
+| `https://<домен>`        | `cg-api:3000`          | сайт, `/rpc`, `/stream/<id>/`                                |
+| `https://<домен>/agent*` | `cg-orchestrator:3001` | агенты (`wss://…/agent`, `/agent/tunnel`), установка сервера |
+| `https://<хост S3>`      | `cg-rustfs:9000`       | профили (отдельный хост: S3 плохо живёт под префиксом пути)  |
+
+`RELAY_PORT` (3002) в маршруты **не добавлять**. Docker не делит порты контейнера по сетям, так что
+в сети `proxy` relay тоже слушается — поэтому он и требует `RELAY_SECRET`: без секрета другой
+контейнер в `proxy` получит 403. Секрет не выводить и не класть в маршруты прокси.
+
+### `.env` главного
+
+**Никогда не печатать, не логировать и не коммитить значения секретов.** Собрать `.env` рядом с
+`compose.main.yaml` (права 600), значения копировать программно, не выводя на экран:
+
+- `CG_VERSION=<тег релиза>` — тег образов (он же версия, которую ставят новые игровые серверы).
+- `PUBLIC_URL=https://<домен>`, `PORT=3000`, `WEB_DIST_DIR=/app/apps/web/dist`.
+- `POSTGRES_PASSWORD` — случайный; `DATABASE_URL=postgres://cg:<POSTGRES_PASSWORD>@cg-postgres:5432/cloud_gaming`.
+- `BETTER_AUTH_SECRET` (`openssl rand -hex 32`), `STEAM_API_KEY`, `POCKET_ID_URL`,
+  `POCKET_ID_CLIENT_ID`, `POCKET_ID_CLIENT_SECRET`, `POCKET_ID_ADMIN_GROUP`.
+- `SMTP_URL` — настоящий SMTP (`log://` разрешён только при `PUBLIC_URL` на localhost),
+  `MAIL_FROM`.
+- Необязательно, парами: `GOOGLE_CLIENT_ID`/`_SECRET`, `YANDEX_CLIENT_ID`/`_SECRET`,
+  `TELEGRAM_CLIENT_ID`/`_SECRET`; `ALLOWED_ORIGINS`.
+- `ORCHESTRATOR_PUBLIC_URL=https://<домен>` — из него адрес агентов `wss://<домен>/agent` и адрес
+  в скрипте установки. Только origin (схема, хост, порт), без пути: иначе оркестратор не стартует.
+- `S3_PUBLIC_ENDPOINT=https://<хост S3>`, `S3_BUCKET=cg-profiles` (по умолчанию).
+- `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — по `openssl rand -hex 24` (корневые ключи RustFS, они
+  же S3-ключи, которые оркестратор выдаёт агентам).
+- `RELAY_SECRET` — `openssl rand -hex 32` (не короче 32 символов): общий секрет `cg-api` и relay
+  оркестратора, compose передаёт его обоим.
+- `PROFILE_KEY`, `SEED_KEY` — по `openssl rand -base64 32` (base64 ровно 32 байт).
+  **`PROFILE_KEY` не менять и не терять:** им зашифрованы все профили. `SEED_KEY` сменить можно
+  (посеянные входы пропадут, игроки один раз войдут по QR снова).
+- `REGISTRY_SERVER=registry.imtechnologies.ru`, `REGISTRY_USERNAME`, `REGISTRY_PASSWORD` — deploy
+  token GitLab с правом `read_registry` (все три или ни одной): их получают агенты при обмене кода.
+
+```sh
+grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base64 32)" >> .env   # так же остальные
+```
+
+Каждый сервис получает только свои переменные (`POSTGRES_PASSWORD` — только `cg-postgres`,
+`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор).
+
+### Запуск и обновление главного
+
+```sh
+docker login registry.imtechnologies.ru                     # токен на чтение, один раз
+docker compose -f compose.main.yaml --env-file .env pull
+docker compose -f compose.main.yaml --env-file .env run --rm cg-rustfs-bucket   # бакет, идемпотентно
+docker compose -f compose.main.yaml --env-file .env up -d
+curl -s https://<домен>/healthz                             # ok
+```
+
+Обновление: `CG_VERSION=<новый тег>` в `.env`, затем те же `pull` и `up -d`. Пересоздание `cg-api`
+и `cg-orchestrator` рвёт управляющий WebSocket идущих сессий (стрим идёт через главный). Автодеплой
+через Arcane — позже (спека, «Не цели»).
+
+Владелец (один раз): маршруты обратного прокси (таблица выше); в Pocket ID OIDC-клиент с callback
+`https://<домен>/api/auth/callback/pocket-id` (именно `/api/auth/callback/…`, не
+`/api/auth/oauth2/callback/…`) и группа админов; у Google, Яндекса и Telegram redirect
+`https://<домен>/api/auth/callback/<google|yandex|telegram>`.
+
+## Игровой сервер
+
+Требования: Linux x86_64 (Debian или Ubuntu), Docker Engine с плагином compose, драйвер NVIDIA
+**одной из версий `images/session/drivers.txt`** (в образе сессии 32-битные библиотеки ровно этой
+версии), NVIDIA Container Toolkit (`nvidia-ctk runtime configure --runtime=docker`),
+`nvidia-drm modeset=1`, публичный IP с открытыми UDP-портами слотов. TCP наружу не нужен.
+
+**Добавление** (решение владельца 6): админка → «Серверы» → «Добавить сервер» → имя и регион →
+команда с одноразовым кодом (живёт 24 часа). На сервере:
+
+```sh
+curl -fsSL https://<домен>/agent/install.sh | sudo bash -s -- <код>
+#   --public-ip <ip>    если api.ipify.org недоступен или IP не тот
+#   --data-dir <путь>   библиотека игр не в /srv/cloud-gaming (например, большой диск)
+#   --sessions-subnet a.b.c.0/24   подсеть сети cg-sessions, если 172.31.240.0/24 занята
+#   --dry-run           только проверки и план, код не тратится
+```
+
+`install.sh` (комментарий в начале файла — подробно):
+
+1. Проверки, ничего не меняя: Docker и compose, `nvidia-smi`, runtime `nvidia` в `docker info`,
+   `nvidia-drm modeset=1`, драйвер из списка релиза, `libnvidia-allocator.so.<драйвер>`, публичный
+   IP, сеть `cg-sessions` (если уже есть — с нужной подсетью). Что не так — пишет и выходит, код не
+   тратится.
+2. Меняет код на постоянный токен сервера (`POST /agent/enroll`), `docker login` реестра выданными
+   учётными данными (пароль через stdin), проверяет образы релиза (`docker manifest inspect`) и
+   скачивает образ сессии `cg-session:<драйвер>-<версия>`.
+3. Каталоги (владелец uid 1000), сеть `cg-sessions` с фиксированной подсетью
+   (`CG_SESSIONS_SUBNET`, по умолчанию `172.31.240.0/24`; контейнерам сессий Docker раздаёт адреса
+   из `CG_SESSIONS_IP_RANGE` `.128/25`, `cg-agent` закреплён на `CG_AGENT_IP` `.2` вне его),
+   `/opt/cloud-gaming/.env` (600, root).
+4. `session-isolation.sh apply-local --agent-ip <CG_AGENT_IP>` — **до** старта агента, с
+   сохранением правил на перезагрузку (ставит `iptables-persistent`); не вышло — агент прежней
+   установки останавливается, выход 1. Затем `docker compose pull && up -d` агента.
+5. Шаблон клиента Steam, если его нет (~2,5 ГБ, 10–30 мин; пока его нет, сервер сессий не берёт и в
+   админке «Клиент Steam не собран»).
+6. До 60 с ждёт в логе `cg-agent` «Connected to orchestrator» (первый отчёт, принятый
+   оркестратором). Есть — «Сервер <id> подключён. Откройте UDP <порты> в файрволе провайдера»
+   (`UDP_PORT_BASE` (59000) … `+SLOTS-1`, слот = одна GPU), нет — предупреждение и как смотреть лог.
+
+Повторный запуск с новым кодом (карточка сервера → «Перевыпустить код») переустанавливает сервер:
+старый токен перестаёт действовать, `.env` перезаписывается.
+
+Файлы на сервере:
+
+| Путь                                                              | Что                                                                                                                                                                                                   |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/opt/cloud-gaming/.env`                                          | `WORKER_ID`, `WORKER_TOKEN` (секрет), `ORCHESTRATOR_URL`, `CG_VERSION`, `SESSION_IMAGE`, пути, `SLOTS`, `DOCKER_GID`, `GBM_ALLOCATOR_PATH`, `CG_SESSIONS_SUBNET`/`CG_SESSIONS_IP_RANGE`/`CG_AGENT_IP` |
+| `/opt/cloud-gaming/compose.yaml`                                  | `compose.worker.yaml` с главного                                                                                                                                                                      |
+| `/opt/cloud-gaming/session-isolation.sh`, `build-steam-client.sh` | помощники с главного                                                                                                                                                                                  |
+| `/srv/cloud-gaming/library`                                       | библиотека игр этого сервера (`steamapps/…`, шаблоны префикса Proton); lower сессий                                                                                                                   |
+| `/srv/cloud-gaming/install-scratch`                               | upper/work установщиков; та же ФС и тот же bind, что библиотека (перенос `rename`)                                                                                                                    |
+| `/srv/cloud-gaming/games`                                         | пакеты своих игр `<slug>/<version>/`                                                                                                                                                                  |
+| `/srv/cloud-gaming-scratch`                                       | upper/work сессий (лучше NVMe); после сессии пусто                                                                                                                                                    |
+| `/srv/cloud-gaming-steam/client`                                  | шаблон клиента Steam (NVMe); в агент смонтирован родитель, только на чтение                                                                                                                           |
+
+S3 профилей и `PROFILE_KEY` в `.env` нет: агент получает их от главного (`GET /agent/config`).
+
+`cg-agent`: пользователь 1000 с группой сокета Docker (`DOCKER_GID`), без `privileged`; сети
+`cg-sessions` (закреплённый адрес `CG_AGENT_IP`; сам ходит в Selkies сессий
+`cg-session-<id>:8080` для тоннеля стрима) и своя default; GPU с `capabilities: [utility]` — только `nvidia-smi`/NVML для метрик админки. **Из-за
+этой резервации агент не стартует, если NVIDIA Container Toolkit или NVML на хосте не работают**
+(например, драйвер обновлён без перезагрузки) — чинится на хосте. Контейнеры сессий и
+установщиков агент создаёт сам, `docker compose up/down` их не трогает.
+
+Команды на сервере:
+
+```sh
+cd /opt/cloud-gaming
+sudo docker compose -f compose.yaml --env-file .env logs -f cg-agent
+sudo docker compose -f compose.yaml --env-file .env up -d          # после правки .env
+sudo ./session-isolation.sh apply-local --agent-ip "$(sudo sed -n 's/^CG_AGENT_IP=//p' .env)"   # если сменились DNS хоста
+sudo ./build-steam-client.sh                 # пересобрать шаблон клиента Steam (без сессий; в конце перезапустит cg-agent)
+```
+
+Обновление агента (пока руками, кнопка «Обновить» — третья часть): без живых сессий и установок
+(«На обслуживание» в админке и дождаться) в `.env` поменять `CG_VERSION` и `SESSION_IMAGE` на новый
+тег, `docker pull <SESSION_IMAGE>`, `pull`, `up -d` (адрес агента закреплён, правила изоляции
+повторять не нужно).
+
+Сеть `cg-sessions` уже есть с другой подсетью (ставили руками или старой версией) — `install.sh`
+откажется. Пересоздать, пока нет сессий и установок
+(`docker ps -a --filter label=cg.session --filter label=cg.install` пусто):
+`docker stop cg-agent && docker network rm cg-sessions`, затем снова команда установки (новый код).
+
+## Сетевая изоляция контейнеров сессий
+
+Контейнеры сессий и установщиков (сеть `cg-sessions`) должны видеть интернет (Steam, игры), но не
+адреса хоста, локальную сеть и другие контейнеры моста, кроме `cg-agent` → Selkies сессий `:8080`
+(тоннель стрима). На игровом сервере правила ставит `install.sh` до старта агента
+(`/opt/cloud-gaming/session-isolation.sh apply-local --agent-ip <CG_AGENT_IP>`: определяет подсеть,
+мост и DNS хоста, проверяет, что адрес агента в подсети `cg-sessions`, применяет
+`iptables-restore -n`, ставит переход из `INPUT` первым правилом и сохраняет на перезагрузку
+`netfilter-persistent save`; если его нет — сам ставит `iptables-persistent` без вопросов (debconf
+`autosave_v4/v6=false`, `apt-get install --no-remove`: пакет конфликтует с `ufw`, и apt тогда
+откажется, а не удалит файрвол). Не сохранилось — код 1, `install.sh` агент не запускает. На
+brofrong sudo нет — там правила не применяются.
+
+Правило для `:8080` привязано к адресу `cg-agent`, а он закреплён (`ipv4_address: ${CG_AGENT_IP}` в
+`compose.worker.yaml`, вне ip-range контейнеров сессий) — пересоздание агента правила не ломает.
+Повторять `apply-local` нужно, только если сменились DNS-серверы хоста или пересоздана сеть
+(цепочки перезапишутся целиком, переход из `INPUT` останется один). `-n` не трогает чужие таблицы,
+но **стирает другие правила в `DOCKER-USER`** (общая цепочка всех сетей Docker на хосте).
+`netfilter-persistent save` сохраняет и цепочки Docker — при старте Docker перестраивает их сам,
+`DOCKER-USER` не трогает.
+
+С машины разработчика (без sudo): `./deploy/session-isolation.sh detect <хост>` — аргументы для
+`print --subnet <cidr> --bridge <ifname> --agent-ip <ip> [--resolver <ipv4>]… [--subnet6 <cidr>]`,
+который печатает дамп правил; ручное применение — комментарий в начале скрипта. Проверка:
+`./deploy/check-session-isolation.sh [ssh-хост]` — два временных контейнера в `cg-sessions` и
+`curl -m 3` к шлюзу моста, LAN-адресу и шлюзу хоста, второму контейнеру `:8080`, `cg-agent:8080`
+и в интернет; код 0 — всё как ожидается («закрыто» — только таймаут). Скрипт читает
+`~/cloud-gaming/.env` (стенд); на игровом сервере ему нужен `SESSION_IMAGE` из
+`/opt/cloud-gaming/.env`.
+
+## Стенд brofrong
+
+`~/cloud-gaming` на brofrong: `.env`, `compose.main.yaml`, `compose.worker.yaml`,
+`compose.stand.yaml` (копирует `deploy-stand.sh`; старая копия репозитория от прежнего `deploy.sh`
+там больше не нужна). Главный и агент — один compose-проект `cloud-gaming`. Агент ходит к
+оркестратору тем же протоколом, что удалённые серверы (токен сервера, тоннель стрима), только по
+внутренней сети `cg` (`ws://cg-orchestrator:3001/agent`). Пути стенда `deploy-stand.sh` дописывает
+в `.env`, если их там нет: `CG_DATA_DIR=/raid/cloud-gaming`,
+`SCRATCH_DIR=/home/brofrong/cloud-gaming-scratch`, `STEAM_CLIENT_DIR=/home/brofrong/cloud-gaming-steam/client`,
+`STEAM_CLIENT_PARENT=/home/brofrong/cloud-gaming-steam`. Оверлей `compose.stand.yaml` задаёт
+`WORKER_ID=brofrong`, `WORKER_PUBLIC_IP=37.153.14.138` и GBM драйвера 550.163.01 (по умолчанию).
+
+**`.env` стенда: что поменялось** (по строке, не выводя остальные значения):
+
+- убрать `AGENT_TOKEN` (общего токена агентов больше нет);
+- добавить `ORCHESTRATOR_PUBLIC_URL=https://game.brofrong.ru`;
+- добавить `S3_PUBLIC_ENDPOINT=http://cg-rustfs:9000` (агент стенда ходит в RustFS по сети `cg`);
+- добавить `RELAY_SECRET` (`openssl rand -hex 32`, без вывода на экран):
+  `grep -q '^RELAY_SECRET=' .env || printf 'RELAY_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env`;
+- `PROFILE_KEY` остаётся в `.env`, но читает его теперь оркестратор (агенту выдаёт через
+  `/agent/config`); `RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` — так же (S3-ключи оркестратора);
+- `CG_VERSION` и `SESSION_IMAGE` пишет `deploy-stand.sh` (прежний `SESSION_IMAGE=cg-session:…`
+  заменится образом релиза);
+- `WORKER_TOKEN` — токен сервера brofrong: пишет `deploy-stand.sh enroll <код>` (ниже);
+- пути (`CG_DATA_DIR` и др.) дописывает `deploy-stand.sh`; необязательно
+  `CG_SESSIONS_SUBNET`/`CG_SESSIONS_IP_RANGE`/`CG_AGENT_IP`, если `172.31.240.0/24` на brofrong
+  занята (адрес агента — внутри подсети и вне ip-range);
+- необязательно: `REGISTRY_SERVER`/`REGISTRY_USERNAME`/`REGISTRY_PASSWORD` — если с этим стендом
+  будут ставить игровые серверы.
+
+Один раз на brofrong: `docker login registry.imtechnologies.ru` (deploy token с `read_registry`) и
+пересоздать сеть `cg-sessions` с фиксированной подсетью (старая создана без неё — `deploy-stand.sh`
+откажется с той же инструкцией): без сессий и установок
+`ssh brofrong 'docker stop cg-agent && docker network rm cg-sessions'` — сеть создаст деплой.
+
+```sh
+./deploy/deploy-stand.sh v0.1.0
+```
+
+1. Отказ, если есть созданный или запущенный контейнер `cg.session`, `cg.install` или
+   `cg.template` (остановленные не мешают); сессии штатно не останавливает — ждать или «На
+   обслуживание».
+2. Драйвер brofrong должен быть в `images/session/drivers.txt`.
+3. Пути стенда в `.env` (если нет), каталоги (uid 1000), сеть `cg-sessions` с фиксированной
+   подсетью (есть с другой — отказ); предупреждение, если шаблон клиента Steam не собран
+   (`./deploy/build-steam-client.sh`).
+4. Три compose-файла в `~/cloud-gaming/`, `config -q` и скачивание образов с новыми `CG_VERSION` и
+   `SESSION_IMAGE=…/cg-session:<драйвер>-<тег>`; только после этого они пишутся в `.env`; бакет
+   профилей, `up -d`.
+
+Первый деплой: агент без `WORKER_TOKEN` не подключится (в логе `cg-agent` ошибка `WORKER_TOKEN`).
+Админка → «Серверы» → brofrong → «Перевыпустить код», затем:
+
+```sh
+./deploy/deploy-stand.sh enroll <код>      # обмен внутри cg-orchestrator, токен сразу в .env, up -d cg-agent
+```
+
+GPU-слот начинает принимать сессии, как только агент подключился: спайк `cg-spike` (та же GPU и
+UDP `59000`) останавливать **до** деплоя: `ssh brofrong 'cd ~/cg-spike && docker compose stop'`.
+
+Ручные команды на стенде:
+`cd ~/cloud-gaming && docker compose -f compose.main.yaml -f compose.worker.yaml -f compose.stand.yaml --env-file .env logs -f cg-orchestrator`
+(для `up` ещё `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` в окружении).
+
+Проверка после деплоя:
+
+```sh
+curl -s https://game.brofrong.ru/healthz                                   # ok
+ssh brofrong 'docker ps --filter name=cg- --format "{{.Names}} {{.Status}} {{.Image}}"'
+  # cg-api, cg-orchestrator, cg-postgres, cg-rustfs — healthy; cg-agent — Up; образы :<тег>
+ssh brofrong 'docker logs cg-agent 2>&1 | head -20'                        # нет ошибок конфига
+ssh brofrong 'docker logs cg-orchestrator 2>&1 | grep "Agent connected" | tail -1'   # workerId=brofrong
+ssh brofrong 'docker logs cg-agent 2>&1 | grep -m1 "Connected to orchestrator"'  # агент принят
+```
+
+## Релиз
+
+1. Тег `vX.Y.Z` на коммите `main` (и `git push origin vX.Y.Z` — только с согласия владельца).
+2. CI (`.gitlab-ci.yml`): проверки, `cg-app:vX.Y.Z` (+ `latest`, кроме `-rc`) и
+   `cg-session:<драйвер>-vX.Y.Z` на каждую строку `images/session/drivers.txt`.
+3. Стенд: `./deploy/deploy-stand.sh vX.Y.Z`, проверка.
+4. Главный: `CG_VERSION=vX.Y.Z` в его `.env`, `pull`, `up -d` (раздел «Главный сервер»). Новые
+   игровые серверы с этого момента ставятся этой версией.
+5. Игровые серверы: руками по разделу «Игровой сервер» (кнопка «Обновить» — третья часть).
+
+Новый драйвер на игровом сервере — сначала строка в `images/session/drivers.txt` и новый релиз
+(образ сессии собирается только в CI), потом установка или обновление сервера.
 
 ## Админка
 
@@ -167,268 +364,12 @@ Steam»; своя строка — действия неактивны. Подр
 отменена администратором». Если агент уже переносит игру в библиотеку, отмена не успевает — игра
 остаётся установленной.
 
-**«На обслуживание» перед деплоем.** Кнопка на карточке воркера (там же «Вернуть в работу»):
-воркер на обслуживании доигрывает текущие сессии и установки, но новых не берёт — так можно
-заранее перекрыть приток новых сессий, не дожидаясь, пока `deploy.sh` откажется деплоить из-за
-живых `cg.session`/`cg.install` (см. «Шаг 4: деплой»). Флаг (`workers.draining`) переживает
+**«На обслуживание» перед деплоем.** Кнопка на карточке сервера (там же «Вернуть в работу»):
+сервер на обслуживании доигрывает текущие сессии и установки, но новых не берёт — так можно
+заранее перекрыть приток новых сессий, не дожидаясь, пока `deploy-stand.sh` откажется деплоить из-за
+живых `cg.session`/`cg.install` (см. «Стенд brofrong»). Флаг (`workers.draining`) переживает
 перезапуск агента и оркестратора; сам деплой его не трогает — возвращать воркер в работу нужно
 руками, после деплоя.
-
-## Сетевая изоляция контейнеров сессий (новый сервер)
-
-Контейнеры сессий и установщиков (сеть `cg-sessions`) должны видеть интернет (Steam, игры), но не
-адреса хоста, локальную сеть и другие контейнеры моста, кроме `cg-api` → Selkies сессий `:8080`
-(поток стрима через `cg-api`). На `brofrong` сейчас изоляции нет — у нас нет sudo на этот хост, и
-применять правила там нельзя; на новом (арендованном) сервере, где у владельца есть sudo, это надо
-сделать перед тем, как пускать на сервер посторонних игроков.
-
-- `deploy/session-isolation.sh` — только печатает правила (ничего не применяет и не нужен sudo,
-  чтобы его запустить):
-  - `detect [ssh-хост=brofrong]` — читает (не меняет) `docker network inspect cg-sessions`,
-    `docker inspect cg-api` и DNS-серверы хоста на сервере, печатает аргументы для `print`;
-  - `print --subnet <cidr> --bridge <ifname> --api-ip <ip> [--resolver <ipv4>]… [--subnet6 <cidr>]` —
-    печатает фрагмент дампа `iptables-save`/`ip6tables-save` (таблица `filter`, цепочки
-    `DOCKER-USER` и `CG-SESSIONS-IN`) и в комментарии — команду перехода из `INPUT`.
-  - DNS: к DNS-серверам хоста (`--resolver`: из `/run/systemd/resolve/resolv.conf`, если есть, иначе
-    из `/etc/resolv.conf`, без 127.x и `::1`) сессиям открыт только `:53` udp/tcp — встроенный DNS
-    Docker ходит к ним из сети контейнера, и без исключения DROP частных диапазонов сломал бы DNS.
-- `deploy/check-session-isolation.sh [ssh-хост=brofrong]` — проверка без sudo: два временных
-  контейнера в `cg-sessions` (свои, с меткой `cg.isolation-check`, без GPU, удаляются в конце),
-  изнутри одного — `curl -m 3` к шлюзу моста, LAN-адресу и LAN-шлюзу хоста, второму контейнеру
-  `:8080`, `cg-api:3000` и в интернет. Печатает таблицу «цель | ожидается | факт»; код 0 — всё как
-  ожидается, код 1 — где-то открыто то, что должно быть закрыто, или не работает интернет/DNS.
-  «Закрыто» (`closed`) — только таймаут; отказ в соединении — `reachable` (хост ответил, это
-  провал), не разрешилось имя — `dns-fail` (тоже провал).
-
-Порядок на новом сервере. Шаги 1–3 — локально (в репозитории, с машины, у которой есть ssh-доступ
-на сервер; sudo не нужен ни здесь, ни для `detect`/`print`), шаги 4–6 — на сервере, с sudo, делает
-владелец:
-
-1. Узнать подсеть/мост/IP `cg-api`/DNS-серверы: `./deploy/session-isolation.sh detect <хост>`.
-2. Напечатать и сохранить правила:
-   `./deploy/session-isolation.sh print $(./deploy/session-isolation.sh detect <хост>) > /tmp/cg-session-isolation.rules`.
-3. Посмотреть их глазами: `cat /tmp/cg-session-isolation.rules` — прежде чем применять.
-4. Применить на сервере: IPv4-часть — всё до строки `# ip6tables`, если она есть; IPv6-часть —
-   после неё, без самой этой строки:
-
-   ```sh
-   sed '/^# ip6tables/,$d' /tmp/cg-session-isolation.rules | ssh <хост> 'sudo iptables-restore -n'
-   sed -n '/^# ip6tables/,$p' /tmp/cg-session-isolation.rules | tail -n +2 | ssh <хост> 'sudo ip6tables-restore -n'
-   ```
-
-   Затем переход из `INPUT` в `CG-SESSIONS-IN` — первым правилом, чтобы разрешения хоста (ufw,
-   `--dport 22 -j ACCEPT` и т. п.) не пускали сессии к сервисам хоста раньше него; `-C` не даёт
-   ему задвоиться при повторе (команды с подставленным мостом — в комментариях дампа):
-
-   ```sh
-   ssh <хост> 'sudo iptables -C INPUT -i <мост> -j CG-SESSIONS-IN 2>/dev/null || sudo iptables -I INPUT 1 -i <мост> -j CG-SESSIONS-IN'
-   # если есть --subnet6 — то же с ip6tables
-   ```
-
-   `-n` (noflush) не трогает другие таблицы и встроенные цепочки хоста, но объявленные в дампе
-   пользовательские цепочки (`DOCKER-USER`, `CG-SESSIONS-IN`) очищает и заполняет заново: повторное
-   применение не копит дублей, но **стирает любые другие правила в `DOCKER-USER`** — это общая
-   цепочка всех сетей docker на хосте; если там будут свои правила, дописать их в дамп до
-   применения.
-5. Сохранить правила после перезагрузки (Debian/Ubuntu):
-   `sudo apt install iptables-persistent && sudo netfilter-persistent save`.
-6. Проверить: `./deploy/check-session-isolation.sh <хост>` → код 0, в таблице везде «факт»
-   совпадает с «ожидается».
-
-Если `cg-api` пересоздан (например, после деплоя) — у него может измениться IP в `cg-sessions`,
-и правило для `:8080` перестанет пускать нужный трафик (или наоборот, останется открытым для
-старого, уже не существующего адреса). Повторить шаги 1–4 с текущим `detect` (так же — если
-сменились DNS-серверы хоста); цепочки перезапишутся целиком, переход из `INPUT` останется один.
-
-## Шаг 1 (один раз, локально): собрать `.env.production` и скопировать на сервер
-
-**Никогда не печатать, не логировать и не коммитить значения секретов.**
-
-1. Собрать `.env.production` в корне репозитория (файл в `.gitignore`, не коммитится) из корневого
-   `.env` — копировать значения программно (`grep`/`sed`), не выводя их на экран:
-   - `STEAM_API_KEY`, `POCKET_ID_URL`, `POCKET_ID_CLIENT_ID`, `POCKET_ID_CLIENT_SECRET`,
-     `POCKET_ID_ADMIN_GROUP` — как в корневом `.env`.
-   - `PUBLIC_URL=https://game.brofrong.ru`
-   - `PORT=3000`
-   - `WEB_DIST_DIR=/app/apps/web/dist`
-   - `BETTER_AUTH_SECRET` — новый случайный (`openssl rand -hex 32`), отдельный от dev-секрета.
-   - `POSTGRES_PASSWORD` — новый случайный пароль для `cg-postgres`.
-   - `DATABASE_URL=postgres://cg:<POSTGRES_PASSWORD>@cg-postgres:5432/cloud_gaming` — тот же пароль,
-     что в `POSTGRES_PASSWORD`.
-   - Необязательно: `ALLOWED_ORIGINS` — дополнительные Origin для WebSocket `/rpc` через запятую;
-     без неё разрешён только origin `PUBLIC_URL`, для прода этого достаточно.
-   - `SMTP_URL` — настоящий SMTP для писем с кодом входа (например
-     `smtps://user:pass@smtp.example:465`). **`SMTP_URL=log://` только для dev** (пишет письма в
-     лог вместо отправки) — `apps/api/src/config.ts` разрешает его лишь когда `PUBLIC_URL` —
-     `localhost`/`127.0.0.1`, в проде с `PUBLIC_URL=https://game.brofrong.ru` сервис не стартует.
-   - `MAIL_FROM` — заголовок `From` писем, например `GameCrate <no-reply@brofrong.ru>`.
-   - Необязательно (каждая пара — вместе или не задавать вовсе, пустая строка тоже считается «не
-     задано»): `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`,
-     `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET` — ключи провайдеров входа, завести их на сервере
-     владелец может и после первого деплоя (шаг 2 ниже, п. 3–5): провайдер без ключей просто не
-     появится на `/login`.
-
-   - `AGENT_TOKEN` — новый случайный, не короче 32 символов (без вывода на экран):
-     `grep -q '^AGENT_TOKEN=' .env.production || printf 'AGENT_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env.production`.
-     Если на сервере уже есть `.env` без `AGENT_TOKEN`, `deploy.sh` сам допишет туда эту строку из
-     `.env.production` (одну строку, остальные значения не читает и не меняет).
-   - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — ключи хранилища профилей `cg-rustfs`, каждый не
-     короче 16 символов, `PROFILE_KEY` — ключ шифрования профилей и `SEED_KEY` — ключ шифрования
-     посеянных входов Steam в БД (`steam_login_seeds`), оба base64 ровно 32 байт (без вывода на
-     экран):
-
-     ```sh
-     grep -q '^RUSTFS_ACCESS_KEY=' .env.production || printf 'RUSTFS_ACCESS_KEY=%s\n' "$(openssl rand -hex 24)" >> .env.production
-     grep -q '^RUSTFS_SECRET_KEY=' .env.production || printf 'RUSTFS_SECRET_KEY=%s\n' "$(openssl rand -hex 24)" >> .env.production
-     grep -q '^PROFILE_KEY=' .env.production || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base64 32)" >> .env.production
-     grep -q '^SEED_KEY=' .env.production || printf 'SEED_KEY=%s\n' "$(openssl rand -base64 32)" >> .env.production
-     ```
-
-     Как и `AGENT_TOKEN`, `deploy.sh` допишет в серверный `.env` недостающие из этих строк (и
-     откажется деплоить, если их нет и в `.env.production` или значение не проходит проверку).
-     **`PROFILE_KEY` не менять и не терять:** им зашифрованы все профили в RustFS; с другим ключом
-     агент их не расшифрует (вход Steam и сохранения пользователей пропадут). Хранить копию
-     `.env.production` в надёжном месте. Ключи RustFS менять только вместе (RustFS берёт корневые
-     ключи из окружения при каждом старте, данные тома сохраняются). `SEED_KEY` сменить можно:
-     оркестратор не расшифрует уже посеянные входы, удалит их (предупреждение `Steam login seed
-     cannot be decrypted, dropped` с `userId`) — эти пользователи один раз снова войдут по QR.
-
-   - Необязательно (не секреты): `CG_DATA_DIR` (по умолчанию `/raid/cloud-gaming`), `SCRATCH_DIR`
-     (по умолчанию `/home/brofrong/cloud-gaming-scratch`), `STEAM_CLIENT_DIR` (по умолчанию
-     `/home/brofrong/cloud-gaming-steam/client`), `STEAM_CLIENT_PARENT` (по умолчанию
-     `/home/brofrong/cloud-gaming-steam` — менять вместе со `STEAM_CLIENT_DIR`, см. выше), `ROLES`,
-     `S3_BUCKET` — без кавычек.
-
-   Каждый сервис получает только перечисленные для него в `deploy/compose.yaml` переменные (не весь
-   `.env`): `POSTGRES_PASSWORD` видит лишь `cg-postgres`, `AGENT_TOKEN` — оркестратор и агент,
-   `RUSTFS_*` — `cg-rustfs`, агент и одноразовый `cg-rustfs-bucket`, `PROFILE_KEY` — только агент,
-   `SEED_KEY` — только оркестратор.
-   Новая переменная сервера — добавить её туда же.
-
-2. `chmod 600 .env.production`.
-3. Скопировать на сервер **один раз**: `scp -p .env.production brofrong:~/cloud-gaming/.env`
-   (сначала `ssh brofrong 'mkdir -p ~/cloud-gaming'`, если каталога ещё нет).
-   `deploy.sh` этот файл не создаёт и никогда не перезаписывает — повторный деплой его не трогает.
-   Чтобы сменить секреты, копировать `.env` на сервер нужно вручную.
-
-## Шаг 2 (ручной шаг владельца сервера)
-
-1. **ingressi (Caddy)**, `https://proxy.brofrong.ru`: добавить хост `game.brofrong.ru` →
-   `http://cg-api:3000`, WebSocket включён (нужен для `/rpc`), HTTPS (Let's Encrypt).
-2. **Pocket ID**, `https://sso.brofrong.ru`: создать OIDC-клиента «Cloud Gaming» с callback-адресом
-   **`https://game.brofrong.ru/api/auth/callback/pocket-id`**.
-
-   > Важно: это путь `/api/auth/callback/pocket-id` (core-роут Better Auth `callback/:id` для
-   > `genericOAuth`), а **не** `/api/auth/oauth2/callback/pocket-id` — такой путь был бы неверным.
-   > См. Task 3 report, раздел Concerns, п. 1.
-
-   Создать группу `cloud_gaming_admins`, добавить в неё себя. Client id/secret этого клиента
-   записать в `POCKET_ID_CLIENT_ID`/`POCKET_ID_CLIENT_SECRET` в `.env.production` (шаг 1) ещё до
-   копирования `.env` на сервер.
-3. **Google** (Google Cloud Console): OAuth-клиент «Web application», redirect-адрес
-   **`https://game.brofrong.ru/api/auth/callback/google`** → `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`.
-4. **Яндекс** (oauth.yandex.ru): приложение с правами «доступ к адресу электронной почты, имени,
-   аватару», redirect-адрес **`https://game.brofrong.ru/api/auth/callback/yandex`** →
-   `YANDEX_CLIENT_ID`/`YANDEX_CLIENT_SECRET`.
-5. **Telegram** (BotFather → бот → «Login Widget»): Telegram теперь обычный OIDC-провайдер. В
-   списке разрешённых адресов (Allowed URLs) должен быть redirect
-   **`https://game.brofrong.ru/api/auth/callback/telegram`**; там же BotFather показывает Client ID и
-   Client Secret → `TELEGRAM_CLIENT_ID`/`TELEGRAM_CLIENT_SECRET`. Бот-токен серверу не нужен.
-
-   Ключи из пунктов 3–5 дописать в `.env.production` (шаг 1) и скопировать на сервер тем же `scp`;
-   провайдер без ключей просто не появится на `/login`, так что эти пункты можно делать по одному,
-   в любом порядке, и после первого деплоя.
-
-## Шаг 3 (один раз, перед первым деплоем этой работы): чистка старых Steam-пользователей
-
-Сейчас в проде есть пользователи, созданные Steam-входом: синтетическая почта `steam_<id>@…`,
-единственная привязка — Steam. Перенос таких записей не делается (их не жалко — см.
-`docs/superpowers/specs/2026-10-22-auth-login-and-linking-design.md`, §3.5); перед первым деплоем
-этой работы их нужно один раз удалить вручную, иначе привязка Steam к новому аккаунту не пройдёт
-(плагин ответит «Steam уже привязан к другому аккаунту»). Удаление `user` каскадом уносит его
-`account`, `session`, `sessions`, `user_games` и остальные таблицы с `user_id`, кроме `play_segments`
-(у неё `NO ACTION`) — её строки удаляются первыми в той же транзакции. Выполнено 2026-10-23.
-
-```sh
-ssh brofrong "cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env exec cg-postgres psql -U cg -d cloud_gaming -v ON_ERROR_STOP=1 -c \"BEGIN; DELETE FROM play_segments WHERE user_id IN (SELECT id FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam')); DELETE FROM \\\"user\\\" WHERE email LIKE 'steam\_%@%' AND id NOT IN (SELECT user_id FROM account WHERE provider_id <> 'steam'); COMMIT;\""
-```
-
-(`~/cloud-gaming` и контейнер `cg-postgres` на сервере уже есть — это чистка перед деплоем
-**новой версии входа**, а не перед первым деплоем вообще.) Если такой пользователь всё же
-останется, привязка его Steam даст ту же штатную ошибку плагина — данные никуда не переезжают,
-просто придётся почистить руками позже.
-
-## Шаг 4: деплой
-
-> **Внимание: GPU-слот начинает принимать настоящие сессии, как только `cg-agent` подключится к
-> оркестратору** (через несколько секунд после `up`). На brofrong одна GPU и один слот (UDP
-> `59000`). Если GPU или UDP `59000` в этот момент заняты (спайк `cg-spike` или что-то ещё),
-> первая же нажатая «Играть» упадёт с «Не удалось запустить игровой сервер» (`failed to bind host
-port 0.0.0.0:59000/udp: address already in use`). Поэтому спайк останавливать **до деплоя**, а не
-> только на время приёмки:
->
-> ```sh
-> ssh brofrong 'cd ~/cg-spike && docker compose stop'      # до ./deploy/deploy.sh
-> ssh brofrong 'ss -lun | grep ":59000 " || echo free'      # UDP 59000 свободен
-> ```
->
-> Вернуть спайк — только когда сессий нет (`docker ps --filter label=cg.session` пуст) и они не
-> ожидаются, потому что спайк снова займёт GPU и `59000`:
-> `ssh brofrong 'cd ~/cg-spike && docker compose start'`.
-
-```sh
-./deploy/deploy.sh
-```
-
-Скрипт:
-
-1. Отказывается деплоить (exit 1, печатает имена), если на сервере есть созданный или запущенный
-   контейнер с меткой `cg.session`, `cg.install` или `cg.template` (сборка клиента Steam).
-   Остановленные (`exited`, например `profile-unsaved`) не мешают.
-2. `rsync` репозитория в `brofrong:~/cloud-gaming` (без `node_modules`, `.git`, `spike/nv`,
-   `images/session/nv`, `.superpowers`, `docs`, `.env*` кроме `.env.example`).
-3. Проверяет, что `~/cloud-gaming/.env` существует на сервере (падает с понятной ошибкой, если нет
-   — см. шаг 1).
-4. Для каждого из `AGENT_TOKEN`, `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY`, `PROFILE_KEY`,
-   `SEED_KEY`: если в серверном `.env` нет такого ключа — дописывает строку из локального
-   `.env.production` (значение проверяется локально и идёт через stdin ssh, на экран не выводится).
-5. Каталоги хоста `CG_DATA_DIR/{library/steamapps,install-scratch}`, `SCRATCH_DIR`,
-   `STEAM_CLIENT_PARENT` и `STEAM_CLIENT_DIR/steamapps` — `mkdir -p` от `brofrong`, проверка
-   владельца uid 1000 (пути — из серверного `.env`, если там заданы
-   `CG_DATA_DIR`/`SCRATCH_DIR`/`STEAM_CLIENT_DIR`/`STEAM_CLIENT_PARENT`, иначе по умолчанию). Если
-   шаблон клиента Steam не собран — предупреждение (см. «Клиент Steam: пересборка шаблона»).
-6. Создаёт сеть `cg-sessions`, если её нет.
-7. Бакет профилей: `docker compose … run --rm cg-rustfs-bucket` — поднимает `cg-rustfs` (ждёт
-   healthy) и пиннутым `amazon/aws-cli:2.38.4` в сети `cg` создаёт `S3_BUCKET`, если его нет
-   (`head-bucket` → `create-bucket`; ключи — через окружение контейнера).
-8. `ssh brofrong 'cd ~/cloud-gaming && DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose -f deploy/compose.yaml --env-file .env up -d --build'`.
-
-Повторный запуск безопасен: пересобирает образ и перезапускает только сервисы `cg-*` этого
-compose-проекта; другие контейнеры на сервере не трогает. При живых сессиях и установках скрипт не
-запускается вовсе: пересоздание `cg-api` рвёт стримы, а `cg-agent` прерывает установки (они не
-продолжаются после перезапуска агента).
-
-Ручные команды compose на сервере — с теми же флагами, например:
-`cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env logs -f cg-orchestrator`.
-
-## Проверка после деплоя
-
-```sh
-curl -s https://game.brofrong.ru/healthz                       # ok
-ssh brofrong 'docker ps --filter name=cg- --format "{{.Names}} {{.Status}}"'
-  # cg-api, cg-postgres, cg-orchestrator, cg-rustfs — (healthy); cg-agent — Up
-ssh brofrong 'docker logs cg-agent 2>&1 | head -20'              # нет ошибок конфига (ROLES, каталоги, S3_*)
-ssh brofrong 'docker logs cg-orchestrator 2>&1 | grep "Agent connected"'   # workerId=brofrong
-ssh brofrong 'docker exec cg-postgres psql -U cg -d cloud_gaming -c "select id, public_ip, slots, last_seen_at from workers"'  # строка brofrong
-ssh brofrong 'docker ps --format "{{.Names}}" | sort'           # сравнить с «до» — число и состав
-                                                                  # остальных контейнеров не изменились
-curl -s https://game.brofrong.ru/ | head -c 200                 # отдаёт SPA (index.html)
-curl -s -X POST https://game.brofrong.ru/api/auth/steam/login \
-  -H 'Content-Type: application/json' -d '{"callbackURL":"/app"}'   # {"url":"https://steamcommunity.com/..."}
-```
-
-Реальный вход через Steam/Pocket ID не проверяется деплоем — это делает владелец сервера (шаг 5,
-ниже), у него есть нужные аккаунты.
 
 ## Сессии: как посмотреть
 
@@ -463,7 +404,7 @@ ssh brofrong 'ls /raid/cloud-gaming/library/steamapps /raid/cloud-gaming/library
 ssh brofrong 'ls -A /home/brofrong/cloud-gaming-scratch /raid/cloud-gaming/install-scratch'
 ssh brofrong 'docker volume ls --filter label=cg.session; docker volume ls --filter label=cg.install'
 # объекты профилей в RustFS (ключи — из .env через compose, на экран не выводятся)
-ssh brofrong 'cd ~/cloud-gaming && docker compose -f deploy/compose.yaml --env-file .env run --rm --no-deps --entrypoint aws cg-rustfs-bucket s3 ls --recursive s3://cg-profiles/'
+ssh brofrong 'cd ~/cloud-gaming && docker compose -f compose.main.yaml --env-file .env run --rm --no-deps --entrypoint aws cg-rustfs-bucket s3 ls --recursive s3://cg-profiles/'
 ```
 
 ## Профиль не сохранён (`profile-unsaved`)
@@ -548,9 +489,9 @@ D-состоянии (непрерываемое ожидание ядра, на
   `docker stop`, контейнер со слоями остаётся (см. «Профиль не сохранён»).
 - Пока идут повторы, сессия остаётся в heartbeat агента, и слот держится: на её GPU и UDP-порт
   новую сессию не назначат. Убрал — ближайший heartbeat без сессии освобождает слот. Если в это
-  время агент переподключился или перезапустился, в логе оркестратора будет `Stopping container
-  of an unknown session` для уже закончившейся сессии — это нормально: агент на этот `StopSession`
-  ничего не делает, уборка идёт своим чередом.
+  время агент переподключился или перезапустился, в логе оркестратора будет
+  `Stopping container of an unknown session` для уже закончившейся сессии — это нормально: агент
+  на этот `StopSession` ничего не делает, уборка идёт своим чередом.
 - Сразу после сохранения профиля агент пишет метку `<SCRATCH_DIR>/<id>/profile-saved`.
   Перезапуск агента такой контейнер (запущенный или нет) удалит вместе со слоями, профиль второй
   раз не снимается.
@@ -850,8 +791,8 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep "Seeded Steam login was not accep
 - входные файлы — 8 частей параллельно, каждая с докачкой после обрыва, на хосте склейка и сверка
   SHA-256. Канал с мака до brofrong бывает 5–20 КиБ/с на соединение и рвётся каждые 10–20 минут:
   одним потоком ROM 32 МиБ шёл около двух часов, scp падал по таймауту. Мак показывает лог сборки
-  и после обрыва переподключается. Связь пропала совсем — сборка доходит до конца там же (`ssh
-  brofrong tail -f ~/cg-games-src/<slug>.XXXXXX/build.log`). Ctrl-C на маке останавливает её;
+  и после обрыва переподключается. Связь пропала совсем — сборка доходит до конца там же
+  (`ssh brofrong tail -f ~/cg-games-src/<slug>.XXXXXX/build.log`). Ctrl-C на маке останавливает её;
 - образ `cg-game-builder-<slug>:<version>` из `builder.Dockerfile` (`FROM ${SESSION_IMAGE}`);
 - `docker run --rm --init --user 1000:1000` сборщика: `/game` (ro), `/input` (ro),
   `/out = <GAMES_DIR>/<slug>/.build-<version>`. После него входные файлы удаляются сразу. Если
@@ -873,7 +814,11 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep "Seeded Steam login was not accep
 
 ## Смена образа сессии: перетег и откат
 
-Агент берёт образ сессии по `SESSION_IMAGE` (по умолчанию `cg-session:550.163.01`). Новый образ
+С релизами через CI образ сессии приходит из реестра (`SESSION_IMAGE=…/cg-session:<драйвер>-<тег>`,
+его пишут `install.sh` и `deploy-stand.sh`); откат — прежний тег в `SESSION_IMAGE` и `up -d`.
+Ниже — прежний способ для опытов на стенде: образ, собранный на brofrong, и перетег.
+
+Агент берёт образ сессии по `SESSION_IMAGE`. Новый образ
 собирается рядом под своим тегом (`./deploy/build-session-image.sh brofrong <суффикс>` →
 `cg-session:<версия>-<суффикс>`) и становится рабочим перетегом — без деплоя и без перезапуска
 агента (каждая новая сессия создаётся из образа по тегу; идущие не затрагиваются). Только когда
@@ -935,26 +880,25 @@ ssh brofrong 'docker tag cg-session:550.163.01-nocc cg-session:550.163.01'
 
 Шаблон клиента Steam при откате не пересобирается.
 
-## Обновление драйвера NVIDIA на воркере
+## Обновление драйвера NVIDIA на игровом сервере
 
 Образ сессии содержит 32-битные библиотеки NVIDIA ровно версии драйвера хоста, а агент
-пробрасывает GBM-бэкенд по пути с версией. После обновления драйвера (и перезагрузки — её делает
-владелец):
+пробрасывает GBM-бэкенд по пути с версией. Порядок:
 
-1. `nvidia-smi` на воркере → новая версия `<ver>`; проверить, что
-   `/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.<ver>` существует.
-2. Пересобрать образ: `./deploy/build-session-image.sh` — сам определит версию, скачает и
-   распакует драйвер, соберёт `cg-session:<ver>`.
-3. Дописать или исправить в серверном `~/cloud-gaming/.env` (по строке, не выводя остальные
-   значения): `SESSION_IMAGE=cg-session:<ver>` и
-   `GBM_ALLOCATOR_PATH=/usr/lib/x86_64-linux-gnu/nvidia/current/libnvidia-allocator.so.<ver>`
-   (без них `compose.yaml` берёт значения по умолчанию для 550.163.01). Либо поменять значения по
-   умолчанию в `compose.yaml` и закоммитить.
-4. `./deploy/deploy.sh` — пересоздаст `cg-agent` с новыми переменными; новые сессии пойдут на
-   новый образ.
-5. Старый образ `cg-session:<старая версия>` удалить вручную (`docker rmi`), когда на нём нет сессий.
+1. Новая версия `<ver>` — строкой в `images/session/drivers.txt`, затем релиз (раздел «Релиз»): CI
+   соберёт `cg-session:<ver>-<тег>`.
+2. Без сессий и установок («На обслуживание») владелец обновляет драйвер и перезагружает сервер;
+   `nvidia-smi` → `<ver>`, есть `libnvidia-allocator.so.<ver>` (Debian —
+   `/usr/lib/x86_64-linux-gnu/nvidia/current/`, Ubuntu — `/usr/lib/x86_64-linux-gnu/`).
+3. Игровой сервер: в `/opt/cloud-gaming/.env` — `SESSION_IMAGE=…/cg-session:<ver>-<тег>` и
+   `GBM_ALLOCATOR_PATH=…/libnvidia-allocator.so.<ver>`, `docker pull <SESSION_IMAGE>`, `up -d`,
+   `apply-local`. Стенд: `GBM_ALLOCATOR_PATH` в `~/cloud-gaming/.env` (по умолчанию в
+   `compose.stand.yaml` — для 550.163.01), затем `./deploy/deploy-stand.sh <тег>` (сам определит
+   драйвер и `SESSION_IMAGE`).
+4. Шаблон клиента Steam от драйвера не зависит. Старые образы — `docker rmi`, когда на них нет
+   сессий.
 
-## Шаг 5 (приёмка, делает владелец)
+## Приёмка MVP (история, делал владелец)
 
 Главная страница после входа — `/app` (библиотека «Мои игры», «В тренде», «Из ящика», «Время»);
 старый `/library` перенаправляет на неё.
@@ -985,11 +929,12 @@ MVP-2 (сессии). На время приёмки спайк остановл
 - **Геймпад считается вводом.** Играть только геймпадом (клавиатуру и мышь не трогать) дольше N
   минут при фокусе на iframe стрима — «Вы ещё здесь?» появляться не должно.
 - **WebSocket через прокси.** Стрим идёт через `https://game.brofrong.ru/stream/<id>/` (сигналинг
-  Selkies — WebSocket через ingressi и `cg-api`); в консоли браузера нет ошибок WebSocket про
+  Selkies — WebSocket через ingressi, `cg-api` и тоннель агента); в консоли браузера нет ошибок
+  WebSocket про
   subprotocol (`Sec-WebSocket-Protocol`) и циклических переподключений.
 
 MVP-3 (магазин игр и профили). До деплоя: `./deploy/build-session-image.sh`,
-`./deploy/build-steam-client.sh`, затем `./deploy/deploy.sh`; сессий в начале нет.
+`./deploy/build-steam-client.sh`, затем деплой; сессий в начале нет.
 
 1. Vampire Survivors (нет в библиотеке) → «Устанавливаем N %» растёт → игра; профиль
    импортирован из `cg-home-*` — QR не спрашивали.

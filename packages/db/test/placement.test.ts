@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { WorkerHardware, WorkerStats } from "@cg/rpc";
+import type { WorkerHardware, WorkerStats, WorkerVersions } from "@cg/rpc";
 import { Effect } from "effect";
 import {
   Db,
@@ -23,6 +23,18 @@ const run = <A, E>(eff: Effect.Effect<A, E, Db>) =>
   Effect.runPromise(Effect.scoped(eff.pipe(Effect.provide(DbTest))));
 
 const GiB = 1024 ** 3;
+
+/**
+ * `workers.versions` с собранным клиентом Steam: без него Steam-игры воркеру
+ * не годятся (спека 2026-11-09 §5) — у фикстур ниже он есть, если тест не
+ * проверяет именно его отсутствие.
+ */
+const steamClientVersions: WorkerVersions = {
+  agentCommit: "test",
+  sessionImage: "cg-session:test",
+  driver: null,
+  steamClientBuiltAt: "2026-11-01T00:00:00.000Z",
+};
 
 /** Железо с одной картой и без дисков (не важны для `fitsRequirements`). */
 const hardware = (opts: {
@@ -130,6 +142,7 @@ describe("eligibleWorkers", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           classId: null,
         });
@@ -149,6 +162,7 @@ describe("eligibleWorkers", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           classId: weak.id,
           draining: true,
@@ -167,9 +181,27 @@ describe("eligibleWorkers", () => {
         const { weak, strong } = yield* setupClasses(db);
         yield* db.insert(games).values({ appId: 1, name: "G1" });
         yield* db.insert(workers).values([
-          { id: "wb", publicIp: "203.0.113.1", slots: 1, classId: weak.id },
-          { id: "wa", publicIp: "203.0.113.2", slots: 1, classId: strong.id },
-          { id: "wc", publicIp: "203.0.113.3", slots: 1, classId: strong.id },
+          {
+            id: "wb",
+            publicIp: "203.0.113.1",
+            versions: steamClientVersions,
+            slots: 1,
+            classId: weak.id,
+          },
+          {
+            id: "wa",
+            publicIp: "203.0.113.2",
+            versions: steamClientVersions,
+            slots: 1,
+            classId: strong.id,
+          },
+          {
+            id: "wc",
+            publicIp: "203.0.113.3",
+            versions: steamClientVersions,
+            slots: 1,
+            classId: strong.id,
+          },
         ]);
         // Требования с нулями — проверка порядка через `fitsRequirements`,
         // а не через правило «только сильнейший класс» (§2.3, своя группа тестов).
@@ -194,10 +226,17 @@ describe("eligibleWorkers", () => {
         const { weak, strong } = yield* setupClasses(db);
         yield* db.insert(games).values({ appId: 1, name: "G1" });
         yield* db.insert(workers).values([
-          { id: "w-weak", publicIp: "203.0.113.1", slots: 1, classId: weak.id },
+          {
+            id: "w-weak",
+            publicIp: "203.0.113.1",
+            versions: steamClientVersions,
+            slots: 1,
+            classId: weak.id,
+          },
           {
             id: "w-strong",
             publicIp: "203.0.113.2",
+            versions: steamClientVersions,
             slots: 1,
             classId: strong.id,
             draining: true,
@@ -217,10 +256,17 @@ describe("eligibleWorkers", () => {
         const { weak, strong } = yield* setupClasses(db);
         yield* db.insert(games).values({ appId: 1, name: "G1" });
         yield* db.insert(workers).values([
-          { id: "w-weak", publicIp: "203.0.113.1", slots: 1, classId: weak.id },
+          {
+            id: "w-weak",
+            publicIp: "203.0.113.1",
+            versions: steamClientVersions,
+            slots: 1,
+            classId: weak.id,
+          },
           {
             id: "w-strong",
             publicIp: "203.0.113.2",
+            versions: steamClientVersions,
             slots: 1,
             classId: strong.id,
           },
@@ -243,6 +289,7 @@ describe("eligibleWorkers", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           classId: strong.id,
           hardware: hardware({
@@ -292,6 +339,7 @@ describe("gameAvailable", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           roles: ["worker"],
           classId: weak.id,
@@ -310,6 +358,7 @@ describe("gameAvailable", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           roles: ["worker"],
           classId: weak.id,
@@ -329,6 +378,7 @@ describe("gameAvailable", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           roles: ["gamestore"],
           classId: weak.id,
@@ -356,6 +406,7 @@ describe("gameAvailable", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           roles: ["worker"],
           classId: weak.id,
@@ -410,6 +461,7 @@ describe("eligibleWorkers for own games", () => {
           {
             id: "w1",
             publicIp: "203.0.113.1",
+            versions: steamClientVersions,
             slots: 1,
             classId: weak.id,
             stats: statsWith([{ slug: "soh", version: "9.3.1-1" }]),
@@ -417,6 +469,7 @@ describe("eligibleWorkers for own games", () => {
           {
             id: "w2",
             publicIp: "203.0.113.2",
+            versions: steamClientVersions,
             slots: 1,
             classId: weak.id,
             stats: statsWith([]),
@@ -438,6 +491,7 @@ describe("eligibleWorkers for own games", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           classId: weak.id,
           stats: statsWith([{ slug: "soh", version: "9.3.1-0" }]),
@@ -458,6 +512,7 @@ describe("eligibleWorkers for own games", () => {
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
+          versions: steamClientVersions,
           slots: 1,
           classId: weak.id,
           stats: statsWith([]),
@@ -466,6 +521,79 @@ describe("eligibleWorkers for own games", () => {
           workerIds: ["w1"],
         });
         expect(eligible.map((w) => w.id)).toEqual(["w1"]);
+      }),
+    ));
+});
+
+describe("eligibleWorkers and the Steam client template (спека 2026-11-09 §5)", () => {
+  it("steam game skips workers without a built Steam client", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values([
+          {
+            id: "w-null",
+            publicIp: "203.0.113.1",
+            slots: 1,
+            classId: weak.id,
+            versions: { ...steamClientVersions, steamClientBuiltAt: null },
+          },
+          // Агент ещё не подключался — версий нет вовсе.
+          { id: "w-none", publicIp: "203.0.113.2", slots: 1, classId: weak.id },
+          {
+            id: "w-ready",
+            publicIp: "203.0.113.3",
+            slots: 1,
+            classId: weak.id,
+            versions: steamClientVersions,
+          },
+        ]);
+        const eligible = yield* eligibleWorkers("u1", 1, {
+          workerIds: ["w-null", "w-none", "w-ready"],
+        });
+        expect(eligible.map((w) => w.id)).toEqual(["w-ready"]);
+      }),
+    ));
+
+  it("own game does not need the Steam client", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* setupOwnGame(db, "9.3.1-1");
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          classId: weak.id,
+          versions: { ...steamClientVersions, steamClientBuiltAt: null },
+          stats: statsWith([{ slug: "soh", version: "9.3.1-1" }]),
+        });
+        const eligible = yield* eligibleWorkers("u1", OWN_APP_ID, {
+          workerIds: ["w1"],
+        });
+        expect(eligible.map((w) => w.id)).toEqual(["w1"]);
+      }),
+    ));
+
+  it("gameAvailable: a recent worker without the Steam client does not make a Steam game available", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const { weak } = yield* setupClasses(db);
+        yield* db.insert(games).values({ appId: 1, name: "G1" });
+        yield* db.insert(workers).values({
+          id: "w1",
+          publicIp: "203.0.113.1",
+          slots: 1,
+          roles: ["worker"],
+          classId: weak.id,
+          lastSeenAt: new Date(),
+          versions: { ...steamClientVersions, steamClientBuiltAt: null },
+        });
+        expect(yield* gameAvailable("u1", 1, new Date())).toBe(false);
       }),
     ));
 });

@@ -57,8 +57,8 @@ const adminDeleteGameAtom = Atom.fn((arg: unknown) => {
   deleteCalls.push(arg);
   return Effect.succeed("started" as const);
 });
-const adminDeleteGameArgs = (appId: number) => ({
-  payload: { appId },
+const adminDeleteGameArgs = (workerId: string, appId: number) => ({
+  payload: { workerId, appId },
   reactivityKeys: ["admin"],
 });
 
@@ -226,6 +226,7 @@ const admin: CurrentUserShape = {
 const game = (
   patch: Partial<AdminGame> & { appId: number; name: string },
 ): AdminGame => ({
+  workerId: "w1",
   sizeBytes: 100 * 1024 * 1024,
   installedAt: new Date("2026-10-27T10:00:00Z").toISOString(),
   lastLaunchAt: new Date("2026-10-27T12:00:00Z").toISOString(),
@@ -279,6 +280,7 @@ describe("GamesTab", () => {
     activeSessions: 1,
   });
   const peglin = game({
+    workerId: "msk-2",
     appId: 1296610,
     name: "Peglin",
     sizeBytes: 317 * 1024 * 1024,
@@ -345,7 +347,46 @@ describe("GamesTab", () => {
     expect(within(peglinRow).queryByText(/Не удалось удалить/)).toBeNull();
   });
 
-  it("opens the confirm dialog on click and sends the appId on confirm", async () => {
+  it("shows the server of each row", async () => {
+    renderGames({ games: [vampire, peglin], service: null });
+
+    const peglinRow = (await screen.findByText("Peglin")).closest("tr");
+    if (peglinRow === null) throw new Error("row not found");
+    expect(within(peglinRow).getByText("msk-2")).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Сервер" })).toBeTruthy();
+  });
+
+  it("expanding one server's row does not expand the same game's row on another server", async () => {
+    // Та же игра на двух серверах — две строки с одним appId, но разным workerId:
+    // ключ раскрытой строки должен различать их (была ошибка — ключ был просто appId,
+    // раскрытие одной строки раскрывало требования под обеими).
+    requirementsStore[1794681] = {
+      requirements: null,
+      rows: [],
+      overall: { sessions: 0, vramP95: null, ramP95: null, cpuP95: null },
+    };
+    const onW1 = game({ appId: 1794681, name: "Dup Game", workerId: "w1" });
+    const onW2 = game({ appId: 1794681, name: "Dup Game", workerId: "w2" });
+    renderGames({ games: [onW1, onW2], service: null });
+
+    const [row1, row2] = (await screen.findAllByText("Dup Game")).map((el) =>
+      el.closest("tr"),
+    );
+    if (row1 === null || row1 === undefined || row2 === null || row2 === undefined) {
+      throw new Error("row not found");
+    }
+
+    fireEvent.click(row1);
+
+    expect(row1.getAttribute("aria-expanded")).toBe("true");
+    expect(row2.getAttribute("aria-expanded")).toBe("false");
+    // Панель требований открылась ровно один раз (под строкой w1), а не под обеими.
+    expect(
+      screen.getAllByText("нет данных, запускается только на самом сильном классе"),
+    ).toHaveLength(1);
+  });
+
+  it("opens the confirm dialog on click and sends the server and appId on confirm", async () => {
     renderGames({
       games: [vampire, peglin, katana, balatro],
       service: null,
@@ -357,7 +398,9 @@ describe("GamesTab", () => {
     const deleteButton = within(row).getByRole("button", { name: "Удалить" });
     fireEvent.click(deleteButton);
 
-    expect(await screen.findByText("Удалить Peglin?")).toBeTruthy();
+    expect(
+      await screen.findByText("Удалить Peglin с сервера msk-2?"),
+    ).toBeTruthy();
     const dialog = screen.getByRole("alertdialog");
     expect(within(dialog).getByText(/317 МБ/)).toBeTruthy();
 
@@ -366,7 +409,7 @@ describe("GamesTab", () => {
 
     await waitFor(() => {
       expect(deleteCalls.at(-1)).toEqual({
-        payload: { appId: 1296610 },
+        payload: { workerId: "msk-2", appId: 1296610 },
         reactivityKeys: ["admin"],
       });
     });
@@ -455,9 +498,7 @@ describe("GamesTab own games section", () => {
 
     const row = (await screen.findByText("Third Port")).closest("tr");
     if (row === null) throw new Error("row not found");
-    fireEvent.click(
-      within(row).getByRole("button", { name: "Требования" }),
-    );
+    fireEvent.click(within(row).getByRole("button", { name: "Требования" }));
 
     expect(
       await screen.findByText(

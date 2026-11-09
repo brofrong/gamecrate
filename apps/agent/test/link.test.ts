@@ -5,6 +5,7 @@ import {
   AgentNotConnected,
   type AgentReport,
   AgentRpcs,
+  AgentUnauthorized,
   type ProfileCommit,
   type WorkerHardware,
   type WorkerStats,
@@ -14,6 +15,7 @@ import { BunHttpServer } from "@effect/platform-bun";
 import {
   type Cause,
   Effect,
+  Exit,
   Fiber,
   Layer,
   Logger,
@@ -39,10 +41,11 @@ import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { TunnelClient, type TunnelClientShape } from "../src/TunnelClient";
 import { WorkerMonitor, type WorkerMonitorShape } from "../src/WorkerMonitor";
 import { testConfig } from "./fakes";
 
-const token = "link-test-token-0123456789abcdef!";
+const token = `cgw_${"a".repeat(43)}`;
 
 /** Фейковый оркестратор: журнал подключений и отчётов, очереди команд. */
 const server = {
@@ -158,7 +161,7 @@ afterAll(() => runtime.dispose());
 const config = (): AgentConfigValues =>
   testConfig({
     orchestratorUrl: `ws://127.0.0.1:${port}/agent`,
-    agentToken: Redacted.make(token),
+    workerToken: Redacted.make(token),
     slots: 1,
     sessionImage: "cg-session:test",
     gbmAllocatorPath: Option.none(),
@@ -247,6 +250,18 @@ describe("OrchestratorLink", () => {
     expect(report("Heartbeat")).toBe(false);
   });
 
+  it("isUnauthorized finds AgentUnauthorized among the connection's failures", () => {
+    expect(
+      OrchestratorLink.isUnauthorized(Exit.fail(new AgentUnauthorized())),
+    ).toBe(true);
+    expect(
+      OrchestratorLink.isUnauthorized(Exit.fail(new AgentNotConnected())),
+    ).toBe(false);
+    expect(OrchestratorLink.isUnauthorized(Exit.succeed(undefined))).toBe(
+      false,
+    );
+  });
+
   it(
     "connects with bearer and snapshot, routes commands, sends reports in order, commits profiles, reconnects",
     () =>
@@ -275,6 +290,15 @@ describe("OrchestratorLink", () => {
             },
           ]),
           reports,
+          hasStream: () => true,
+        };
+        /** Тоннели: `open` не кончается (WebSocket стрима живёт всю игру). */
+        const tunnelsOpened: Array<string> = [];
+        const tunnels: TunnelClientShape = {
+          open: (command) =>
+            Effect.sync(() => void tunnelsOpened.push(command.tunnelId)).pipe(
+              Effect.andThen(Effect.never),
+            ),
         };
         const installed: Array<AgentCommand> = [];
         const installReports = yield* Queue.unbounded<AgentReport>();
@@ -295,6 +319,7 @@ describe("OrchestratorLink", () => {
         yield* Layer.build(
           OrchestratorLink.layer.pipe(
             Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+            Layer.provide(Layer.succeed(TunnelClient, tunnels)),
             Layer.provide(Layer.succeed(Installer, installer)),
             Layer.provide(
               Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),
@@ -306,7 +331,10 @@ describe("OrchestratorLink", () => {
 
         yield* waitUntil(() => server.connects.length === 1);
         expect(server.authorizations.at(-1)).toBe(`Bearer ${token}`);
+        // Токен в agent.connect — тот же, что на апгрейде.
+        expect(Redacted.value(server.connects[0]!.token)).toBe(token);
         expect(server.connects[0]).toEqual({
+          token: expect.anything(),
           workerId: "w1",
           publicIp: "203.0.113.7",
           slots: 1,
@@ -356,6 +384,17 @@ describe("OrchestratorLink", () => {
         yield* waitUntil(() => handled.length === 1);
         expect(handled).toEqual([start]);
 
+        // `OpenTunnel` — TunnelClient в фоне: незакончившийся тоннель не
+        // держит следующие команды.
+        const stop: AgentCommand = { _tag: "StopSession", sessionId: "s1" };
+        yield* Queue.offerAll(server.streams[0]!, [
+          { _tag: "OpenTunnel", tunnelId: "t1", sessionId: "s1" },
+          stop,
+        ]);
+        yield* waitUntil(() => handled.length === 2);
+        expect(tunnelsOpened).toEqual(["t1"]);
+        expect(handled).toEqual([start, stop]);
+
         // Команды установки — установщику, не супервизору сессий.
         const installGame: AgentCommand = {
           _tag: "InstallGame",
@@ -377,7 +416,7 @@ describe("OrchestratorLink", () => {
           { _tag: "CancelInstall", jobId: "j1" },
           { _tag: "DeleteGame", appId: 2379780 },
         ]);
-        expect(handled).toEqual([start]);
+        expect(handled).toEqual([start, stop]);
 
         yield* Queue.offerAll(reports, [
           { _tag: "StreamReady", sessionId: "s1", streamUrl: "u" },
@@ -478,6 +517,7 @@ describe("OrchestratorLink", () => {
         handle: () => Effect.void,
         snapshot: Effect.succeed([]),
         reports,
+        hasStream: () => false,
       };
       const installed: Array<AgentCommand> = [];
       const installReports = yield* Queue.unbounded<AgentReport>();
@@ -493,6 +533,9 @@ describe("OrchestratorLink", () => {
       yield* Layer.build(
         OrchestratorLink.layer.pipe(
           Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+          Layer.provide(
+            Layer.succeed(TunnelClient, { open: () => Effect.void }),
+          ),
           Layer.provide(Layer.succeed(Installer, installer)),
           Layer.provide(
             Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),

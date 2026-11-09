@@ -93,6 +93,42 @@ export const rpcStub = () => ({
     payload: { workerId, classId },
     reactivityKeys: adminKeys,
   }),
+  adminRegionsAtom: query(),
+  adminCreateRegionAtom: mutation(),
+  adminCreateRegionArgs: (code: string, name: string) => ({
+    payload: { code, name },
+    reactivityKeys: adminKeys,
+  }),
+  adminUpdateRegionAtom: mutation(),
+  adminUpdateRegionArgs: (id: string, name: string, position: number) => ({
+    payload: { id, name, position },
+    reactivityKeys: adminKeys,
+  }),
+  adminDeleteRegionAtom: mutation(),
+  adminDeleteRegionArgs: (id: string) => ({
+    payload: { id },
+    reactivityKeys: adminKeys,
+  }),
+  adminCreateWorkerAtom: mutation(),
+  adminCreateWorkerArgs: (id: string, regionId: string) => ({
+    payload: { id, regionId },
+    reactivityKeys: adminKeys,
+  }),
+  adminIssueWorkerCodeAtom: mutation(),
+  adminIssueWorkerCodeArgs: (workerId: string) => ({
+    payload: { workerId },
+    reactivityKeys: adminKeys,
+  }),
+  adminRevokeWorkerAtom: mutation(),
+  adminRevokeWorkerArgs: (workerId: string) => ({
+    payload: { workerId },
+    reactivityKeys: adminKeys,
+  }),
+  adminSetWorkerRegionAtom: mutation(),
+  adminSetWorkerRegionArgs: (workerId: string, regionId: string | null) => ({
+    payload: { workerId, regionId },
+    reactivityKeys: adminKeys,
+  }),
   adminGamesAtom: query(),
   adminDeleteGameAtom: mutation(),
   adminDeleteGameArgs: (appId: number) => ({

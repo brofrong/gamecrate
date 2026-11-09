@@ -1,10 +1,12 @@
-# Образ приложения (тег cloud-gaming/cg-api): ставит зависимости (включая патчи drizzle-orm и
+# Образ приложения (cg-app:<тег> в реестре проекта): ставит зависимости (включая патчи drizzle-orm и
 # better-auth-steam из patches/), собирает SPA (apps/web/dist). Все сервисы запускаются напрямую
 # через bun из исходников (без транспиляции): по умолчанию api, а cg-orchestrator и cg-agent в
-# compose.yaml переопределяют `command` (apps/orchestrator/src/main.ts, apps/agent/src/main.ts).
+# compose.main.yaml/compose.worker.yaml переопределяют `command` (apps/orchestrator/src/main.ts,
+# apps/agent/src/main.ts). Копия репозитория в образе нужна и оркестратору: он отдаёт из неё
+# deploy/worker/install.sh и другие файлы установки игрового сервера (GET /agent/install.sh).
 #
-# Собирается из корня репозитория: docker compose (см. compose.yaml) передаёт
-# context: .. — так Dockerfile видит apps/, packages/ и patches/.
+# Собирается из корня репозитория (CI, .gitlab-ci.yml: docker build -f deploy/Dockerfile .) —
+# так Dockerfile видит apps/, packages/ и patches/.
 FROM oven/bun:1.4
 
 WORKDIR /app
@@ -31,8 +33,18 @@ COPY . .
 # они запускаются прямо из исходников через bun).
 RUN bun run build
 
+# CG_COMMIT и CG_VERSION зашивает CI (.gitlab-ci.yml, джоба build-app) на сборке по тегу:
+# --build-arg CG_COMMIT=$CI_COMMIT_SHORT_SHA --build-arg CG_VERSION=$CI_COMMIT_TAG. Как ENV они
+# становятся умолчанием для cg-api/cg-orchestrator/cg-agent (apps/*/src/config.ts), которое видно
+# в блоке «Версии» админки без переменных окружения в compose; локальная сборка без --build-arg
+# даёт те же значения, что и раньше ("unknown"/"dev").
+ARG CG_COMMIT=unknown
+ARG CG_VERSION=dev
+
 ENV PORT=3000 \
-    WEB_DIST_DIR=/app/apps/web/dist
+    WEB_DIST_DIR=/app/apps/web/dist \
+    CG_COMMIT=${CG_COMMIT} \
+    CG_VERSION=${CG_VERSION}
 
 EXPOSE 3000
 

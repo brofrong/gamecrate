@@ -106,6 +106,13 @@ const seed = Effect.gen(function* () {
     roles: ["worker"],
     classId: cls!.id,
     lastSeenAt: new Date(),
+    // Клиент Steam собран — без него Steam-игры недоступны (спека 2026-11-09 §5).
+    versions: {
+      agentCommit: "test",
+      sessionImage: "cg-session:test",
+      driver: null,
+      steamClientBuiltAt: "2026-11-01T00:00:00.000Z",
+    },
   });
 });
 

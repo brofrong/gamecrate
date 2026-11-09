@@ -5,9 +5,12 @@ import {
   account,
   Db,
   games,
+  regions,
   sessions,
+  sha256Hex,
   steamLogins,
   user,
+  workerCredentials,
   workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
@@ -136,6 +139,139 @@ describe("admin.workers", () => {
       "offline-worker",
       "online-worker",
     ]);
+  });
+
+  it("list shows regionId, enrolled and pendingCode", async () => {
+    const now = new Date();
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const [region] = yield* db
+          .insert(regions)
+          .values({ code: "spb", name: "Питер" })
+          .returning({ id: regions.id });
+        yield* insertWorker(db, { id: "no-creds", regionId: region!.id });
+        yield* insertWorker(db, { id: "enrolled-worker" });
+        yield* db.insert(workerCredentials).values({
+          workerId: "enrolled-worker",
+          tokenHash: sha256Hex("cgw_token"),
+          tokenIssuedAt: now,
+        });
+        yield* insertWorker(db, { id: "pending-worker" });
+        yield* db.insert(workerCredentials).values({
+          workerId: "pending-worker",
+          enrollCodeHash: sha256Hex("CODE"),
+          enrollExpiresAt: new Date(now.getTime() + 60_000),
+        });
+        yield* insertWorker(db, { id: "expired-code-worker" });
+        yield* db.insert(workerCredentials).values({
+          workerId: "expired-code-worker",
+          enrollCodeHash: sha256Hex("EXPIRED-CODE"),
+          enrollExpiresAt: new Date(now.getTime() - 60_000),
+        });
+        yield* insertWorker(db, { id: "revoked-worker" });
+        yield* db.insert(workerCredentials).values({
+          workerId: "revoked-worker",
+          tokenHash: sha256Hex("cgw_revoked_token"),
+          tokenIssuedAt: now,
+          revokedAt: now,
+        });
+
+        const rpc = yield* client;
+        const list = yield* rpc["admin.workers.list"]();
+        return { list, regionId: region!.id };
+      }),
+    );
+    const byId = new Map(result.list.map((w) => [w.id, w]));
+    expect(byId.get("no-creds")?.regionId).toBe(result.regionId);
+    expect(byId.get("no-creds")?.enrolled).toBe(false);
+    expect(byId.get("no-creds")?.pendingCode).toBeNull();
+    expect(byId.get("enrolled-worker")?.enrolled).toBe(true);
+    expect(byId.get("enrolled-worker")?.pendingCode).toBeNull();
+    expect(byId.get("pending-worker")?.enrolled).toBe(false);
+    expect(byId.get("pending-worker")?.pendingCode).not.toBeNull();
+    expect(byId.get("expired-code-worker")?.pendingCode).toBeNull();
+    expect(byId.get("revoked-worker")?.enrolled).toBe(false);
+  });
+
+  it("setRegion sets, clears to null, and returns false for unknown worker", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const [region] = yield* db
+          .insert(regions)
+          .values({ code: "spb", name: "Питер" })
+          .returning({ id: regions.id });
+        yield* insertWorker(db, { id: "w1" });
+        const rpc = yield* client;
+
+        const setOk = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: region!.id,
+        });
+        const [afterSet] = yield* db
+          .select({ regionId: workers.regionId })
+          .from(workers)
+          .where(eq(workers.id, "w1"));
+
+        const clearOk = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: null,
+        });
+        const [afterClear] = yield* db
+          .select({ regionId: workers.regionId })
+          .from(workers)
+          .where(eq(workers.id, "w1"));
+
+        const unknown = yield* rpc["admin.workers.setRegion"]({
+          workerId: "no-such-worker",
+          regionId: region!.id,
+        });
+        return {
+          setOk,
+          afterSet,
+          clearOk,
+          afterClear,
+          unknown,
+          regionId: region!.id,
+        };
+      }),
+    );
+    expect(result.setOk).toBe(true);
+    expect(result.afterSet?.regionId).toBe(result.regionId);
+    expect(result.clearOk).toBe(true);
+    expect(result.afterClear?.regionId).toBeNull();
+    expect(result.unknown).toBe(false);
+  });
+
+  it("setRegion returns false for an unknown or non-uuid region and keeps the old one", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        const [region] = yield* db
+          .insert(regions)
+          .values({ code: "spb", name: "Питер" })
+          .returning({ id: regions.id });
+        yield* insertWorker(db, { id: "w1", regionId: region!.id });
+        const rpc = yield* client;
+        const unknown = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: crypto.randomUUID(),
+        });
+        const malformed = yield* rpc["admin.workers.setRegion"]({
+          workerId: "w1",
+          regionId: "not-a-uuid",
+        });
+        const [after] = yield* db
+          .select({ regionId: workers.regionId })
+          .from(workers)
+          .where(eq(workers.id, "w1"));
+        return { unknown, malformed, after, regionId: region!.id };
+      }),
+    );
+    expect(result.unknown).toBe(false);
+    expect(result.malformed).toBe(false);
+    expect(result.after?.regionId).toBe(result.regionId);
   });
 
   it("setDraining persists and returns false for unknown worker", async () => {

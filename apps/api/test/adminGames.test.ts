@@ -1,5 +1,5 @@
-// RPC `admin.games.*`/`admin.installs.*`: игры общей библиотеки (список,
-// удаление) и задачи установки (список, отмена), по образцу adminWorkers.test.ts.
+// RPC `admin.games.*`/`admin.installs.*`: игры библиотек серверов (список,
+// удаление с сервера) и задачи установки (список, отмена), по образцу adminWorkers.test.ts.
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import {
@@ -14,7 +14,7 @@ import {
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type CurrentUserShape, AdminRpcs, OWN_APP_ID_MIN } from "@cg/rpc";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
 import { AdminRpcHandlers } from "../src/admin/rpc";
@@ -103,6 +103,7 @@ const insertSession = (
 const insertGamestoreApp = (
   db: Db["Service"],
   values: Partial<typeof gamestoreApps.$inferInsert> & {
+    workerId: string;
     appId: number;
     sizeBytes: number;
     buildId: string;
@@ -128,32 +129,59 @@ const insertOwnGame = (
 ) => db.insert(ownGames).values(values);
 
 describe("admin.games", () => {
+  /**
+   * Библиотека своя у каждого сервера (спека 2026-11-09 §5): на w1 (роль
+   * gamestore) стоят Balatro и Peglin, w2 — второй сервер без игр.
+   */
   const seedGames = (db: Db["Service"]) =>
     Effect.gen(function* () {
       yield* insertUser(db, "u1", "Alice");
       yield* insertUser(db, "u2", "Bob");
       yield* insertGame(db, 100, "Balatro");
       yield* insertGame(db, 200, "Peglin");
+      yield* insertWorker(db, { id: "w1", roles: ["worker", "gamestore"] });
+      yield* insertWorker(db, { id: "w2", roles: ["worker", "gamestore"] });
       yield* insertGamestoreApp(db, {
+        workerId: "w1",
         appId: 100,
         sizeBytes: 64 * 1024 * 1024,
         buildId: "b1",
       });
       yield* insertGamestoreApp(db, {
+        workerId: "w1",
         appId: 200,
         sizeBytes: 317 * 1024 * 1024,
         buildId: "b2",
       });
     });
 
-  it("games.list: launches/activeSessions по сессиям, служебные пакеты из стат воркера", async () => {
+  /** `deleting_at` строки (сервер, игра). */
+  const deletingAtOf = (db: Db["Service"], workerId: string, appId: number) =>
+    db
+      .select({ deletingAt: gamestoreApps.deletingAt })
+      .from(gamestoreApps)
+      .where(
+        and(
+          eq(gamestoreApps.workerId, workerId),
+          eq(gamestoreApps.appId, appId),
+        ),
+      )
+      .pipe(Effect.map(([row]) => row?.deletingAt));
+
+  it("games.list: строка на пару сервер–игра, запуски/активные сессии по серверу, служебные пакеты из стат воркера", async () => {
     const now = new Date();
     const result = await run(
       Effect.gen(function* () {
         const db = yield* Db;
         yield* seedGames(db);
-        yield* insertWorker(db, { id: "w1" });
-        // 3 размещённых сессии Peglin (последняя — lastLaunchAt).
+        // Peglin стоит и на w2.
+        yield* insertGamestoreApp(db, {
+          workerId: "w2",
+          appId: 200,
+          sizeBytes: 300 * 1024 * 1024,
+          buildId: "b2",
+        });
+        // 3 сессии Peglin на w1 (последняя — lastLaunchAt).
         yield* insertSession(db, {
           id: "11111111-1111-1111-1111-111111111111",
           userId: "u1",
@@ -185,7 +213,19 @@ describe("admin.games", () => {
           state: "playing",
           createdAt: new Date(now.getTime() - 1000),
         });
-        // Queued без воркера: не считается в launches, но считается в activeSessions.
+        // Одна завершённая сессия Peglin на w2.
+        yield* insertSession(db, {
+          id: "55555555-5555-5555-5555-555555555555",
+          userId: "u2",
+          appId: 200,
+          workerId: "w2",
+          slot: 0,
+          state: "ended",
+          createdAt: new Date(now.getTime() - 5000),
+          endedAt: new Date(now.getTime() - 4000),
+          slotReleasedAt: new Date(now.getTime() - 4000),
+        });
+        // Queued без воркера — ни к одному серверу не относится.
         yield* insertSession(db, {
           id: "44444444-4444-4444-4444-444444444444",
           userId: "u2",
@@ -193,40 +233,58 @@ describe("admin.games", () => {
           state: "queued",
           createdAt: now,
         });
-        yield* insertWorker(db, {
-          id: "gamestore-1",
-          roles: ["gamestore"],
-          statsAt: now,
-          stats: {
-            cpuPercent: 1,
-            memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
-            gpus: [],
-            filesystems: [],
-            uptimeSeconds: 0,
-            library: [
-              {
-                appId: 1493710,
-                name: "Proton Experimental",
-                sizeBytes: 1_610_612_736,
-              },
-            ],
-          } as never,
-        });
+        // Библиотека w1 (первый по id воркер gamestore): Balatro — его игра,
+        // Proton — служебный пакет.
+        yield* db
+          .update(workers)
+          .set({
+            statsAt: now,
+            stats: {
+              cpuPercent: 1,
+              memory: { totalBytes: 0, usedBytes: 0, cacheBytes: 0 },
+              gpus: [],
+              filesystems: [],
+              uptimeSeconds: 0,
+              library: [
+                {
+                  appId: 1493710,
+                  name: "Proton Experimental",
+                  sizeBytes: 1_610_612_736,
+                },
+                { appId: 100, name: "Balatro", sizeBytes: 64 * 1024 * 1024 },
+              ],
+            } as never,
+          })
+          .where(eq(workers.id, "w1"));
 
         const rpc = yield* client;
         return yield* rpc["admin.games.list"]();
       }),
     );
     // По размеру убыв.
-    expect(result.games.map((g) => g.appId)).toEqual([200, 100]);
-    const peglin = result.games.find((g) => g.appId === 200);
-    expect(peglin?.launches).toBe(3);
-    expect(peglin?.activeSessions).toBe(2);
-    expect(peglin?.lastLaunchAt).toBe(
+    expect(result.games.map((g) => [g.workerId, g.appId])).toEqual([
+      ["w1", 200],
+      ["w2", 200],
+      ["w1", 100],
+    ]);
+    const peglinW1 = result.games.find(
+      (g) => g.workerId === "w1" && g.appId === 200,
+    );
+    expect(peglinW1?.launches).toBe(3);
+    expect(peglinW1?.activeSessions).toBe(1);
+    expect(peglinW1?.lastLaunchAt).toBe(
       new Date(now.getTime() - 1000).toISOString(),
     );
-    expect(peglin?.installing).toBe(false);
-    expect(peglin?.deleting).toBe(false);
+    expect(peglinW1?.installing).toBe(false);
+    expect(peglinW1?.deleting).toBe(false);
+    const peglinW2 = result.games.find(
+      (g) => g.workerId === "w2" && g.appId === 200,
+    );
+    expect(peglinW2?.launches).toBe(1);
+    expect(peglinW2?.activeSessions).toBe(0);
+    expect(peglinW2?.lastLaunchAt).toBe(
+      new Date(now.getTime() - 5000).toISOString(),
+    );
     const balatro = result.games.find((g) => g.appId === 100);
     expect(balatro?.launches).toBe(0);
     expect(balatro?.activeSessions).toBe(0);
@@ -268,6 +326,7 @@ describe("admin.games", () => {
           .where(eq(gamestoreApps.appId, 100));
 
         const started = yield* (yield* client)["admin.games.delete"]({
+          workerId: "w1",
           appId: 100,
         });
         const [row] = yield* db
@@ -286,30 +345,30 @@ describe("admin.games", () => {
       Effect.gen(function* () {
         const db = yield* Db;
         yield* seedGames(db);
+        const rpc = yield* client;
 
-        const started = yield* (yield* client)["admin.games.delete"]({
+        const started = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
           appId: 100,
         });
-        const [rowAfterFirst] = yield* db
-          .select({ deletingAt: gamestoreApps.deletingAt })
-          .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, 100));
+        const deletingAtFirst = yield* deletingAtOf(db, "w1", 100);
         yield* Effect.sleep("10 millis");
-        const startedAgain = yield* (yield* client)["admin.games.delete"]({
+        const startedAgain = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
           appId: 100,
         });
-        const [rowAfterSecond] = yield* db
-          .select({ deletingAt: gamestoreApps.deletingAt })
-          .from(gamestoreApps)
-          .where(eq(gamestoreApps.appId, 100));
+        const deletingAtSecond = yield* deletingAtOf(db, "w1", 100);
 
         yield* insertSession(db, {
           id: "11111111-1111-1111-1111-111111111111",
           userId: "u1",
           appId: 200,
+          workerId: "w1",
+          slot: 0,
           state: "playing",
         });
-        const inUseBySession = yield* (yield* client)["admin.games.delete"]({
+        const inUseBySession = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
           appId: 200,
         });
 
@@ -317,14 +376,22 @@ describe("admin.games", () => {
           id: "job-1",
           appId: 100,
           userId: "u1",
+          workerId: "w1",
           state: "queued",
         });
-        const inUseByJob = yield* (yield* client)["admin.games.delete"]({
+        const inUseByJob = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
           appId: 100,
         });
 
-        const notFound = yield* (yield* client)["admin.games.delete"]({
+        const notFound = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
           appId: 1493710,
+        });
+        // Игра есть, но не на этом сервере.
+        const notOnServer = yield* rpc["admin.games.delete"]({
+          workerId: "w2",
+          appId: 100,
         });
 
         return {
@@ -333,8 +400,9 @@ describe("admin.games", () => {
           inUseBySession,
           inUseByJob,
           notFound,
-          deletingAtFirst: rowAfterFirst?.deletingAt,
-          deletingAtSecond: rowAfterSecond?.deletingAt,
+          notOnServer,
+          deletingAtFirst,
+          deletingAtSecond,
         };
       }),
     );
@@ -347,6 +415,72 @@ describe("admin.games", () => {
     expect(result.inUseBySession).toBe("inUse");
     expect(result.inUseByJob).toBe("inUse");
     expect(result.notFound).toBe("notFound");
+    expect(result.notOnServer).toBe("notFound");
+  });
+
+  it("delete is refused while the game runs on that worker", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGames(db);
+        yield* insertGamestoreApp(db, {
+          workerId: "w2",
+          appId: 200,
+          sizeBytes: 317 * 1024 * 1024,
+          buildId: "b2",
+        });
+        // Peglin играют на w1; на w2 его ставят — задача другого сервера.
+        yield* insertSession(db, {
+          id: "11111111-1111-1111-1111-111111111111",
+          userId: "u1",
+          appId: 200,
+          workerId: "w1",
+          slot: 0,
+          state: "playing",
+        });
+        const rpc = yield* client;
+
+        const onW1 = yield* rpc["admin.games.delete"]({
+          workerId: "w1",
+          appId: 200,
+        });
+        const onW2 = yield* rpc["admin.games.delete"]({
+          workerId: "w2",
+          appId: 200,
+        });
+        return {
+          onW1,
+          onW2,
+          deletingW1: yield* deletingAtOf(db, "w1", 200),
+          deletingW2: yield* deletingAtOf(db, "w2", 200),
+        };
+      }),
+    );
+    expect(result.onW1).toBe("inUse");
+    expect(result.deletingW1).toBeNull();
+    expect(result.onW2).toBe("started");
+    expect(result.deletingW2).not.toBeNull();
+  });
+
+  it("games.delete: an install of the game on another worker does not block", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* seedGames(db);
+        yield* insertInstallJob(db, {
+          id: "job-w2",
+          appId: 100,
+          userId: "u1",
+          workerId: "w2",
+          state: "running",
+        });
+        return yield* (yield* client)["admin.games.delete"]({
+          workerId: "w1",
+          appId: 100,
+        });
+      }),
+    );
+    expect(result).toBe("started");
   });
 
   it("games.delete: ended session still holding a slot (container not released yet) → inUse", async () => {
@@ -354,7 +488,6 @@ describe("admin.games", () => {
       Effect.gen(function* () {
         const db = yield* Db;
         yield* seedGames(db);
-        yield* insertWorker(db, { id: "w1" });
         // state уже терминальный, но slotReleasedAt ещё null — агент не
         // прислал Stopped/Failed, контейнер на GPU воркера жив.
         yield* insertSession(db, {
@@ -367,7 +500,10 @@ describe("admin.games", () => {
           endedAt: new Date(),
         });
 
-        return yield* (yield* client)["admin.games.delete"]({ appId: 100 });
+        return yield* (yield* client)["admin.games.delete"]({
+          workerId: "w1",
+          appId: 100,
+        });
       }),
     );
     expect(result).toBe("inUse");
@@ -384,7 +520,11 @@ describe("admin.games (свои сборки)", () => {
       yield* insertUser(db, "u2", "Bob");
       yield* insertGame(db, ALPHA, "Alpha Game");
       yield* insertGame(db, ZETA, "Zeta Game");
-      yield* insertOwnGame(db, { appId: ALPHA, slug: "alpha", version: "1.0.0" });
+      yield* insertOwnGame(db, {
+        appId: ALPHA,
+        slug: "alpha",
+        version: "1.0.0",
+      });
       yield* insertOwnGame(db, { appId: ZETA, slug: "zeta", version: "2.0.0" });
     });
 
@@ -706,7 +846,7 @@ describe("admin.games/installs access", () => {
         const rpc = yield* client;
         const gamesList = yield* Effect.flip(rpc["admin.games.list"]());
         const gamesDelete = yield* Effect.flip(
-          rpc["admin.games.delete"]({ appId: 100 }),
+          rpc["admin.games.delete"]({ workerId: "w1", appId: 100 }),
         );
         const installsList = yield* Effect.flip(rpc["admin.installs.list"]());
         const installsCancel = yield* Effect.flip(

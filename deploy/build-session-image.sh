@@ -12,6 +12,10 @@
 #    (--extract-only) в nv/x. Скачанный .run и распаковка кешируются в ~/cg-session-image/nv.
 # 4. docker build --build-arg NV_VER=<ver> -t cg-session:<ver>[-<суффикс>].
 #
+# Место распаковки (nv/x относительно images/session) — то же, что у deploy/ci/build-session-images.sh
+# (CI, сборка по тегу релиза): отличие только в источнике версии (nvidia-smi хоста здесь, против
+# drivers.txt там). Поведение для brofrong этот файл не меняет.
+#
 # Ничего, кроме своего каталога и своего образа, на воркере не меняет; sudo не нужен.
 set -euo pipefail
 

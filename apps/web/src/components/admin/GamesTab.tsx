@@ -1,5 +1,7 @@
-// Вкладка «Игры» (`/admin?tab=games`, Task 4, макет `mockup-games.html`): общая
-// библиотека хранилища — размер/даты/запуски и «Удалить» с подтверждением; служебные
+// Вкладка «Игры» (`/admin?tab=games`, Task 4, макет `mockup-games.html`): игры
+// библиотек серверов — строка на пару (сервер, игра), библиотека своя у каждого
+// сервера (спека 2026-11-09 §5): размер/даты/запуски по серверу и «Удалить» с
+// этого сервера с подтверждением; служебные
 // пакеты (Proton, Steam Linux Runtime…) показаны отдельной строкой без кнопки — их не
 // удаляют никогда (это не `gamestore_apps`, см. глобальные ограничения спеки). Плюс
 // раздел «Свои сборки» (спека 2026-11-03 «Свои игры», Task 10) над играми библиотеки:
@@ -109,12 +111,13 @@ function DeleteCell({
  */
 function OwnGamesTable({
   games,
-  expandedAppId,
+  expandedKey,
   onToggle,
   onSetPublished,
 }: {
   games: ReadonlyArray<AdminOwnGame>;
-  expandedAppId: number | null;
+  /** Ключ раскрытой строки — здесь просто `String(appId)` (своя сборка не дублируется по серверам). */
+  expandedKey: string | null;
   onToggle: (appId: number) => void;
   onSetPublished: (game: AdminOwnGame, published: boolean) => void;
 }) {
@@ -182,7 +185,7 @@ function OwnGamesTable({
                     </Button>
                   </td>
                 </tr>
-                {expandedAppId === game.appId && (
+                {expandedKey === String(game.appId) && (
                   <tr className="border-t bg-muted/30">
                     <td className={td} colSpan={columns}>
                       <GameRequirementsPanel appId={game.appId} />
@@ -202,24 +205,28 @@ function GamesTable({
   games,
   service,
   onDelete,
-  expandedAppId,
+  expandedKey,
   onToggle,
 }: {
   games: ReadonlyArray<AdminGame>;
   service: AdminGames["service"];
   onDelete: (game: AdminGame) => void;
-  expandedAppId: number | null;
-  onToggle: (appId: number) => void;
+  /** Ключ раскрытой строки — `${workerId}:${appId}`: та же игра на двух серверах — две
+   * разные строки, раскрытие одной не должно раскрывать требования под обеими (была
+   * ошибка — ключ был просто `appId`, общий для обеих строк). */
+  expandedKey: string | null;
+  onToggle: (game: AdminGame) => void;
 }) {
   const th = "px-2 py-1.5 text-left font-medium";
   const td = "px-2 py-2";
-  const columns = 6;
+  const columns = 7;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="text-xs text-muted-foreground">
           <tr>
             <th className={th}>Игра</th>
+            <th className={th}>Сервер</th>
             <th className={th}>Размер</th>
             <th className={th}>Поставлена</th>
             <th className={th}>Последний запуск</th>
@@ -229,11 +236,13 @@ function GamesTable({
         </thead>
         <tbody>
           {games.map((game) => (
-            <React.Fragment key={game.appId}>
+            <React.Fragment key={`${game.workerId}:${game.appId}`}>
               <tr
                 className="cursor-pointer border-t hover:bg-muted/40"
-                aria-expanded={expandedAppId === game.appId}
-                onClick={() => onToggle(game.appId)}
+                aria-expanded={
+                  expandedKey === `${game.workerId}:${game.appId}`
+                }
+                onClick={() => onToggle(game)}
               >
                 <td className={td}>
                   <div className="flex flex-col gap-0.5">
@@ -245,6 +254,7 @@ function GamesTable({
                     )}
                   </div>
                 </td>
+                <td className={cn(td, "whitespace-nowrap")}>{game.workerId}</td>
                 <td className={cn(td, "whitespace-nowrap")}>
                   {formatBytes(game.sizeBytes)}
                 </td>
@@ -273,7 +283,7 @@ function GamesTable({
                   <DeleteCell game={game} onDelete={onDelete} />
                 </td>
               </tr>
-              {expandedAppId === game.appId && (
+              {expandedKey === `${game.workerId}:${game.appId}` && (
                 <tr className="border-t bg-muted/30">
                   <td className={td} colSpan={columns}>
                     <GameRequirementsPanel appId={game.appId} />
@@ -287,6 +297,7 @@ function GamesTable({
               <td className={cn(td, "whitespace-normal text-muted-foreground")}>
                 {`Служебные: ${service.names.join(", ")}`}
               </td>
+              <td className={td} />
               <td className={cn(td, "whitespace-nowrap text-muted-foreground")}>
                 {formatBytes(service.sizeBytes)}
               </td>
@@ -314,8 +325,11 @@ export function GamesTab() {
   usePolling(adminGamesAtom);
   const [toDelete, setToDelete] = React.useState<AdminGame | null>(null);
   // Общий на оба раздела: диапазоны appId своих сборок и игр библиотеки не
-  // пересекаются, раскрытая строка в одном разделе не мешает другому.
-  const [expandedAppId, setExpandedAppId] = React.useState<number | null>(null);
+  // пересекаются, раскрытая строка в одном разделе не мешает другому. Ключ —
+  // `String(appId)` для своих сборок (строка на appId, дублей нет) и
+  // `${workerId}:${appId}` для игр библиотеки (та же игра на двух серверах —
+  // две строки, иначе раскрытие одной раскрывало бы требования под обеими).
+  const [expandedKey, setExpandedKey] = React.useState<string | null>(null);
   const deleteGame = useAtomSet(adminDeleteGameAtom, { mode: "promiseExit" });
   const setOwnGamePublished = useAtomSet(adminSetOwnGamePublishedAtom, {
     mode: "promiseExit",
@@ -323,13 +337,22 @@ export function GamesTab() {
 
   const onConfirm = async () => {
     if (toDelete === null) return;
-    const exit = await deleteGame(adminDeleteGameArgs(toDelete.appId));
+    const exit = await deleteGame(
+      adminDeleteGameArgs(toDelete.workerId, toDelete.appId),
+    );
     if (Exit.isFailure(exit)) toast.error("Не удалось удалить игру");
     else deleteToast(exit.value);
   };
 
-  const onToggle = (appId: number) =>
-    setExpandedAppId((current) => (current === appId ? null : appId));
+  const onToggleOwn = (appId: number) => {
+    const key = String(appId);
+    setExpandedKey((current) => (current === key ? null : key));
+  };
+
+  const onToggleGame = (game: AdminGame) => {
+    const key = `${game.workerId}:${game.appId}`;
+    setExpandedKey((current) => (current === key ? null : key));
+  };
 
   const onSetPublished = async (game: AdminOwnGame, published: boolean) => {
     const exit = await setOwnGamePublished(
@@ -365,8 +388,8 @@ export function GamesTab() {
               ) : (
                 <OwnGamesTable
                   games={value.own}
-                  expandedAppId={expandedAppId}
-                  onToggle={onToggle}
+                  expandedKey={expandedKey}
+                  onToggle={onToggleOwn}
                   onSetPublished={(game, published) =>
                     void onSetPublished(game, published)
                   }
@@ -402,8 +425,8 @@ export function GamesTab() {
                   games={value.games}
                   service={value.service}
                   onDelete={setToDelete}
-                  expandedAppId={expandedAppId}
-                  onToggle={onToggle}
+                  expandedKey={expandedKey}
+                  onToggle={onToggleGame}
                 />
               )
             }
@@ -419,10 +442,10 @@ export function GamesTab() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{`Удалить ${toDelete?.name ?? ""}?`}</AlertDialogTitle>
+            <AlertDialogTitle>{`Удалить ${toDelete?.name ?? ""} с сервера ${toDelete?.workerId ?? ""}?`}</AlertDialogTitle>
             <AlertDialogDescription>
               {toDelete !== null &&
-                `${formatBytes(toDelete.sizeBytes)} освободится на хранилище. Запуск игры потом поставит её заново.`}
+                `${formatBytes(toDelete.sizeBytes)} освободится на сервере. Запуск игры потом поставит её заново.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

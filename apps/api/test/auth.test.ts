@@ -145,6 +145,8 @@ const providersConfig = (
   pocketIdClientSecret: Redacted.make("unused"),
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
+  orchestratorRelayUrl: "http://cg-orchestrator:3002",
+  relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
   webDistDir: "unused",
   ownGamesDir: "unused",
   smtpUrl: Redacted.make("log://"),
@@ -225,6 +227,8 @@ const appDeps = (webDistDir: string) =>
         pocketIdClientSecret: Redacted.make("unused"),
         pocketIdAdminGroup: "cloud_gaming_admins",
         allowedOrigins: ["http://localhost:5173"],
+        orchestratorRelayUrl: "http://cg-orchestrator:3002",
+        relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
         webDistDir,
         ownGamesDir: "unused",
         smtpUrl: Redacted.make("log://"),
@@ -393,6 +397,7 @@ describe("config ALLOWED_ORIGINS", () => {
     WEB_DIST_DIR: "unused",
     SMTP_URL: "log://",
     MAIL_FROM: "GameCrate <test@example.com>",
+    RELAY_SECRET: "test-relay-secret-test-relay-secret-0001",
   };
 
   it("defaults to no extra origins", async () => {

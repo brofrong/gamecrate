@@ -177,15 +177,63 @@ export const adminSetWorkerClassArgs = (
   classId: string | null,
 ) => ({ payload: { workerId, classId }, reactivityKeys: adminKeys }) as const;
 
-/** Игры общей библиотеки + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
+/** Регионы серверов (спека §6), карточка «Регионы» на вкладке «Серверы». */
+export const adminRegionsAtom = Api.query("admin.regions.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Новый регион («Добавить регион»); занятый код — `"codeTaken"`, не по шаблону — `"invalid"`. */
+export const adminCreateRegionAtom = Api.mutation("admin.regions.create");
+export const adminCreateRegionArgs = (code: string, name: string) =>
+  ({ payload: { code, name }, reactivityKeys: adminKeys }) as const;
+
+/** Переименовать регион и/или переставить его порядок (`position`). */
+export const adminUpdateRegionAtom = Api.mutation("admin.regions.update");
+export const adminUpdateRegionArgs = (
+  id: string,
+  name: string,
+  position: number,
+) => ({ payload: { id, name, position }, reactivityKeys: adminKeys }) as const;
+
+/** Удалить регион (запрет, если у него есть серверы — `"notEmpty"`). */
+export const adminDeleteRegionAtom = Api.mutation("admin.regions.delete");
+export const adminDeleteRegionArgs = (id: string) =>
+  ({ payload: { id }, reactivityKeys: adminKeys }) as const;
+
+/**
+ * Завести сервер и одноразовый код подключения («Добавить сервер»); занятый id — `"idTaken"`,
+ * не по шаблону — `"invalid"`, региона уже нет — `"regionNotFound"`.
+ */
+export const adminCreateWorkerAtom = Api.mutation("admin.workers.create");
+export const adminCreateWorkerArgs = (id: string, regionId: string) =>
+  ({ payload: { id, regionId }, reactivityKeys: adminKeys }) as const;
+
+/** Новый код подключения для уже заведённого сервера («Новый код подключения»). */
+export const adminIssueWorkerCodeAtom = Api.mutation("admin.workers.issueCode");
+export const adminIssueWorkerCodeArgs = (workerId: string) =>
+  ({ payload: { workerId }, reactivityKeys: adminKeys }) as const;
+
+/** Отозвать токен и код подключения сервера («Отозвать доступ»). */
+export const adminRevokeWorkerAtom = Api.mutation("admin.workers.revoke");
+export const adminRevokeWorkerArgs = (workerId: string) =>
+  ({ payload: { workerId }, reactivityKeys: adminKeys }) as const;
+
+/** Привязать сервер к региону (выбор региона в карточке сервера; `null` — без региона); нет сервера или региона — `false`. */
+export const adminSetWorkerRegionAtom = Api.mutation("admin.workers.setRegion");
+export const adminSetWorkerRegionArgs = (
+  workerId: string,
+  regionId: string | null,
+) => ({ payload: { workerId, regionId }, reactivityKeys: adminKeys }) as const;
+
+/** Игры библиотек серверов + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
 export const adminGamesAtom = Api.query("admin.games.list", undefined, {
   reactivityKeys: adminKeys,
 });
 
-/** Пометить игру к удалению («Удалить» на вкладке «Игры»). */
+/** Пометить игру к удалению с сервера `workerId` («Удалить» на вкладке «Игры»). */
 export const adminDeleteGameAtom = Api.mutation("admin.games.delete");
-export const adminDeleteGameArgs = (appId: number) =>
-  ({ payload: { appId }, reactivityKeys: adminKeys }) as const;
+export const adminDeleteGameArgs = (workerId: string, appId: number) =>
+  ({ payload: { workerId, appId }, reactivityKeys: adminKeys }) as const;
 
 /** Требования и замеры по моделям GPU одной игры (панель на вкладке «Игры», спека §5.2). */
 export const adminGameRequirementsAtom = Atom.family((appId: number) =>

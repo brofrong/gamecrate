@@ -370,7 +370,11 @@ const OWN_GAME_PATTERN = `cg-game-exit ${OWN_GAME_RUN}( |$)`;
 
 /** Команды внутри контейнера (`docker exec`, без shell). */
 export const commands = {
-  /** Selkies отвечает: в образе есть curl; HTTP из агента в `cg-sessions` не ходит. */
+  /**
+   * Selkies отвечает: curl внутри контейнера (в образе он есть), на
+   * `localhost` сессии — проверка не зависит от сети `cg-sessions` и правил
+   * изоляции (стрим агент сам тоннелирует в `cg-session-<id>:8080`, TunnelClient).
+   */
   probe: [
     "curl",
     "-fsS",
@@ -544,6 +548,12 @@ export interface SessionSupervisorShape {
   readonly snapshot: Effect.Effect<ReadonlyArray<RunningSession>>;
   /** Отчёты оркестратору в порядке возникновения. */
   readonly reports: Queue.Queue<AgentReport>;
+  /**
+   * Сессия идёт на этом агенте и её стрим готов (после `StreamReady`, до
+   * начала остановки): только к такой открывается тоннель стрима
+   * (`TunnelClient`, спека 2026-11-09 §4).
+   */
+  readonly hasStream: (sessionId: string) => boolean;
 }
 
 const make = Effect.gen(function* () {
@@ -1979,6 +1989,7 @@ const make = Effect.gen(function* () {
       })),
     ),
     reports,
+    hasStream: (sessionId) => sessions.get(sessionId)?.phase === "ready",
   } satisfies SessionSupervisorShape;
 });
 

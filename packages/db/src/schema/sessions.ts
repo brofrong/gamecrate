@@ -35,6 +35,20 @@ export const workerClasses = pgTable("worker_classes", {
   createdAt: timestamptz("created_at").notNull().defaultNow(),
 });
 
+/**
+ * Регион игровых серверов («Питер», «Москва») с коротким кодом (`spb`,
+ * `msk`) для выбора по пингу (спека §6). `position` — порядок в админке и
+ * запасной порядок выбора, когда замер пинга не удался; задаётся админом,
+ * БД сама не переставляет.
+ */
+export const regions = pgTable("regions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  position: integer("position").notNull().default(0),
+  createdAt: timestamptz("created_at").notNull().defaultNow(),
+});
+
 /** Состояния сессии (точные строки по спеке). Активная сессия — не `ended`/`failed`. */
 export const sessionStates = [
   "queued",
@@ -72,6 +86,9 @@ export type SessionStage = (typeof sessionStages)[number];
  * не берёт новые сессии/установки (`Scheduler.placeOne`, `InstallRepo.claimNext`),
  * уже идущие не трогает — админка (Task 4/часть 2). `classId` — класс воркера
  * (спека §1.1); `null` — воркер без класса сессий не берёт, как `draining`.
+ * `regionId` — регион воркера (спека §6); `null` — воркер ещё не привязан к
+ * региону. В первой части размещение регион не учитывает (сессии берёт и
+ * сервер без региона); выбор региона и фильтр по нему — вторая часть.
  */
 export const workers = pgTable("workers", {
   id: text("id").primaryKey(),
@@ -82,12 +99,37 @@ export const workers = pgTable("workers", {
   classId: uuid("class_id").references(() => workerClasses.id, {
     onDelete: "restrict",
   }),
+  regionId: uuid("region_id").references(() => regions.id, {
+    onDelete: "restrict",
+  }),
   hardware: jsonb("hardware").$type<WorkerHardware | null>(),
   versions: jsonb("versions").$type<WorkerVersions | null>(),
   stats: jsonb("stats").$type<WorkerStats | null>(),
   statsAt: timestamptz("stats_at"),
   lastSeenAt: timestamptz("last_seen_at"),
   createdAt: timestamptz("created_at").notNull().defaultNow(),
+});
+
+/**
+ * Учётные данные сервера (спека §3): по одной строке на воркер, заводит
+ * админка вместе с записью `workers` (Task 2 — RPC админки). Одноразовый код
+ * подключения (`enrollCodeHash`, живёт 24 часа — `enrollExpiresAt`) скрипт
+ * установки меняет на постоянный токен (`tokenHash`, `tokenIssuedAt`);
+ * оркестратор сверяет `Authorization: Bearer` с хэшем токена и `workerId` —
+ * с владельцем (Task 3 — аутентификация агента). `revokedAt` — админ отозвал
+ * токен, оркестратор рвёт соединение этого воркера; новый код подключения
+ * выпускается отдельно. Хэши — `sha256Hex` (`workerTokens.ts`), секрет в
+ * базе не хранится в открытом виде.
+ */
+export const workerCredentials = pgTable("worker_credentials", {
+  workerId: text("worker_id")
+    .primaryKey()
+    .references(() => workers.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").unique(),
+  enrollCodeHash: text("enroll_code_hash").unique(),
+  enrollExpiresAt: timestamptz("enroll_expires_at"),
+  tokenIssuedAt: timestamptz("token_issued_at"),
+  revokedAt: timestamptz("revoked_at"),
 });
 
 /**

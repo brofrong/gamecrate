@@ -1,6 +1,6 @@
 // Протокол агента воркера ↔ оркестратор (группа `agent.*`). Обслуживается только
-// оркестратором на `GET /agent` (Bearer AGENT_TOKEN); в `AppRpcs` не входит —
-// браузерный API её никогда не обслуживает.
+// оркестратором на `GET /agent` (Bearer — токен этого сервера, спека §3); в
+// `AppRpcs` не входит — браузерный API её никогда не обслуживает.
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { OwnGamePackage } from "./ownGames";
@@ -98,13 +98,16 @@ export type WorkerHardware = typeof WorkerHardware.Type;
  * Версии и сборки воркера — снимаются агентом один раз при подключении.
  * `driver` — версия драйвера NVIDIA (`nvidia-smi`), `null` — GPU нет или
  * `nvidia-smi` недоступен; `steamClientBuiltAt` — mtime `STEAM_CLIENT_DIR`
- * (ISO), `null` — каталог не смонтирован или недоступен.
+ * (ISO), `null` — каталог не смонтирован или недоступен. `agentVersion` —
+ * `CG_VERSION` агента (деплой ставит тег релиза, по умолчанию `dev`);
+ * `optional` — поля нет у агента до задачи 4.
  */
 export const WorkerVersions = Schema.Struct({
   agentCommit: Schema.String,
   sessionImage: Schema.String,
   driver: Schema.NullOr(Schema.String),
   steamClientBuiltAt: Schema.NullOr(Schema.String),
+  agentVersion: Schema.optional(Schema.String),
 });
 export type WorkerVersions = typeof WorkerVersions.Type;
 
@@ -169,8 +172,17 @@ export type WorkerStats = typeof WorkerStats.Type;
  * `gamestore`; снимок для переподключения, как `running` для сессий).
  * `hardware`/`versions` — снимок железа и версий воркера (админка, спека
  * 2026-10-28); необязательные — старый агент без этих полей совместим.
+ *
+ * `token` — постоянный токен сервера (`cgw_…`, тот же, что в `Authorization:
+ * Bearer` апгрейда): оркестратор сверяет, что токен принадлежит именно
+ * `workerId`, иначе поток падает с `AgentUnauthorized` (спека §3: чужой
+ * `workerId` со своим токеном — отказ). Проверка апгрейда одна этого не
+ * гарантирует: она пускает любой действующий токен, а `workerId` приходит уже
+ * в сообщении. `RedactedFromValue`, а не `Redacted` — значение приходит с
+ * провода простой строкой (см. `SteamLoginSeed`).
  */
 export const AgentConnect = Schema.Struct({
+  token: Schema.RedactedFromValue(Schema.String),
   workerId: Schema.String,
   publicIp: Schema.String,
   slots: NonNegativeInt,
@@ -247,6 +259,10 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * `StartSession.ownGame` — есть, значит `appId` — своя игра (запускать пакет
  * `<slug>/<version>` из `ownGame`, а не Steam); нет поля — обычный Steam-запуск,
  * как раньше.
+ * `OpenTunnel` — открыть канал тоннеля стрима (спека 2026-11-09 §4):
+ * WebSocket `/agent/tunnel/<tunnelId>` к оркестратору со своим токеном в
+ * `Authorization: Bearer`, по нему — одно соединение с Selkies сессии
+ * `sessionId` (`cg-session-<id>:8080` на этом сервере, протокол — `tunnel.ts`).
  */
 export const AgentCommand = Schema.Union([
   Schema.TaggedStruct("StartSession", {
@@ -275,6 +291,10 @@ export const AgentCommand = Schema.Union([
   }),
   Schema.TaggedStruct("CancelInstall", { jobId: Schema.String }),
   Schema.TaggedStruct("DeleteGame", { appId: Schema.Int }),
+  Schema.TaggedStruct("OpenTunnel", {
+    tunnelId: Schema.String,
+    sessionId: Schema.String,
+  }),
 ]);
 export type AgentCommand = typeof AgentCommand.Type;
 
@@ -407,6 +427,15 @@ export const AgentReport = Schema.Union([
 ]);
 export type AgentReport = typeof AgentReport.Type;
 
+/**
+ * `agent.connect` отклонён: `token` не действует (отозван, заменён новым или
+ * не существует) или принадлежит другому серверу, не `workerId`.
+ */
+export class AgentUnauthorized extends Schema.TaggedError<AgentUnauthorized>()(
+  "AgentUnauthorized",
+  {},
+) {}
+
 /** `agent.report`/`agent.profileCommit` пришёл по соединению без активного `agent.connect`. */
 export class AgentNotConnected extends Schema.TaggedError<AgentNotConnected>()(
   "AgentNotConnected",
@@ -442,13 +471,16 @@ export type ProfileCommit = typeof ProfileCommit.Type;
 /**
  * `agent.connect` — поток команд воркеру; жизнь соединения агента = жизнь этого
  * потока (обрыв → воркер отключён; поток завершился сам — подключился более новый
- * агент с тем же `workerId`). `agent.report` и `agent.profileCommit` — по тому же
- * WebSocket, на котором открыт `agent.connect`.
+ * агент с тем же `workerId`, либо токен сервера отозвали). Токен не того
+ * сервера — поток падает с `AgentUnauthorized`. `agent.report` и
+ * `agent.profileCommit` — по тому же WebSocket, на котором открыт
+ * `agent.connect`.
  */
 export const AgentRpcs = RpcGroup.make(
   Rpc.make("agent.connect", {
     payload: AgentConnect,
     success: AgentCommand,
+    error: AgentUnauthorized,
     stream: true,
   }),
   Rpc.make("agent.report", {

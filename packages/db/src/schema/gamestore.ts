@@ -1,5 +1,5 @@
-// Общая библиотека установленных игр, очередь установок и профили пользователей
-// в RustFS (план MVP-3).
+// Библиотека установленных игр каждого сервера, очередь установок и профили
+// пользователей в RustFS (план MVP-3; своя библиотека на сервер — спека §5).
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -18,27 +18,40 @@ import { workers } from "./sessions";
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
 
 /**
- * Установленная сборка игры в общей библиотеке (`LIBRARY_DIR/steamapps`).
- * Строка есть ⇔ игра в библиотеке. `buildId` — установленный Steam buildid,
+ * Установленная сборка игры в библиотеке сервера (`LIBRARY_DIR/steamapps`
+ * воркера `workerId`) — у каждого игрового сервера своя библиотека, общей
+ * ФС между городами не будет (спека §5). Строка есть ⇔ игра стоит на этом
+ * сервере; PK `(workerId, appId)` — та же игра может стоять на нескольких
+ * серверах отдельными строками. `buildId` — установленный Steam buildid,
  * `sizeBytes` — размер на диске (из манифеста после установки).
- * `deletingAt` — админ удаляет игру: строка живёт до итога агента
- * (`GameDeleted` удаляет её, `GameDeleteFailed` снимает пометку); пока пометка
- * есть, игра не запускается и не ставится — сессии ждут в очереди.
- * `deleteError` — причина последнего `GameDeleteFailed` (русский текст
- * агента, см. `deleteReasons` в `apps/agent/src/Installer.ts`), которую видит
- * админ; новый запрос удаления (`deleting_at`) сразу очищает его в том же
- * `update`, итог `GameDeleted` убирает строку целиком.
+ * `deletingAt` — админ удаляет игру с этого сервера: строка живёт до итога
+ * агента (`GameDeleted` удаляет её, `GameDeleteFailed` снимает пометку);
+ * пока пометка есть, игра на этом сервере не запускается и не ставится —
+ * сессии ждут в очереди. `deleteError` — причина последнего
+ * `GameDeleteFailed` (русский текст агента, см. `deleteReasons` в
+ * `apps/agent/src/Installer.ts`), которую видит админ; новый запрос удаления
+ * (`deleting_at`) сразу очищает его в том же `update`, итог `GameDeleted`
+ * убирает строку целиком.
  */
-export const gamestoreApps = pgTable("gamestore_apps", {
-  appId: integer("app_id")
-    .primaryKey()
-    .references(() => games.appId),
-  sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
-  buildId: text("build_id").notNull(),
-  installedAt: timestamptz("installed_at").notNull().defaultNow(),
-  deletingAt: timestamptz("deleting_at"),
-  deleteError: text("delete_error"),
-});
+export const gamestoreApps = pgTable(
+  "gamestore_apps",
+  {
+    workerId: text("worker_id")
+      .notNull()
+      .references(() => workers.id),
+    appId: integer("app_id")
+      .notNull()
+      .references(() => games.appId),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    buildId: text("build_id").notNull(),
+    installedAt: timestamptz("installed_at").notNull().defaultNow(),
+    deletingAt: timestamptz("deleting_at"),
+    deleteError: text("delete_error"),
+  },
+  (t) => [
+    primaryKey({ name: "gamestore_apps_pkey", columns: [t.workerId, t.appId] }),
+  ],
+);
 
 /** Состояния задачи установки. */
 export const installJobStates = [
@@ -60,11 +73,15 @@ export const installStages = [
 export type InstallStage = (typeof installStages)[number];
 
 /**
- * Задача установки игры в общую библиотеку. `userId` — чьим Steam-клиентом
- * качаем (нужен владеющий игрой аккаунт), `workerId` — агент с ролью
- * `gamestore`, который её выполняет. Частичный уникальный индекс гарантирует
- * не более одной активной (`queued`/`running`) задачи на `appId` — сессии,
- * ждущие ту же игру, присоединяются к уже идущей задаче (Task 5).
+ * Задача установки игры в библиотеку сервера. `userId` — чьим Steam-клиентом
+ * качаем (нужен владеющий игрой аккаунт), `workerId` — сервер с ролью
+ * `gamestore`, в чью библиотеку ставим: планировщик выбирает его при создании
+ * задачи (`Scheduler.placeOne`), и `claimNext` выдаёт задачу только агенту
+ * этого сервера (`null` — только у старых задач, которым миграция
+ * `multi_server` не нашла сервера; такие не выдаются). Частичный уникальный индекс
+ * гарантирует не более одной активной (`queued`/`running`) задачи на пару
+ * `(workerId, appId)` — сессии, ждущие ту же игру на том же сервере,
+ * присоединяются к уже идущей задаче (Task 5).
  */
 export const installJobs = pgTable(
   "install_jobs",
@@ -95,8 +112,8 @@ export const installJobs = pgTable(
       .$onUpdate(() => new Date()),
   },
   (t) => [
-    uniqueIndex("install_jobs_active_app_idx")
-      .on(t.appId)
+    uniqueIndex("install_jobs_active_worker_app_idx")
+      .on(t.workerId, t.appId)
       .where(sql`${t.state} in ('queued', 'running')`),
   ],
 );

@@ -17,8 +17,11 @@ export * from "./ownGames";
 export * from "./session";
 export * from "./settings";
 export * from "./steamLogin";
+export * from "./streamBody";
 export * from "./streamSettings";
 export * from "./time";
+export * from "./tunnel";
+export * from "./wsBridge";
 
 /** Все RPC-группы приложения; сервер обслуживает их на `/rpc`, SPA строит по ней клиента. */
 export const AppRpcs = AuthRpcs.merge(

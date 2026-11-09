@@ -4,8 +4,8 @@
 import { Db, workerClasses, workers } from "@cg/db";
 import type { AdminWorkerClass } from "@cg/rpc";
 import { asc, desc, eq, gt, lt, sql } from "drizzle-orm";
-import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
-import { Cause, Effect, Option } from "effect";
+import { Effect } from "effect";
+import { violatedConstraint } from "./dbErrors";
 
 /**
  * Временный ранг для обмена местами двух классов под уникальным индексом
@@ -13,35 +13,10 @@ import { Cause, Effect, Option } from "effect";
  */
 const TEMP_RANK = -2147483648;
 
-/** Имена constraint'ов, по которым различаем Postgres-нарушения ниже. */
+/** Имена constraint'ов, по которым различаем Postgres-нарушения ниже (см. `violatedConstraint` в `./dbErrors`). */
 const NAME_UNIQUE_CONSTRAINT = "worker_classes_name_key";
 const WORKERS_CLASS_ID_FK_CONSTRAINT =
   "workers_class_id_worker_classes_id_fkey";
-
-/**
- * Имя нарушенного ограничения БД, если `error` — `EffectDrizzleQueryError` с
- * нарушением уникальности или FK (`UniqueViolation`/`ConstraintError`
- * Postgres-реасонов `@effect/sql`); иначе `undefined` — вызывающий код сам
- * решает, что делать (как правило, `Effect.die`, как раньше `Effect.orDie`).
- *
- * Нужно для check-then-act гонок: create/rename с одинаковым именем или
- * delete/setClass на одном классе могут одновременно пройти
- * предварительную проверку и упереться в constraint на запись — тогда
- * конкретный Postgres-код надёжнее второй проверки (которую та же гонка
- * обходит тем же способом).
- */
-const violatedConstraint = (error: unknown): string | undefined => {
-  if (!(error instanceof EffectDrizzleQueryError)) return undefined;
-  const sqlError = Option.getOrUndefined(
-    Cause.findErrorOption(error.cause as Cause.Cause<unknown>),
-  ) as { reason?: unknown } | undefined;
-  const reason = sqlError?.reason as
-    | { _tag?: string; constraint?: string; cause?: { constraint?: string } }
-    | undefined;
-  if (reason?._tag === "UniqueViolation") return reason.constraint;
-  if (reason?._tag === "ConstraintError") return reason.cause?.constraint;
-  return undefined;
-};
 
 /** Классы по силе (`rank desc`, сильнейший сверху), с числом воркеров у каждого. */
 export const listClasses = (): Effect.Effect<

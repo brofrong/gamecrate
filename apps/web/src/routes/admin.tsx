@@ -2,7 +2,7 @@
 // «Игры» (общая библиотека хранилища), «Установки» (активные и недавние задачи установки),
 // «Пользователи» (роль, блокировка, сброс входа Steam) и «Настройки» («Настройки сессий»).
 // Без сессии — вход через Pocket ID, игрок — «Нет доступа».
-import type { AdminWorker, SessionSettings } from "@cg/rpc";
+import type { AdminRegion, AdminWorker, SessionSettings } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   createRoute,
@@ -14,11 +14,16 @@ import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
 import { signInWithProvider } from "@/auth";
+import {
+  AddWorkerDialog,
+  IssueCodeDialog,
+} from "@/components/admin/AddWorkerDialog";
 import { ClassesCard } from "@/components/admin/ClassesCard";
 import { FailuresCard } from "@/components/admin/FailuresCard";
 import { GamesTab } from "@/components/admin/GamesTab";
 import { InstallsTab } from "@/components/admin/InstallsTab";
 import { Polled } from "@/components/admin/Polled";
+import { RegionsCard } from "@/components/admin/RegionsCard";
 import { SessionSettingsForm } from "@/components/admin/SessionSettingsForm";
 import { SessionsTab } from "@/components/admin/SessionsTab";
 import { UsersTab } from "@/components/admin/UsersTab";
@@ -48,12 +53,19 @@ import { usePolling } from "@/lib/usePolling";
 import { cn } from "@/lib/utils";
 import {
   adminClassesAtom,
+  adminIssueWorkerCodeArgs,
+  adminIssueWorkerCodeAtom,
   adminPingAtom,
+  adminRegionsAtom,
+  adminRevokeWorkerArgs,
+  adminRevokeWorkerAtom,
   adminSessionsAtom,
   adminSetDrainingArgs,
   adminSetDrainingAtom,
   adminSetWorkerClassArgs,
   adminSetWorkerClassAtom,
+  adminSetWorkerRegionArgs,
+  adminSetWorkerRegionAtom,
   adminStopSessionArgs,
   adminStopSessionAtom,
   adminWorkersAtom,
@@ -166,7 +178,7 @@ function SessionSettingsCard() {
 
 /** Вкладки админки, в порядке вывода. */
 const ADMIN_TABS = [
-  ["workers", "Воркеры"],
+  ["workers", "Серверы"],
   ["sessions", "Сессии"],
   ["games", "Игры"],
   ["installs", "Установки"],
@@ -253,6 +265,76 @@ function ListSkeleton() {
   );
 }
 
+/**
+ * Серверы по регионам (спека §7): группы в порядке `position`, «Без региона» —
+ * последняя (в т. ч. если `regionId` указывает на уже удалённый регион — по id
+ * которого региона уже нет в списке, сервер всё равно должен быть виден).
+ * Регион без серверов — в список групп не попадает (ему всё равно нечего показать).
+ */
+function groupWorkersByRegion(
+  workers: ReadonlyArray<AdminWorker>,
+  regions: ReadonlyArray<AdminRegion>,
+): ReadonlyArray<{ label: string; workers: ReadonlyArray<AdminWorker> }> {
+  const sorted = [...regions].sort((a, b) => a.position - b.position);
+  const regionIds = new Set(regions.map((region) => region.id));
+  const groups = sorted
+    .map((region) => ({
+      label: region.name,
+      workers: workers.filter((worker) => worker.regionId === region.id),
+    }))
+    .filter((group) => group.workers.length > 0);
+  const noRegion = workers.filter(
+    (worker) => worker.regionId === null || !regionIds.has(worker.regionId),
+  );
+  if (noRegion.length > 0)
+    groups.push({ label: "Без региона", workers: noRegion });
+  return groups;
+}
+
+/** «Отозвать доступ» с подтверждением: `worker` — какой сервер спрашиваем, `null` — диалог закрыт. */
+function RevokeWorkerDialog({
+  worker,
+  onClose,
+}: {
+  worker: AdminWorker | null;
+  onClose: () => void;
+}) {
+  const revoke = useAtomSet(adminRevokeWorkerAtom, { mode: "promiseExit" });
+
+  const onConfirm = async () => {
+    if (worker === null) return;
+    const exit = await revoke(adminRevokeWorkerArgs(worker.id));
+    if (Exit.isFailure(exit)) toast.error("Не удалось отозвать доступ");
+    else if (!exit.value) toast.error("У сервера нет кода или токена");
+    else toast.success(`${worker.id}: доступ отозван`);
+  };
+
+  return (
+    <AlertDialog
+      open={worker !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{`Отозвать доступ сервера ${worker?.id ?? ""}?`}</AlertDialogTitle>
+          <AlertDialogDescription>
+            Сервер отключится и не сможет подключиться, пока не получит новый
+            код.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Отмена</AlertDialogCancel>
+          <AlertDialogAction onClick={() => void onConfirm()}>
+            Отозвать доступ
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   const workers = useAtomValue(adminWorkersAtom);
   usePolling(adminWorkersAtom);
@@ -261,10 +343,15 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   usePolling(failuresAtom);
   const classesResult = useAtomValue(adminClassesAtom);
   usePolling(adminClassesAtom);
-  // Выбор класса в карточке воркера нужен сразу — пока список классов не
-  // пришёл (или упал), показываем пустой (воркер покажет текущий класс всё равно).
+  const regionsResult = useAtomValue(adminRegionsAtom);
+  usePolling(adminRegionsAtom);
+  // Выбор класса/региона в карточке воркера нужен сразу — пока список не
+  // пришёл (или упал), показываем пустой (карточка покажет текущее значение всё равно).
   const classes = AsyncResult.isSuccess(classesResult)
     ? classesResult.value
+    : [];
+  const regions = AsyncResult.isSuccess(regionsResult)
+    ? regionsResult.value
     : [];
   const setDraining = useAtomSet(adminSetDrainingAtom, {
     mode: "promiseExit",
@@ -272,8 +359,22 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
   const setWorkerClass = useAtomSet(adminSetWorkerClassAtom, {
     mode: "promiseExit",
   });
+  const setWorkerRegion = useAtomSet(adminSetWorkerRegionAtom, {
+    mode: "promiseExit",
+  });
+  const issueCode = useAtomSet(adminIssueWorkerCodeAtom, {
+    mode: "promiseExit",
+  });
   // Опрос перерисовывает вкладку раз в 5 с — «сигнал … назад» и «Идёт» считаются от этого.
   const now = Date.now();
+  const [issuedCode, setIssuedCode] = React.useState<{
+    readonly workerId: string;
+    readonly code: string;
+    readonly expiresAt: string;
+  } | null>(null);
+  const [revokeTarget, setRevokeTarget] = React.useState<AdminWorker | null>(
+    null,
+  );
 
   const onDraining = async (worker: AdminWorker, draining: boolean) => {
     const exit = await setDraining(adminSetDrainingArgs(worker.id, draining));
@@ -297,9 +398,30 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
     else toast.success(`${worker.id}: класс обновлён`);
   };
 
+  const onSetRegion = async (worker: AdminWorker, regionId: string | null) => {
+    const exit = await setWorkerRegion(
+      adminSetWorkerRegionArgs(worker.id, regionId),
+    );
+    if (Exit.isFailure(exit)) toast.error("Не удалось назначить регион");
+    else if (!exit.value) toast.error("Сервер или регион не найден");
+    else toast.success(`${worker.id}: регион обновлён`);
+  };
+
+  const onIssueCode = async (worker: AdminWorker) => {
+    const exit = await issueCode(adminIssueWorkerCodeArgs(worker.id));
+    if (Exit.isFailure(exit)) toast.error("Не удалось выпустить код");
+    else if (exit.value === "notFound") toast.error("Сервер не найден");
+    else setIssuedCode({ workerId: worker.id, ...exit.value });
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <ClassesCard />
+      <RegionsCard />
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Серверы</h2>
+        <AddWorkerDialog regions={regions} />
+      </div>
       <Polled
         result={workers}
         error="Не удалось загрузить воркеры"
@@ -311,16 +433,29 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
               Воркеров нет: ни один агент ещё не подключался.
             </p>
           ) : (
-            value.map((worker) => (
-              <WorkerCard
-                key={worker.id}
-                worker={worker}
-                now={now}
-                classes={classes}
-                onStop={onStop}
-                onDraining={(draining) => void onDraining(worker, draining)}
-                onSetClass={(classId) => void onSetClass(worker, classId)}
-              />
+            groupWorkersByRegion(value, regions).map((group) => (
+              <div key={group.label} className="flex flex-col gap-4">
+                <h3 className="text-base font-semibold text-muted-foreground">
+                  {group.label}
+                </h3>
+                {group.workers.map((worker) => (
+                  <WorkerCard
+                    key={worker.id}
+                    worker={worker}
+                    now={now}
+                    classes={classes}
+                    regions={regions}
+                    onStop={onStop}
+                    onDraining={(draining) => void onDraining(worker, draining)}
+                    onSetClass={(classId) => void onSetClass(worker, classId)}
+                    onSetRegion={(regionId) =>
+                      void onSetRegion(worker, regionId)
+                    }
+                    onIssueCode={() => void onIssueCode(worker)}
+                    onRevoke={() => setRevokeTarget(worker)}
+                  />
+                ))}
+              </div>
             ))
           )
         }
@@ -332,6 +467,14 @@ function WorkersTab({ onStop }: { onStop: (sessionId: string) => void }) {
       >
         {(value) => <FailuresCard sessions={value.recent} />}
       </Polled>
+      <IssueCodeDialog
+        worker={issuedCode}
+        onClose={() => setIssuedCode(null)}
+      />
+      <RevokeWorkerDialog
+        worker={revokeTarget}
+        onClose={() => setRevokeTarget(null)}
+      />
     </div>
   );
 }

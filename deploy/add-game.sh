@@ -4,7 +4,7 @@
 #   ./deploy/add-game.sh <slug> [--host <ssh-хост>] [--input <name>=<путь>]... [--rebuild]
 #
 # Результат — пакет <GAMES_DIR>/<slug>/<version>/ на хосте (GAMES_DIR = <CG_DATA_DIR>/games, как
-# у cg-agent в compose.yaml): исполняемый run и бинарник игры (поля version и binary из
+# у cg-agent в compose.worker.yaml/compose.stand.yaml): исполняемый run и бинарник игры (поля version и binary из
 # games/<slug>/game.json). Агент видит пакет после деплоя, игрокам игру открывает админка.
 #
 # 1. game.json: version, binary, inputs. Каждый inputs[].name — обязательный --input.
@@ -160,7 +160,7 @@ done
 
 echo "==> ${REMOTE_HOST}: CG_DATA_DIR и SESSION_IMAGE из ~/${REMOTE_DIR}/.env"
 # Только эти два несекретных значения, остальные строки .env не читаются и не выводятся (как
-# каталоги в deploy.sh). Нет .env или ключа — умолчания compose.yaml.
+# каталоги в deploy-stand.sh). Нет .env или ключа — умолчания стенда (compose.stand.yaml).
 remote_env="$(ssh "${REMOTE_HOST}" bash -s -- "${REMOTE_DIR}" <<'REMOTE'
 set -euo pipefail
 envval() { local v=""; [ -f ~/"$1"/.env ] && v="$(sed -n "s/^$2=//p" ~/"$1"/.env | tail -n 1)"; printf '%s\n' "${v:-$3}"; }
@@ -328,7 +328,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # in_use <version> — на этой версии пакета идёт сессия: контейнер с меткой cg.own-game создан или
-# запущен (как проверка занятости в deploy.sh; остановленные не мешают).
+# запущен (как проверка занятости в deploy-stand.sh; остановленные не мешают).
 in_use() {
   [ -n "$(docker ps -aq --filter "label=cg.own-game=${slug}/$1" --filter status=created \
     --filter status=running --filter status=restarting --filter status=paused)" ]

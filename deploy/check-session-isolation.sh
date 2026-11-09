@@ -11,9 +11,10 @@
 #   - LAN-адрес хоста :22 и LAN-шлюз хоста :80 (`ip route get 1.1.1.1` на самом хосте: `src` и
 #     `via`) — тоже адреса хоста/LAN, просто не через мост cg-sessions;
 #   - второй контейнер :8080 (в нём поднят `python3 -m http.server 8080`) — другой контейнер
-#     моста, не cg-api;
-#   - cg-api:3000 — контейнеру моста, которому разрешён только исходящий к сессиям :8080, не
-#     входящий от них;
+#     моста, не cg-agent;
+#   - cg-agent:8080 — контейнеру моста, которому разрешён только исходящий к сессиям :8080
+#     (тоннель стрима), не входящий от них (у агента нет слушающих портов: без правил — отказ
+#     в соединении, `reachable`);
 #   - https://store.steampowered.com — интернет (и DNS сессий), должен остаться открытым.
 # «факт»: closed — таймаут (curl 28, его дают DROP-правила); reachable — отказ в соединении
 # (curl 7: адрес ответил, закрыт только порт — изоляции нет); dns-fail — имя не разрешилось
@@ -145,7 +146,7 @@ row "шлюз моста cg-sessions:22" tcp_check "http://${bridge_gw}:22" clos
 row "LAN-адрес хоста:22" tcp_check "http://${host_ip}:22" closed
 row "LAN-шлюз хоста:80" tcp_check "http://${lan_gw}:80" closed
 row "второй контейнер моста:8080" tcp_check "http://${b}:8080" closed
-row "cg-api:3000" tcp_check "http://cg-api:3000" closed
+row "cg-agent:8080" tcp_check "http://cg-agent:8080" closed
 row "интернет (store.steampowered.com)" internet_check "https://store.steampowered.com" open
 
 exit "${ok}"
