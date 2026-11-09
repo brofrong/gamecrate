@@ -4,6 +4,8 @@
 // команды установки и удаления игр — Installer; их отчёты и снимки загрузки
 // WorkerMonitor отправляет по одному, по порядку (каждого источника); на
 // время соединения через него идут `agent.profileCommit` (ProfileCommitter).
+// `OpenTunnel` (канал тоннеля стрима) уходит TunnelClient в фоне: поток команд
+// он не держит, а каналы переживают переподключение к оркестратору.
 // `agent.connect` несёт железо и версии воркера (WorkerMonitor).
 // Обрыв, отказ в отчёте (AgentNotConnected), чужой токен (AgentUnauthorized —
 // WORKER_TOKEN отозван или не принадлежит WORKER_ID) или замена соединения
@@ -21,6 +23,7 @@ import {
   Duration,
   Effect,
   Exit,
+  FiberSet,
   Layer,
   Option,
   Queue,
@@ -32,6 +35,7 @@ import { AgentConfig } from "./config";
 import { Installer } from "./Installer";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { SessionSupervisor } from "./SessionSupervisor";
+import { TunnelClient } from "./TunnelClient";
 import { WorkerMonitor } from "./WorkerMonitor";
 
 export const RECONNECT_MIN = Duration.seconds(1);
@@ -74,6 +78,12 @@ export const run = Effect.gen(function* () {
   const installer = yield* Installer;
   const committer = yield* ProfileCommitter;
   const monitor = yield* WorkerMonitor;
+  const tunnels = yield* TunnelClient;
+  /**
+   * Каналы тоннелей — в scope слоя, а не соединения: WebSocket стрима живёт
+   * всю игру и не должен рваться из-за переподключения команд.
+   */
+  const tunnelFibers = yield* FiberSet.make();
   const protocol = RpcClient.layerProtocolSocket().pipe(
     Layer.provide(
       BunSocket.layerWebSocket(config.orchestratorUrl, {
@@ -145,26 +155,28 @@ export const run = Effect.gen(function* () {
         case "DeleteGame":
           return installer.deleteGame(command.appId);
         case "OpenTunnel":
-          // Канал тоннеля стрима агент откроет в задаче 6; до тех пор relay
-          // оркестратора отвечает api 502 по тайм-ауту.
-          return Effect.logWarning("Stream tunnel is not supported yet", {
-            tunnelId: command.tunnelId,
-          });
+          return FiberSet.run(tunnelFibers, tunnels.open(command)).pipe(
+            Effect.asVoid,
+          );
         default:
           return supervisor.handle(command);
       }
     };
     const commands = client["agent.connect"](payload).pipe(
       Stream.runForEach((command) =>
-        Effect.logInfo("Command received", {
-          command: command._tag,
-          id:
-            "sessionId" in command
-              ? command.sessionId
-              : "jobId" in command
-                ? command.jobId
-                : command.appId,
-        }).pipe(Effect.andThen(route(command))),
+        // Тоннелей — десяток на загрузку плеера: в обычном логе это шум.
+        (command._tag === "OpenTunnel" ? Effect.logDebug : Effect.logInfo)(
+          "Command received",
+          {
+            command: command._tag,
+            id:
+              "sessionId" in command
+                ? command.sessionId
+                : "jobId" in command
+                  ? command.jobId
+                  : command.appId,
+          },
+        ).pipe(Effect.andThen(route(command))),
       ),
     );
 
@@ -214,5 +226,10 @@ export const run = Effect.gen(function* () {
 export const layer: Layer.Layer<
   never,
   never,
-  AgentConfig | SessionSupervisor | Installer | ProfileCommitter | WorkerMonitor
+  | AgentConfig
+  | SessionSupervisor
+  | Installer
+  | ProfileCommitter
+  | WorkerMonitor
+  | TunnelClient
 > = Layer.effectDiscard(run.pipe(Effect.forkScoped));

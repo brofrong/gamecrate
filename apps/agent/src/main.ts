@@ -15,9 +15,12 @@ import { prefixTemplatesLayer } from "./PrefixTemplate";
 import { ProfileCommitter } from "./profile/ProfileCommitter";
 import { ProfileStore } from "./profile/ProfileStore";
 import { SessionSupervisor } from "./SessionSupervisor";
+import { TunnelClient } from "./TunnelClient";
 import { WorkerMonitor } from "./WorkerMonitor";
 
 const Agent = OrchestratorLink.layer.pipe(
+  // Каналы тоннеля стрима к Selkies сессий (нужен тот же супервизор).
+  Layer.provide(TunnelClient.layer),
   // По очереди, не параллельно: супервизор при старте убирает всех помощников
   // (`cg.helper`), а уборка установок сама запускает помощника очистки.
   Layer.provide(SessionSupervisor.layer),

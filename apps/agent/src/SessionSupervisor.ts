@@ -544,6 +544,12 @@ export interface SessionSupervisorShape {
   readonly snapshot: Effect.Effect<ReadonlyArray<RunningSession>>;
   /** Отчёты оркестратору в порядке возникновения. */
   readonly reports: Queue.Queue<AgentReport>;
+  /**
+   * Сессия идёт на этом агенте и её стрим готов (после `StreamReady`, до
+   * начала остановки): только к такой открывается тоннель стрима
+   * (`TunnelClient`, спека 2026-11-09 §4).
+   */
+  readonly hasStream: (sessionId: string) => boolean;
 }
 
 const make = Effect.gen(function* () {
@@ -1979,6 +1985,7 @@ const make = Effect.gen(function* () {
       })),
     ),
     reports,
+    hasStream: (sessionId) => sessions.get(sessionId)?.phase === "ready",
   } satisfies SessionSupervisorShape;
 });
 

@@ -41,6 +41,7 @@ import {
   SessionSupervisor,
   type SessionSupervisorShape,
 } from "../src/SessionSupervisor";
+import { TunnelClient, type TunnelClientShape } from "../src/TunnelClient";
 import { WorkerMonitor, type WorkerMonitorShape } from "../src/WorkerMonitor";
 import { testConfig } from "./fakes";
 
@@ -289,6 +290,15 @@ describe("OrchestratorLink", () => {
             },
           ]),
           reports,
+          hasStream: () => true,
+        };
+        /** Тоннели: `open` не кончается (WebSocket стрима живёт всю игру). */
+        const tunnelsOpened: Array<string> = [];
+        const tunnels: TunnelClientShape = {
+          open: (command) =>
+            Effect.sync(() => void tunnelsOpened.push(command.tunnelId)).pipe(
+              Effect.andThen(Effect.never),
+            ),
         };
         const installed: Array<AgentCommand> = [];
         const installReports = yield* Queue.unbounded<AgentReport>();
@@ -309,6 +319,7 @@ describe("OrchestratorLink", () => {
         yield* Layer.build(
           OrchestratorLink.layer.pipe(
             Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+            Layer.provide(Layer.succeed(TunnelClient, tunnels)),
             Layer.provide(Layer.succeed(Installer, installer)),
             Layer.provide(
               Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),
@@ -373,6 +384,17 @@ describe("OrchestratorLink", () => {
         yield* waitUntil(() => handled.length === 1);
         expect(handled).toEqual([start]);
 
+        // `OpenTunnel` — TunnelClient в фоне: незакончившийся тоннель не
+        // держит следующие команды.
+        const stop: AgentCommand = { _tag: "StopSession", sessionId: "s1" };
+        yield* Queue.offerAll(server.streams[0]!, [
+          { _tag: "OpenTunnel", tunnelId: "t1", sessionId: "s1" },
+          stop,
+        ]);
+        yield* waitUntil(() => handled.length === 2);
+        expect(tunnelsOpened).toEqual(["t1"]);
+        expect(handled).toEqual([start, stop]);
+
         // Команды установки — установщику, не супервизору сессий.
         const installGame: AgentCommand = {
           _tag: "InstallGame",
@@ -394,7 +416,7 @@ describe("OrchestratorLink", () => {
           { _tag: "CancelInstall", jobId: "j1" },
           { _tag: "DeleteGame", appId: 2379780 },
         ]);
-        expect(handled).toEqual([start]);
+        expect(handled).toEqual([start, stop]);
 
         yield* Queue.offerAll(reports, [
           { _tag: "StreamReady", sessionId: "s1", streamUrl: "u" },
@@ -495,6 +517,7 @@ describe("OrchestratorLink", () => {
         handle: () => Effect.void,
         snapshot: Effect.succeed([]),
         reports,
+        hasStream: () => false,
       };
       const installed: Array<AgentCommand> = [];
       const installReports = yield* Queue.unbounded<AgentReport>();
@@ -510,6 +533,9 @@ describe("OrchestratorLink", () => {
       yield* Layer.build(
         OrchestratorLink.layer.pipe(
           Layer.provide(Layer.succeed(SessionSupervisor, supervisor)),
+          Layer.provide(
+            Layer.succeed(TunnelClient, { open: () => Effect.void }),
+          ),
           Layer.provide(Layer.succeed(Installer, installer)),
           Layer.provide(
             Layer.succeed(WorkerMonitor, fakeMonitor(monitorReports)),
