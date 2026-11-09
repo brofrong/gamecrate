@@ -41,10 +41,10 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
     }),
   "admin.sessions.stop": ({ sessionId }) => adminStop(sessionId),
   "admin.games.list": () => listGames(),
-  "admin.games.delete": ({ appId }) =>
+  "admin.games.delete": ({ workerId, appId }) =>
     Effect.gen(function* () {
       const now = yield* DateTime.nowAsDate;
-      return yield* deleteGame(appId, now);
+      return yield* deleteGame(workerId, appId, now);
     }),
   "admin.games.requirements": ({ appId }) => adminGameRequirements(appId),
   "admin.games.setRequirements": ({ appId, requirements }) =>

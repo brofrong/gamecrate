@@ -20,7 +20,7 @@ import {
   defaultSessionSettings,
   sessionSettingsKey,
 } from "@cg/rpc";
-import { asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Logger, Redacted, References } from "effect";
 import { type AgentHubEvent } from "../src/AgentHub";
 import { failReasons } from "../src/lifecycle";
@@ -508,12 +508,19 @@ describe("scheduler", () => {
         const db = yield* Db;
         const t0 = new Date();
         yield* seedUsers("u1");
-        yield* connectWorker(fake, "w-a", 1);
-        // Админ удаляет игру: строка библиотеки остаётся до итога агента.
+        yield* connectWorker(fake, "w-a", 1, {
+          roles: ["worker", "gamestore"],
+        });
+        // Админ удаляет игру с w-a: строка библиотеки остаётся до итога агента.
         yield* db
           .update(gamestoreApps)
           .set({ deletingAt: t0 })
-          .where(eq(gamestoreApps.appId, 570));
+          .where(
+            and(
+              eq(gamestoreApps.workerId, "w-a"),
+              eq(gamestoreApps.appId, 570),
+            ),
+          );
         yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
 
         yield* Scheduler.tick(t0);
@@ -525,11 +532,23 @@ describe("scheduler", () => {
         expect(fake.sent).toEqual([]);
         expect(yield* db.select().from(installJobs)).toEqual([]);
 
-        // Агент удалил игру — сессия ставит её заново обычной установкой.
-        yield* db.delete(gamestoreApps).where(eq(gamestoreApps.appId, 570));
+        // Агент удалил игру — сессия ставит её на w-a заново обычной установкой.
+        yield* db
+          .delete(gamestoreApps)
+          .where(
+            and(
+              eq(gamestoreApps.workerId, "w-a"),
+              eq(gamestoreApps.appId, 570),
+            ),
+          );
         yield* Scheduler.tick(at(t0, 2));
         const [job] = yield* db.select().from(installJobs);
-        like(job, { appId: 570, userId: "u1", state: "queued" });
+        like(job, {
+          appId: 570,
+          userId: "u1",
+          state: "queued",
+          workerId: "w-a",
+        });
         like(yield* sessionRow("s1"), {
           state: "installing",
           installJobId: job?.id ?? "",

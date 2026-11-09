@@ -1,5 +1,7 @@
-// Вкладка «Игры» (`/admin?tab=games`, Task 4, макет `mockup-games.html`): общая
-// библиотека хранилища — размер/даты/запуски и «Удалить» с подтверждением; служебные
+// Вкладка «Игры» (`/admin?tab=games`, Task 4, макет `mockup-games.html`): игры
+// библиотек серверов — строка на пару (сервер, игра), библиотека своя у каждого
+// сервера (спека 2026-11-09 §5): размер/даты/запуски по серверу и «Удалить» с
+// этого сервера с подтверждением; служебные
 // пакеты (Proton, Steam Linux Runtime…) показаны отдельной строкой без кнопки — их не
 // удаляют никогда (это не `gamestore_apps`, см. глобальные ограничения спеки). Плюс
 // раздел «Свои сборки» (спека 2026-11-03 «Свои игры», Task 10) над играми библиотеки:
@@ -213,13 +215,14 @@ function GamesTable({
 }) {
   const th = "px-2 py-1.5 text-left font-medium";
   const td = "px-2 py-2";
-  const columns = 6;
+  const columns = 7;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="text-xs text-muted-foreground">
           <tr>
             <th className={th}>Игра</th>
+            <th className={th}>Сервер</th>
             <th className={th}>Размер</th>
             <th className={th}>Поставлена</th>
             <th className={th}>Последний запуск</th>
@@ -229,7 +232,7 @@ function GamesTable({
         </thead>
         <tbody>
           {games.map((game) => (
-            <React.Fragment key={game.appId}>
+            <React.Fragment key={`${game.workerId}:${game.appId}`}>
               <tr
                 className="cursor-pointer border-t hover:bg-muted/40"
                 aria-expanded={expandedAppId === game.appId}
@@ -245,6 +248,7 @@ function GamesTable({
                     )}
                   </div>
                 </td>
+                <td className={cn(td, "whitespace-nowrap")}>{game.workerId}</td>
                 <td className={cn(td, "whitespace-nowrap")}>
                   {formatBytes(game.sizeBytes)}
                 </td>
@@ -287,6 +291,7 @@ function GamesTable({
               <td className={cn(td, "whitespace-normal text-muted-foreground")}>
                 {`Служебные: ${service.names.join(", ")}`}
               </td>
+              <td className={td} />
               <td className={cn(td, "whitespace-nowrap text-muted-foreground")}>
                 {formatBytes(service.sizeBytes)}
               </td>
@@ -323,7 +328,9 @@ export function GamesTab() {
 
   const onConfirm = async () => {
     if (toDelete === null) return;
-    const exit = await deleteGame(adminDeleteGameArgs(toDelete.appId));
+    const exit = await deleteGame(
+      adminDeleteGameArgs(toDelete.workerId, toDelete.appId),
+    );
     if (Exit.isFailure(exit)) toast.error("Не удалось удалить игру");
     else deleteToast(exit.value);
   };
@@ -419,10 +426,10 @@ export function GamesTab() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{`Удалить ${toDelete?.name ?? ""}?`}</AlertDialogTitle>
+            <AlertDialogTitle>{`Удалить ${toDelete?.name ?? ""} с сервера ${toDelete?.workerId ?? ""}?`}</AlertDialogTitle>
             <AlertDialogDescription>
               {toDelete !== null &&
-                `${formatBytes(toDelete.sizeBytes)} освободится на хранилище. Запуск игры потом поставит её заново.`}
+                `${formatBytes(toDelete.sizeBytes)} освободится на сервере. Запуск игры потом поставит её заново.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -18,6 +18,7 @@ import {
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type CurrentUserShape, LibraryRpcs } from "@cg/rpc";
+import { eq } from "drizzle-orm";
 import { Effect, Layer, Option, type Scope } from "effect";
 import { RpcTest } from "effect/rpc";
 import { BetterAuth } from "../src/auth/auth";
@@ -534,13 +535,15 @@ describe("library.game", () => {
 
   it("game view says unavailable without a fitting worker", async () => {
     reset();
-    const { withoutWorker, withWorker } = await run(
+    const { withoutWorker, withoutSteamClient, withWorker } = await run(
       Effect.gen(function* () {
         const db = yield* Db;
         yield* seedGame(db);
         const withoutWorker = yield* game();
         // Миграция уже завела класс «Стандарт» (rank 1) — переиспользуем его.
         const [cls] = yield* db.select().from(workerClasses);
+        // Воркер без шаблона клиента Steam Steam-игру не запустит (спека
+        // 2026-11-09 §5) — игра всё ещё недоступна.
         yield* db.insert(workers).values({
           id: "w1",
           publicIp: "203.0.113.1",
@@ -549,11 +552,24 @@ describe("library.game", () => {
           classId: cls!.id,
           lastSeenAt: new Date(),
         });
+        const withoutSteamClient = yield* game();
+        yield* db
+          .update(workers)
+          .set({
+            versions: {
+              agentCommit: "test",
+              sessionImage: "cg-session:test",
+              driver: null,
+              steamClientBuiltAt: "2026-11-01T00:00:00.000Z",
+            },
+          })
+          .where(eq(workers.id, "w1"));
         const withWorker = yield* game();
-        return { withoutWorker, withWorker };
+        return { withoutWorker, withoutSteamClient, withWorker };
       }),
     );
     expect(withoutWorker.available).toBe(false);
+    expect(withoutSteamClient.available).toBe(false);
     expect(withWorker.available).toBe(true);
   });
 

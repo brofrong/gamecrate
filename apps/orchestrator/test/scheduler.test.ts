@@ -1,15 +1,14 @@
-// Планировщик с классами воркеров и требованиями к железу (спека §2).
+// Планировщик с классами воркеров и требованиями к железу (спека §2) и
+// библиотекой игр у каждого сервера (спека 2026-11-09 §5).
 import { describe, expect, it } from "bun:test";
 import {
   Db,
   gameRequirements,
   games,
-  gamestoreApps,
   installJobs,
   ownGames,
   sessions,
   user,
-  workers,
 } from "@cg/db";
 import type { WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
@@ -20,6 +19,7 @@ import {
   at,
   connectWorker,
   insertSession,
+  installOn,
   like,
   run,
   seedUsers,
@@ -49,37 +49,22 @@ const sessionRow = (id: string) =>
     return row;
   });
 
-/**
- * Служебный воркер для строк `gamestore_apps` этого файла: библиотека своя
- * у каждого сервера (спека §5), но проверки размещения не смотрят на
- * `workerId` до задачи 8 — конкретный владелец строки здесь не важен.
- */
-const LIBRARY_FIXTURE_WORKER = "library-fixture";
-
-/** Игра `appId` в библиотеке (своя строка `games`/`gamestore_apps`). */
+/** Строка `games` Steam-игры `appId` (в библиотеки серверов её кладёт `installOn`). */
 const seedGame = (appId: number, name: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db.insert(games).values({ appId, name }).onConflictDoNothing();
-    yield* db
-      .insert(workers)
-      .values({
-        id: LIBRARY_FIXTURE_WORKER,
-        publicIp: "203.0.113.8",
-        slots: 0,
-        roles: ["gamestore"],
-      })
-      .onConflictDoNothing();
-    yield* db
-      .insert(gamestoreApps)
-      .values({
-        workerId: LIBRARY_FIXTURE_WORKER,
-        appId,
-        sizeBytes: 1,
-        buildId: "1",
-      })
-      .onConflictDoNothing();
   });
+
+/** Все задачи установки (по времени создания не сортируем — в тестах их ≤ 1). */
+const installJobRows = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    return yield* db.select().from(installJobs);
+  });
+
+/** Steam-игра, которой по умолчанию нет ни в одной библиотеке. */
+const PORTAL = 400;
 
 /** Требования к железу игры (минимумы на слот, спека §1.2). */
 const setRequirements = (
@@ -231,6 +216,7 @@ describe("scheduler: classes and hardware requirements", () => {
             ramBytes: 16 * GiB,
             cpuThreads: 8,
           }),
+          library: [570, 730],
         });
         yield* setRequirements(730, {
           minVramBytes: 8 * GiB,
@@ -262,6 +248,253 @@ describe("scheduler: classes and hardware requirements", () => {
           workerId: null,
           slot: null,
         });
+      }),
+    ));
+});
+
+describe("scheduler: game library of each server (спека 2026-11-09 §5)", () => {
+  it("places on the worker that has the game", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* seedGame(PORTAL, "Portal");
+        yield* connectWorker(fake, "w1", 1, { roles: ["worker", "gamestore"] });
+        yield* connectWorker(fake, "w2", 1, {
+          roles: ["worker", "gamestore"],
+          library: [PORTAL],
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s1"), {
+          state: "starting",
+          workerId: "w2",
+          slot: 0,
+        });
+        expect(yield* installJobRows()).toEqual([]);
+      }),
+    ));
+
+  it("installs on a worker with a free slot", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-busy", "u1");
+        yield* seedGame(PORTAL, "Portal");
+        yield* connectWorker(fake, "w1", 1, { roles: ["worker", "gamestore"] });
+        yield* connectWorker(fake, "w2", 1, { roles: ["worker", "gamestore"] });
+        // Единственный слот w1 занят — Portal ставится на w2, где сессия
+        // сможет запуститься сразу после установки.
+        yield* insertSession({
+          id: "s-busy",
+          userId: "u-busy",
+          state: "playing",
+          workerId: "w1",
+          slot: 0,
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        const [job, ...rest] = yield* installJobRows();
+        expect(rest).toEqual([]);
+        like(job, {
+          appId: PORTAL,
+          userId: "u1",
+          workerId: "w2",
+          state: "queued",
+        });
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: job?.id ?? "",
+          workerId: null,
+          slot: null,
+        });
+      }),
+    ));
+
+  it("installs on the first gamestore worker when every slot is busy", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-busy", "u1");
+        yield* seedGame(PORTAL, "Portal");
+        // w0 без роли gamestore ставить не может; w1 — первый из годных.
+        yield* connectWorker(fake, "w0", 1);
+        yield* connectWorker(fake, "w1", 0, { roles: ["worker", "gamestore"] });
+        yield* connectWorker(fake, "w2", 0, { roles: ["worker", "gamestore"] });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        const [job] = yield* installJobRows();
+        like(job, { appId: PORTAL, workerId: "w1", state: "queued" });
+        like(yield* sessionRow("s1"), { state: "installing" });
+      }),
+    ));
+
+  it("waits when the game is installed only on a busy worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-busy", "u1");
+        yield* seedGame(PORTAL, "Portal");
+        yield* connectWorker(fake, "w1", 1, {
+          roles: ["worker", "gamestore"],
+          library: [570, PORTAL],
+        });
+        yield* connectWorker(fake, "w2", 1, { roles: ["worker", "gamestore"] });
+        yield* insertSession({
+          id: "s-busy",
+          userId: "u-busy",
+          state: "playing",
+          workerId: "w1",
+          slot: 0,
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        // Portal уже стоит на w1 — вторую копию на свободный w2 не ставим, ждём.
+        like(yield* sessionRow("s1"), {
+          state: "queued",
+          workerId: null,
+          installJobId: null,
+        });
+        expect(yield* installJobRows()).toEqual([]);
+        expect(fake.sent).toEqual([]);
+      }),
+    ));
+
+  it("installs on an eligible worker when the game is only on an offline server", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        // Dota 2 стоит на `LIBRARY_FIXTURE_WORKER` (`seedUsers`), но его нет
+        // на связи — для этой сессии игра не стоит нигде.
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1, {
+          roles: ["worker", "gamestore"],
+          library: [],
+        });
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+
+        const [job] = yield* installJobRows();
+        like(job, { appId: 570, workerId: "w1", state: "queued" });
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: job?.id ?? "",
+        });
+      }),
+    ));
+
+  it("joins the active install on another eligible worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seedUsers("u-first", "u1");
+        yield* seedGame(PORTAL, "Portal");
+        yield* connectWorker(fake, "w1", 1, { roles: ["worker", "gamestore"] });
+        yield* connectWorker(fake, "w2", 1, { roles: ["worker", "gamestore"] });
+        // Portal уже ставится на w2 (для другой сессии); w1 свободен, но
+        // второй задачи не заводим — присоединяемся к идущей.
+        yield* db.insert(installJobs).values({
+          id: "job-w2",
+          appId: PORTAL,
+          userId: "u-first",
+          workerId: "w2",
+          state: "running",
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        expect((yield* installJobRows()).map((j) => j.id)).toEqual(["job-w2"]);
+        like(yield* sessionRow("s1"), {
+          state: "installing",
+          installJobId: "job-w2",
+        });
+      }),
+    ));
+
+  it("does not install over a deletion on the same worker", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1");
+        yield* seedGame(PORTAL, "Portal");
+        yield* connectWorker(fake, "w1", 1, { roles: ["worker", "gamestore"] });
+        yield* installOn("w1", PORTAL, { deletingAt: at(t0, -1) });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          appId: PORTAL,
+          createdAt: at(t0, -5),
+        });
+
+        yield* Scheduler.tick(t0);
+
+        // Portal на w1 удаляется: не запускаем и не ставим туда же — ждём.
+        like(yield* sessionRow("s1"), { state: "queued", installJobId: null });
+        expect(yield* installJobRows()).toEqual([]);
+
+        // Появился второй сервер — ставим туда.
+        yield* connectWorker(fake, "w2", 1, { roles: ["worker", "gamestore"] });
+        yield* Scheduler.tick(at(t0, 2));
+        const [job] = yield* installJobRows();
+        like(job, { appId: PORTAL, workerId: "w2" });
+      }),
+    ));
+
+  it("skips workers without a Steam client template", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u1", "u2");
+        // У w1 игра стоит, но шаблон клиента Steam не собран.
+        yield* connectWorker(fake, "w1", 1, {
+          roles: ["worker", "gamestore"],
+          steamClient: false,
+        });
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+        like(yield* sessionRow("s1"), { state: "queued", installJobId: null });
+        expect(yield* installJobRows()).toEqual([]);
+
+        yield* connectWorker(fake, "w2", 1);
+        yield* Scheduler.tick(at(t0, 2));
+        like(yield* sessionRow("s1"), { state: "starting", workerId: "w2" });
       }),
     ));
 });

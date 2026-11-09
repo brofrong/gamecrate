@@ -100,18 +100,22 @@ export const AdminRegion = Schema.Struct({
 export type AdminRegion = typeof AdminRegion.Type;
 
 /**
- * Игра общей библиотеки для админки (вкладка «Игры»). `installedAt` — когда
- * установилась (`gamestore_apps.installed_at`); `lastLaunchAt`/`launches` — по
- * сессиям этой игры, дошедшим до размещения на воркере (`worker_id is not
- * null`); `activeSessions` — сессии не `ended`/`failed` (включая ещё не
- * размещённые — `queued`/`installing`); `installing` — есть активная
- * (`queued`/`running`) задача установки; `deleting` — админ попросил удалить
- * (`deleting_at`), кнопка «Удалить» в этом состоянии уже неактивна.
- * `deleteError` — причина последнего неудачного удаления (русский текст
- * агента, без секретов), `null` — его не было или новый запрос уже её
- * очистил.
+ * Игра в библиотеке одного сервера для админки (вкладка «Игры»): строка — пара
+ * (сервер `workerId`, игра `appId`), библиотека своя у каждого сервера (спека
+ * 2026-11-09 §5), та же игра на двух серверах — две строки. Всё ниже — по
+ * этому серверу. `installedAt` — когда установилась
+ * (`gamestore_apps.installed_at`); `lastLaunchAt`/`launches` — по сессиям этой
+ * игры, размещённым на этом сервере; `activeSessions` — такие сессии не
+ * `ended`/`failed` (ещё не размещённые — `queued`/`installing` — ни к одному
+ * серверу не относятся и не считаются); `installing` — есть активная
+ * (`queued`/`running`) задача установки этой игры на этот сервер;
+ * `deleting` — админ попросил удалить её с сервера (`deleting_at`), кнопка
+ * «Удалить» в этом состоянии уже неактивна. `deleteError` — причина
+ * последнего неудачного удаления (русский текст агента, без секретов),
+ * `null` — его не было или новый запрос уже её очистил.
  */
 export const AdminGame = Schema.Struct({
+  workerId: Schema.String,
   appId: Schema.Int,
   name: Schema.String,
   sizeBytes: Schema.Number,
@@ -151,8 +155,9 @@ export const AdminOwnGame = Schema.Struct({
 export type AdminOwnGame = typeof AdminOwnGame.Type;
 
 /**
- * Игры общей библиотеки + служебные пакеты + свои сборки. `service` — часть
- * библиотеки воркера `gamestore`, которой нет в `gamestore_apps` (Proton,
+ * Игры библиотек серверов (строка — пара сервер–игра) + служебные пакеты +
+ * свои сборки. `service` — часть библиотеки первого по id воркера
+ * `gamestore`, которой нет в его строках `gamestore_apps` (Proton,
  * Steam Linux Runtime и т. п.) — их показывают как «Служебные: …», но
  * никогда не удаляют; `null` — у воркера `gamestore` ещё нет снимка
  * библиотеки (или такого воркера нет вовсе). `own` — свои сборки
@@ -401,8 +406,9 @@ export const AdminRpcs = RpcGroup.make(
     success: Schema.Boolean,
   }),
   Rpc.make("admin.games.list", { success: AdminGames }),
+  // Удалить игру с одного сервера (строка `gamestore_apps` пары сервер–игра).
   Rpc.make("admin.games.delete", {
-    payload: Schema.Struct({ appId: Schema.Int }),
+    payload: Schema.Struct({ workerId: Schema.String, appId: Schema.Int }),
     success: Schema.Literals(["started", "inUse", "notFound"]),
   }),
   Rpc.make("admin.games.requirements", {

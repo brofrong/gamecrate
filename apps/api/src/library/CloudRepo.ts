@@ -1,4 +1,4 @@
-// Статус облачной версии игры (установка на сервере стриминга), облачный
+// Статус облачной версии игры (установка хотя бы на одном игровом сервере), облачный
 // профиль Steam (MVP-3) и время последней сессии — для `library.list`.
 import { Db, gamestoreApps, installJobs, profiles, sessions } from "@cg/db";
 import { type CloudStatus, isOwnAppId } from "@cg/rpc";
@@ -15,9 +15,11 @@ const installPercent = (
     : Math.round(((bytesDownloaded ?? 0) / bytesTotal) * 100);
 
 /**
- * Статус облака для каждой из `appIds`: `Ready` — игра есть в `gamestore_apps`;
- * иначе `Installing`, если есть активная (`queued`/`running`) задача установки
- * (частичный уникальный индекс гарантирует не более одной); иначе `Missing`
+ * Статус облака для каждой из `appIds`: `Ready` — игра есть в `gamestore_apps`
+ * хотя бы одного сервера (библиотека своя у каждого сервера, спека 2026-11-09
+ * §5; «в облаке» — стоит где-нибудь); иначе `Installing`, если есть активная
+ * (`queued`/`running`) задача установки на каком-нибудь сервере (их может быть
+ * несколько — по одной на сервер, процент берётся у первой попавшейся); иначе `Missing`
  * (в карту не попадает — см. `cloudStatusOf`). Свои игры (`isOwnAppId`)
  * всегда `Ready`: их пакет не ставится через Steam, а раскатан на воркеры
  * (есть ли он на подходящем воркере — забота `gameAvailable`). Пустой список
@@ -35,7 +37,7 @@ export const cloudStatuses = (
     const db = yield* Db;
 
     const ready = yield* db
-      .select({ appId: gamestoreApps.appId })
+      .selectDistinct({ appId: gamestoreApps.appId })
       .from(gamestoreApps)
       .where(inArray(gamestoreApps.appId, ids));
     for (const row of ready) status.set(row.appId, { _tag: "Ready" });

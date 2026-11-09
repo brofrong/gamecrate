@@ -177,15 +177,15 @@ export const adminSetWorkerClassArgs = (
   classId: string | null,
 ) => ({ payload: { workerId, classId }, reactivityKeys: adminKeys }) as const;
 
-/** Игры общей библиотеки + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
+/** Игры библиотек серверов + служебные пакеты (вкладка «Игры», опрос раз в 5 с). */
 export const adminGamesAtom = Api.query("admin.games.list", undefined, {
   reactivityKeys: adminKeys,
 });
 
-/** Пометить игру к удалению («Удалить» на вкладке «Игры»). */
+/** Пометить игру к удалению с сервера `workerId` («Удалить» на вкладке «Игры»). */
 export const adminDeleteGameAtom = Api.mutation("admin.games.delete");
-export const adminDeleteGameArgs = (appId: number) =>
-  ({ payload: { appId }, reactivityKeys: adminKeys }) as const;
+export const adminDeleteGameArgs = (workerId: string, appId: number) =>
+  ({ payload: { workerId, appId }, reactivityKeys: adminKeys }) as const;
 
 /** Требования и замеры по моделям GPU одной игры (панель на вкладке «Игры», спека §5.2). */
 export const adminGameRequirementsAtom = Atom.family((appId: number) =>

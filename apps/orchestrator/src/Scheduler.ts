@@ -1,11 +1,11 @@
 // Планировщик: раз в 2 с раздаёт сессии из очереди по свободным слотам
-// подключённых воркеров и отправляет агенту StartSession; сессии неустановленных
-// игр отправляет ждать установку (`installing`); сессии удаляемых игр ждут в
-// очереди.
+// подключённых воркеров и отправляет агенту StartSession. Библиотека игр своя
+// у каждого сервера (спека 2026-11-09 §5): сессия Steam-игры размещается
+// только там, где игра стоит; нет её ни на одном подходящем сервере — сессия
+// ждёт установку (`installing`) на выбранный сервер.
 import {
   Db,
   eligibleWorkers,
-  gamestoreApps,
   installJobs,
   ownGames,
   sessions,
@@ -17,7 +17,16 @@ import {
   type ProfileRef,
   accessDeniedReason,
 } from "@cg/rpc";
-import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { AgentHub } from "./AgentHub";
 import * as InstallRepo from "./InstallRepo";
@@ -76,20 +85,11 @@ type Outcome =
   | { readonly _tag: "Retry" };
 
 /**
- * Строка игры сессии есть в `gamestore_apps` (подзапрос по внешней `sessions`),
- * в том числе у удаляемой: её не ставим, пока агент не удалит игру.
- */
-const appInLibrary: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId})`;
-
-/** Игра сессии в общей библиотеке и не удаляется (`deleting_at is null`). */
-const appInstalled: SQL = sql`exists (select 1 from ${gamestoreApps} where ${gamestoreApps.appId} = ${sessions.appId} and ${gamestoreApps.deletingAt} is null)`;
-
-/**
  * У игры сессии есть строка каталога своих игр (спека 2026-11-03 «Свои игры»):
  * это своя игра (фанатский ПК-порт вне Steam), а не Steam-приложение, —
  * независимо от `published`. Такая сессия никогда не уходит в установку
  * (`placeOne`): пакет раскатывается на воркеры заранее, а не задачей
- * установки.
+ * установки; непубликованную `placeOne` даже не просматривает.
  */
 const ownGameRow: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.appId} = ${sessions.appId})`;
 
@@ -97,16 +97,28 @@ const ownGameRow: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.a
 const ownGamePublished: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.appId} = ${sessions.appId} and ${ownGames.published})`;
 
 /**
- * У игры сессии есть активная (`queued`/`running`) задача установки, которую
- * админ попросил отменить (`cancel_requested_at`). Частичный уникальный индекс
- * `install_jobs_active_app_idx` не даст завести вторую активную задачу этой
- * игры, пока первая не закончится, — значит `startInstall`
- * (`InstallRepo.lockActiveJob`) присоединил бы новую сессию к отменяемой
- * задаче, и она тут же провалилась бы с «Установка отменена администратором».
- * Такую сессию оставляем в очереди без установки: новая задача появится, как
- * только отменяемая завершится.
+ * Игры, у которых есть активная (`queued`/`running`) задача установки (на
+ * любом сервере), которую админ попросил отменить (`cancel_requested_at`).
+ * `startInstall` (`InstallRepo.lockActiveJob`) мог бы присоединить новую
+ * сессию к отменяемой задаче, и она тут же провалилась бы с «Установка
+ * отменена администратором». Сессию такой игры, если игра не стоит ни на
+ * одном подходящем сервере, оставляем в очереди без установки: новая задача
+ * появится, как только отменяемая завершится.
  */
-const appInstallCancelling: SQL = sql`exists (select 1 from ${installJobs} where ${installJobs.appId} = ${sessions.appId} and ${installJobs.state} in ('queued', 'running') and ${installJobs.cancelRequestedAt} is not null)`;
+const installCancellingApps = () =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const rows = yield* db
+      .selectDistinct({ appId: installJobs.appId })
+      .from(installJobs)
+      .where(
+        and(
+          inArray(installJobs.state, ["queued", "running"]),
+          isNotNull(installJobs.cancelRequestedAt),
+        ),
+      );
+    return new Set(rows.map((r) => r.appId));
+  });
 
 /**
  * У пользователя сессии нет активной (`queued`/`running`) задачи установки,
@@ -123,7 +135,7 @@ const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${inst
  */
 const userBlocked: SQL<boolean> = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${sessions.userId} and ${user.blockedAt} is not null)`;
 
-/** Не больше стольких `queued`-сессий установленной игры за один проход `placeOne`. */
+/** Не больше стольких `queued`-сессий за один проход `placeOne`. */
 export const PLACE_SCAN = 50;
 
 /**
@@ -179,12 +191,20 @@ const blockedFailure = (now: Date, sessionId: string) =>
   });
 
 /**
- * Сессия неустановленной игры: задача установки — активная этого appid или
- * новая `queued` с `userId` сессии; `installJobId` и `InstallStarted`
- * (→ `installing`). Задача блокируется до проверки библиотеки: если её как раз
- * завершают, видим уже установленную игру (`Retry`), а не завершённую задачу.
+ * Сессия игры, которой нет в библиотеке ни одного подходящего ей сервера
+ * (`eligible` — годные ей подключённые воркеры, спека 2026-11-09 §5):
+ * задача установки — активная этой игры на одном из `eligible`
+ * (`lockActiveJob`) или новая `queued` на `targets[0]` с `userId` сессии;
+ * `installJobId` и `InstallStarted` (→ `installing`). Слот за сессией не
+ * держится: после установки она снова `queued` и ждёт слот на сервере, где
+ * игра теперь стоит. `targets` — серверы, куда можно ставить (с ролью
+ * `gamestore`, без строки библиотеки этой игры, сначала со свободным слотом,
+ * см. `placeOne`); пусто и активной задачи нет — `undefined`, сессия ждёт в
+ * очереди без записи в БД. Задача блокируется до проверки библиотеки: если её
+ * как раз завершают, видим уже установленную игру (`Retry`), а не
+ * завершённую задачу.
  *
- * `appInstallCancelling` в `lockOldestQueued` и блокировка задачи тут — два
+ * `installCancellingApps` в `placeOne` и блокировка задачи тут — два
  * разных запроса в одной транзакции: между ними админская отмена (отдельная
  * транзакция `cancelInstall`) могла успеть закоммититься — тогда первый запрос
  * ещё не видел отмену, а `lockActiveJob` на блокировке уже её видит
@@ -192,8 +212,8 @@ const blockedFailure = (now: Date, sessionId: string) =>
  * её немедленно провалит админская отмена; вместо этого `Retry` без всякой
  * записи в БД. Спина нет: к следующему вызову `placeOne` (в том же проходе
  * или следующем тике) отмена уже закоммичена и видна и первому запросу —
- * `appInstallCancelling` вернёт эту сессию в ветку "отменяемая игра, ждать в
- * очереди", а не сюда (экспортируется для теста этой гонки, M1).
+ * `installCancellingApps` оставит эту сессию ждать в очереди, а не пошлёт
+ * сюда (экспортируется для теста этой гонки, M1).
  */
 export const startInstall = (
   now: Date,
@@ -202,17 +222,22 @@ export const startInstall = (
     readonly userId: string;
     readonly appId: number;
   },
+  eligible: ReadonlyArray<string>,
+  targets: ReadonlyArray<string>,
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const locked = yield* InstallRepo.lockActiveJob(session.appId);
-    if (yield* InstallRepo.isInstalled(session.appId))
+    const locked = yield* InstallRepo.lockActiveJob(session.appId, eligible);
+    const installed = yield* InstallRepo.installedOn(session.appId);
+    if (installed.some((workerId) => eligible.includes(workerId)))
       return { _tag: "Retry" } as const;
     if (locked !== undefined && locked.cancelRequestedAt !== null)
       return { _tag: "Retry" } as const;
+    const [target] = targets;
+    if (locked === undefined && target === undefined) return undefined;
     const jobId =
       locked?.id ??
-      (yield* InstallRepo.createJob(session.appId, session.userId));
+      (yield* InstallRepo.createJob(target!, session.appId, session.userId));
     yield* db
       .update(sessions)
       .set({ installJobId: jobId })
@@ -225,34 +250,45 @@ export const startInstall = (
   });
 
 /**
- * Одна транзакция на один проход. Сессия заблокированного пользователя (в
- * любой из веток ниже) не ставится и не размещается, а валится с
- * `accessDeniedReason` (`blockedFailure`). Сначала самая старая `queued`-
- * сессия неустановленной игры (её игры нет в `gamestore_apps`, `LIMIT 1`, и
- * она не своя игра — своя игра никогда не уходит в установку, `ownGameRow`),
- * чья задача установки не отменяется админом (`appInstallCancelling`), уходит
- * в установку (`startInstall`) — слот ей не нужен, поэтому она не ждёт
- * воркеров; сессия отменяемой игры остаётся в очереди и дождётся новой задачи
- * после её конца. Иначе — очередь без затора (спека §2.5): до `PLACE_SCAN`
- * самых старых `queued`-сессий установленных (`appInstalled`) или открытых
- * игрокам своих игр (`ownGamePublished`, спека 2026-11-03 «Свои игры»)
- * (`created_at asc`, `FOR UPDATE SKIP LOCKED`) просматриваются по очереди, для
- * каждой — `eligibleWorkers(userId, appId, { workerIds: candidates })`
- * (классы воркеров и железо, спека §2.1–§2.3; для своей игры он же проверяет
- * раскатанный пакет, `hasPackage`), первый из них со свободным слотом (слот —
- * наименьший свободный) размещает сессию; не нашёлся — переходим к следующей
- * сессии. Строка игры читается под `FOR SHARE` — `gamestore_apps` для
- * Steam-игры (api помечает удаление под `FOR UPDATE` и проверяет активные
- * сессии — либо мы видим пометку, либо api видит нашу сессию), `own_games`
- * для своей игры; удаляемая/непубликованная или пропавшая игра — сессия
- * пропускается, как и при отсутствии свободного воркера. Просмотренные, но не
- * размещённые сессии остаются заблокированными только до конца транзакции —
- * следующий проход их не пропустит. Размещение — `workerId`, `slot`,
- * `state = 'starting'`, `stateSince = agentSeenAt = now` и коммит; профиль и
- * пометка сброса входа Steam читаются в той же транзакции: сбой чтения
- * откатывает размещение, а не оставляет его без команды. Своя игра не входит
- * в Steam — пометка сброса входа для неё не читается (`steamLoginResetAt:
- * null` без запроса), `Placement.ownGame` несёт её пакет (`slug`/`version`).
+ * Одна транзакция на один проход: до `PLACE_SCAN` самых старых
+ * `queued`-сессий Steam-игр и открытых игрокам своих игр (`ownGamePublished`,
+ * спека 2026-11-03 «Свои игры»; `created_at asc`, `FOR UPDATE SKIP LOCKED`)
+ * просматриваются по очереди — очередь без затора (спека §2.5): сессия,
+ * которой сейчас некуда, не держит следующие. Для каждой:
+ *
+ * 1. Пользователь заблокирован админом — сессия валится с
+ *    `accessDeniedReason` (`blockedFailure`), итог `Retry`.
+ * 2. `eligible = eligibleWorkers(userId, appId, { workerIds: candidates })`
+ *    (подключённые воркеры с ролью `worker`; классы и железо, спека
+ *    §2.1–§2.3; для Steam-игры — собранный клиент Steam, для своей игры —
+ *    раскатанный пакет, `hasPackage`). Пусто — следующая сессия.
+ * 3. Своя игра: строка `own_games` под `FOR SHARE`, пропавшая или
+ *    непубликованная — следующая сессия; иначе её размещают на первом из
+ *    `eligible` со свободным слотом. Своя игра никогда не уходит в установку.
+ * 4. Steam-игра — библиотека сервера (спека 2026-11-09 §5): `installed` —
+ *    серверы из `eligible`, где игра стоит и не удаляется
+ *    (`InstallRepo.installedOn`, строки под `FOR SHARE` — api помечает
+ *    удаление под `FOR UPDATE` и проверяет сессии этого сервера: либо мы
+ *    видим пометку, либо api видит нашу сессию). Не пусто — первый из них
+ *    со свободным слотом, иначе сессия ждёт: игра где-то уже стоит, вторую
+ *    копию на другой сервер не ставим, даже если там свободно.
+ * 5. Игры нет ни на одном подходящем сервере (на серверах вне `eligible` —
+ *    не на связи, на обслуживании, слабых — она не в счёт): установку игры
+ *    отменяет админ (`installCancellingApps`) — сессия ждёт; иначе
+ *    `startInstall` — присоединиться к активной задаче на одном из
+ *    `eligible` или завести новую на первом из `eligible` с ролью
+ *    `gamestore`, без строки этой игры (удаляемой) и со свободным слотом,
+ *    иначе на первом такой же без свободного слота. Таких серверов нет —
+ *    сессия ждёт.
+ *
+ * Слот — наименьший свободный. Просмотренные, но не размещённые сессии
+ * остаются заблокированными только до конца транзакции — следующий проход их
+ * не пропустит. Размещение — `workerId`, `slot`, `state = 'starting'`,
+ * `stateSince = agentSeenAt = now` и коммит; профиль и пометка сброса входа
+ * Steam читаются в той же транзакции: сбой чтения откатывает размещение, а не
+ * оставляет его без команды. Своя игра не входит в Steam — пометка сброса
+ * входа для неё не читается (`steamLoginResetAt: null` без запроса),
+ * `Placement.ownGame` несёт её пакет (`slug`/`version`).
  */
 const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -260,37 +296,49 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     const hub = yield* AgentHub;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const [uninstalled] = yield* lockOldestQueued(
-          sql`not (${appInLibrary} or ${ownGameRow}) and not ${appInstallCancelling}`,
-        );
-        if (uninstalled !== undefined)
-          return uninstalled.userBlocked
-            ? yield* blockedFailure(now, uninstalled.id)
-            : ((yield* startInstall(now, uninstalled)) as Outcome);
-
-        if (candidates.length === 0) return undefined;
         const queued = yield* lockOldestQueued(
-          sql`${appInstalled} or ${ownGamePublished}`,
+          sql`(${ownGamePublished} or not ${ownGameRow})`,
           PLACE_SCAN,
         );
         if (queued.length === 0) return undefined;
+        const cancelling = yield* installCancellingApps();
 
-        const taken = yield* db
-          .select({ workerId: sessions.workerId, slot: sessions.slot })
-          .from(sessions)
-          .where(and(inArray(sessions.workerId, [...candidates]), holdsSlot));
+        const taken =
+          candidates.length === 0
+            ? []
+            : yield* db
+                .select({ workerId: sessions.workerId, slot: sessions.slot })
+                .from(sessions)
+                .where(
+                  and(inArray(sessions.workerId, [...candidates]), holdsSlot),
+                );
         const busyOf = (workerId: string) =>
           new Set(
             taken.flatMap((t) =>
               t.workerId === workerId && t.slot !== null ? [t.slot] : [],
             ),
           );
+        /** Наименьший свободный слот подключённого воркера или `undefined`. */
+        const freeSlotOf = (workerId: string) => {
+          const info = hub.info(workerId);
+          if (info === undefined) return undefined;
+          const slot = lowestFreeSlot(info.slots, busyOf(workerId));
+          return slot === undefined ? undefined : { info, slot };
+        };
 
         for (const session of queued) {
           if (session.userBlocked)
             return yield* blockedFailure(now, session.id);
 
+          const eligible = (yield* eligibleWorkers(
+            session.userId,
+            session.appId,
+            { workerIds: candidates },
+          )).map((w) => w.id);
+          if (eligible.length === 0) continue;
+
           let ownGame: OwnGamePackage | undefined;
+          let placeOn: ReadonlyArray<string>;
           if (isOwnAppId(session.appId)) {
             const [row] = yield* db
               .select({
@@ -303,25 +351,41 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
               .for("share");
             if (row === undefined || !row.published) continue;
             ownGame = { slug: row.slug, version: row.version };
+            placeOn = eligible;
           } else {
-            const [app] = yield* db
-              .select({ deletingAt: gamestoreApps.deletingAt })
-              .from(gamestoreApps)
-              .where(eq(gamestoreApps.appId, session.appId))
-              .for("share");
-            if (app === undefined || app.deletingAt !== null) continue;
+            const installed = new Set(
+              yield* InstallRepo.installedOn(session.appId),
+            );
+            placeOn = eligible.filter((id) => installed.has(id));
+            if (placeOn.length === 0) {
+              if (cancelling.has(session.appId)) continue;
+              const inLibrary = new Set(
+                yield* InstallRepo.libraryWorkersOf(session.appId),
+              );
+              const gamestores = eligible.filter(
+                (id) =>
+                  !inLibrary.has(id) &&
+                  (hub.info(id)?.roles.includes("gamestore") ?? false),
+              );
+              const targets = [
+                ...gamestores.filter((id) => freeSlotOf(id) !== undefined),
+                ...gamestores.filter((id) => freeSlotOf(id) === undefined),
+              ];
+              const outcome = yield* startInstall(
+                now,
+                session,
+                eligible,
+                targets,
+              );
+              if (outcome === undefined) continue;
+              return outcome as Outcome;
+            }
           }
 
-          const eligible = yield* eligibleWorkers(
-            session.userId,
-            session.appId,
-            { workerIds: candidates },
-          );
-          for (const { id: workerId } of eligible) {
-            const info = hub.info(workerId);
-            if (info === undefined) continue;
-            const slot = lowestFreeSlot(info.slots, busyOf(workerId));
-            if (slot === undefined) continue;
+          for (const workerId of placeOn) {
+            const free = freeSlotOf(workerId);
+            if (free === undefined) continue;
+            const { info, slot } = free;
             yield* db
               .update(sessions)
               .set({

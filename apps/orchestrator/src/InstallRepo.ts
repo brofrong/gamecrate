@@ -1,5 +1,7 @@
-// Задачи установки игр в БД: одна активная задача на appid, выдача агенту
-// gamestore, итоги установки и переходы ждущих её сессий — одной транзакцией.
+// Задачи установки игр в БД: задача привязана к серверу (библиотека своя у
+// каждого сервера, спека 2026-11-09 §5) — не больше одной активной на пару
+// (сервер, appid); выдача агенту этого сервера, итоги установки и переходы
+// ждущих её сессий — одной транзакцией.
 //
 // Блокировки: `Scheduler.placeOne` держит `queued`-сессию и затем берёт строку
 // активной задачи (`lockActiveJob`, `FOR UPDATE`); `finish`/`fail` берут строку
@@ -28,12 +30,14 @@ import {
   and,
   asc,
   eq,
+  exists,
   inArray,
   isNotNull,
   isNull,
   notExists,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import type { LifecycleEvent } from "./lifecycle";
 import * as SessionRepo from "./SessionRepo";
@@ -43,56 +47,99 @@ const activeStates: InstallJobState[] = ["queued", "running"];
 /** Условие «задача активна» (`queued`/`running`). */
 const isActiveJob = inArray(installJobs.state, activeStates);
 
-/** Игра уже в общей библиотеке. */
-export const isInstalled = (appId: number) =>
+/**
+ * Серверы, на которых игра `appId` стоит и не удаляется (`deleting_at is
+ * null`), по возрастанию id. Строки читаются под `FOR SHARE` (вызывать в
+ * транзакции): api помечает удаление под `FOR UPDATE` и проверяет активные
+ * сессии этого сервера — либо мы ждём его коммита и уже не видим сервер
+ * (условие перепроверяется после блокировки), либо api видит нашу сессию.
+ */
+export const installedOn = (appId: number) =>
   Effect.gen(function* () {
     const db = yield* Db;
-    const [row] = yield* db
-      .select({ appId: gamestoreApps.appId })
+    const rows = yield* db
+      .select({ workerId: gamestoreApps.workerId })
       .from(gamestoreApps)
-      .where(eq(gamestoreApps.appId, appId));
-    return row !== undefined;
+      .where(
+        and(eq(gamestoreApps.appId, appId), isNull(gamestoreApps.deletingAt)),
+      )
+      .orderBy(asc(gamestoreApps.workerId))
+      .for("share");
+    return rows.map((r) => r.workerId);
   });
 
 /**
- * Активная задача установки `appId` под `FOR UPDATE` (вызывать в транзакции).
- * Если её сейчас завершают, ждёт конца той транзакции и видит уже итог.
- * `cancelRequestedAt` отдаём и тут же под той же блокировкой: вызывающий
- * (`Scheduler.startInstall`) мог увидеть задачу как не отменяемую чуть раньше
- * (отдельным запросом, до коммита отмены) — на блокировке он уже видит отмену
- * и не присоединяет сессию к задаче, которую немедленно провалит админ.
+ * Серверы, где у игры `appId` есть строка библиотеки, в том числе
+ * удаляемая (`deleting_at`): туда игру не ставим — агент сейчас удаляет её
+ * файлы, установка поверх удаления сломала бы обе.
  */
-export const lockActiveJob = (appId: number) =>
+export const libraryWorkersOf = (appId: number) =>
   Effect.gen(function* () {
+    const db = yield* Db;
+    const rows = yield* db
+      .select({ workerId: gamestoreApps.workerId })
+      .from(gamestoreApps)
+      .where(eq(gamestoreApps.appId, appId));
+    return rows.map((r) => r.workerId);
+  });
+
+/**
+ * Активная задача установки `appId` на одном из серверов `workerIds` (самая
+ * старая) под `FOR UPDATE` (вызывать в транзакции). Если её сейчас завершают,
+ * ждёт конца той транзакции и видит уже итог. `cancelRequestedAt` отдаём и
+ * тут же под той же блокировкой: вызывающий (`Scheduler.startInstall`) мог
+ * увидеть задачу как не отменяемую чуть раньше (отдельным запросом, до
+ * коммита отмены) — на блокировке он уже видит отмену и не присоединяет
+ * сессию к задаче, которую немедленно провалит админ. Пустой `workerIds` —
+ * `undefined` без запроса.
+ */
+export const lockActiveJob = (
+  appId: number,
+  workerIds: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    if (workerIds.length === 0) return undefined;
     const db = yield* Db;
     const [job] = yield* db
       .select({
         id: installJobs.id,
+        workerId: installJobs.workerId,
         cancelRequestedAt: installJobs.cancelRequestedAt,
       })
       .from(installJobs)
-      .where(and(eq(installJobs.appId, appId), isActiveJob))
+      .where(
+        and(
+          eq(installJobs.appId, appId),
+          inArray(installJobs.workerId, [...workerIds]),
+          isActiveJob,
+        ),
+      )
+      .orderBy(asc(installJobs.createdAt))
+      .limit(1)
       .for("update");
     return job;
   });
 
 /**
- * Новая `queued`-задача `appId` с `userId` — чьим Steam качать (вызывать в
- * транзакции, когда `lockActiveJob` ничего не нашёл). Параллельная вставка той
- * же задачи упирается в частичный уникальный индекс — тогда берём вставленную ею.
+ * Новая `queued`-задача `appId` на сервере `workerId` с `userId` — чьим Steam
+ * качать (вызывать в транзакции, когда `lockActiveJob` ничего не нашёл).
+ * Параллельная вставка той же задачи упирается в частичный уникальный индекс
+ * `(worker_id, app_id)` — тогда берём вставленную ею.
  */
-export const createJob = (appId: number, userId: string) =>
+export const createJob = (workerId: string, appId: number, userId: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
     const [inserted] = yield* db
       .insert(installJobs)
-      .values({ id: crypto.randomUUID(), appId, userId })
+      .values({ id: crypto.randomUUID(), workerId, appId, userId })
       .onConflictDoNothing()
       .returning({ id: installJobs.id });
     if (inserted !== undefined) return inserted.id;
-    const existing = yield* lockActiveJob(appId);
+    const existing = yield* lockActiveJob(appId, [workerId]);
     if (existing === undefined)
-      return yield* Effect.die(`install job for app ${appId} vanished`);
+      return yield* Effect.die(
+        `install job for app ${appId} on ${workerId} vanished`,
+      );
     return existing.id;
   });
 
@@ -118,17 +165,23 @@ export const cancelledByAdminError = "Установка отменена адм
 /** Владелец задачи (`install_jobs.user_id`) заблокирован админом (`user.blocked_at`). */
 const ownerBlocked = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${installJobs.userId} and ${user.blockedAt} is not null)`;
 
+/** Другая задача того же сервера — для «на сервере уже идёт установка». */
+const runningOnWorker = alias(installJobs, "running_on_worker");
+
 /**
  * Одна транзакция: самая старая `queued`-задача без запроса отмены админом
- * (`FOR UPDATE SKIP LOCKED`) → первый по id агент из `candidates` со строкой в
- * `workers`, не в обслуживании (`draining = false`) и без `running`-задачи →
- * `state = 'running'`, `workerId`; профиль и пометка сброса входа Steam
- * пользователя задачи читаются в той же транзакции (сбой чтения откатывает
- * выдачу). Задача, чей владелец заблокирован (`ownerBlocked`) уже после её
- * создания, не выдаётся: она проваливается (`fail`, ошибка
- * `accessDeniedReason`, ждущие сессии — как у любой проваленной задачи), и в
- * той же транзакции берётся следующая. `running`-задачи заблокированных не
- * трогаются. `undefined` — очередь пуста или свободных агентов нет.
+ * (`FOR UPDATE SKIP LOCKED`), чей сервер (`worker_id`, задача привязана к нему
+ * при создании) есть в `candidates`, не в обслуживании (`draining = false`)
+ * и сейчас не выполняет другую (`running`) задачу → `state = 'running'`;
+ * профиль и пометка сброса входа Steam пользователя задачи читаются в той же
+ * транзакции (сбой чтения откатывает выдачу). Задачи других серверов ждут
+ * свой сервер — чужому агенту не выдаются никогда: игра должна оказаться в
+ * библиотеке того сервера, где потом будет сессия. Задача, чей владелец
+ * заблокирован (`ownerBlocked`) уже после её создания, не выдаётся: она
+ * проваливается (`fail`, ошибка `accessDeniedReason`, ждущие сессии — как у
+ * любой проваленной задачи), и в той же транзакции берётся следующая.
+ * `running`-задачи заблокированных не трогаются. `undefined` — подходящих
+ * задач нет.
  */
 export const claimNext = (candidates: ReadonlyArray<string>, now: Date) =>
   Effect.gen(function* () {
@@ -136,13 +189,13 @@ export const claimNext = (candidates: ReadonlyArray<string>, now: Date) =>
     if (candidates.length === 0) return undefined;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        let job: Claim["job"] | undefined;
-        while (job === undefined) {
+        while (true) {
           const [next] = yield* db
             .select({
               id: installJobs.id,
               appId: installJobs.appId,
               userId: installJobs.userId,
+              workerId: installJobs.workerId,
               ownerBlocked,
             })
             .from(installJobs)
@@ -150,79 +203,84 @@ export const claimNext = (candidates: ReadonlyArray<string>, now: Date) =>
               and(
                 eq(installJobs.state, "queued"),
                 isNull(installJobs.cancelRequestedAt),
+                inArray(installJobs.workerId, [...candidates]),
+                // Не в обслуживании (`draining`) — такие новых установок не берут.
+                exists(
+                  db
+                    .select({ id: workers.id })
+                    .from(workers)
+                    .where(
+                      and(
+                        eq(workers.id, installJobs.workerId),
+                        eq(workers.draining, false),
+                      ),
+                    ),
+                ),
+                notExists(
+                  db
+                    .select({ id: runningOnWorker.id })
+                    .from(runningOnWorker)
+                    .where(
+                      and(
+                        eq(runningOnWorker.workerId, installJobs.workerId),
+                        eq(runningOnWorker.state, "running"),
+                      ),
+                    ),
+                ),
               ),
             )
             .orderBy(asc(installJobs.createdAt))
             .limit(1)
             .for("update", { skipLocked: true });
           if (next === undefined) return undefined;
-          const { ownerBlocked: blocked, ...rest } = next;
-          if (!blocked) {
-            job = rest;
-            break;
+          const { ownerBlocked: blocked, workerId, ...job } = next;
+          if (blocked) {
+            // Другие пользователи ждут не из-за себя — их сессии возвращаются
+            // в очередь (`InstallCancelled`) и получат новую задачу под своим
+            // профилем. Сессии самого владельца к этому моменту уже
+            // stop-requested через `setBlocked`, так что `UserStop` кончит их
+            // раньше; если какая-то всё же проскочила сюда, `placeOne` увидит
+            // блокировку заново и провалит её `blockedFailure` с «Доступ закрыт».
+            const waiters = yield* fail(next.id, accessDeniedReason, now, {
+              requeueWaiters: true,
+            });
+            yield* Effect.logInfo(
+              "Queued install job of a blocked user failed",
+              { jobId: next.id, sessions: waiters },
+            );
+            continue;
           }
-          // Другие пользователи ждут не из-за себя — их сессии возвращаются в
-          // очередь (`InstallCancelled`) и получат новую задачу под своим
-          // профилем. Сессии самого владельца к этому моменту уже
-          // stop-requested через `setBlocked`, так что `UserStop` кончит их
-          // раньше; если какая-то всё же проскочила сюда, `placeOne` увидит
-          // блокировку заново и провалит её `blockedFailure` с «Доступ закрыт».
-          const waiters = yield* fail(next.id, accessDeniedReason, now, {
-            requeueWaiters: true,
-          });
-          yield* Effect.logInfo("Queued install job of a blocked user failed", {
-            jobId: next.id,
-            sessions: waiters,
-          });
-        }
-        // Не в обслуживании (`draining`) — такие новых установок не берут.
-        const known = yield* db
-          .select({ id: workers.id })
-          .from(workers)
-          .where(
-            and(
-              inArray(workers.id, [...candidates]),
-              eq(workers.draining, false),
-            ),
-          )
-          .orderBy(asc(workers.id));
-        const busy = yield* db
-          .select({ workerId: installJobs.workerId })
-          .from(installJobs)
-          .where(
-            and(
-              eq(installJobs.state, "running"),
-              inArray(installJobs.workerId, [...candidates]),
-            ),
+          if (workerId === null)
+            return yield* Effect.die(`install job ${job.id} has no worker`);
+          yield* db
+            .update(installJobs)
+            .set({ state: "running" })
+            .where(eq(installJobs.id, job.id));
+          const profile = yield* SessionRepo.profileOf(job.userId);
+          const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
+            job.userId,
           );
-        const busyIds = new Set(busy.map((b) => b.workerId));
-        const free = known.find((w) => !busyIds.has(w.id));
-        if (free === undefined) return undefined;
-        yield* db
-          .update(installJobs)
-          .set({ state: "running", workerId: free.id })
-          .where(eq(installJobs.id, job.id));
-        const profile = yield* SessionRepo.profileOf(job.userId);
-        const steamLoginResetAt = yield* SessionRepo.steamLoginResetAt(
-          job.userId,
-        );
-        return {
-          job,
-          workerId: free.id,
-          profile,
-          steamLoginResetAt,
-        } satisfies Claim;
+          return {
+            job,
+            workerId,
+            profile,
+            steamLoginResetAt,
+          } satisfies Claim;
+        }
       }),
     );
   });
 
-/** InstallGame не доставлен: задача снова `queued`, если её никто не трогал. */
+/**
+ * InstallGame не доставлен: задача снова `queued`, если её никто не трогал;
+ * сервер остаётся прежним — задача привязана к нему с создания.
+ */
 export const unclaim = (claim: Claim) =>
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db
       .update(installJobs)
-      .set({ state: "queued", workerId: null })
+      .set({ state: "queued" })
       .where(
         and(
           eq(installJobs.id, claim.job.id),
@@ -345,10 +403,12 @@ const notifyWaiters = (
   });
 
 /**
- * `InstallFinished` агента `workerId`: игра в библиотеке (upsert
- * `gamestore_apps`), задача `done`, ждущие сессии — снова `queued`. Первый
- * итог побеждает: задача уже не активна (или чужая) — `undefined`, ничего не
- * меняется. Иначе — id переведённых сессий.
+ * `InstallFinished` агента `workerId`: игра в библиотеке сервера задачи
+ * (upsert `gamestore_apps` по `(worker_id, app_id)`), задача `done`, ждущие
+ * сессии — снова `queued` (планировщик разместит их на этом сервере, как
+ * только там освободится слот). Первый итог побеждает: задача уже не
+ * активна (или чужая) — `undefined`, ничего не меняется. Иначе — id
+ * переведённых сессий.
  */
 export const finish = (
   workerId: string,
@@ -361,12 +421,17 @@ export const finish = (
     return yield* db.transaction(() =>
       Effect.gen(function* () {
         const job = yield* lockJob(jobId, workerId);
-        if (job === undefined) return undefined;
-        // `workerId` — тот же агент gamestore, который выдал InstallFinished;
-        // библиотека своя у каждого сервера (спека §5), PK `(workerId, appId)`.
+        if (job === undefined || job.workerId === null) return undefined;
+        // Сервер задачи (`lockJob` уже сверил его с агентом, приславшим
+        // итог): библиотека своя у каждого сервера (спека §5).
         yield* db
           .insert(gamestoreApps)
-          .values({ workerId, appId: job.appId, ...result, installedAt: now })
+          .values({
+            workerId: job.workerId,
+            appId: job.appId,
+            ...result,
+            installedAt: now,
+          })
           .onConflictDoUpdate({
             target: [gamestoreApps.workerId, gamestoreApps.appId],
             set: { ...result, installedAt: now },

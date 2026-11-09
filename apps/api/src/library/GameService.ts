@@ -25,7 +25,7 @@ import {
   ownGameAssetUrl,
   ProtonTier,
 } from "@cg/rpc";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, max, ne } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { SteamApi } from "../steam/SteamApi";
 import { SteamStoreApi } from "../steam/SteamStoreApi";
@@ -272,8 +272,10 @@ export const gameView = (
               and(eq(userGames.userId, userId), eq(userGames.appId, appId)),
             )
             .pipe(Effect.orDie),
+          // Размер на диске: игра может стоять на нескольких серверах (своя
+          // библиотека у каждого, спека 2026-11-09 §5) — берём наибольший.
           db
-            .select({ sizeBytes: gamestoreApps.sizeBytes })
+            .select({ sizeBytes: max(gamestoreApps.sizeBytes) })
             .from(gamestoreApps)
             .where(eq(gamestoreApps.appId, appId))
             .pipe(Effect.orDie),

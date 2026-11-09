@@ -1,11 +1,13 @@
 // Допуск игры на воркер: классы воркеров, подходит ли железо, какие воркеры
-// годятся игре для пользователя (спека §2.1–§2.3), а для своих игр —
+// годятся игре для пользователя (спека §2.1–§2.3), для Steam-игр — собран ли
+// на воркере шаблон клиента Steam (спека 2026-11-09 §5), а для своих игр —
 // есть ли на воркере активный пакет («Свои игры», спека 2026-11-03).
 import {
   isOwnAppId,
   type OwnGamePackage,
   type WorkerHardware,
   type WorkerStats,
+  type WorkerVersions,
 } from "@cg/rpc";
 import { and, arrayContains, desc, eq, gte, inArray, or } from "drizzle-orm";
 import { Effect } from "effect";
@@ -59,6 +61,15 @@ export const hasPackage = (
     (p) => p.slug === pkg.slug && p.version === pkg.version,
   );
 
+/**
+ * Собран ли на воркере шаблон клиента Steam (`steamClientBuiltAt` из
+ * `agent.connect`, спека 2026-11-09 §5): `versions = null` (агент ещё не
+ * подключался) или `steamClientBuiltAt = null` — не собран, Steam-игры там
+ * не запустить и не поставить.
+ */
+export const hasSteamClient = (versions: WorkerVersions | null): boolean =>
+  (versions?.steamClientBuiltAt ?? null) !== null;
+
 /** Класс воркера в порядке силы (`rank desc`): сильнейший первым. */
 export type WorkerClassRow = {
   readonly id: string;
@@ -110,8 +121,13 @@ export type EligibleWorker = {
  * строки `own_games` для этого `appId` — игра недопустима нигде (`[]`),
  * иначе кандидаты дополнительно фильтруются `hasPackage` — нужен именно
  * активный пакет (`own_games.slug`/`version`) в `WorkerStats.ownGames`
- * воркера, старая версия на диске не годится. Для Steam-игр поведение не
- * меняется.
+ * воркера, старая версия на диске не годится.
+ *
+ * Для Steam-игр кандидат должен иметь собранный шаблон клиента Steam
+ * (`workers.versions.steamClientBuiltAt` не `null`, спека 2026-11-09 §5):
+ * шаблон у каждого сервера свой, без него ни сессию, ни установку там не
+ * запустить; `versions = null` (агент ещё не подключался) — тоже не годится.
+ * Своим играм клиент Steam не нужен, для них это не проверяется.
  */
 export const eligibleWorkers = (
   userId: string,
@@ -141,6 +157,7 @@ export const eligibleWorkers = (
         slots: workers.slots,
         hardware: workers.hardware,
         stats: workers.stats,
+        versions: workers.versions,
         rank: workerClasses.rank,
       })
       .from(workers)
@@ -155,7 +172,7 @@ export const eligibleWorkers = (
 
     const withPackage = ownGamePackage
       ? candidates.filter((w) => hasPackage(w.stats, ownGamePackage!))
-      : candidates;
+      : candidates.filter((w) => hasSteamClient(w.versions));
 
     const [req] = yield* db
       .select({
@@ -191,8 +208,8 @@ export const WORKER_RECENT_MS = 10 * 60 * 1000;
  * за последние `WORKER_RECENT_MS`
  * (`last_seen_at` хаба или `stats_at` монитора — хватает любого из двух; по
  * этим полям, не зная о текущей сетевой подключённости), есть хотя бы один,
- * который годится игре для пользователя (`eligibleWorkers`, §2.1–§2.3, без
- * проверки свободного слота — «все подходящие заняты» не значит «недоступна»,
+ * который годится игре для пользователя (`eligibleWorkers`, §2.1–§2.3, для
+ * Steam-игры — с собранным клиентом Steam; без проверки свободного слота — «все подходящие заняты» не значит «недоступна»,
  * это забота планировщика).
  */
 export const gameAvailable = (

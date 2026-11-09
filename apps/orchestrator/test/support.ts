@@ -16,9 +16,11 @@ import {
 import { DbTest } from "@cg/db/test";
 import type {
   AgentCommand,
+  AgentRoles,
   OwnGamePackage,
   WorkerHardware,
   WorkerStats,
+  WorkerVersions,
 } from "@cg/rpc";
 import { eq } from "drizzle-orm";
 import {
@@ -195,11 +197,56 @@ const statsWith = (
 });
 
 /**
+ * `workers.versions` подключённого агента: клиент Steam собран
+ * (`steamClientBuiltAt` не `null`) — без этого `eligibleWorkers` не даёт
+ * воркеру Steam-игры (спека 2026-11-09 §5).
+ */
+export const versionsWithSteamClient: WorkerVersions = {
+  agentCommit: "test",
+  sessionImage: "cg-session:test",
+  driver: null,
+  steamClientBuiltAt: "2026-11-01T00:00:00.000Z",
+};
+
+/**
+ * Игра `appId` в библиотеке сервера `workerId` (строка `gamestore_apps`,
+ * своя у каждого сервера, спека 2026-11-09 §5); строка `games` заводится,
+ * если её ещё нет. `deletingAt` — админ удаляет игру с этого сервера.
+ */
+export const installOn = (
+  workerId: string,
+  appId: number,
+  opts: { readonly deletingAt?: Date } = {},
+) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db
+      .insert(games)
+      .values({ appId, name: `App ${appId}` })
+      .onConflictDoNothing();
+    yield* db
+      .insert(gamestoreApps)
+      .values({
+        workerId,
+        appId,
+        sizeBytes: 1,
+        buildId: "1",
+        deletingAt: opts.deletingAt ?? null,
+      })
+      .onConflictDoNothing();
+  });
+
+/**
  * Агент воркера подключён: строка `workers` (как пишет хаб) + запись в фейке.
  * По умолчанию класс — «Стандарт» (`rank 1`, заводится, если его ещё нет);
  * `classRank: null` — воркер без класса (спека §2.1, сессий не берёт).
  * `ownGames` — пакеты своих игр, которые воркер уже раскатал (`workers.stats`,
  * спека 2026-11-03 «Свои игры»); нет опции — `stats` пустой (ни одного пакета).
+ * `roles` — роли агента (по умолчанию `worker`; ставить игры — `gamestore`).
+ * `library` — Steam-игры, уже стоящие в библиотеке этого сервера (по
+ * умолчанию Dota 2, `570`, — большинство тестов размещают именно её).
+ * `steamClient: false` — шаблон клиента Steam не собран
+ * (`versions.steamClientBuiltAt = null`), Steam-игр сервер не берёт.
  */
 export const connectWorker = (
   fake: FakeHub,
@@ -209,12 +256,16 @@ export const connectWorker = (
     readonly classRank?: number | null;
     readonly hardware?: WorkerHardware;
     readonly ownGames?: ReadonlyArray<OwnGamePackage>;
+    readonly roles?: AgentRoles;
+    readonly library?: ReadonlyArray<number>;
+    readonly steamClient?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
     const db = yield* Db;
     const classRank = opts.classRank === undefined ? 1 : opts.classRank;
     const classId = classRank === null ? null : yield* classIdByRank(classRank);
+    const roles = opts.roles ?? ["worker"];
     yield* db
       .insert(workers)
       .values({
@@ -222,29 +273,39 @@ export const connectWorker = (
         publicIp: "203.0.113.7",
         slots,
         classId,
+        roles: [...roles],
         hardware: opts.hardware ?? null,
+        versions:
+          opts.steamClient === false
+            ? { ...versionsWithSteamClient, steamClientBuiltAt: null }
+            : versionsWithSteamClient,
         stats: opts.ownGames === undefined ? null : statsWith(opts.ownGames),
       })
       .onConflictDoNothing();
+    for (const appId of opts.library ?? [570])
+      yield* installOn(workerId, appId);
     fake.infos.set(workerId, {
       workerId,
       publicIp: "203.0.113.7",
       slots,
       udpPortBase: 59000,
-      roles: ["worker"],
+      roles,
     });
   });
 
 /**
- * Id служебного воркера, которому эти фикстуры приписывают строку
- * `gamestore_apps` (библиотека своя у каждого сервера, спека §5). Сами
- * проверки размещения (`Scheduler.appInLibrary`/`appInstalled`) пока не
- * смотрят на `workerId` — это делает только задача 8, поэтому для тестов
- * планировщика конкретный владелец строки не важен.
+ * Служебный сервер, которого нет на связи (в фейковом хабе его нет): у него
+ * в библиотеке Dota 2 (`seedUsers`). Библиотека своя у каждого сервера
+ * (спека 2026-11-09 §5), а игра на неподключённом сервере для размещения не в
+ * счёт — тесты планировщика не должны от него зависеть.
  */
-const LIBRARY_FIXTURE_WORKER = "library-fixture";
+export const LIBRARY_FIXTURE_WORKER = "library-fixture";
 
-/** Игра 570 (Dota 2) в библиотеке (на `LIBRARY_FIXTURE_WORKER`) + пользователи `ids`. */
+/**
+ * Игра 570 (Dota 2) + пользователи `ids`. Dota 2 стоит на
+ * `LIBRARY_FIXTURE_WORKER` (не на связи); подключённым воркерам её ставит
+ * `connectWorker` (опция `library`).
+ */
 export const seedUsers = (...ids: string[]) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -258,19 +319,10 @@ export const seedUsers = (...ids: string[]) =>
         id: LIBRARY_FIXTURE_WORKER,
         publicIp: "203.0.113.8",
         slots: 0,
-        roles: ["gamestore"],
+        roles: ["worker", "gamestore"],
       })
       .onConflictDoNothing();
-    // Игра в библиотеке — планировщик размещает сессии, а не ставит в установку.
-    yield* db
-      .insert(gamestoreApps)
-      .values({
-        workerId: LIBRARY_FIXTURE_WORKER,
-        appId: 570,
-        sizeBytes: 1,
-        buildId: "1",
-      })
-      .onConflictDoNothing();
+    yield* installOn(LIBRARY_FIXTURE_WORKER, 570);
     for (const id of ids)
       yield* db.insert(user).values({
         id,
