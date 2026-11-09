@@ -9,6 +9,7 @@ import {
   ownGames,
   sessions,
   user,
+  workers,
 } from "@cg/db";
 import type { WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
@@ -48,14 +49,35 @@ const sessionRow = (id: string) =>
     return row;
   });
 
-/** Игра `appId` в общей библиотеке (своя строка `games`/`gamestore_apps`). */
+/**
+ * Служебный воркер для строк `gamestore_apps` этого файла: библиотека своя
+ * у каждого сервера (спека §5), но проверки размещения не смотрят на
+ * `workerId` до задачи 8 — конкретный владелец строки здесь не важен.
+ */
+const LIBRARY_FIXTURE_WORKER = "library-fixture";
+
+/** Игра `appId` в библиотеке (своя строка `games`/`gamestore_apps`). */
 const seedGame = (appId: number, name: string) =>
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db.insert(games).values({ appId, name }).onConflictDoNothing();
     yield* db
+      .insert(workers)
+      .values({
+        id: LIBRARY_FIXTURE_WORKER,
+        publicIp: "203.0.113.8",
+        slots: 0,
+        roles: ["gamestore"],
+      })
+      .onConflictDoNothing();
+    yield* db
       .insert(gamestoreApps)
-      .values({ appId, sizeBytes: 1, buildId: "1" })
+      .values({
+        workerId: LIBRARY_FIXTURE_WORKER,
+        appId,
+        sizeBytes: 1,
+        buildId: "1",
+      })
       .onConflictDoNothing();
   });
 

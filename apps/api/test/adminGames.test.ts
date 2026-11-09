@@ -103,6 +103,7 @@ const insertSession = (
 const insertGamestoreApp = (
   db: Db["Service"],
   values: Partial<typeof gamestoreApps.$inferInsert> & {
+    workerId: string;
     appId: number;
     sizeBytes: number;
     buildId: string;
@@ -127,6 +128,15 @@ const insertOwnGame = (
   },
 ) => db.insert(ownGames).values(values);
 
+/**
+ * Служебный воркер строк `gamestore_apps` этого файла: библиотека своя у
+ * каждого сервера (спека §5), но эти тесты проверяют список/удаление игр, а
+ * не размещение по серверу — конкретный владелец строки не важен, и здесь
+ * он у обеих игр один, так что `admin.games.list` всё равно видит по одной
+ * строке на игру.
+ */
+const LIBRARY_FIXTURE_WORKER = "library-fixture";
+
 describe("admin.games", () => {
   const seedGames = (db: Db["Service"]) =>
     Effect.gen(function* () {
@@ -134,12 +144,15 @@ describe("admin.games", () => {
       yield* insertUser(db, "u2", "Bob");
       yield* insertGame(db, 100, "Balatro");
       yield* insertGame(db, 200, "Peglin");
+      yield* insertWorker(db, { id: LIBRARY_FIXTURE_WORKER });
       yield* insertGamestoreApp(db, {
+        workerId: LIBRARY_FIXTURE_WORKER,
         appId: 100,
         sizeBytes: 64 * 1024 * 1024,
         buildId: "b1",
       });
       yield* insertGamestoreApp(db, {
+        workerId: LIBRARY_FIXTURE_WORKER,
         appId: 200,
         sizeBytes: 317 * 1024 * 1024,
         buildId: "b2",
@@ -384,7 +397,11 @@ describe("admin.games (свои сборки)", () => {
       yield* insertUser(db, "u2", "Bob");
       yield* insertGame(db, ALPHA, "Alpha Game");
       yield* insertGame(db, ZETA, "Zeta Game");
-      yield* insertOwnGame(db, { appId: ALPHA, slug: "alpha", version: "1.0.0" });
+      yield* insertOwnGame(db, {
+        appId: ALPHA,
+        slug: "alpha",
+        version: "1.0.0",
+      });
       yield* insertOwnGame(db, { appId: ZETA, slug: "zeta", version: "2.0.0" });
     });
 

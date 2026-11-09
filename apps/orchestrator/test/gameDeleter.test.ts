@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { Db, gamestoreApps, games } from "@cg/db";
+import { Db, gamestoreApps, games, workers } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import type { AgentCommand, AgentReport, AgentRoles } from "@cg/rpc";
 import { asc, eq } from "drizzle-orm";
@@ -87,6 +87,13 @@ const report = (workerId: string, agentReport: AgentReport): AgentHubEvent => ({
   report: agentReport,
 });
 
+/**
+ * Служебный воркер для строк `gamestore_apps` этого файла: библиотека своя
+ * у каждого сервера (спека §5), но `GameRepo`/`GameDeleter` пока не смотрят
+ * на `workerId` (задача 8) — для этих тестов конкретный владелец не важен.
+ */
+const LIBRARY_FIXTURE_WORKER = "library-fixture";
+
 /** Dota помечена к удалению, Portal просто установлена. */
 const seed = Effect.gen(function* () {
   const db = yield* Db;
@@ -94,9 +101,25 @@ const seed = Effect.gen(function* () {
     { appId: DOTA, name: "Dota 2" },
     { appId: PORTAL, name: "Portal" },
   ]);
+  yield* db.insert(workers).values({
+    id: LIBRARY_FIXTURE_WORKER,
+    publicIp: "203.0.113.8",
+    slots: 0,
+  });
   yield* db.insert(gamestoreApps).values([
-    { appId: DOTA, sizeBytes: 1, buildId: "1", deletingAt: new Date() },
-    { appId: PORTAL, sizeBytes: 1, buildId: "1" },
+    {
+      workerId: LIBRARY_FIXTURE_WORKER,
+      appId: DOTA,
+      sizeBytes: 1,
+      buildId: "1",
+      deletingAt: new Date(),
+    },
+    {
+      workerId: LIBRARY_FIXTURE_WORKER,
+      appId: PORTAL,
+      sizeBytes: 1,
+      buildId: "1",
+    },
   ]);
 });
 

@@ -462,7 +462,12 @@ describe("library.game", () => {
       Effect.gen(function* () {
         const db = yield* Db;
         yield* seedGame(db);
+        // Библиотека своя у каждого сервера (спека §5) — нужен владелец строки.
+        yield* db
+          .insert(workers)
+          .values({ id: "gs1", publicIp: "203.0.113.8", slots: 0 });
         yield* db.insert(gamestoreApps).values({
+          workerId: "gs1",
           appId: 1086940,
           sizeBytes: 122 * 2 ** 30,
           buildId: "b1",

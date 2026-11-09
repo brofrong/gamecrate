@@ -362,11 +362,13 @@ export const finish = (
       Effect.gen(function* () {
         const job = yield* lockJob(jobId, workerId);
         if (job === undefined) return undefined;
+        // `workerId` — тот же агент gamestore, который выдал InstallFinished;
+        // библиотека своя у каждого сервера (спека §5), PK `(workerId, appId)`.
         yield* db
           .insert(gamestoreApps)
-          .values({ appId: job.appId, ...result, installedAt: now })
+          .values({ workerId, appId: job.appId, ...result, installedAt: now })
           .onConflictDoUpdate({
-            target: gamestoreApps.appId,
+            target: [gamestoreApps.workerId, gamestoreApps.appId],
             set: { ...result, installedAt: now },
           });
         yield* db

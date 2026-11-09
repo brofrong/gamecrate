@@ -132,12 +132,30 @@ const seed = (...userIds: string[]) =>
       });
   });
 
+/**
+ * Служебный воркер для `markInstalled`: библиотека своя у каждого сервера
+ * (спека §5), но эти тесты проверяют выдачу/диспетчеризацию задач, а не
+ * размещение по серверу — конкретный владелец строки не важен.
+ */
+const LIBRARY_FIXTURE_WORKER = "library-fixture";
+
 const markInstalled = (appId: number) =>
   Effect.gen(function* () {
     const db = yield* Db;
     yield* db
-      .insert(gamestoreApps)
-      .values({ appId, sizeBytes: 1_000, buildId: "1" });
+      .insert(workers)
+      .values({
+        id: LIBRARY_FIXTURE_WORKER,
+        publicIp: "203.0.113.8",
+        slots: 0,
+      })
+      .onConflictDoNothing();
+    yield* db.insert(gamestoreApps).values({
+      workerId: LIBRARY_FIXTURE_WORKER,
+      appId,
+      sizeBytes: 1_000,
+      buildId: "1",
+    });
   });
 
 const insertSession = (values: {

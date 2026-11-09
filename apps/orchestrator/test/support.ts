@@ -176,7 +176,16 @@ export const connectWorker = (
     });
   });
 
-/** Игра 570 (Dota 2) в общей библиотеке + пользователи `ids`. */
+/**
+ * Id служебного воркера, которому эти фикстуры приписывают строку
+ * `gamestore_apps` (библиотека своя у каждого сервера, спека §5). Сами
+ * проверки размещения (`Scheduler.appInLibrary`/`appInstalled`) пока не
+ * смотрят на `workerId` — это делает только задача 8, поэтому для тестов
+ * планировщика конкретный владелец строки не важен.
+ */
+const LIBRARY_FIXTURE_WORKER = "library-fixture";
+
+/** Игра 570 (Dota 2) в библиотеке (на `LIBRARY_FIXTURE_WORKER`) + пользователи `ids`. */
 export const seedUsers = (...ids: string[]) =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -184,10 +193,24 @@ export const seedUsers = (...ids: string[]) =>
       .insert(games)
       .values({ appId: 570, name: "Dota 2" })
       .onConflictDoNothing();
+    yield* db
+      .insert(workers)
+      .values({
+        id: LIBRARY_FIXTURE_WORKER,
+        publicIp: "203.0.113.8",
+        slots: 0,
+        roles: ["gamestore"],
+      })
+      .onConflictDoNothing();
     // Игра в библиотеке — планировщик размещает сессии, а не ставит в установку.
     yield* db
       .insert(gamestoreApps)
-      .values({ appId: 570, sizeBytes: 1, buildId: "1" })
+      .values({
+        workerId: LIBRARY_FIXTURE_WORKER,
+        appId: 570,
+        sizeBytes: 1,
+        buildId: "1",
+      })
       .onConflictDoNothing();
     for (const id of ids)
       yield* db.insert(user).values({

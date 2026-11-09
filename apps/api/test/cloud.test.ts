@@ -10,6 +10,7 @@ import {
   sessions,
   user,
   userGames,
+  workers,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import { type CurrentUserShape, LibraryRpcs } from "@cg/rpc";
@@ -103,9 +104,16 @@ describe("cloud status and steam profile in library.list", () => {
         yield* insertUser(db);
         yield* insertGames(db, [1, 2, 3, 4]);
         yield* insertOwned(db, cloudUser.id, [1, 2, 3, 4]);
+        // Библиотека своя у каждого сервера (спека §5) — нужен владелец строки.
         yield* db
-          .insert(gamestoreApps)
-          .values({ appId: 1, sizeBytes: 1000, buildId: "b1" });
+          .insert(workers)
+          .values({ id: "gs1", publicIp: "203.0.113.8", slots: 0 });
+        yield* db.insert(gamestoreApps).values({
+          workerId: "gs1",
+          appId: 1,
+          sizeBytes: 1000,
+          buildId: "b1",
+        });
         yield* db.insert(installJobs).values([
           {
             id: crypto.randomUUID(),
