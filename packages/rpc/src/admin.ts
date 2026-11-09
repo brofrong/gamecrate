@@ -44,6 +44,13 @@ export type AdminSession = typeof AdminSession.Type;
  * и активные сессии на нём. `online` — пришёл свежий снимок загрузки
  * (`WORKER_ONLINE_MS`); `lastSeenAt` — `statsAt`, а если снимков не было —
  * `lastSeenAt` воркера (последнее подключение агента), иначе `null`.
+ * `regionId` — регион сервера (спека §6), `null` — ещё не привязан.
+ * `enrolled` — сервер уже обменял код на постоянный токен и токен не
+ * отозван (`worker_credentials.token_hash is not null and revoked_at is
+ * null`); `pendingCode` — у сервера есть не истёкший код подключения
+ * (`enroll_code_hash is not null and enroll_expires_at > now`), `null` —
+ * кода нет или он истёк. Сервер без строки `worker_credentials` (ещё не
+ * заводили код) — `enrolled: false`, `pendingCode: null`.
  */
 export const AdminWorker = Schema.Struct({
   id: Schema.String,
@@ -54,6 +61,9 @@ export const AdminWorker = Schema.Struct({
   lastSeenAt: Schema.NullOr(Schema.String),
   draining: Schema.Boolean,
   classId: Schema.NullOr(Schema.String),
+  regionId: Schema.NullOr(Schema.String),
+  enrolled: Schema.Boolean,
+  pendingCode: Schema.NullOr(Schema.Struct({ expiresAt: Schema.String })),
   hardware: Schema.NullOr(WorkerHardware),
   versions: Schema.NullOr(WorkerVersions),
   stats: Schema.NullOr(WorkerStats),
@@ -73,6 +83,21 @@ export const AdminWorkerClass = Schema.Struct({
   workers: Schema.Int,
 });
 export type AdminWorkerClass = typeof AdminWorkerClass.Type;
+
+/**
+ * Регион игровых серверов для админки (вкладка «Регионы», спека §6).
+ * `position` — порядок в админке и запасной порядок выбора региона без
+ * пинга; задаётся админом. `workers` — сколько серверов сейчас привязано к
+ * региону (запрет удаления, если не ноль).
+ */
+export const AdminRegion = Schema.Struct({
+  id: Schema.String,
+  code: Schema.String,
+  name: Schema.String,
+  position: Schema.Int,
+  workers: Schema.Int,
+});
+export type AdminRegion = typeof AdminRegion.Type;
 
 /**
  * Игра общей библиотеки для админки (вкладка «Игры»). `installedAt` — когда
@@ -331,6 +356,24 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // `admin.classes.delete` — у класса есть воркеры — `"inUse"`, нет класса —
 // `"notFound"`, иначе `"ok"`. `admin.workers.setClass` — назначить класс
 // воркеру (`null` — без класса, сессий не берёт); нет воркера — `false`.
+//
+// `admin.regions.list` — регионы, `position asc, name asc`.
+// `admin.regions.create` — новый регион; занятый код — `"codeTaken"`, код не
+// по `REGION_CODE_PATTERN` — `"invalid"`. `admin.regions.update` —
+// переименовать/переставить порядок — `"ok" | "notFound"`.
+// `admin.regions.delete` — у региона есть серверы — `"notEmpty"`, нет
+// региона — `"notFound"`, иначе `"ok"`.
+// `admin.workers.create` — завести сервер (`workers(id, publicIp: "",
+// slots: 0, regionId)`) и одноразовый код подключения на 24 часа; занятый
+// id — `"idTaken"`, id не по `WORKER_ID_PATTERN` — `"invalid"`.
+// `admin.workers.issueCode` — новый код подключения для существующего
+// сервера (текущий токен, если он уже есть, продолжает действовать, пока
+// код не обменяли) — нет сервера — `"notFound"`.
+// `admin.workers.revoke` — отозвать токен и код подключения сервера
+// (`token_hash`/`enroll_code_hash = null`, `revoked_at = now`) — есть
+// учётные данные сервера — `true`, нет — `false`.
+// `admin.workers.setRegion` — привязать сервер к региону (`null` — без
+// региона) — нет сервера — `false`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -422,6 +465,51 @@ export const AdminRpcs = RpcGroup.make(
     payload: Schema.Struct({
       workerId: Schema.String,
       classId: Schema.NullOr(Schema.String),
+    }),
+    success: Schema.Boolean,
+  }),
+  Rpc.make("admin.regions.list", { success: Schema.Array(AdminRegion) }),
+  Rpc.make("admin.regions.create", {
+    payload: Schema.Struct({ code: Schema.String, name: Schema.String }),
+    success: Schema.Union([
+      AdminRegion,
+      Schema.Literals(["codeTaken", "invalid"]),
+    ]),
+  }),
+  Rpc.make("admin.regions.update", {
+    payload: Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      position: Schema.Int,
+    }),
+    success: Schema.Literals(["ok", "notFound"]),
+  }),
+  Rpc.make("admin.regions.delete", {
+    payload: Schema.Struct({ id: Schema.String }),
+    success: Schema.Literals(["ok", "notEmpty", "notFound"]),
+  }),
+  Rpc.make("admin.workers.create", {
+    payload: Schema.Struct({ id: Schema.String, regionId: Schema.String }),
+    success: Schema.Union([
+      Schema.Struct({ code: Schema.String, expiresAt: Schema.String }),
+      Schema.Literals(["idTaken", "invalid"]),
+    ]),
+  }),
+  Rpc.make("admin.workers.issueCode", {
+    payload: Schema.Struct({ workerId: Schema.String }),
+    success: Schema.Union([
+      Schema.Struct({ code: Schema.String, expiresAt: Schema.String }),
+      Schema.Literal("notFound"),
+    ]),
+  }),
+  Rpc.make("admin.workers.revoke", {
+    payload: Schema.Struct({ workerId: Schema.String }),
+    success: Schema.Boolean,
+  }),
+  Rpc.make("admin.workers.setRegion", {
+    payload: Schema.Struct({
+      workerId: Schema.String,
+      regionId: Schema.NullOr(Schema.String),
     }),
     success: Schema.Boolean,
   }),

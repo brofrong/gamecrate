@@ -1,7 +1,8 @@
-// Воркеры для админки: список с онлайном, снимком железа/загрузки и
-// активными сессиями на каждом; включение/выключение обслуживания; назначение
-// класса (блок «Классы», спека §5.1).
-import { Db, games, sessions, user, workers } from "@cg/db";
+// Воркеры для админки: список с онлайном, снимком железа/загрузки,
+// привязкой к региону, статусом подключения (код/токен) и активными
+// сессиями на каждом; включение/выключение обслуживания; назначение класса
+// (блок «Классы», спека §5.1) и региона (спека §6).
+import { Db, games, sessions, user, workerCredentials, workers } from "@cg/db";
 import { type AdminSession, type AdminWorker, WORKER_ONLINE_MS } from "@cg/rpc";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -11,7 +12,9 @@ import { toAdminSession } from "./sessions";
 /**
  * Воркеры + их активные сессии одним select'ом: `left join` сессий (иначе
  * воркер без сессий пропал бы) с условием активности в `on`, затем `left
- * join` игры и пользователя сессии (без N+1).
+ * join` игры и пользователя сессии (без N+1). `left join`
+ * `worker_credentials` — `1:1` по `workerId` (первичный ключ), так что не
+ * размножает строки сессий, как и остальные поля `workers`.
  */
 const workerColumns = {
   id: workers.id,
@@ -20,11 +23,16 @@ const workerColumns = {
   roles: workers.roles,
   draining: workers.draining,
   classId: workers.classId,
+  regionId: workers.regionId,
   hardware: workers.hardware,
   versions: workers.versions,
   stats: workers.stats,
   statsAt: workers.statsAt,
   lastSeenAt: workers.lastSeenAt,
+  tokenHash: workerCredentials.tokenHash,
+  revokedAt: workerCredentials.revokedAt,
+  enrollCodeHash: workerCredentials.enrollCodeHash,
+  enrollExpiresAt: workerCredentials.enrollExpiresAt,
   sessionId: sessions.id,
   sessionUserId: sessions.userId,
   sessionUserName: user.name,
@@ -49,6 +57,7 @@ export const listWorkers = (
     const rows = yield* db
       .select(workerColumns)
       .from(workers)
+      .leftJoin(workerCredentials, eq(workerCredentials.workerId, workers.id))
       .leftJoin(sessions, and(eq(sessions.workerId, workers.id), isActive))
       .leftJoin(games, eq(sessions.appId, games.appId))
       .leftJoin(user, eq(sessions.userId, user.id))
@@ -77,6 +86,14 @@ export const listWorkers = (
           lastSeenAt: (row.statsAt ?? row.lastSeenAt)?.toISOString() ?? null,
           draining: row.draining,
           classId: row.classId,
+          regionId: row.regionId,
+          enrolled: row.tokenHash !== null && row.revokedAt === null,
+          pendingCode:
+            row.enrollCodeHash !== null &&
+            row.enrollExpiresAt !== null &&
+            row.enrollExpiresAt.getTime() > now.getTime()
+              ? { expiresAt: row.enrollExpiresAt.toISOString() }
+              : null,
           hardware: row.hardware,
           versions: row.versions,
           stats: row.stats,
@@ -134,6 +151,21 @@ export const setClass = (
     const updated = yield* db
       .update(workers)
       .set({ classId })
+      .where(eq(workers.id, workerId))
+      .returning({ id: workers.id });
+    return updated.length > 0;
+  }).pipe(Effect.orDie);
+
+/** Привязать воркер к региону (`null` — без региона, игрокам не показывается); нет воркера — `false`. */
+export const setRegion = (
+  workerId: string,
+  regionId: string | null,
+): Effect.Effect<boolean, never, Db> =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    const updated = yield* db
+      .update(workers)
+      .set({ regionId })
       .where(eq(workers.id, workerId))
       .returning({ id: workers.id });
     return updated.length > 0;

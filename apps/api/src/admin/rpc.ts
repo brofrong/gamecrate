@@ -10,11 +10,18 @@ import {
 } from "./classes";
 import { deleteGame, listGames, setPublished } from "./games";
 import { cancelInstall, listInstalls } from "./installs";
+import {
+  createRegion,
+  deleteRegion,
+  listRegions,
+  updateRegion,
+} from "./regions";
 import { adminGameRequirements, setRequirements } from "./requirements";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
 import { adminStop, listSessions } from "./sessions";
 import { listUsers, resetSteamLogin, setBlocked, setRole } from "./users";
-import { listWorkers, setClass, setDraining } from "./workers";
+import { createWorker, issueCode, revoke } from "./workerEnroll";
+import { listWorkers, setClass, setDraining, setRegion } from "./workers";
 
 export const AdminRpcHandlers = AdminRpcs.toLayer({
   "admin.ping": () => Effect.succeed("pong" as const),
@@ -81,4 +88,14 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
   "admin.classes.delete": ({ id }) => deleteClass(id),
   "admin.workers.setClass": ({ workerId, classId }) =>
     setClass(workerId, classId),
+  "admin.regions.list": () => listRegions(),
+  "admin.regions.create": ({ code, name }) => createRegion(code, name),
+  "admin.regions.update": ({ id, name, position }) =>
+    updateRegion(id, name, position),
+  "admin.regions.delete": ({ id }) => deleteRegion(id),
+  "admin.workers.create": ({ id, regionId }) => createWorker(id, regionId),
+  "admin.workers.issueCode": ({ workerId }) => issueCode(workerId),
+  "admin.workers.revoke": ({ workerId }) => revoke(workerId),
+  "admin.workers.setRegion": ({ workerId, regionId }) =>
+    setRegion(workerId, regionId),
 });
