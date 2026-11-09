@@ -9,31 +9,12 @@
 import { Db, regions, REGION_CODE_PATTERN, workers } from "@cg/db";
 import type { AdminRegion } from "@cg/rpc";
 import { asc, eq, sql } from "drizzle-orm";
-import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
-import { Cause, Effect, Option } from "effect";
+import { Effect } from "effect";
+import { violatedConstraint } from "./dbErrors";
 
-/** Имена constraint'ов, по которым различаем Postgres-нарушения ниже. */
+/** Имена constraint'ов, по которым различаем Postgres-нарушения ниже (см. `violatedConstraint` в `./dbErrors`). */
 const CODE_UNIQUE_CONSTRAINT = "regions_code_key";
 const WORKERS_REGION_ID_FK_CONSTRAINT = "workers_region_id_regions_id_fkey";
-
-/**
- * Имя нарушенного ограничения БД, если `error` — `EffectDrizzleQueryError` с
- * нарушением уникальности или FK; иначе `undefined` (копия
- * `violatedConstraint` из `classes.ts` — своя: `rpc`/`db` не делят модуль
- * ошибок между контроллерами).
- */
-const violatedConstraint = (error: unknown): string | undefined => {
-  if (!(error instanceof EffectDrizzleQueryError)) return undefined;
-  const sqlError = Option.getOrUndefined(
-    Cause.findErrorOption(error.cause as Cause.Cause<unknown>),
-  ) as { reason?: unknown } | undefined;
-  const reason = sqlError?.reason as
-    | { _tag?: string; constraint?: string; cause?: { constraint?: string } }
-    | undefined;
-  if (reason?._tag === "UniqueViolation") return reason.constraint;
-  if (reason?._tag === "ConstraintError") return reason.cause?.constraint;
-  return undefined;
-};
 
 /** Регионы, `position asc, name asc`, с числом серверов у каждого. */
 export const listRegions = (): Effect.Effect<Array<AdminRegion>, never, Db> =>

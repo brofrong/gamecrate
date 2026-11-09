@@ -16,25 +16,11 @@ import {
   workers,
 } from "@cg/db";
 import { eq } from "drizzle-orm";
-import { EffectDrizzleQueryError } from "drizzle-orm/effect-core";
-import { Cause, DateTime, Effect, Option } from "effect";
+import { DateTime, Effect } from "effect";
+import { violatedConstraint } from "./dbErrors";
 
-/** `workers.id` — первичный ключ без явного имени, Postgres называет его так. */
+/** `workers.id` — первичный ключ без явного имени, Postgres называет его так (см. `violatedConstraint` в `./dbErrors`). */
 const WORKERS_PKEY_CONSTRAINT = "workers_pkey";
-
-/** Копия `violatedConstraint` из `classes.ts`/`regions.ts` — своя, без общего модуля между контроллерами. */
-const violatedConstraint = (error: unknown): string | undefined => {
-  if (!(error instanceof EffectDrizzleQueryError)) return undefined;
-  const sqlError = Option.getOrUndefined(
-    Cause.findErrorOption(error.cause as Cause.Cause<unknown>),
-  ) as { reason?: unknown } | undefined;
-  const reason = sqlError?.reason as
-    | { _tag?: string; constraint?: string; cause?: { constraint?: string } }
-    | undefined;
-  if (reason?._tag === "UniqueViolation") return reason.constraint;
-  if (reason?._tag === "ConstraintError") return reason.cause?.constraint;
-  return undefined;
-};
 
 /** Код + момент истечения для ответа админке. */
 type EnrollCode = { readonly code: string; readonly expiresAt: string };
