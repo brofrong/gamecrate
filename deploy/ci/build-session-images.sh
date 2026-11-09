@@ -15,6 +15,9 @@
 #
 # Версии обрабатываются по очереди (не параллельно): images/session/nv/x — общий путь
 # распаковки для всех версий, параллельная сборка затёрла бы его.
+#
+# drivers.txt: пустые строки и строки-комментарии (начинаются с #) пропускаются; любая другая
+# строка должна быть версией драйвера (цифры и точки), иначе — ошибка.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -25,8 +28,11 @@ REGISTRY_IMAGE="${CI_REGISTRY_IMAGE:?переменная CI_REGISTRY_IMAGE не
 
 mkdir -p "${SESSION_DIR}/nv"
 
-while IFS= read -r ver; do
-  [ -n "${ver}" ] || continue
+while IFS= read -r ver || [ -n "${ver}" ]; do
+  # `|| [ -n "${ver}" ]` — иначе read молча теряет последнюю строку файла без завершающего \n.
+  case "${ver}" in
+    "" | "#"*) continue ;;
+  esac
   if ! [[ "${ver}" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
     echo "ОШИБКА: в drivers.txt не похоже на версию драйвера: '${ver}'" >&2
     exit 1
