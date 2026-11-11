@@ -39,6 +39,7 @@ export const rpcStub = () => ({
   gameAtom: queryFamily(),
   adminPingAtom: query(),
   activeSessionAtom: query(),
+  accountPlanAtom: query(),
   startSessionAtom: mutation(),
   startSessionArgs: (appId: number) => ({
     payload: { appId },

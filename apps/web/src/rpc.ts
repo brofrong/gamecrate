@@ -77,6 +77,15 @@ export const activeSessionAtom = Api.query("session.active", undefined, {
   reactivityKeys: sessionKeys,
 });
 
+/**
+ * Тариф, остаток минут и каталог тарифов/пакетов часов текущего игрока (карточка
+ * `/app`, страница тарифов `/app/plans`, спека §2/§7). Ключ реактивности `session` —
+ * после `session.start` (и остановки) остаток минут мог измениться.
+ */
+export const accountPlanAtom = Api.query("account.plan", undefined, {
+  reactivityKeys: sessionKeys,
+});
+
 /** Запустить игру (или получить уже активную сессию). */
 export const startSessionAtom = Api.mutation("session.start");
 export const startSessionArgs = (appId: number) =>

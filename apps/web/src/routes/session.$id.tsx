@@ -17,6 +17,7 @@ import { reportStartError } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import { useStreamSettings } from "@/lib/useStreamSettings";
 import {
+  accountPlanAtom,
   errorTag,
   heartbeatAtom,
   resultErrorTag,
@@ -106,6 +107,13 @@ function SessionPage() {
   const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
   const input = useInputActivity();
   const streamSettings = useStreamSettings();
+  const plan = useAtomValue(accountPlanAtom);
+  const qualityLimits = AsyncResult.isSuccess(plan)
+    ? {
+        maxResolution: plan.value.tariff.maxResolution,
+        maxBitrateMbps: plan.value.tariff.maxBitrateMbps,
+      }
+    : undefined;
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
   const tag = resultErrorTag(watch);
@@ -194,6 +202,7 @@ function SessionPage() {
         onFrameLoad={input.attachFrame}
         onPlayAgain={() => void onPlayAgain()}
         streamSettings={streamSettings}
+        {...(qualityLimits !== undefined ? { qualityLimits } : {})}
       />
       {stalled && (
         // Стрим идёт отдельным соединением и может работать дальше — не закрываем его.

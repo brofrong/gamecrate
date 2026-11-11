@@ -1,6 +1,7 @@
 import { describe, expect, it, mock, spyOn } from "bun:test";
 import {
   accessDeniedReason,
+  noMinutesReason,
   noServerReason,
   type SessionState,
   type SessionView,
@@ -366,6 +367,35 @@ describe("session", () => {
 
       expect(navigate).not.toHaveBeenCalled();
       expect(toastError).toHaveBeenCalledWith(noServerReason);
+      toastError.mockRestore();
+    });
+
+    it("shows «Часы закончились» with a «Докупить» action to /app/plans and does not navigate on NoMinutes", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () => Exit.fail({ _tag: "NoMinutes" } as const));
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        noMinutesReason,
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Докупить" }),
+        }),
+      );
+      const [, options] = toastError.mock.calls[0] ?? [];
+      const action = (
+        options as unknown as { action?: { onClick: () => void } }
+      )?.action;
+      const assign = spyOn(window.location, "assign").mockImplementation(
+        () => {},
+      );
+      action?.onClick();
+      expect(assign).toHaveBeenCalledWith("/app/plans");
+      assign.mockRestore();
       toastError.mockRestore();
     });
   });

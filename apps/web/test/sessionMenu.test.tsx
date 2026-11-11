@@ -13,6 +13,7 @@ import {
 import {
   defaultStreamSettings,
   type SessionView,
+  type StreamResolution,
   type StreamSettings,
 } from "@cg/rpc";
 import {
@@ -78,6 +79,7 @@ type Props = {
   bridge?: SelkiesBridge;
   onExit?: () => void;
   onFrameLoad?: (frame: HTMLIFrameElement) => void;
+  qualityLimits?: { maxResolution: StreamResolution; maxBitrateMbps: number };
 };
 
 const ui = (props: Props) => (
@@ -90,6 +92,7 @@ const ui = (props: Props) => (
     streamSettings={props.streamSettings}
     bridge={props.bridge ?? fakeBridge()}
     {...(props.onFrameLoad ? { onFrameLoad: props.onFrameLoad } : {})}
+    {...(props.qualityLimits ? { qualityLimits: props.qualityLimits } : {})}
   />
 );
 
@@ -325,6 +328,41 @@ describe("session menu", () => {
     const [prev, next] = bridge.update.mock.calls.at(-1) ?? [];
     expect(prev?.resolution).toBe("1080p");
     expect(next?.resolution).toBe("720p");
+  });
+
+  it("locks resolutions above the tariff with «Доступно в тарифе выше» and caps the slider", async () => {
+    const update = mock<Update>(() => {});
+    renderPlayer({
+      streamSettings: control({ quality: "manual", bitrateMbps: 25 }, true, update),
+      qualityLimits: { maxResolution: "1080p", maxBitrateMbps: 20 },
+    });
+    await clickMenu();
+
+    expect(screen.queryByText("Доступно в тарифе выше")).toBeTruthy();
+    const allowed = screen.getByRole("radio", { name: "1080p" });
+    expect(allowed.hasAttribute("disabled")).toBe(false);
+    const locked = screen.getByRole("radio", { name: /1440p/ });
+    expect(locked.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(locked);
+    expect(update).not.toHaveBeenCalledWith({ resolution: "1440p" });
+
+    // Битрейт выше потолка тарифа (25) — показан и зажат на потолке (20), а не выше.
+    expect(screen.getByText("20 Мбит/с")).toBeTruthy();
+    expect(
+      screen.getByRole("slider", { name: "Битрейт" }).getAttribute("aria-valuemax"),
+    ).toBe("20");
+  });
+
+  it("no tariff loaded — all resolutions unlocked, no lock note", async () => {
+    renderPlayer({
+      streamSettings: control({ quality: "manual" }, true),
+    });
+    await clickMenu();
+    expect(screen.queryByText("Доступно в тарифе выше")).toBeNull();
+    expect(
+      screen.getByRole("radio", { name: "1440p" }).hasAttribute("disabled"),
+    ).toBe(false);
   });
 
   it("slider commits on release", async () => {
