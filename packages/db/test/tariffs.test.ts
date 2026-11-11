@@ -7,6 +7,7 @@ import { Effect } from "effect";
 import {
   Db,
   games,
+  minuteCredits,
   playSegments,
   sessions,
   tariffGrants,
@@ -198,6 +199,59 @@ describe("sessionLimit", () => {
 
         const limit = yield* sessionLimit("u1", "s1", d("2026-01-10T00:00:00Z"));
         expect(limit).toBeNull();
+      }),
+    ));
+
+  it("unlimited tariff without a session cap: null without loading balance or segment history (hot path)", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        yield* insertSession(db, "s1", "u1");
+        yield* db.insert(playSegments).values({
+          sessionId: "s1",
+          userId: "u1",
+          appId: 1,
+          startedAt: d("2026-01-09T00:00:00Z"),
+          endedAt: d("2026-01-09T01:00:00Z"),
+          billable: true,
+          open: false,
+        });
+
+        // Db, которая запоминает таблицы всех `select().from(...)`.
+        const tables: Array<unknown> = [];
+        const spied = new Proxy(db, {
+          get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver);
+            if (prop !== "select") return value;
+            return (...args: Array<unknown>) => {
+              const builder = (value as (...a: Array<unknown>) => object).apply(
+                target,
+                args,
+              );
+              return new Proxy(builder, {
+                get(b, p, r) {
+                  const v = Reflect.get(b, p, r);
+                  if (p !== "from") return v;
+                  return (table: unknown) => {
+                    tables.push(table);
+                    return (v as (t: unknown) => unknown).call(b, table);
+                  };
+                },
+              });
+            };
+          },
+        });
+
+        const limit = yield* sessionLimit(
+          "u1",
+          "s1",
+          d("2026-01-10T00:00:00Z"),
+        ).pipe(Effect.provideService(Db, spied));
+        expect(limit).toBeNull();
+        expect(tables).not.toContain(playSegments);
+        expect(tables).not.toContain(minuteCredits);
+        expect(tables).not.toContain(user);
       }),
     ));
 

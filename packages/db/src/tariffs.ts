@@ -167,6 +167,16 @@ export const sessionLimit = (
   now: Date,
 ): Effect.Effect<SessionLimit | null, never, Db> =>
   Effect.gen(function* () {
+    // Горячий путь (каждый тик оркестратора и каждое чтение `session.watch`):
+    // у безлимитного тарифа без лимита длины сессии ограничений нет — без
+    // загрузки выдач, начислений и всей истории игры. Выдачи не пересекаются
+    // (новая закрывает действующую), так что `currentTariff` — тот же тариф,
+    // что выбрал бы `computeBalance`.
+    const tariff = yield* currentTariff(userId, now);
+    if (tariff.monthlyMinutes === null && tariff.maxSessionMinutes === null) {
+      return null;
+    }
+
     const balance = yield* loadBalance(userId, now);
     const maxSessionMinutes = balance.tariff.maxSessionMinutes;
 
