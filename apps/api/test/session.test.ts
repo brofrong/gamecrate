@@ -1148,4 +1148,53 @@ describe("SessionView.queue и SessionView.limit", () => {
     expect(result.idleWarning?.limit?.reason).toBe("minutes");
     expect(result.starting?.limit).toBeNull();
   });
+
+  it("limit deadline uses limit_grace_until when it is later than now + remainder (I3)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        // Длина сессии 1 минута, сессия идёт уже 10 — остаток давно ≤ 0.
+        yield* db.insert(tariffs).values({
+          id: "t-short",
+          name: "Короткий",
+          maxSessionMinutes: 1,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        yield* grantTariff("t-short", new Date(Date.now() - 60 * 60_000));
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* setSession(id, { state: "playing" });
+        yield* db.insert(playSegments).values({
+          sessionId: id,
+          userId: alice.id,
+          appId: 10,
+          startedAt: new Date(Date.now() - 10 * 60_000),
+          endedAt: new Date(),
+          billable: true,
+          open: true,
+        });
+        const noGrace = yield* rpc["session.active"]();
+        const grace = new Date(Date.now() + 90_000);
+        yield* setSession(id, { limitGraceUntil: grace });
+        const withGrace = yield* rpc["session.active"]();
+        // Окно в прошлом — дедлайн не раньше «сейчас».
+        yield* setSession(id, {
+          limitGraceUntil: new Date(Date.now() - 60_000),
+        });
+        const before = Date.now();
+        const pastGrace = yield* rpc["session.active"]();
+        return { noGrace, withGrace, pastGrace, grace, before };
+      }),
+    );
+    expect(result.withGrace?.limit).toEqual({
+      deadline: result.grace.toISOString(),
+      reason: "session_length",
+    });
+    expect(result.noGrace?.limit?.reason).toBe("session_length");
+    expect(
+      Date.parse(result.pastGrace?.limit?.deadline ?? ""),
+    ).toBeGreaterThanOrEqual(result.before - 1000);
+  });
 });

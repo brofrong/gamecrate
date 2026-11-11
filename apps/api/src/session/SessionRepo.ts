@@ -90,6 +90,7 @@ const sessionWithGame = {
   queuePosition: sessions.queuePosition,
   queueTotal: sessions.queueTotal,
   queueEtaMinutes: sessions.queueEtaMinutes,
+  limitGraceUntil: sessions.limitGraceUntil,
 };
 
 type SessionWithGame = {
@@ -110,6 +111,7 @@ type SessionWithGame = {
   readonly queuePosition: number | null;
   readonly queueTotal: number | null;
   readonly queueEtaMinutes: number | null;
+  readonly limitGraceUntil: Date | null;
 };
 
 /** Сессии с названием игры, отобранные по `where`. */
@@ -281,17 +283,22 @@ const queueOf = (row: SessionWithGame): SessionQueue | null => {
  * `SessionView.limit`: только в `playing`/`idle_warning`, когда у тарифа
  * действует лимит минут или длины сессии (`sessionLimit`, `@cg/db`);
  * `deadline` — `now + max(0, remainingMs)` (остаток не бывает отрицательным
- * на экране, даже если расчёт между тиками на миг ушёл в долг).
+ * на экране, даже если расчёт между тиками на миг ушёл в долг), но не раньше
+ * `limit_grace_until` — окна предупреждения, раньше которого оркестратор сессию
+ * по лимиту не останавливает.
  */
 const limitOf = (row: SessionWithGame, now: Date) =>
   Effect.gen(function* () {
     if (row.state !== "playing" && row.state !== "idle_warning") return null;
     const limit = yield* sessionLimit(row.userId, row.id, now);
     if (limit === null) return null;
+    const byRemainder = now.getTime() + Math.max(0, limit.remainingMs);
+    const deadline =
+      row.limitGraceUntil === null
+        ? byRemainder
+        : Math.max(byRemainder, row.limitGraceUntil.getTime());
     return {
-      deadline: new Date(
-        now.getTime() + Math.max(0, limit.remainingMs),
-      ).toISOString(),
+      deadline: new Date(deadline).toISOString(),
       reason: limit.reason,
     } satisfies SessionLimitView;
   });
