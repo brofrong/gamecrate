@@ -344,11 +344,11 @@ describe("UserPlanDialog", () => {
     });
   });
 
-  it("sends minutes and comment when crediting hours", async () => {
+  it("credits whole hours, sent as minutes = hours × 60, and resets the form after success", async () => {
     renderUserPlanDialog();
 
-    fireEvent.change(await screen.findByLabelText("Минуты"), {
-      target: { value: "90" },
+    fireEvent.change(await screen.findByLabelText("Часы"), {
+      target: { value: "2" },
     });
     fireEvent.change(screen.getByLabelText("Комментарий"), {
       target: { value: "Компенсация" },
@@ -357,9 +357,61 @@ describe("UserPlanDialog", () => {
 
     await waitFor(() => {
       expect(addMinutesCalls.at(-1)).toEqual({
-        payload: { userId: "u1", minutes: 90, comment: "Компенсация" },
+        payload: { userId: "u1", minutes: 120, comment: "Компенсация" },
         reactivityKeys: ["admin"],
       });
     });
+    // Поля очищены — повторное «Начислить» не начислит второй раз.
+    await waitFor(() => {
+      expect((screen.getByLabelText("Часы") as HTMLInputElement).value).toBe("");
+    });
+    expect((screen.getByLabelText("Комментарий") as HTMLInputElement).value).toBe("");
+    const callsAfter = addMinutesCalls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Начислить" }));
+    expect(addMinutesCalls.length).toBe(callsAfter);
+  });
+
+  it("rejects fractional hours without calling the RPC", async () => {
+    renderUserPlanDialog();
+    const callsBefore = addMinutesCalls.length;
+    fireEvent.change(await screen.findByLabelText("Часы"), {
+      target: { value: "1.5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Начислить" }));
+    expect(addMinutesCalls.length).toBe(callsBefore);
+  });
+
+  it("resets the end date after a successful grant", async () => {
+    grantResult = "ok";
+    renderUserPlanDialog();
+    const endsAt = (await screen.findByLabelText(
+      "Дата окончания (пусто — бессрочно)",
+    )) as HTMLInputElement;
+    fireEvent.change(endsAt, { target: { value: "2026-12-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выдать" }));
+    await waitFor(() => expect(endsAt.value).toBe(""));
+  });
+
+  it("keeps the end date when the grant fails (admin can fix and retry)", async () => {
+    grantResult = "badEnd";
+    renderUserPlanDialog();
+    const endsAt = (await screen.findByLabelText(
+      "Дата окончания (пусто — бессрочно)",
+    )) as HTMLInputElement;
+    fireEvent.change(endsAt, { target: { value: "2026-12-31" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выдать" }));
+    await screen.findByText("Дата окончания должна быть в будущем");
+    expect(endsAt.value).toBe("2026-12-31");
+    grantResult = "ok";
+  });
+
+  it("shows «Следующее пополнение» for a limited plan, hides it for an unlimited one", async () => {
+    const { unmount } = renderUserPlanDialog();
+    expect(await screen.findByText(/Следующее пополнение/)).toBeTruthy();
+    unmount();
+
+    renderUserPlanDialog(plan({ tariff: basic, remainingMinutes: null }));
+    expect(await screen.findByText("Осталось: без лимита")).toBeTruthy();
+    expect(screen.queryByText(/Следующее пополнение/)).toBeNull();
   });
 });

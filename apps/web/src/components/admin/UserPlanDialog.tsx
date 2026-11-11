@@ -1,9 +1,9 @@
 // Диалог «Тариф пользователя» (карточка в «Пользователях», спека §2/§3/§8): текущий
 // тариф и остаток, «Выдать тариф» (тариф + необязательная дата окончания), «Снять
-// тариф», «Начислить часы» (минуты и комментарий — RPC `admin.users.addMinutes` берёт
-// минуты напрямую, этому полю не нужен пересчёт часов, в отличие от `TariffDialog`,
-// где это помогает начислить дробную компенсацию, например 90 минут, без лишнего
-// округления до часа) и история выдач/начислений. Монтируется только когда выбран
+// тариф», «Начислить часы» (целые часы и комментарий; RPC `admin.users.addMinutes`
+// берёт минуты — отправляем часы × 60, спека говорит о часах) и история
+// выдач/начислений. Формы очищаются после успешной отправки — повторное нажатие не
+// начислит второй раз. Монтируется только когда выбран
 // пользователь (`UsersTab`), как `GameRequirementsPanel` для раскрытой строки —
 // не держит подписку на `admin.users.plan` впустую.
 import type { AdminUserPlan } from "@cg/rpc";
@@ -57,9 +57,12 @@ function CurrentPlan({ plan }: { plan: AdminUserPlan }) {
           {`Выдача действует до ${formatShortDate(plan.grantEndsAt)}`}
         </span>
       )}
-      <span className="text-sm text-muted-foreground">
-        {`Следующее пополнение: ${formatShortDate(plan.periodEndsAt)}`}
-      </span>
+      {/* Безлимит — пополнять нечего. */}
+      {plan.remainingMinutes !== null && (
+        <span className="text-sm text-muted-foreground">
+          {`Следующее пополнение: ${formatShortDate(plan.periodEndsAt)}`}
+        </span>
+      )}
     </div>
   );
 }
@@ -83,7 +86,8 @@ function GrantTariffForm({
   onSubmit,
 }: {
   tariffs: ReadonlyArray<{ id: string; name: string }>;
-  onSubmit: (tariffId: string, endsAt: string | null) => void;
+  /** `true` — выдано: форма возвращается к исходным значениям. */
+  onSubmit: (tariffId: string, endsAt: string | null) => Promise<boolean>;
 }) {
   const [tariffId, setTariffId] = React.useState(tariffs[0]?.id ?? "");
   const [endsAt, setEndsAt] = React.useState("");
@@ -106,7 +110,14 @@ function GrantTariffForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (tariffId === "") return;
-        onSubmit(tariffId, endsAt.trim() === "" ? null : endOfLocalDay(endsAt));
+        void onSubmit(
+          tariffId,
+          endsAt.trim() === "" ? null : endOfLocalDay(endsAt),
+        ).then((ok) => {
+          if (!ok) return;
+          setTariffId(tariffs[0]!.id);
+          setEndsAt("");
+        });
       }}
     >
       <div className="flex flex-col gap-1.5">
@@ -145,13 +156,14 @@ function GrantTariffForm({
   );
 }
 
-/** «Начислить часы»: минуты и комментарий (RPC берёт минуты напрямую). */
+/** «Начислить часы»: целые часы и комментарий; RPC получает минуты = часы × 60. */
 function AddMinutesForm({
   onSubmit,
 }: {
-  onSubmit: (minutes: number, comment: string) => void;
+  /** `true` — начислено: поля очищаются. */
+  onSubmit: (minutes: number, comment: string) => Promise<boolean>;
 }) {
-  const [minutes, setMinutes] = React.useState("");
+  const [hours, setHours] = React.useState("");
   const [comment, setComment] = React.useState("");
 
   return (
@@ -159,23 +171,29 @@ function AddMinutesForm({
       className="flex flex-wrap items-end gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        const value = Number(minutes);
+        // Целое число больше нуля — та же проверка, что у часов в `TariffsTab`.
+        const value = Number(hours);
         if (!Number.isInteger(value) || value <= 0) return;
-        onSubmit(value, comment.trim());
+        void onSubmit(value * 60, comment.trim()).then((ok) => {
+          if (!ok) return;
+          setHours("");
+          setComment("");
+        });
       }}
     >
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="plan-add-minutes" className="text-xs font-medium text-muted-foreground">
-          Минуты
+        <label htmlFor="plan-add-hours" className="text-xs font-medium text-muted-foreground">
+          Часы
         </label>
         <input
-          id="plan-add-minutes"
+          id="plan-add-hours"
           type="number"
           inputMode="numeric"
           min={1}
-          placeholder="например, 90"
-          value={minutes}
-          onChange={(event) => setMinutes(event.currentTarget.value)}
+          step={1}
+          placeholder="например, 2"
+          value={hours}
+          onChange={(event) => setHours(event.currentTarget.value)}
           className={`${inputClass} w-28`}
         />
       </div>
@@ -267,7 +285,9 @@ function PlanContent({
       setError("Пользователь или тариф не найден");
     } else {
       toast.success("Тариф выдан");
+      return true;
     }
+    return false;
   };
 
   const onRevoke = async () => {
@@ -281,7 +301,11 @@ function PlanContent({
     const exit = await addMinutes(adminAddMinutesArgs(userId, minutes, comment));
     if (Exit.isFailure(exit)) toast.error("Не удалось начислить часы");
     else if (exit.value === "notFound") toast.error("Пользователь не найден");
-    else toast.success(`Начислено ${formatMinutes(minutes)}`);
+    else {
+      toast.success(`Начислено ${formatMinutes(minutes)}`);
+      return true;
+    }
+    return false;
   };
 
   return (
@@ -289,7 +313,7 @@ function PlanContent({
       {plan !== null && <CurrentPlan plan={plan} />}
       <div className="flex flex-col gap-2">
         <p className="text-sm font-medium">Выдать тариф</p>
-        <GrantTariffForm tariffs={openTariffs} onSubmit={(id, endsAt) => void onGrant(id, endsAt)} />
+        <GrantTariffForm tariffs={openTariffs} onSubmit={onGrant} />
       </div>
       <div>
         <Button variant="outline" size="sm" onClick={() => void onRevoke()}>
@@ -298,7 +322,7 @@ function PlanContent({
       </div>
       <div className="flex flex-col gap-2">
         <p className="text-sm font-medium">Начислить часы</p>
-        <AddMinutesForm onSubmit={(minutes, comment) => void onAddMinutes(minutes, comment)} />
+        <AddMinutesForm onSubmit={onAddMinutes} />
       </div>
       {error && (
         <p role="alert" className="text-sm text-destructive">
