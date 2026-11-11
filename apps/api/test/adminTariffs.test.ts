@@ -139,6 +139,40 @@ describe("admin.tariffs", () => {
     expect(defaults[0]!.id).toBe(result.plusId);
   });
 
+  it("setDefault is race-safe under concurrent calls (exactly one default remains)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const rpc = yield* client;
+        yield* rpc["admin.tariffs.create"]({
+          input: tariffInput({ name: "А" }),
+        });
+        yield* rpc["admin.tariffs.create"]({
+          input: tariffInput({ name: "Б" }),
+        });
+        const list = yield* rpc["admin.tariffs.list"]();
+        const a = list.find((t) => t.name === "А")!;
+        const b = list.find((t) => t.name === "Б")!;
+        // Два конкурентных setDefault на разные тарифы, пока третий (seed
+        // «Базовый») — текущий дефолт: без лока на старый дефолт внутри
+        // `setDefaultTariff` второй вызов падает нарушением частичного
+        // уникального индекса `tariffs_default_idx`.
+        const [setA, setB] = yield* Effect.all(
+          [
+            rpc["admin.tariffs.setDefault"]({ id: a.id }),
+            rpc["admin.tariffs.setDefault"]({ id: b.id }),
+          ],
+          { concurrency: 2 },
+        );
+        const after = yield* rpc["admin.tariffs.list"]();
+        return { setA, setB, after };
+      }),
+    );
+    expect(result.setA).toBe("ok");
+    expect(result.setB).toBe("ok");
+    const defaults = result.after.filter((t) => t.isDefault);
+    expect(defaults).toHaveLength(1);
+  });
+
   it('setDefault on archived tariff → "archived"', async () => {
     const result = await run(
       Effect.gen(function* () {
