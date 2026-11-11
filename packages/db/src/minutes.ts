@@ -159,6 +159,23 @@ const periodIndex = (anchor: Date, t: number): number => {
 };
 
 /**
+ * Текущий период тарифа по умолчанию в момент `input.now` (якорь — `userCreatedAt`):
+ * запасной вариант `computeBalance`, если ни одна полоса не накрыла `now`. При
+ * корректных датах так не бывает, но анти-цель спеки — никогда не запрет игры,
+ * поэтому вместо ошибки (сессия бы не запустилась, тик оркестратора упал бы) —
+ * тариф по умолчанию.
+ */
+export const defaultPeriodAt = (
+  input: BalanceInput,
+): { readonly tariff: TariffLimits; readonly periodEndsAt: Date } => {
+  const k = periodIndex(input.userCreatedAt, input.now.getTime());
+  return {
+    tariff: input.defaultTariff,
+    periodEndsAt: new Date(boundary(input.userCreatedAt, k + 1)),
+  };
+};
+
+/**
  * Полосы от `origin` без конца: выдачи по возрастанию начала, промежутки
  * между ними — тариф по умолчанию.
  */
@@ -291,8 +308,21 @@ export const computeBalance = (input: BalanceInput): Balance => {
   events.sort((a, b) => a.at - b.at || a.order - b.order);
 
   // `origin <= now` и полосы покрывают время от `origin`, так что текущий
-  // период находится всегда; проверка — для типов.
-  if (current === null) throw new Error("computeBalance: нет полосы для now");
+  // период находится всегда; иначе — тариф по умолчанию (`defaultPeriodAt`),
+  // не ошибка.
+  if (current === null) {
+    const fallback = defaultPeriodAt(input);
+    current = {
+      band: {
+        tariff: fallback.tariff,
+        start: now,
+        end: null,
+        anchor: input.userCreatedAt,
+        grantEndsAt: null,
+      },
+      periodEnd: fallback.periodEndsAt.getTime(),
+    };
+  }
 
   const times = [...boundaries].filter((t) => t <= now).sort((a, b) => a - b);
   const buckets: Bucket[] = [];

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   type BalanceInput,
   computeBalance,
+  defaultPeriodAt,
   FALLBACK_TARIFF,
   type TariffLimits,
   type Usage,
@@ -280,3 +281,63 @@ describe("computeBalance", () => {
     expect(b.remainingMs).toBe(min(540));
   });
 });
+
+describe("defaultPeriodAt (запасной вариант computeBalance, M7)", () => {
+  it("current period of the default tariff, anchored at userCreatedAt — never an error", () => {
+    const limitedDefault = tariff({ id: "def", monthlyMinutes: 300 });
+    const period = defaultPeriodAt({
+      userCreatedAt: d("2028-01-31T00:00:00Z"),
+      defaultTariff: limitedDefault,
+      grants: [],
+      credits: [],
+      usage: [],
+      now: d("2028-02-15T12:00:00Z"),
+    });
+    expect(period.tariff).toBe(limitedDefault);
+    // Якорь 31 января: период до 29 февраля (последний день месяца).
+    expect(period.periodEndsAt).toEqual(d("2028-02-29T00:00:00Z"));
+  });
+
+  it("matches what computeBalance reports for a user on the default tariff", () => {
+    const input: BalanceInput = {
+      userCreatedAt: d("2028-01-10T00:00:00Z"),
+      defaultTariff: limited600,
+      grants: [],
+      credits: [],
+      usage: [],
+      now: d("2028-03-15T00:00:00Z"),
+    };
+    const balance = computeBalance(input);
+    const period = defaultPeriodAt(input);
+    expect(balance.tariff).toBe(period.tariff);
+    expect(balance.periodEndsAt).toEqual(period.periodEndsAt);
+  });
+
+  it("computeBalance never throws over grants/now combinations around period and grant edges", () => {
+    const base = d("2028-01-31T00:00:00Z").getTime();
+    const day = 24 * 60 * 60_000;
+    const at = (days: number) => new Date(base + days * day);
+    const offsets = [-40, -1, 0, 1, 29, 30, 31, 59, 60, 61];
+    for (const now of offsets)
+      for (const a of offsets)
+        for (const len of [null, 0, 1, 30]) {
+          const input: BalanceInput = {
+            userCreatedAt: at(0),
+            defaultTariff: limited600,
+            grants: [
+              {
+                tariff: tariff({ id: "r", monthlyMinutes: 60, rollover: true }),
+                startsAt: at(a),
+                endsAt: len === null ? null : at(a + len),
+              },
+              { tariff: FALLBACK_TARIFF, startsAt: at(a + 10), endsAt: null },
+            ],
+            credits: [],
+            usage: [],
+            now: at(now),
+          };
+          expect(() => computeBalance(input)).not.toThrow();
+        }
+  });
+});
+
