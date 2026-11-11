@@ -68,6 +68,8 @@ const installingSession: SessionView = {
   playedSeconds: 0,
   previousPlayedAt: null,
   createdAt: "2026-10-23T10:00:00.000Z",
+  queue: null,
+  limit: null,
 };
 
 const renderStrip = (ui: React.ReactElement) =>

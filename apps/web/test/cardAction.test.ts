@@ -19,6 +19,8 @@ const session: SessionView = {
   playedSeconds: 10,
   previousPlayedAt: null,
   createdAt: "2026-10-23T00:00:00.000Z",
+  queue: null,
+  limit: null,
 };
 
 const basePlay: LibraryPlay = {

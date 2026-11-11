@@ -5,7 +5,9 @@
 // схемы, — в `admin.ts` (та же группа `AdminRpcs`, что и остальная админка).
 // Task 6 добавит сюда же `AccountRpcs` для игрока (свой тариф, покупка
 // пакета), поэтому файл сразу разложен на «форма записи» / «форма ввода».
-import { Schema } from "effect";
+import { Schema, Struct } from "effect";
+import { Rpc, RpcGroup } from "effect/rpc";
+import { AuthMiddleware } from "./auth";
 import {
   maxBitrateMbps,
   minBitrateMbps,
@@ -81,3 +83,48 @@ export const HourPackInput = Schema.Struct({
   priceRub: Schema.NullOr(IntBetween(0, 1_000_000)),
 });
 export type HourPackInput = typeof HourPackInput.Type;
+
+/** Поля `Tariff`, которые видит игрок (без `isDefault`/`archived` — это детали админки). */
+const publicTariffKeys = [
+  "id",
+  "name",
+  "priceRub",
+  "queuePriority",
+  "monthlyMinutes",
+  "rollover",
+  "maxResolution",
+  "maxBitrateMbps",
+  "maxSessionMinutes",
+] as const;
+
+/** `Tariff` без `isDefault`/`archived` (каталог тарифов и действующий тариф игрока, спека §2). */
+export const PublicTariff = Tariff.mapFields(Struct.pick(publicTariffKeys));
+export type PublicTariff = typeof PublicTariff.Type;
+
+/** `Tariff` (полная форма админки) → `PublicTariff`, которую видит игрок. */
+export const toPublicTariff = (tariff: Tariff): PublicTariff =>
+  Struct.pick(tariff, publicTariffKeys);
+
+/**
+ * Тариф и остаток минут текущего игрока (спека §2, §3, экран тарифов):
+ * `remainingMinutes` — `null` при безлимите, иначе целое число минут, не
+ * меньше нуля (долг между тиками `computeBalance` не показывается игроку).
+ * `grantEndsAt` — конец действующей выдачи, `null` — бессрочно или тариф по
+ * умолчанию. `nextRefillAt` — когда пополнится корзина минут, `null` при
+ * безлимите. `tariffs`/`hourPacks` — каталог на возможную покупку, без
+ * архивных, тарифы по возрастанию приоритета очереди.
+ */
+export const PlayerPlan = Schema.Struct({
+  tariff: PublicTariff,
+  remainingMinutes: Schema.NullOr(Schema.Int),
+  grantEndsAt: Schema.NullOr(Schema.String),
+  nextRefillAt: Schema.NullOr(Schema.String),
+  tariffs: Schema.Array(PublicTariff),
+  hourPacks: Schema.Array(HourPack),
+});
+export type PlayerPlan = typeof PlayerPlan.Type;
+
+/** `account.plan` — тариф, остаток минут и каталог тарифов/пакетов часов текущего игрока. */
+export const AccountRpcs = RpcGroup.make(
+  Rpc.make("account.plan", { success: PlayerPlan }),
+).middleware(AuthMiddleware);

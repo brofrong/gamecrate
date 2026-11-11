@@ -2,61 +2,25 @@
 // пользователя, спека §2, §3, §8): `loadUserPlan` отдаёт их разом (без N+1),
 // `grantTariff`/`revokeTariff`/`addMinutes` — меняют историю. Эффективный
 // тариф берётся из `loadBalance` (`@cg/db`, Task 3: `currentTariff` +
-// остаток минут одним расчётом); если это встроенный `FALLBACK_TARIFF` (нет
-// строки по умолчанию в БД), полный `Tariff` для него строится из его полей
-// вручную (`isDefault: true, archived: false, priceRub: null`) — у fallback
-// нет настоящей строки `tariffs`, маппинг `toTariff` (`tariffs.ts`) к нему
-// не применим; для настоящего тарифа используется он же — не дублируем
-// маппинг строки `tariffs` в форму для админки.
+// остаток минут одним расчётом) и `loadEffectiveTariff` (`tariffs.ts`,
+// общий с `account.plan`) — маппинг `FALLBACK_TARIFF` в полный `Tariff` не
+// дублируется здесь.
 import {
   Db,
-  FALLBACK_TARIFF,
   loadBalance,
   minuteCredits,
   tariffGrants,
   tariffs,
   user,
 } from "@cg/db";
-import type { AdminUserPlan, Tariff } from "@cg/rpc";
+import type { AdminUserPlan } from "@cg/rpc";
 import { and, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
-import { toTariff } from "./tariffs";
+import { loadEffectiveTariff } from "./tariffs";
 
 /** Алиас `user` для имени админа, выдавшего/начислившего вручную. */
 const granter = alias(user, "granter");
-
-/** Полный `Tariff` действующего тарифа: настоящая строка или `FALLBACK_TARIFF`. */
-const loadEffectiveTariff = (
-  tariffId: string,
-): Effect.Effect<Tariff, never, Db> =>
-  Effect.gen(function* () {
-    if (tariffId === FALLBACK_TARIFF.id) {
-      return {
-        id: FALLBACK_TARIFF.id,
-        name: FALLBACK_TARIFF.name,
-        priceRub: null,
-        queuePriority: FALLBACK_TARIFF.queuePriority,
-        monthlyMinutes: FALLBACK_TARIFF.monthlyMinutes,
-        rollover: FALLBACK_TARIFF.rollover,
-        maxResolution: FALLBACK_TARIFF.maxResolution,
-        maxBitrateMbps: FALLBACK_TARIFF.maxBitrateMbps,
-        maxSessionMinutes: FALLBACK_TARIFF.maxSessionMinutes,
-        isDefault: true,
-        archived: false,
-      };
-    }
-    const db = yield* Db;
-    // `tariffId` взят из действующей выдачи или тарифа по умолчанию
-    // (`loadBalance`/`currentTariff`), оба ссылаются на реальную строку
-    // `tariffs` (FK) — строка гарантированно есть.
-    const [row] = yield* db
-      .select()
-      .from(tariffs)
-      .where(eq(tariffs.id, tariffId))
-      .limit(1);
-    return toTariff(row!);
-  }).pipe(Effect.orDie);
 
 /** Условие «эта выдача действует на момент `now`» — как в `currentTariff` (`@cg/db`). */
 const activeGrant = (userId: string, now: Date) =>

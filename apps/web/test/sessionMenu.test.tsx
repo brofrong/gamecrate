@@ -45,6 +45,8 @@ const view = (patch: Partial<SessionView> = {}): SessionView => ({
   playedSeconds: 0,
   previousPlayedAt: null,
   createdAt: "2026-10-17T10:00:00.000Z",
+  queue: null,
+  limit: null,
   ...patch,
 });
 

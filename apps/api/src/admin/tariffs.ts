@@ -8,7 +8,13 @@
 // гонять check-then-act с конкурентным `setArchived`/`setDefault` на той же
 // строке. Пакеты часов — тот же CRUD, но без уникальности имени и без
 // понятия "по умолчанию".
-import { Db, hourPacks, tariffs, type TariffRow } from "@cg/db";
+import {
+  Db,
+  FALLBACK_TARIFF,
+  hourPacks,
+  tariffs,
+  type TariffRow,
+} from "@cg/db";
 import type { HourPack, HourPackInput, Tariff, TariffInput } from "@cg/rpc";
 import { asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -182,8 +188,48 @@ export const setArchivedTariff = (
     );
   }).pipe(Effect.orDie);
 
+/**
+ * Полный `Tariff` действующего тарифа: настоящая строка `tariffs` или
+ * встроенный `FALLBACK_TARIFF` (нет строки по умолчанию — не должно
+ * случаться, но админка может удалить её без замены). Общий код для карточки
+ * пользователя (`userPlans.ts`, `admin.users.plan`) и `account.plan`
+ * (`apps/api/src/account/rpc.ts`) — маппинг fallback-тарифа в полный `Tariff`
+ * не дублируется: у fallback нет настоящей строки `tariffs`, `toTariff` к
+ * нему не применим.
+ */
+export const loadEffectiveTariff = (
+  tariffId: string,
+): Effect.Effect<Tariff, never, Db> =>
+  Effect.gen(function* () {
+    if (tariffId === FALLBACK_TARIFF.id) {
+      return {
+        id: FALLBACK_TARIFF.id,
+        name: FALLBACK_TARIFF.name,
+        priceRub: null,
+        queuePriority: FALLBACK_TARIFF.queuePriority,
+        monthlyMinutes: FALLBACK_TARIFF.monthlyMinutes,
+        rollover: FALLBACK_TARIFF.rollover,
+        maxResolution: FALLBACK_TARIFF.maxResolution,
+        maxBitrateMbps: FALLBACK_TARIFF.maxBitrateMbps,
+        maxSessionMinutes: FALLBACK_TARIFF.maxSessionMinutes,
+        isDefault: true,
+        archived: false,
+      };
+    }
+    const db = yield* Db;
+    // `tariffId` взят из действующей выдачи или тарифа по умолчанию
+    // (`loadBalance`/`currentTariff`), оба ссылаются на реальную строку
+    // `tariffs` (FK) — строка гарантированно есть.
+    const [row] = yield* db
+      .select()
+      .from(tariffs)
+      .where(eq(tariffs.id, tariffId))
+      .limit(1);
+    return toTariff(row!);
+  }).pipe(Effect.orDie);
+
 /** Строка `hour_packs` → форма для админки: `archived` — `archived_at is not null`. */
-const toHourPack = (row: typeof hourPacks.$inferSelect): HourPack => ({
+export const toHourPack = (row: typeof hourPacks.$inferSelect): HourPack => ({
   id: row.id,
   name: row.name,
   minutes: row.minutes,
