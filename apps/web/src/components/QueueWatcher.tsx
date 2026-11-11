@@ -13,12 +13,28 @@
 // (устанавливается и вернётся в очередь) — не «сервер готов», сигнала и уведомления
 // нет (ревью задачи 11, раунд 1: ложное уведомление при `queued → ended`). Ничего не
 // рендерит — чистый побочный эффект.
-import type { SessionState, SessionView } from "@cg/rpc";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+//
+// Сессия стала терминальной (вышел из игры, простой, лимит, таймаут очереди, «Закончить
+// игру») — heartbeat прекращается и `activeSessionAtom` перезапрашивается: атом подписан
+// здесь всё время, без перезапроса `/app` и страницы игры показывали бы мёртвую сессию
+// (`ActiveSessionPanel`, `cardAction` → `blocked` у остальных игр).
+//
+// Только для вошедшего (`meAtom` успешен): гостю `session.active` не нужен.
+import {
+  isTerminalSessionState,
+  type SessionState,
+  type SessionView,
+} from "@cg/rpc";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef } from "react";
-import { activeSessionAtom, heartbeatAtom, sessionWatchAtom } from "@/rpc";
+import {
+  activeSessionAtom,
+  heartbeatAtom,
+  meAtom,
+  sessionWatchAtom,
+} from "@/rpc";
 
 /** Период heartbeat очереди (сервер учитывает его только пока сессия `queued`). */
 const QUEUE_HEARTBEAT_MS = 5_000;
@@ -90,23 +106,31 @@ export function useLeftQueue(state: SessionState | undefined): boolean {
   return left;
 }
 
-/** Heartbeat `queueOnly` каждые 5 с, пока смонтирован компонент с этим `sessionId`. */
-function useQueueHeartbeat(sessionId: string): void {
+/** Heartbeat `queueOnly` каждые 5 с, пока `enabled` (сессия не терминальная). */
+function useQueueHeartbeat(sessionId: string, enabled: boolean): void {
   const send = useAtomSet(heartbeatAtom, { mode: "promiseExit" });
   useEffect(() => {
+    if (!enabled) return;
     const beat = () =>
       void send({ payload: { sessionId, inputAgeMs: 0, queueOnly: true } });
     beat();
     const timer = setInterval(beat, QUEUE_HEARTBEAT_MS);
     return () => clearInterval(timer);
-  }, [sessionId, send]);
+  }, [sessionId, send, enabled]);
 }
 
 function QueueWatcherActive({ sessionId }: { sessionId: string }) {
-  useQueueHeartbeat(sessionId);
   const watch = useAtomValue(sessionWatchAtom(sessionId));
   const view = Option.getOrUndefined(AsyncResult.value(watch));
+  const terminal = view !== undefined && isTerminalSessionState(view.state);
+  useQueueHeartbeat(sessionId, !terminal);
   const left = useLeftQueue(view?.state);
+
+  // Сессия закончилась — `session.active` перезапрашивается (вернёт null или уже новую).
+  const refreshActive = useAtomRefresh(activeSessionAtom);
+  useEffect(() => {
+    if (terminal) refreshActive();
+  }, [terminal, refreshActive]);
 
   useEffect(() => {
     if (!left) return;
@@ -118,8 +142,14 @@ function QueueWatcherActive({ sessionId }: { sessionId: string }) {
   return null;
 }
 
-/** Монтируется один раз в `__root.tsx`; без активной сессии ничего не делает. */
+/** Монтируется один раз в `__root.tsx`; гостю и без активной сессии ничего не делает. */
 export function QueueWatcher() {
+  const me = useAtomValue(meAtom);
+  if (!AsyncResult.isSuccess(me)) return null;
+  return <QueueWatcherSignedIn />;
+}
+
+function QueueWatcherSignedIn() {
   const active = useAtomValue(activeSessionAtom);
   const session: SessionView | null = AsyncResult.isSuccess(active)
     ? active.value

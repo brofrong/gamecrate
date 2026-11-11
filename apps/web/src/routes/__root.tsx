@@ -9,7 +9,7 @@ function RootLayout() {
     <>
       {/* Хук очереди (спека §5): heartbeat `queueOnly` и уведомление «сервер
           готов» с любой страницы сайта, не только `/session/$id`. Ничего не
-          рендерит без активной сессии пользователя. */}
+          рендерит; гостю и без активной сессии ничего не делает. */}
       <QueueWatcher />
       <Outlet />
       <Toaster position="bottom-right" richColors />
