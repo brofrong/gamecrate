@@ -3,6 +3,9 @@
 // сменить роль, заблокировать/разблокировать, сбросить вход Steam (подтверждение для блокировки
 // и сброса, как «Удалить»/«Отменить» на других вкладках). Своя строка — действия неактивны
 // («Это вы»): себя нельзя ни разжаловать, ни заблокировать (сервер и так ответит «self»).
+// Столбец «Тариф» (Task 9, спека §8) — имя действующего тарифа и кнопка «Тариф», открывающая
+// `UserPlanDialog` (выдача/снятие тарифа, начисление часов, история) — своей строки эта кнопка
+// не касается, тариф себе менять можно (это не роль/блокировка).
 import type { AdminUser, LoginProviderId, Role } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Option } from "effect";
@@ -10,6 +13,7 @@ import { AsyncResult } from "effect/reactivity";
 import * as React from "react";
 import { toast } from "sonner";
 import { Polled } from "@/components/admin/Polled";
+import { UserPlanDialog } from "@/components/admin/UserPlanDialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -224,6 +228,7 @@ function UsersTable({
   onUnblock,
   onBlock,
   onReset,
+  onOpenPlan,
 }: {
   users: ReadonlyArray<AdminUser>;
   myId: string | undefined;
@@ -231,6 +236,7 @@ function UsersTable({
   onUnblock: (u: AdminUser) => void;
   onBlock: (u: AdminUser) => void;
   onReset: (u: AdminUser) => void;
+  onOpenPlan: (u: AdminUser) => void;
 }) {
   const th = "px-2 py-1.5 text-left font-medium";
   const td = "px-2 py-2 align-top";
@@ -246,6 +252,7 @@ function UsersTable({
             <th className={th}>Последняя сессия</th>
             <th className={th}>Наиграно</th>
             <th className={th}>Профиль</th>
+            <th className={th}>Тариф</th>
             <th className={th} aria-label="Действия" />
           </tr>
         </thead>
@@ -272,6 +279,18 @@ function UsersTable({
               </td>
               <td className={cn(td, "whitespace-nowrap")}>
                 {profileLabel(u)}
+              </td>
+              <td className={cn(td, "whitespace-nowrap")}>
+                <div className="flex items-center gap-1.5">
+                  <span>{u.tariffName}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onOpenPlan(u)}
+                  >
+                    Тариф
+                  </Button>
+                </div>
               </td>
               <td className={cn(td, "text-right")}>
                 <ActionsCell
@@ -311,6 +330,7 @@ export function UsersTab() {
   const [query, setQuery] = React.useState("");
   const [toBlock, setToBlock] = React.useState<AdminUser | null>(null);
   const [toReset, setToReset] = React.useState<AdminUser | null>(null);
+  const [planUser, setPlanUser] = React.useState<AdminUser | null>(null);
 
   const setRole = useAtomSet(adminSetRoleAtom, { mode: "promiseExit" });
   const setBlocked = useAtomSet(adminSetBlockedAtom, { mode: "promiseExit" });
@@ -389,6 +409,7 @@ export function UsersTab() {
                     onUnblock={(u) => void onUnblock(u)}
                     onBlock={setToBlock}
                     onReset={setToReset}
+                    onOpenPlan={setPlanUser}
                   />
                   {filterUsers(value, query).length === 0 && (
                     <p className="mt-3 text-sm text-muted-foreground">
@@ -447,6 +468,17 @@ export function UsersTab() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {planUser !== null && (
+        <UserPlanDialog
+          userId={planUser.id}
+          userName={planUser.name}
+          open
+          onOpenChange={(open) => {
+            if (!open) setPlanUser(null);
+          }}
+        />
+      )}
     </>
   );
 }

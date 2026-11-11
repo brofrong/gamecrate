@@ -1,5 +1,8 @@
 // Таблица сессий админки: слоты в карточке воркера и вкладка «Сессии» (с `showWorker`).
 // «Идёт» — от создания до конца (или до `now`), «Ввод» — сколько назад был последний ввод.
+// «Очередь» (Task 9, спека §5/§8) — место `queued`-сессии; у неё же оно может быть `null`,
+// пока оценка места ещё не считалась («оцениваем…», тот же текст, что увидит игрок, см.
+// `global-constraints.md`), у остальных состояний — «—» (сессия сейчас не в очереди).
 import type { AdminSession } from "@cg/rpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +36,12 @@ const sinceMs = (session: AdminSession, now: number) =>
   (session.endedAt === null ? now : Date.parse(session.endedAt)) -
   Date.parse(session.createdAt);
 
+/** «3-й», «оцениваем…» (место ещё не считалось), «—» (сессия не в очереди). */
+function queueLabel(session: AdminSession): string {
+  if (session.state !== "queued") return "—";
+  return session.queuePosition === null ? "оцениваем…" : `${session.queuePosition}-й`;
+}
+
 export function AdminSessionsTable({
   sessions,
   now,
@@ -58,6 +67,7 @@ export function AdminSessionsTable({
             <th className={th}>Игра</th>
             {showWorker && <th className={th}>Воркер</th>}
             <th className={th}>Этап</th>
+            <th className={th}>Очередь</th>
             <th className={th}>Идёт</th>
             <th className={th}>Ввод</th>
             {onStop && <th className={th} aria-label="Действия" />}
@@ -75,6 +85,9 @@ export function AdminSessionsTable({
               )}
               <td className={td}>
                 <StageBadge session={session} />
+              </td>
+              <td className={cn(td, "whitespace-nowrap text-muted-foreground")}>
+                {queueLabel(session)}
               </td>
               <td className={cn(td, "whitespace-nowrap")}>
                 {formatDuration(sinceMs(session, now))}

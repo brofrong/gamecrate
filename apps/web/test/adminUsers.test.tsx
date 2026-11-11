@@ -332,7 +332,13 @@ describe("UsersTab", () => {
       .find((tr) => tr !== null);
     if (ownRow === undefined || ownRow === null)
       throw new Error("row not found");
-    const buttons = within(ownRow).getAllByRole("button");
+    // Последняя ячейка строки — «Действия» (роль/блокировка/сброс Steam): их нельзя
+    // применить к себе. Кнопка «Tариф» живёт в отдельном столбце и этим правилом не
+    // ограничена — тариф себе выдать можно, это не роль и не блокировка.
+    const cells = ownRow.querySelectorAll("td");
+    const actionsCell = cells[cells.length - 1];
+    if (actionsCell === undefined) throw new Error("actions cell not found");
+    const buttons = within(actionsCell as HTMLElement).getAllByRole("button");
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
