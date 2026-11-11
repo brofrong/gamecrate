@@ -26,9 +26,10 @@ export function formatPlanDate(iso: string): string {
 }
 
 /**
- * Приоритет тарифа словами (дизайн §8, карточки `PlansPage`): самый высокий приоритет
- * среди каталога — «Без очереди», выше минимального — «Приоритет в очереди», иначе
- * (минимальный приоритет каталога) — «Общая очередь». Каталог может не включать сам
+ * Приоритет тарифа словами (дизайн §8, карточки `PlansPage`): минимальный приоритет
+ * каталога — «Общая очередь» (проверяется первым: когда приоритеты у всех равны — например,
+ * в каталоге один «Базовый» — очередь у всех общая), самый высокий — «Без очереди», между
+ * ними — «Приоритет в очереди». Каталог может не включать сам
  * `tariff` (архивный тариф пользователя, снятый с продажи) — тогда сравнение идёт с его
  * собственным приоритетом как границей.
  */
@@ -39,9 +40,9 @@ export function tariffPriorityLabel(
   const priorities = tariffs.map((t) => t.queuePriority);
   const max = Math.max(tariff.queuePriority, ...priorities);
   const min = Math.min(tariff.queuePriority, ...priorities);
+  if (tariff.queuePriority === min) return "Общая очередь";
   if (tariff.queuePriority === max) return "Без очереди";
-  if (tariff.queuePriority > min) return "Приоритет в очереди";
-  return "Общая очередь";
+  return "Приоритет в очереди";
 }
 
 /**

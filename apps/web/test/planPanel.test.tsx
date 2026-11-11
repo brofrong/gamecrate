@@ -71,6 +71,17 @@ describe("tariffPriorityLabel", () => {
   it("минимальный приоритет — «Общая очередь»", () => {
     expect(tariffPriorityLabel(start, tariffs)).toBe("Общая очередь");
   });
+  it("единственный тариф (деплой: только «Базовый», приоритет 0) — «Общая очередь»", () => {
+    const basic = tariff({ id: "t0", name: "Базовый", queuePriority: 0 });
+    expect(tariffPriorityLabel(basic, [basic])).toBe("Общая очередь");
+  });
+
+  it("все приоритеты равны — «Общая очередь» у каждого", () => {
+    const a = tariff({ id: "a", name: "А", queuePriority: 3 });
+    const b = tariff({ id: "b", name: "Б", queuePriority: 3 });
+    expect(tariffPriorityLabel(a, [a, b])).toBe("Общая очередь");
+    expect(tariffPriorityLabel(b, [a, b])).toBe("Общая очередь");
+  });
 });
 
 describe("PlanPanel", () => {
@@ -158,6 +169,9 @@ describe("PlansPage", () => {
 
     expect(screen.getByText("10 часов")).toBeTruthy();
     expect(screen.getByText("10 ч")).toBeTruthy();
+    // Пакет часов — разовая покупка: «₽», не «₽/мес».
+    expect(screen.getByText("300 ₽")).toBeTruthy();
+    expect(screen.queryByText("300 ₽/мес")).toBeNull();
 
     // Кнопок покупки нет.
     expect(screen.queryByRole("button", { name: /Купить/ })).toBeNull();

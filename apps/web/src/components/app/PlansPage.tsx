@@ -15,8 +15,13 @@ import { useStalled } from "@/lib/useStalled";
 import { cn } from "@/lib/utils";
 import { accountPlanAtom } from "@/rpc";
 
+/** Цена тарифа — помесячно. */
 const priceLabel = (priceRub: number | null) =>
   priceRub === null ? "—" : `${priceRub} ₽/мес`;
+
+/** Цена пакета часов — разовая покупка. */
+const packPriceLabel = (priceRub: number | null) =>
+  priceRub === null ? "—" : `${priceRub} ₽`;
 
 const hoursLabel = (monthlyMinutes: number | null) =>
   monthlyMinutes === null ? "безлимит" : formatMinutes(monthlyMinutes);
@@ -70,7 +75,7 @@ function HourPackRow({ hourPack }: { hourPack: HourPack }) {
         {formatMinutes(hourPack.minutes)}
       </span>
       <span className="text-sm text-[#8a90a8]">
-        {priceLabel(hourPack.priceRub)}
+        {packPriceLabel(hourPack.priceRub)}
       </span>
     </div>
   );

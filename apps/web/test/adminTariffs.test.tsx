@@ -193,6 +193,22 @@ describe("TariffsTab", () => {
     expect(within(proRow).getByText("40 ч")).toBeTruthy();
   });
 
+  it("hour pack price is a one-time «₽», not «₽/мес»", async () => {
+    renderTariffsTab([basic, pro], [
+      {
+        id: "h1",
+        name: "10 часов",
+        minutes: 600,
+        priceRub: 300,
+        archived: false,
+      },
+    ]);
+    const packRow = (await screen.findByText("10 часов")).parentElement;
+    if (packRow === null) throw new Error("row not found");
+    expect(within(packRow).getByText("300 ₽")).toBeTruthy();
+    expect(within(packRow).queryByText("300 ₽/мес")).toBeNull();
+  });
+
   it("create dialog sends monthlyMinutes = hours × 60", async () => {
     createResult = "ok";
     renderTariffsTab();

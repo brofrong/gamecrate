@@ -46,8 +46,13 @@ const hoursLabel = (monthlyMinutes: number | null) =>
 const sessionLengthLabel = (maxSessionMinutes: number | null) =>
   maxSessionMinutes === null ? "без лимита" : formatMinutes(maxSessionMinutes);
 
+/** Цена тарифа — помесячно. */
 const priceLabel = (priceRub: number | null) =>
   priceRub === null ? "—" : `${priceRub} ₽/мес`;
+
+/** Цена пакета часов — разовая покупка. */
+const packPriceLabel = (priceRub: number | null) =>
+  priceRub === null ? "—" : `${priceRub} ₽`;
 
 function TariffRow({
   tariff,
@@ -256,7 +261,7 @@ function HourPackRow({
         <span className="text-sm text-muted-foreground">
           {formatMinutes(hourPack.minutes)}
         </span>
-        <span className="text-sm text-muted-foreground">{priceLabel(hourPack.priceRub)}</span>
+        <span className="text-sm text-muted-foreground">{packPriceLabel(hourPack.priceRub)}</span>
         {hourPack.archived && <Badge variant="outline">Скрыт</Badge>}
       </div>
       <div className="flex gap-1.5">
