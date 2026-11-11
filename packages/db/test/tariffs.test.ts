@@ -200,4 +200,38 @@ describe("sessionLimit", () => {
         expect(limit).toBeNull();
       }),
     ));
+
+  it("limited minutes without a session cap still returns the minutes limit", () =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertUser(db, "u1");
+        const [t600] = yield* db
+          .insert(tariffs)
+          .values({ id: "t600-nocap", name: "600 без лимита сессии", monthlyMinutes: 600 })
+          .returning();
+        yield* db.insert(tariffGrants).values({
+          id: "g1",
+          userId: "u1",
+          tariffId: t600!.id,
+          startsAt: d("2026-01-01T00:00:00Z"),
+          endsAt: null,
+        });
+        yield* insertSession(db, "s1", "u1");
+
+        const now = d("2026-01-10T00:00:00Z");
+        yield* db.insert(playSegments).values({
+          sessionId: "s1",
+          userId: "u1",
+          appId: 1,
+          startedAt: new Date(now.getTime() - min(100)),
+          endedAt: now,
+          billable: true,
+          open: false,
+        });
+
+        const limit = yield* sessionLimit("u1", "s1", now);
+        expect(limit).toEqual({ reason: "minutes", remainingMs: min(500) });
+      }),
+    ));
 });

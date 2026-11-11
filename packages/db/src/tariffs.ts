@@ -169,8 +169,13 @@ export const sessionLimit = (
   Effect.gen(function* () {
     const balance = yield* loadBalance(userId, now);
     const maxSessionMinutes = balance.tariff.maxSessionMinutes;
-    if (balance.remainingMs === null && maxSessionMinutes === null) {
-      return null;
+
+    // Без лимита длины сессии запрос отрезков этой сессии не нужен вовсе —
+    // `sessionLimit` зовётся на каждый тик оркестратора и `session.watch`.
+    if (maxSessionMinutes === null) {
+      return balance.remainingMs === null
+        ? null
+        : { remainingMs: balance.remainingMs, reason: "minutes" as const };
     }
 
     const db = yield* Db;
@@ -193,17 +198,10 @@ export const sessionLimit = (
       );
       return sum + Math.max(0, end - s.startedAt.getTime());
     }, 0);
-    const sessionRemainingMs =
-      maxSessionMinutes === null ? null : maxSessionMinutes * 60_000 - usedMs;
+    const sessionRemainingMs = maxSessionMinutes * 60_000 - usedMs;
 
     if (balance.remainingMs === null) {
-      return {
-        remainingMs: sessionRemainingMs as number,
-        reason: "session_length" as const,
-      };
-    }
-    if (sessionRemainingMs === null) {
-      return { remainingMs: balance.remainingMs, reason: "minutes" as const };
+      return { remainingMs: sessionRemainingMs, reason: "session_length" as const };
     }
     return sessionRemainingMs < balance.remainingMs
       ? { remainingMs: sessionRemainingMs, reason: "session_length" as const }
