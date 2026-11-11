@@ -446,6 +446,18 @@ describe("session", () => {
     expect(onHere).toHaveBeenCalledTimes(1);
   });
 
+  it("limit warning is rendered under the fullscreen root (Player's <main>)", () => {
+    // Полный экран запрашивается на `<main>` плеера — видно только его поддерево.
+    const deadline = new Date(Date.now() + 5 * 60_000).toISOString();
+    const { container } = renderPlayer(
+      view("playing", { limit: { deadline, reason: "minutes" } }),
+    );
+    const root = container.querySelector("main");
+    expect(root).not.toBeNull();
+    const alert = screen.getByText("Часы заканчиваются — сохранитесь");
+    expect(root?.contains(alert)).toBe(true);
+  });
+
   it("exit asks for confirmation before stopping", async () => {
     const onExit = mock(() => {});
     renderPlayer(view("playing"), { onExit });

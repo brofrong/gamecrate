@@ -18,6 +18,7 @@ import {
   afterBreak,
   SessionControls,
 } from "./session/SessionControls";
+import { LimitWarning } from "./session/LimitWarning";
 import { noQualityLimits, type QualityLimits } from "./session/SessionMenu";
 import { StatsOverlay } from "./session/StatsOverlay";
 import { SessionStatus } from "./SessionStatus";
@@ -296,6 +297,8 @@ export function Player({
         view.idleDeadline !== null && (
           <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
         )}
+      {/* Внутри `<main>`: полный экран запрашивается на нём — снаружи плашку не видно. */}
+      {!loading && view.limit !== null && <LimitWarning limit={view.limit} />}
       {!loading && debug !== "off" && (
         <StatsOverlay mode={debug} snapshot={stats} />
       )}
