@@ -30,6 +30,12 @@ import {
   updateHourPack,
   updateTariff,
 } from "./tariffs";
+import {
+  addMinutes,
+  grantTariff,
+  loadUserPlan,
+  revokeTariff,
+} from "./userPlans";
 import { listUsers, resetSteamLogin, setBlocked, setRole } from "./users";
 import { createWorker, issueCode, revoke } from "./workerEnroll";
 import { listWorkers, setClass, setDraining, setRegion } from "./workers";
@@ -75,7 +81,11 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
       const now = yield* DateTime.nowAsDate;
       return yield* cancelInstall(jobId, now);
     }),
-  "admin.users.list": () => listUsers(),
+  "admin.users.list": () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* listUsers(now);
+    }),
   "admin.users.setRole": ({ userId, role }) =>
     Effect.gen(function* () {
       const current = yield* CurrentUser;
@@ -91,6 +101,34 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
     Effect.gen(function* () {
       const now = yield* DateTime.nowAsDate;
       return yield* resetSteamLogin(userId, now);
+    }),
+  "admin.users.plan": ({ userId }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* loadUserPlan(userId, now);
+    }),
+  "admin.users.grantTariff": ({ userId, tariffId, endsAt }) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      const now = yield* DateTime.nowAsDate;
+      return yield* grantTariff(
+        userId,
+        tariffId,
+        endsAt === null ? null : new Date(endsAt),
+        current.id,
+        now,
+      );
+    }),
+  "admin.users.revokeTariff": ({ userId }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* revokeTariff(userId, now);
+    }),
+  "admin.users.addMinutes": ({ userId, minutes, comment }) =>
+    Effect.gen(function* () {
+      const current = yield* CurrentUser;
+      const now = yield* DateTime.nowAsDate;
+      return yield* addMinutes(userId, minutes, comment, current.id, now);
     }),
   "admin.classes.list": () => listClasses(),
   "admin.classes.create": ({ name }) => createClass(name),

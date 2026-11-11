@@ -17,8 +17,12 @@ import { violatedConstraint } from "./dbErrors";
 /** Имя constraint'а уникального имени тарифа (инлайн `.unique()` в схеме). */
 const TARIFF_NAME_UNIQUE_CONSTRAINT = "tariffs_name_key";
 
-/** Строка `tariffs` → форма для админки: `archived` — `archived_at is not null`. */
-const toTariff = (row: TariffRow): Tariff => ({
+/**
+ * Строка `tariffs` → форма для админки: `archived` — `archived_at is not
+ * null`. Экспортируется — `userPlans.ts` переиспользует для эффективного
+ * тарифа пользователя (`admin.users.plan`), не дублирует маппинг.
+ */
+export const toTariff = (row: TariffRow): Tariff => ({
   id: row.id,
   name: row.name,
   priceRub: row.priceRub,

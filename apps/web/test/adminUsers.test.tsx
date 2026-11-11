@@ -219,6 +219,7 @@ const baseUser = (
   blockedAt: null,
   steamLoginResetPending: false,
   activeSession: false,
+  tariffName: "Базовый",
   ...patch,
 });
 

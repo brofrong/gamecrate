@@ -9,6 +9,8 @@ import {
   playSegments,
   profiles,
   sessions,
+  tariffGrants,
+  tariffs,
   user,
 } from "@cg/db";
 import { DbTest } from "@cg/db/test";
@@ -217,6 +219,45 @@ describe("admin.users.list", () => {
     );
     const steamUser = result.find((u) => u.id === "u-steam");
     expect(steamUser?.email).toBeNull();
+  });
+
+  it("shows tariffName (granted / default)", async () => {
+    const now = new Date();
+    const result = await run(
+      Effect.gen(function* () {
+        const db = yield* Db;
+        yield* insertAdminAndPlayer(db);
+        yield* insertUser(db, { id: "u-granted", name: "Granted" });
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-plus", name: "Плюс", queuePriority: 10 });
+        yield* db.insert(tariffGrants).values({
+          id: "g1",
+          userId: "u-granted",
+          tariffId: "t-plus",
+          startsAt: new Date(now.getTime() - 60_000),
+          endsAt: null,
+        });
+        // Выдача уже закрылась — для этого пользователя действует тариф по умолчанию.
+        yield* insertUser(db, { id: "u-expired", name: "Expired" });
+        yield* db.insert(tariffGrants).values({
+          id: "g2",
+          userId: "u-expired",
+          tariffId: "t-plus",
+          startsAt: new Date(now.getTime() - 120_000),
+          endsAt: new Date(now.getTime() - 60_000),
+        });
+
+        const rpc = yield* client;
+        return yield* rpc["admin.users.list"]();
+      }),
+    );
+    const granted = result.find((u) => u.id === "u-granted");
+    const expired = result.find((u) => u.id === "u-expired");
+    const player0 = result.find((u) => u.id === player.id);
+    expect(granted?.tariffName).toBe("Плюс");
+    expect(expired?.tariffName).toBe("Базовый");
+    expect(player0?.tariffName).toBe("Базовый");
   });
 });
 
