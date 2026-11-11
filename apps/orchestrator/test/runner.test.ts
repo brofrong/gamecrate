@@ -39,6 +39,7 @@ import { sentToken } from "./seedKey";
 import {
   at,
   connectWorker,
+  type FakeHub,
   insertSession,
   like,
   run,
@@ -1150,6 +1151,113 @@ describe("session runner", () => {
 
         yield* runner.tick(t0);
         like(yield* sessionRow("s1"), { state: "playing", failReason: null });
+      }),
+    ));
+
+  /** u1 на тарифе 60 мин/мес и s1 `playing` на w1, уже отыгравшая все 60 минут. */
+  const seedExhausted = (fake: FakeHub, t0: Date) =>
+    Effect.gen(function* () {
+      const db = yield* Db;
+      yield* seedUsers("u1");
+      yield* connectWorker(fake, "w1", 1);
+      yield* db
+        .insert(tariffs)
+        .values({ id: "t-60min", name: "60 минут", monthlyMinutes: 60 });
+      yield* db.insert(tariffGrants).values({
+        id: "g-u1",
+        userId: "u1",
+        tariffId: "t-60min",
+        startsAt: new Date("2026-06-01T00:00:00.000Z"),
+        endsAt: null,
+      });
+      yield* insertSession({
+        id: "s1",
+        userId: "u1",
+        state: "playing",
+        workerId: "w1",
+        slot: 0,
+        stateSince: at(t0, -3600),
+        clientSeenAt: t0,
+        lastInputAt: t0,
+        agentSeenAt: t0,
+      });
+      yield* insertSegment({
+        sessionId: "s1",
+        userId: "u1",
+        startedAt: at(t0, -3600),
+        endedAt: t0,
+        billable: true,
+        open: false,
+      });
+    });
+
+  /** Браузер и агент на месте в момент `now`. */
+  const allAlive = (now: Date) =>
+    Effect.gen(function* () {
+      const db = yield* Db;
+      yield* db
+        .update(sessions)
+        .set({ clientSeenAt: now, lastInputAt: now, agentSeenAt: now })
+        .where(eq(sessions.id, "s1"));
+    });
+
+  it("remainder already ≤ 0 when first seen: 2-minute warning window, then stop (I3)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const t0 = new Date("2026-06-15T12:00:00.000Z");
+        yield* seedExhausted(fake, t0);
+
+        // Первый тик: остаток уже ≤ 0, но окна ещё не было — не останавливаем.
+        yield* runner.tick(t0);
+        like(yield* sessionRow("s1"), {
+          state: "playing",
+          failReason: null,
+          limitGraceUntil: at(t0, 120),
+        });
+
+        // Окно идёт — играем, окно не сдвигается.
+        yield* allAlive(at(t0, 119));
+        yield* runner.tick(at(t0, 119));
+        like(yield* sessionRow("s1"), {
+          state: "playing",
+          limitGraceUntil: at(t0, 120),
+        });
+
+        // Окно кончилось — «Часы закончились».
+        yield* allAlive(at(t0, 120));
+        yield* runner.tick(at(t0, 120));
+        like(yield* sessionRow("s1"), {
+          state: "stopping",
+          failReason: failReasons.minutesOut,
+        });
+      }),
+    ));
+
+  it("top-up during the warning window clears it and keeps playing (I3)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const db = yield* Db;
+        const t0 = new Date("2026-06-15T12:00:00.000Z");
+        yield* seedExhausted(fake, t0);
+
+        yield* runner.tick(t0);
+        like(yield* sessionRow("s1"), { limitGraceUntil: at(t0, 120) });
+
+        yield* db.insert(minuteCredits).values({
+          id: "c1",
+          userId: "u1",
+          minutes: 30,
+          createdAt: at(t0, 30),
+        });
+        yield* allAlive(at(t0, 60));
+        yield* runner.tick(at(t0, 60));
+        like(yield* sessionRow("s1"), {
+          state: "playing",
+          failReason: null,
+          limitGraceUntil: null,
+        });
       }),
     ));
 });

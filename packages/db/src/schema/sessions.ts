@@ -188,6 +188,12 @@ export const sessions = pgTable(
     queuePosition: integer("queue_position"),
     queueTotal: integer("queue_total"),
     queueEtaMinutes: integer("queue_eta_minutes"),
+    // Минимальное окно предупреждения перед остановкой по лимиту тарифа (спека §4):
+    // оркестратор ставит `now + max(остаток, 2 мин)`, когда впервые видит остаток
+    // меньше 2 минут, и не останавливает сессию раньше этого момента, даже если
+    // остаток разом ушёл в ноль (истекла выдача тарифа, админ урезал лимит).
+    // Сбрасывается в `null`, когда остаток снова не меньше 2 минут (пополнение).
+    limitGraceUntil: timestamptz("limit_grace_until"),
   },
   (t) => [
     uniqueIndex("sessions_active_user_idx")

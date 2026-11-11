@@ -197,13 +197,15 @@ const snapshotOf = (row: SessionRow, now: Date) =>
       agentSeenAt: row.agentSeenAt,
       openSegment: segment ?? null,
       limit,
+      limitGraceUntil: row.limitGraceUntil,
     } satisfies Snapshot;
   });
 
 /**
  * Применяет решение автомата одной транзакцией: `state` и `stateSince = now`
  * (только если состояние сменилось), `endedAt = now` при переходе в
- * `ended`/`failed`, `failReason` (если задан), затем `SegmentOp` строго по
+ * `ended`/`failed`, `failReason` (если задан), `limitGraceUntil` (если задан —
+ * `Date` или `null`), затем `SegmentOp` строго по
  * порядку над единственным открытым отрезком сессии. Нет сессии — ничего.
  */
 export const apply = (sessionId: string, decision: Decision, now: Date) =>
@@ -214,7 +216,11 @@ export const apply = (sessionId: string, decision: Decision, now: Date) =>
         const row = yield* lockSession(sessionId);
         if (row === undefined) return;
         const changed = decision.state !== row.state;
-        if (changed || decision.failReason !== null) {
+        if (
+          changed ||
+          decision.failReason !== null ||
+          decision.limitGraceUntil !== undefined
+        ) {
           yield* db
             .update(sessions)
             .set({
@@ -225,6 +231,9 @@ export const apply = (sessionId: string, decision: Decision, now: Date) =>
               }),
               ...(decision.failReason !== null && {
                 failReason: decision.failReason,
+              }),
+              ...(decision.limitGraceUntil !== undefined && {
+                limitGraceUntil: decision.limitGraceUntil,
               }),
             })
             .where(eq(sessions.id, sessionId));
@@ -317,7 +326,8 @@ export const transition = (
         if (
           decision.state !== row.state ||
           decision.ops.length > 0 ||
-          decision.failReason !== null
+          decision.failReason !== null ||
+          decision.limitGraceUntil !== undefined
         )
           yield* apply(sessionId, decision, now);
         return { row, decision } as Transition;

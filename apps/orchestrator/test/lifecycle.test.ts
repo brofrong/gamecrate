@@ -9,6 +9,7 @@ import {
   AGENT_TIMEOUT_MS,
   CLIENT_TIMEOUT_MS,
   failReasons,
+  LIMIT_GRACE_MS,
   QUEUE_CLIENT_TIMEOUT_MS,
   type Decision,
   type LifecycleEvent,
@@ -42,6 +43,7 @@ const snap = (
         ? { startedAt: T0, endedAt: seen, billable: false }
         : null,
   limit: null,
+  limitGraceUntil: null,
   ...overrides,
 });
 
@@ -155,6 +157,7 @@ describe("decide", () => {
         billable: false,
       },
       limit: null,
+      limitGraceUntil: null,
     };
     const d2 = decide(disconnected, tick, returnedAt, settings);
     expect(d2).toEqual({
@@ -190,6 +193,7 @@ describe("decide", () => {
         billable: false,
       },
       limit: null,
+      limitGraceUntil: null,
     };
     expect(decide(s, tick, sec(15 * 60 + 16), settings)).toEqual(
       unchanged("disconnected"),
@@ -220,6 +224,7 @@ describe("decide", () => {
         billable: false,
       },
       limit: null,
+      limitGraceUntil: null,
     };
     expect(decide(s, tick, sec(16 * 60 + 20), settings)).toEqual({
       state: "stopping",
@@ -640,6 +645,7 @@ describe("decide", () => {
       agentSeenAt: sec(20 * 60 + 5),
       openSegment: { startedAt, endedAt: startedAt, billable: true },
       limit: null,
+      limitGraceUntil: null,
     };
     expect(decide(playing, tick, sec(20 * 60 + 5), settings)).toEqual(
       unchanged("playing"),
@@ -809,7 +815,8 @@ describe("decide", () => {
 
   it('playing with an exhausted minutes limit stops with "Часы закончились"', () => {
     const now = min(5);
-    const s = snap("playing", {}, now);
+    // Окно предупреждения уже истекло (выставлено раньше).
+    const s = snap("playing", { limitGraceUntil: now }, now);
     const limit: SessionLimit = { remainingMs: 0, reason: "minutes" };
     expect(decide({ ...s, limit }, tick, now, settings)).toEqual({
       state: "stopping",
@@ -821,7 +828,7 @@ describe("decide", () => {
 
   it('idle_warning with an exhausted session-length limit stops with "Достигнут лимит длины сессии"', () => {
     const now = min(5);
-    const s = snap("idle_warning", {}, now);
+    const s = snap("idle_warning", { limitGraceUntil: min(4) }, now);
     const limit: SessionLimit = { remainingMs: -1, reason: "session_length" };
     expect(decide({ ...s, limit }, tick, now, settings)).toEqual({
       state: "stopping",
@@ -840,6 +847,156 @@ describe("decide", () => {
     expect(decide({ ...s, limit }, tick, now, settings).state).toBe(
       "disconnected",
     );
+  });
+
+  it("remainder dropping from far away straight to ≤ 0: not stopped on that tick, 2-minute window first", () => {
+    // Выдача тарифа истекла — запасной тариф с уже пройденной длиной сессии.
+    const now = min(30);
+    const limit: SessionLimit = { remainingMs: -90_000, reason: "session_length" };
+    const first = decide(
+      { ...snap("playing", {}, now), limit },
+      tick,
+      now,
+      settings,
+    );
+    expect(first).toEqual({
+      ...unchanged("playing"),
+      limitGraceUntil: new Date(now.getTime() + LIMIT_GRACE_MS),
+    });
+
+    // Окно ещё идёт — не останавливаем и окно не трогаем.
+    const grace = new Date(now.getTime() + LIMIT_GRACE_MS);
+    const during = new Date(grace.getTime() - 1);
+    expect(
+      decide(
+        { ...snap("playing", { limitGraceUntil: grace }, during), limit },
+        tick,
+        during,
+        settings,
+      ),
+    ).toEqual(unchanged("playing"));
+
+    // Окно истекло — остановка с прежней причиной.
+    expect(
+      decide(
+        { ...snap("playing", { limitGraceUntil: grace }, grace), limit },
+        tick,
+        grace,
+        settings,
+      ),
+    ).toEqual({
+      state: "stopping",
+      ops: [{ _tag: "Close", at: grace }],
+      command: "StopContainer",
+      failReason: failReasons.sessionTooLong,
+    });
+  });
+
+  it("normal countdown: window set on the first tick under 2 min, stop on the first tick at 0 after it", () => {
+    const t = min(30);
+    const minutes = (remainingMs: number): SessionLimit => ({
+      remainingMs,
+      reason: "minutes",
+    });
+    // Ровно 2 минуты — ещё не «меньше 2 минут»: окно не ставится.
+    expect(
+      decide(
+        { ...snap("playing", {}, t), limit: minutes(LIMIT_GRACE_MS) },
+        tick,
+        t,
+        settings,
+      ),
+    ).toEqual(unchanged("playing"));
+
+    // Следующий тик (5 с): остаток 1:55 → окно now + 2 мин (= ноль остатка + 5 с).
+    const t1 = new Date(t.getTime() + 5_000);
+    const d1 = decide(
+      { ...snap("playing", {}, t1), limit: minutes(115_000) },
+      tick,
+      t1,
+      settings,
+    );
+    const grace = new Date(t1.getTime() + LIMIT_GRACE_MS);
+    expect(d1).toEqual({ ...unchanged("playing"), limitGraceUntil: grace });
+
+    // Остаток кончился, а окно ещё 5 с — играем дальше.
+    const zero = new Date(t1.getTime() + 115_000);
+    expect(
+      decide(
+        {
+          ...snap("playing", { limitGraceUntil: grace }, zero),
+          limit: minutes(0),
+        },
+        tick,
+        zero,
+        settings,
+      ),
+    ).toEqual(unchanged("playing"));
+
+    // Тик на конце окна — «Часы закончились».
+    expect(
+      decide(
+        {
+          ...snap("playing", { limitGraceUntil: grace }, grace),
+          limit: minutes(-5_000),
+        },
+        tick,
+        grace,
+        settings,
+      ).failReason,
+    ).toBe(failReasons.minutesOut);
+  });
+
+  it("top-up (remainder back to ≥ 2 min) clears the window; a later drop gets a fresh one", () => {
+    const now = min(30);
+    const grace = new Date(now.getTime() + 30_000);
+    const topUp: SessionLimit = { remainingMs: 30 * 60_000, reason: "minutes" };
+    expect(
+      decide(
+        { ...snap("playing", { limitGraceUntil: grace }, now), limit: topUp },
+        tick,
+        now,
+        settings,
+      ),
+    ).toEqual({ ...unchanged("playing"), limitGraceUntil: null });
+
+    // Тариф стал безлимитным — окно тоже снимается.
+    expect(
+      decide(
+        {
+          ...snap(
+            "idle_warning",
+            { stateSince: now, limitGraceUntil: grace },
+            now,
+          ),
+          limit: null,
+        },
+        tick,
+        now,
+        settings,
+      ),
+    ).toEqual({ ...unchanged("idle_warning"), limitGraceUntil: null });
+
+    // Позже остаток снова упал до нуля — новое полное окно от «сейчас».
+    const later = min(50);
+    const drop: SessionLimit = { remainingMs: 0, reason: "minutes" };
+    expect(
+      decide({ ...snap("playing", {}, later), limit: drop }, tick, later, settings),
+    ).toEqual({
+      ...unchanged("playing"),
+      limitGraceUntil: new Date(later.getTime() + LIMIT_GRACE_MS),
+    });
+  });
+
+  it("window update rides along with other decisions in playing (idle warning)", () => {
+    // Простой дольше N и одновременно остаток упал — idle_warning и окно вместе.
+    const now = min(30);
+    const s = snap("playing", { lastInputAt: T0 }, now);
+    const limit: SessionLimit = { remainingMs: 60_000, reason: "minutes" };
+    expect(decide({ ...s, limit }, tick, now, settings)).toEqual({
+      ...unchanged("idle_warning"),
+      limitGraceUntil: new Date(now.getTime() + LIMIT_GRACE_MS),
+    });
   });
 
   it("limit null never stops the session on its own", () => {
