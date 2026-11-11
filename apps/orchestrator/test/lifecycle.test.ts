@@ -447,6 +447,24 @@ describe("decide", () => {
     );
   });
 
+  it("queued after install: stale client heartbeat counts from return to queue", () => {
+    // heartbeat очереди не шёл во время установки: clientSeenAt 20 мин назад,
+    // в queued сессия вернулась 10 с назад
+    const now = min(30);
+    const s = snap("queued", {
+      stateSince: sec(30 * 60 - 10),
+      clientSeenAt: min(10),
+      agentSeenAt: null,
+      lastInputAt: null,
+    });
+    expect(decide(s, tick, now, settings)).toEqual(unchanged("queued"));
+    // без heartbeat'а 2 мин после возврата — выпадает
+    const later = sec(30 * 60 - 10 + 121);
+    expect(decide(s, tick, later, settings).failReason).toBe(
+      "Вы вышли из очереди",
+    );
+  });
+
   it("starting still uses disconnectGraceMinutes", () => {
     // клиента нет 3 мин (> порога очереди, < K = 5) — starting ждёт
     const now = min(3);

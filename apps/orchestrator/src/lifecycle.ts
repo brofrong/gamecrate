@@ -167,7 +167,11 @@ const onTick = (
       // Очередь ждёт браузер QUEUE_CLIENT_TIMEOUT_MS, запуск — K.
       const clientRef = s.clientSeenAt ?? s.stateSince;
       if (s.state === "queued") {
-        return ms(clientRef, now) > QUEUE_CLIENT_TIMEOUT_MS
+        // Heartbeat очереди обновляет clientSeenAt только в queued: во время
+        // установки он стоит, и после возврата в queued отсчёт идёт заново
+        // от stateSince, а не от давнего heartbeat'а.
+        const queueRef = max(clientRef, s.stateSince);
+        return ms(queueRef, now) > QUEUE_CLIENT_TIMEOUT_MS
           ? decision("ended", [], null, failReasons.queueLeft)
           : keep;
       }
