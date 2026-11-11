@@ -3,12 +3,16 @@
 // (`activeSessionAtom`), раз в 5 с шлёт `session.heartbeat` с `queueOnly: true` — так
 // игрок остаётся в очереди, даже листая другие страницы сайта (сервер учитывает этот
 // heartbeat только пока сессия `queued`; в остальных состояниях — принятый no-op).
-// Подписан на `sessionWatchAtom`: при переходе `queued → другое`, если вкладка
-// скрыта, играет короткий сигнал (WebAudio, без файлов) и показывает уведомление
-// браузера, если разрешение уже дано (кнопка на экране загрузки,
-// `LoadingScreen.tsx` — спека просит спросить при входе в очередь, но Safari и
-// другие браузеры разрешают запрос только по нажатию, отступление записано в
-// задаче 11). Ничего не рендерит — чистый побочный эффект.
+// Подписан на `sessionWatchAtom`: при переходе `queued → starting/playing/idle_warning`
+// (сервер и правда запустил сессию), если вкладка скрыта, играет короткий сигнал
+// (WebAudio, без файлов) и показывает уведомление браузера, если разрешение уже дано
+// (кнопка на экране загрузки, `LoadingScreen.tsx` — спека просит спросить при входе
+// в очередь, но Safari и другие браузеры разрешают запрос только по нажатию,
+// отступление записано в задаче 11). Переход в `ended`/`failed` (вышел из очереди по
+// 2-минутному таймауту клиента, отмена из другой вкладки) и в `installing`
+// (устанавливается и вернётся в очередь) — не «сервер готов», сигнала и уведомления
+// нет (ревью задачи 11, раунд 1: ложное уведомление при `queued → ended`). Ничего не
+// рендерит — чистый побочный эффект.
 import type { SessionState, SessionView } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Option } from "effect";
@@ -57,14 +61,29 @@ export function notifyQueueReady(): void {
 }
 
 /**
+ * Состояния, в которые переход из `queued` и правда значит «сервер нашёлся,
+ * возвращайтесь» — только вперёд к запуску. `ended`/`failed` (вышел из очереди по
+ * таймауту клиента, отмена из другой вкладки) и `installing` (сессия вернётся в
+ * очередь после установки, спека §5) сюда не входят.
+ */
+const queueClearedStates: ReadonlySet<SessionState> = new Set([
+  "starting",
+  "playing",
+  "idle_warning",
+]);
+
+/**
  * `true` ровно на тот рендер, когда предыдущее состояние было `queued`, а текущее —
- * другое (однократный «импульс» на переходе; на следующем рендере с тем же
- * состоянием снова `false` — не залипает).
+ * из `queueClearedStates` (однократный «импульс» на переходе; на следующем рендере с
+ * тем же состоянием снова `false` — не залипает; переход в терминальное состояние
+ * или в `installing` — всегда `false`).
  */
 export function useLeftQueue(state: SessionState | undefined): boolean {
   const prev = useRef<SessionState | undefined>(undefined);
   const left =
-    prev.current === "queued" && state !== undefined && state !== "queued";
+    prev.current === "queued" &&
+    state !== undefined &&
+    queueClearedStates.has(state);
   useEffect(() => {
     prev.current = state;
   });

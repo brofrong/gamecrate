@@ -1,6 +1,10 @@
 // `QueueWatcher` (спека §5, бриф задачи 11): пока есть активная сессия — heartbeat
 // `queueOnly` раз в 5 с (сервер учтёт его только пока сессия `queued`); при переходе
-// `queued → другое`, если вкладка скрыта, короткий сигнал и уведомление браузера.
+// `queued → starting/playing/idle_warning` (сервер и правда запустил сессию), если
+// вкладка скрыта, короткий сигнал и уведомление браузера. Переход в `ended`/`failed`
+// (вышел из очереди по таймауту, отмена из другой вкладки) и в `installing` (сессия
+// вернётся в очередь после установки) — не «сервер готов»: ревью задачи 11, раунд 1,
+// нашло ложное уведомление «Сервер готов» ровно на `queued → ended`.
 //
 // `../src/rpc` открывает реальный WebSocket, поэтому он подменяется целиком через
 // `mock.module` (как в `myGamesPage.test.tsx`) — `rpcStub()` даёт все имена настоящего
@@ -80,9 +84,60 @@ function Driver({
   return <QueueWatcher />;
 }
 
+/** Разрешение дано, конструктор считает, сколько раз показали уведомление. */
+function stubNotification(): { readonly ctor: ReturnType<typeof mock> } {
+  const ctor = mock(function FakeNotification(_title: string) {});
+  (globalThis as { Notification?: unknown }).Notification = Object.assign(
+    ctor,
+    { permission: "granted" as NotificationPermission },
+  );
+  return { ctor };
+}
+
+/** Фейковый `AudioContext`: `calls` считает, сколько раз его создали (сигнал сыграл). */
+function stubAudioContext(): { calls: number } {
+  const state = { calls: 0 };
+  class FakeOscillator {
+    frequency = { value: 0 };
+    onended: (() => void) | null = null;
+    connect() {}
+    start() {}
+    stop() {}
+  }
+  class FakeGain {
+    gain = { value: 0 };
+    connect() {}
+  }
+  class FakeAudioContext {
+    currentTime = 0;
+    destination = {};
+    constructor() {
+      state.calls += 1;
+    }
+    createOscillator() {
+      return new FakeOscillator();
+    }
+    createGain() {
+      return new FakeGain();
+    }
+    close() {
+      return Promise.resolve();
+    }
+  }
+  (globalThis as { AudioContext?: unknown }).AudioContext = FakeAudioContext;
+  return state;
+}
+
+const originalHidden = Object.getOwnPropertyDescriptor(
+  Document.prototype,
+  "hidden",
+);
+
 afterEach(() => {
   heartbeatCalls = [];
   delete (globalThis as { Notification?: unknown }).Notification;
+  delete (globalThis as { AudioContext?: unknown }).AudioContext;
+  if (originalHidden) Object.defineProperty(document, "hidden", originalHidden);
 });
 
 describe("QueueWatcher", () => {
@@ -132,63 +187,38 @@ describe("QueueWatcher", () => {
     }
   });
 
-  it("notifies when the session leaves queued while the tab is hidden", () => {
-    const originalHidden = Object.getOwnPropertyDescriptor(
-      Document.prototype,
-      "hidden",
-    );
+  it("notifies when the session leaves queued to starting while the tab is hidden", () => {
     Object.defineProperty(document, "hidden", {
       value: true,
       configurable: true,
     });
-
-    const requestPermission = mock(
-      async (): Promise<NotificationPermission> => "granted",
-    );
-    const notifyCtor = mock(function FakeNotification(_title: string) {});
-    (globalThis as { Notification?: unknown }).Notification = Object.assign(
-      notifyCtor,
-      { permission: "granted" as NotificationPermission, requestPermission },
-    );
+    const { ctor: notifyCtor } = stubNotification();
 
     const apiRef: { set?: (v: SessionView) => void } = {};
-    try {
-      render(
-        <RegistryProvider
-          initialValues={[
-            [activeSessionAtom, AsyncResult.success(view("queued"))],
-            [
-              sessionWatchAtom(sessionId),
-              AsyncResult.success(view("queued")),
-            ],
-          ]}
-        >
-          <Driver apiRef={apiRef} />
-        </RegistryProvider>,
-      );
+    render(
+      <RegistryProvider
+        initialValues={[
+          [activeSessionAtom, AsyncResult.success(view("queued"))],
+          [sessionWatchAtom(sessionId), AsyncResult.success(view("queued"))],
+        ]}
+      >
+        <Driver apiRef={apiRef} />
+      </RegistryProvider>,
+    );
 
-      act(() => apiRef.set?.(view("starting")));
+    act(() => apiRef.set?.(view("starting")));
 
-      expect(notifyCtor).toHaveBeenCalledWith(
-        "Сервер готов — возвращайтесь в игру",
-      );
-    } finally {
-      if (originalHidden) {
-        Object.defineProperty(document, "hidden", originalHidden);
-      }
-    }
+    expect(notifyCtor).toHaveBeenCalledWith(
+      "Сервер готов — возвращайтесь в игру",
+    );
   });
 
-  it("does not notify when the tab is visible, or when leaving a non-queued state", () => {
+  it("does not notify when the tab is visible, even leaving to a running state", () => {
     Object.defineProperty(document, "hidden", {
       value: false,
       configurable: true,
     });
-    const notifyCtor = mock(function FakeNotification(_title: string) {});
-    (globalThis as { Notification?: unknown }).Notification = Object.assign(
-      notifyCtor,
-      { permission: "granted" as NotificationPermission },
-    );
+    const { ctor: notifyCtor } = stubNotification();
 
     const apiRef: { set?: (v: SessionView) => void } = {};
     render(
@@ -207,5 +237,59 @@ describe("QueueWatcher", () => {
 
     act(() => apiRef.set?.(view("playing")));
     expect(notifyCtor).not.toHaveBeenCalled();
+  });
+
+  it("queued → ended while hidden: no notification and no chime (left the queue, not server ready)", () => {
+    Object.defineProperty(document, "hidden", {
+      value: true,
+      configurable: true,
+    });
+    const { ctor: notifyCtor } = stubNotification();
+    const audio = stubAudioContext();
+
+    const apiRef: { set?: (v: SessionView) => void } = {};
+    render(
+      <RegistryProvider
+        initialValues={[
+          [activeSessionAtom, AsyncResult.success(view("queued"))],
+          [sessionWatchAtom(sessionId), AsyncResult.success(view("queued"))],
+        ]}
+      >
+        <Driver apiRef={apiRef} />
+      </RegistryProvider>,
+    );
+
+    act(() =>
+      apiRef.set?.(view("ended", { failReason: "Вы вышли из очереди" })),
+    );
+
+    expect(notifyCtor).not.toHaveBeenCalled();
+    expect(audio.calls).toBe(0);
+  });
+
+  it("queued → installing: no notification and no chime (returns to the queue afterwards)", () => {
+    Object.defineProperty(document, "hidden", {
+      value: true,
+      configurable: true,
+    });
+    const { ctor: notifyCtor } = stubNotification();
+    const audio = stubAudioContext();
+
+    const apiRef: { set?: (v: SessionView) => void } = {};
+    render(
+      <RegistryProvider
+        initialValues={[
+          [activeSessionAtom, AsyncResult.success(view("queued"))],
+          [sessionWatchAtom(sessionId), AsyncResult.success(view("queued"))],
+        ]}
+      >
+        <Driver apiRef={apiRef} />
+      </RegistryProvider>,
+    );
+
+    act(() => apiRef.set?.(view("installing")));
+
+    expect(notifyCtor).not.toHaveBeenCalled();
+    expect(audio.calls).toBe(0);
   });
 });
