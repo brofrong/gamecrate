@@ -5,4 +5,5 @@ export * from "./minutes";
 export * from "./ownGames";
 export * from "./placement";
 export * from "./schema";
+export * from "./tariffs";
 export * from "./workerTokens";
