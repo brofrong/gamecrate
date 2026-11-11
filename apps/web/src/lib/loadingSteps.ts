@@ -14,6 +14,7 @@ import {
   type StageTiming,
 } from "@cg/rpc";
 import { formatClock } from "./formatTime";
+import { queueLine } from "./queueText";
 
 export type StepStatus = "done" | "now" | "next";
 
@@ -147,8 +148,12 @@ function plan(view: SessionView): {
   if (view.state === "queued") {
     // Сколько ждать сервер, не знаем — внутри очереди полоска стоит в начале
     // строки (после установки сессия ждёт сервер ещё раз — на `INSTALL_SHARE`).
+    // Место в очереди приходит не сразу (снимок планировщика) — до него строка
+    // прежняя.
+    const queueLabel =
+      view.queue === null ? "Ждём свободный сервер" : queueLine(view.queue);
     return {
-      labels: [...prefix, "Ждём свободный сервер", ...launchLabels],
+      labels: [...prefix, queueLabel, ...launchLabels],
       // В очереди времени этапов не показываем.
       stages: [],
       current: prefix.length,

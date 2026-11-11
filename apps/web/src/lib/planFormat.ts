@@ -2,7 +2,7 @@
 // остаток минут словами и даты по Москве. Отдельно от `lib/formatTime.ts` — там
 // `formatMinutes` сокращает до букв («2 ч 14 м», сводка времени), здесь — до слов
 // («12 ч 30 мин», «45 мин»), как того просит бриф задачи.
-import type { PublicTariff } from "@cg/rpc";
+import type { PlayerPlan, PublicTariff } from "@cg/rpc";
 
 /** «12 ч 30 мин», «40 ч», «45 мин», «0 мин» — остаток минут плана. */
 export function formatMinutes(minutes: number): string {
@@ -42,4 +42,12 @@ export function tariffPriorityLabel(
   if (tariff.queuePriority === max) return "Без очереди";
   if (tariff.queuePriority > min) return "Приоритет в очереди";
   return "Общая очередь";
+}
+
+/**
+ * Каталог содержит открытый тариф с приоритетом очереди выше текущего (подсказка
+ * «В тарифе выше очередь короче» на экране загрузки, спека §5/§7).
+ */
+export function hasHigherTariff(plan: PlayerPlan): boolean {
+  return plan.tariffs.some((t) => t.queuePriority > plan.tariff.queuePriority);
 }

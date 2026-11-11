@@ -1,7 +1,7 @@
 // Экран загрузки до появления игры (спека 2026-10-27-loading-screen §2): этапы
 // списком, общая полоска, «Отменить», запасной фон вместо битой картинки; время
 // этапов и «Показать экран» при 2× нормы (спека 2026-10-29-launch-timers, часть 2).
-import { describe, expect, it, jest, mock, setSystemTime } from "bun:test";
+import { afterEach, describe, expect, it, jest, mock, setSystemTime } from "bun:test";
 import type {
   InstallStage,
   SessionStage,
@@ -10,7 +10,8 @@ import type {
   SessionView,
   StageTiming,
 } from "@cg/rpc";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { RouterProvider } from "@tanstack/react-router";
 import { Player } from "../src/components/Player";
 import {
   formatElapsed,
@@ -20,6 +21,7 @@ import {
   revealDue,
   stageNormMs,
 } from "../src/lib/loadingSteps";
+import { testRouter } from "./router";
 
 const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
   ({
@@ -299,6 +301,108 @@ describe("loading screen", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByText("20 Minutes Till Dawn")).toBeTruthy();
     expect(screen.getByText("Запускаем Steam")).toBeTruthy();
+  });
+
+  it("queued with a queue snapshot shows the queue line instead of the generic wait text", () => {
+    renderPlayer(
+      view("queued", { queue: { position: 3, total: 7, etaMinutes: 10 } }),
+    );
+    expect(
+      screen.getByText("Вы 3-й в очереди · ждут 7 человек · ≈ 10 мин"),
+    ).toBeTruthy();
+    expect(screen.queryByText("Ждём свободный сервер")).toBeNull();
+  });
+});
+
+describe("loading screen: queue upsell", () => {
+  it("loading screen shows queue line and upsell when a higher tariff exists", async () => {
+    const queued = view("queued", {
+      queue: { position: 1, total: 2, etaMinutes: null },
+    });
+    render(
+      <RouterProvider
+        router={testRouter(
+          <Player
+            view={queued}
+            onExit={noop}
+            onHere={noop}
+            onLibrary={noop}
+            onPlayAgain={noop}
+            higherTariffExists
+          />,
+        )}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Вы 1-й в очереди · ждут 2 человека · оцениваем…"),
+    ).toBeTruthy();
+    const link = screen.getByRole("link", {
+      name: "В тарифе выше очередь короче",
+    });
+    expect(link.getAttribute("href")).toBe("/app/plans");
+  });
+
+  it("no upsell hint without a higher tariff", () => {
+    renderPlayer(
+      view("queued", { queue: { position: 1, total: 1, etaMinutes: 5 } }),
+    );
+    expect(
+      screen.queryByText("В тарифе выше очередь короче"),
+    ).toBeNull();
+  });
+});
+
+describe("loading screen: notify when the queue clears", () => {
+  const stubNotification = (
+    permission: NotificationPermission,
+  ): { requestPermission: ReturnType<typeof mock> } => {
+    const requestPermission = mock(
+      async (): Promise<NotificationPermission> => "granted",
+    );
+    class FakeNotification {
+      static permission: NotificationPermission = permission;
+      static requestPermission = requestPermission;
+      constructor(public title: string) {}
+    }
+    (globalThis as { Notification?: unknown }).Notification =
+      FakeNotification;
+    return { requestPermission };
+  };
+
+  afterEach(() => {
+    delete (globalThis as { Notification?: unknown }).Notification;
+  });
+
+  const notifyButton = () =>
+    screen.queryByRole("button", {
+      name: "Сообщить, когда подойдёт очередь",
+    });
+
+  it("shows the button while permission is default, hides it after requesting", async () => {
+    const { requestPermission } = stubNotification("default");
+    renderPlayer(view("queued"));
+    const button = notifyButton();
+    expect(button).toBeTruthy();
+
+    fireEvent.click(button as Element);
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(notifyButton()).toBeNull());
+  });
+
+  it("no button once permission is already granted or denied", () => {
+    stubNotification("granted");
+    renderPlayer(view("queued"));
+    expect(notifyButton()).toBeNull();
+  });
+
+  it("no button without Notification support, and only while queued", () => {
+    renderPlayer(view("queued"));
+    expect(notifyButton()).toBeNull();
+
+    stubNotification("default");
+    renderPlayer(view("starting"));
+    expect(notifyButton()).toBeNull();
   });
 });
 

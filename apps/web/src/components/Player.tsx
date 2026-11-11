@@ -186,6 +186,7 @@ export function Player({
   streamSettings = defaultStreamSettingsControl,
   bridge: bridgeProp,
   qualityLimits = noQualityLimits,
+  higherTariffExists = false,
 }: {
   view: SessionView;
   /** Пользователь подтвердил «Закончить игру» (или «Отменить» на экране загрузки). */
@@ -208,6 +209,8 @@ export function Player({
    * `noQualityLimits` (верх ручного диапазона, как у тарифа по умолчанию «Базовый»).
    */
   qualityLimits?: QualityLimits;
+  /** В тарифе игрока есть открытый тариф выше — подсказка на экране загрузки (`LoadingScreen`). */
+  higherTariffExists?: boolean;
 }) {
   const { settings } = streamSettings;
   const settingsRef = useRef(settings);
@@ -285,6 +288,7 @@ export function Player({
           nowServerMs={nowServerMs}
           onCancel={onExit}
           onReveal={offered ? () => setRevealedId(view.id) : undefined}
+          higherTariffExists={higherTariffExists}
         />
       )}
       {!loading &&

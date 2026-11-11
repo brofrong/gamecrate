@@ -10,9 +10,11 @@ import { toast } from "sonner";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
 import { Player } from "@/components/Player";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
+import { LimitWarning } from "@/components/session/LimitWarning";
 import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
 import { useInputActivity } from "@/lib/inputActivity";
+import { hasHigherTariff } from "@/lib/planFormat";
 import { reportStartError } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import { useStreamSettings } from "@/lib/useStreamSettings";
@@ -114,6 +116,8 @@ function SessionPage() {
         maxBitrateMbps: plan.value.tariff.maxBitrateMbps,
       }
     : undefined;
+  const higherTariffExists =
+    AsyncResult.isSuccess(plan) && hasHigherTariff(plan.value);
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
   const tag = resultErrorTag(watch);
@@ -202,8 +206,10 @@ function SessionPage() {
         onFrameLoad={input.attachFrame}
         onPlayAgain={() => void onPlayAgain()}
         streamSettings={streamSettings}
+        higherTariffExists={higherTariffExists}
         {...(qualityLimits !== undefined ? { qualityLimits } : {})}
       />
+      {view.limit !== null && <LimitWarning limit={view.limit} />}
       {stalled && (
         // Стрим идёт отдельным соединением и может работать дальше — не закрываем его.
         <div className="fixed inset-x-0 bottom-4 z-30 flex justify-center px-4">
