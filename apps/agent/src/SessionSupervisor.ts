@@ -309,9 +309,13 @@ const isDirectory = (path: string) => {
  * Размер экрана — `command.display` против белого списка (`allowedDisplaySize`,
  * проверяется и здесь, и в оркестраторе); нет поля или размер не из списка —
  * 1920×1080. Разрешение идущей сессии не меняется — эти переменные читаются
- * entrypoint'ом только при старте контейнера. Своя игра (`command.ownGame`):
- * пакет только для чтения в `OWN_GAME_MOUNT`, `CG_GAME` — запускать его вместо
- * Steam, метка `OWN_GAME_LABEL`; слои Steam те же.
+ * entrypoint'ом только при старте контейнера. Потолок битрейта
+ * (`SELKIES_VIDEO_BITRATE`) — `command.maxBitrateMbps` из тарифа пользователя
+ * (спека 2026-11-10 §2, Task 8), нет поля (старый оркестратор) — 40 Мбит/с:
+ * Selkies ждёт кбит/с и стартует не выше 10 Мбит/с, даже если потолок выше.
+ * Своя игра (`command.ownGame`): пакет только для чтения в `OWN_GAME_MOUNT`,
+ * `CG_GAME` — запускать его вместо Steam, метка `OWN_GAME_LABEL`; слои Steam
+ * те же.
  */
 export const sessionSpec = (
   config: AgentConfigValues,
@@ -319,6 +323,7 @@ export const sessionSpec = (
   password: string,
 ): ContainerSpec => {
   const { width, height } = allowedDisplaySize(command.display);
+  const bitrateCapMbps = command.maxBitrateMbps ?? 40;
   const own = command.ownGame;
   return desktopSpec(config, {
     name: containerName(command.sessionId),
@@ -331,6 +336,7 @@ export const sessionSpec = (
       SELKIES_MANUAL_HEIGHT: String(height),
       DISPLAY_SIZEW: String(width),
       DISPLAY_SIZEH: String(height),
+      SELKIES_VIDEO_BITRATE: `${Math.min(10_000, bitrateCapMbps * 1000)},2000-${bitrateCapMbps * 1000}`,
       ...(own !== undefined ? { CG_GAME: OWN_GAME_RUN } : {}),
     },
     labels: {

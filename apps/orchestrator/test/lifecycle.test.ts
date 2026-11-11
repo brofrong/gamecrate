@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { SessionState } from "@cg/db";
+import type { SessionLimit, SessionState } from "@cg/db";
 import {
   type SessionSettings,
   defaultSessionSettings,
@@ -8,6 +8,7 @@ import {
 import {
   AGENT_TIMEOUT_MS,
   CLIENT_TIMEOUT_MS,
+  failReasons,
   QUEUE_CLIENT_TIMEOUT_MS,
   type Decision,
   type LifecycleEvent,
@@ -40,6 +41,7 @@ const snap = (
       : state === "disconnected"
         ? { startedAt: T0, endedAt: seen, billable: false }
         : null,
+  limit: null,
   ...overrides,
 });
 
@@ -152,6 +154,7 @@ describe("decide", () => {
         endedAt: sec(13 * 60),
         billable: false,
       },
+      limit: null,
     };
     const d2 = decide(disconnected, tick, returnedAt, settings);
     expect(d2).toEqual({
@@ -186,6 +189,7 @@ describe("decide", () => {
         endedAt: sec(15 * 60),
         billable: false,
       },
+      limit: null,
     };
     expect(decide(s, tick, sec(15 * 60 + 16), settings)).toEqual(
       unchanged("disconnected"),
@@ -215,6 +219,7 @@ describe("decide", () => {
         endedAt: sec(16 * 60),
         billable: false,
       },
+      limit: null,
     };
     expect(decide(s, tick, sec(16 * 60 + 20), settings)).toEqual({
       state: "stopping",
@@ -634,6 +639,7 @@ describe("decide", () => {
       lastInputAt: null,
       agentSeenAt: sec(20 * 60 + 5),
       openSegment: { startedAt, endedAt: startedAt, billable: true },
+      limit: null,
     };
     expect(decide(playing, tick, sec(20 * 60 + 5), settings)).toEqual(
       unchanged("playing"),
@@ -799,5 +805,46 @@ describe("decide", () => {
     expect(
       decide(snap("starting"), { _tag: "InstallStarted" }, sec(1), settings),
     ).toEqual(unchanged("starting"));
+  });
+
+  it('playing with an exhausted minutes limit stops with "Часы закончились"', () => {
+    const now = min(5);
+    const s = snap("playing", {}, now);
+    const limit: SessionLimit = { remainingMs: 0, reason: "minutes" };
+    expect(decide({ ...s, limit }, tick, now, settings)).toEqual({
+      state: "stopping",
+      ops: [{ _tag: "Close", at: now }],
+      command: "StopContainer",
+      failReason: failReasons.minutesOut,
+    });
+  });
+
+  it('idle_warning with an exhausted session-length limit stops with "Достигнут лимит длины сессии"', () => {
+    const now = min(5);
+    const s = snap("idle_warning", {}, now);
+    const limit: SessionLimit = { remainingMs: -1, reason: "session_length" };
+    expect(decide({ ...s, limit }, tick, now, settings)).toEqual({
+      state: "stopping",
+      ops: [{ _tag: "Close", at: now }],
+      command: "StopContainer",
+      failReason: failReasons.sessionTooLong,
+    });
+  });
+
+  it("disconnected client wins over an exhausted limit", () => {
+    // Клиента не видно дольше CLIENT_TIMEOUT_MS: → disconnected, не stopping,
+    // даже если лимит уже исчерпан.
+    const now = sec(16);
+    const s = snap("playing", { clientSeenAt: T0, agentSeenAt: now }, T0);
+    const limit: SessionLimit = { remainingMs: 0, reason: "minutes" };
+    expect(decide({ ...s, limit }, tick, now, settings).state).toBe(
+      "disconnected",
+    );
+  });
+
+  it("limit null never stops the session on its own", () => {
+    const s = snap("playing", { lastInputAt: T0 }, min(1));
+    expect(s.limit).toBeNull();
+    expect(decide(s, tick, min(1), settings)).toEqual(unchanged("playing"));
   });
 });

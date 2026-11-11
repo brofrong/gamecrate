@@ -4,6 +4,7 @@
 // только там, где игра стоит; нет её ни на одном подходящем сервере — сессия
 // ждёт установку (`installing`) на выбранный сервер.
 import {
+  currentTariff,
   Db,
   eligibleWorkers,
   installJobs,
@@ -514,7 +515,10 @@ export const tick = (now: Date) =>
       // Своя игра не читает посеянный вход Steam — он ей не нужен.
       const steamLogin =
         ownGame === undefined ? yield* seeds.get(session.userId) : null;
-      const display = yield* SessionRepo.displaySizeFor(session.userId);
+      const display = yield* SessionRepo.displaySizeFor(session.userId, now);
+      // Тариф читается отдельно от `displaySizeFor` (своя проверка потолка
+      // разрешения там) — здесь нужен только потолок битрейта (Task 8, §2).
+      const tariff = yield* currentTariff(session.userId, now);
       const sent = yield* hub.send(workerId, {
         _tag: "StartSession",
         sessionId: session.id,
@@ -525,6 +529,7 @@ export const tick = (now: Date) =>
         profile,
         steamLogin,
         display,
+        maxBitrateMbps: tariff.maxBitrateMbps,
         ...(steamLoginResetAt !== null && {
           steamLoginResetAt: steamLoginResetAt.toISOString(),
         }),

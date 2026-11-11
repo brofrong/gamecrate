@@ -8,7 +8,10 @@ import {
   installJobs,
   ownGames,
   sessions,
+  tariffGrants,
+  tariffs,
   user,
+  userStreamSettings,
 } from "@cg/db";
 import type { WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
@@ -638,6 +641,79 @@ describe("scheduler: own games (спека 2026-11-03 «Свои игры»)", (
         expect(fake.sent).toEqual([]);
         const db = yield* Db;
         expect(yield* db.select().from(installJobs)).toEqual([]);
+      }),
+    ));
+});
+
+/** Выдаёт тариф `tariffId` пользователю `userId` бессрочно, с `startsAt` в прошлом. */
+const grantTariff = (userId: string, tariffId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.insert(tariffGrants).values({
+      id: `g-${userId}-${tariffId}`,
+      userId,
+      tariffId,
+      startsAt: new Date("2026-01-01T00:00:00Z"),
+      endsAt: null,
+    });
+  });
+
+describe("scheduler: tariff limits (Task 8)", () => {
+  it("StartSession carries maxBitrateMbps of the tariff", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seedUsers("u1");
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-20mbps", name: "20 Мбит/с", maxBitrateMbps: 20 });
+        yield* grantTariff("u1", "t-20mbps");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+
+        const sent = fake.sent[0]!;
+        expect(sent.command._tag).toBe("StartSession");
+        expect(
+          sent.command._tag === "StartSession"
+            ? sent.command.maxBitrateMbps
+            : undefined,
+        ).toBe(20);
+      }),
+    ));
+
+  it("display is capped by tariff", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seedUsers("u1");
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-720p", name: "720p", maxResolution: "720p" });
+        yield* grantTariff("u1", "t-720p");
+        // Ручной режим, 1440p — тариф позволяет только 720p.
+        yield* db.insert(userStreamSettings).values({
+          userId: "u1",
+          value: {
+            quality: "manual",
+            bitrateMbps: 10,
+            resolution: "1440p",
+            debug: "off",
+            menuTourSeen: true,
+          },
+        });
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+
+        const sent = fake.sent[0]!;
+        expect(
+          sent.command._tag === "StartSession" ? sent.command.display : null,
+        ).toEqual({ width: 1280, height: 720 });
       }),
     ));
 });

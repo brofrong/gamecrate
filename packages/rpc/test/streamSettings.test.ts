@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Schema } from "effect";
 import {
   allowedDisplaySize,
+  capResolution,
   decodeStreamSettings,
   defaultDisplaySize,
   defaultStreamSettings,
@@ -110,6 +111,16 @@ describe("displaySizeOf", () => {
         resolution: "1440p",
       }),
     ).toEqual(defaultDisplaySize);
+  });
+});
+
+describe("capResolution", () => {
+  it("clamps down to the tariff ceiling", () => {
+    expect(capResolution("1440p", "1080p")).toBe("1080p");
+  });
+
+  it("passes through a resolution within the ceiling", () => {
+    expect(capResolution("720p", "1080p")).toBe("720p");
   });
 });
 

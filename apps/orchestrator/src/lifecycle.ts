@@ -17,7 +17,7 @@
  * - `failReason !== null` — записать причину (`null` — не трогать);
  * - `command === "StopContainer"` — попросить агента погасить контейнер.
  */
-import type { SessionState } from "@cg/db";
+import type { SessionLimit, SessionState } from "@cg/db";
 import type { SessionSettings } from "@cg/rpc";
 
 /** Нет heartbeat браузера дольше 15 с → клиент отключён. */
@@ -37,6 +37,12 @@ export type Snapshot = {
   lastInputAt: Date | null;
   agentSeenAt: Date | null;
   openSegment: { startedAt: Date; endedAt: Date; billable: boolean } | null;
+  /**
+   * Остаток минут/длины сессии по тарифу (`SessionRepo.snapshotOf`,
+   * `sessionLimit` из `@cg/db`, Task 8); считается только в `playing`/
+   * `idle_warning` — вне них `null` (никогда не запрещает очередь и запуск).
+   */
+  limit: SessionLimit | null;
 };
 
 export type LifecycleEvent =
@@ -78,6 +84,8 @@ export const failReasons = {
   installFailed: "Не удалось установить игру",
   installTimeout: "Установка не закончилась за отведённое время",
   queueLeft: "Вы вышли из очереди",
+  minutesOut: "Часы закончились",
+  sessionTooLong: "Достигнут лимит длины сессии",
 } as const;
 
 const MINUTE_MS = 60_000;
@@ -190,6 +198,17 @@ const onTick = (
           ...close,
           { _tag: "Open", at: openAt, billable: false },
         ]);
+      }
+      // Клиент на месте: кончились минуты или длина сессии (тариф, спека §2–§3).
+      if (s.limit !== null && s.limit.remainingMs <= 0) {
+        return decision(
+          "stopping",
+          closeAt(s, now, now),
+          "StopContainer",
+          s.limit.reason === "minutes"
+            ? failReasons.minutesOut
+            : failReasons.sessionTooLong,
+        );
       }
       if (s.state === "playing") {
         // Простой меряется внутри игрового времени: ввод до старта игры не в счёт.

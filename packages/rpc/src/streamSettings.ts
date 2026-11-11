@@ -140,6 +140,23 @@ export const displaySizeOf = (settings: StreamSettings): DisplaySize =>
     ? defaultDisplaySize
     : streamDisplaySizes[settings.resolution];
 
+/** Порядок разрешений от меньшего к большему (для потолка тарифа, §2). */
+const resolutionRank: Record<StreamResolution, number> = {
+  "720p": 0,
+  "1080p": 1,
+  "1440p": 2,
+};
+
+/**
+ * Разрешение, не выше потолка тарифа (`maxResolution`, Task 8): `wanted`, если
+ * оно не выше `max`, иначе сам `max`.
+ */
+export const capResolution = (
+  wanted: StreamResolution,
+  max: StreamResolution,
+): StreamResolution =>
+  resolutionRank[wanted] <= resolutionRank[max] ? wanted : max;
+
 /**
  * Проверка размера против белого списка (агент и оркестратор проверяют его же):
  * не из трёх допустимых размеров — умолчание 1920×1080.

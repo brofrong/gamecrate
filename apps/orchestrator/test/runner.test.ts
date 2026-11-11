@@ -4,10 +4,13 @@ import {
   gamestoreApps,
   games,
   installJobs,
+  minuteCredits,
   playSegments,
   sessionStageMarks,
   sessions,
   settings,
+  tariffGrants,
+  tariffs,
   user,
   userStreamSettings,
   workers,
@@ -174,6 +177,7 @@ describe("scheduler", () => {
               profile: null,
               steamLogin: null,
               display: { width: 1920, height: 1080 },
+              maxBitrateMbps: 40,
             },
           },
           {
@@ -188,6 +192,7 @@ describe("scheduler", () => {
               profile: null,
               steamLogin: null,
               display: { width: 1920, height: 1080 },
+              maxBitrateMbps: 40,
             },
           },
         ]);
@@ -309,6 +314,7 @@ describe("scheduler", () => {
             profile: null,
             steamLogin: { ...seed, putAt },
             display: { width: 1920, height: 1080 },
+            maxBitrateMbps: 40,
           },
           {
             _tag: "StartSession",
@@ -320,6 +326,7 @@ describe("scheduler", () => {
             profile: null,
             steamLogin: null,
             display: { width: 1920, height: 1080 },
+            maxBitrateMbps: 40,
           },
         ]);
         expect(sentToken(starts[0]?.command)).toBe("refresh-token");
@@ -432,6 +439,7 @@ describe("scheduler", () => {
             profile: null,
             steamLogin: null,
             display: { width: 1920, height: 1080 },
+            maxBitrateMbps: 40,
             steamLoginResetAt: resetOld.toISOString(),
           },
           {
@@ -444,6 +452,7 @@ describe("scheduler", () => {
             profile: null,
             steamLogin: { ...fresh, putAt: expect.any(String) },
             display: { width: 1920, height: 1080 },
+            maxBitrateMbps: 40,
             steamLoginResetAt: resetNew.toISOString(),
           },
           {
@@ -456,6 +465,7 @@ describe("scheduler", () => {
             profile: null,
             steamLogin: { ...none, putAt: expect.any(String) },
             display: { width: 1920, height: 1080 },
+            maxBitrateMbps: 40,
           },
         ]);
         // Без пометки ключа нет вовсе (а не `undefined`).
@@ -1088,6 +1098,58 @@ describe("session runner", () => {
           at(t0, 25),
         );
         expect((yield* sessionRow("s1")).state).toBe("ended");
+      }),
+    ));
+
+  it("credit added mid-session keeps it playing on the next tick (Task 8)", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const runner = yield* SessionRunner;
+        const db = yield* Db;
+        // Фиксированное время — границы месячного периода тарифа предсказуемы.
+        const t0 = new Date("2026-06-15T12:00:00.000Z");
+        yield* seedUsers("u1");
+        yield* connectWorker(fake, "w1", 1);
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-60min", name: "60 минут", monthlyMinutes: 60 });
+        yield* db.insert(tariffGrants).values({
+          id: "g-u1",
+          userId: "u1",
+          tariffId: "t-60min",
+          startsAt: new Date("2026-06-01T00:00:00.000Z"),
+          endsAt: null,
+        });
+        yield* insertSession({
+          id: "s1",
+          userId: "u1",
+          state: "playing",
+          workerId: "w1",
+          slot: 0,
+          stateSince: at(t0, -3600),
+          clientSeenAt: t0,
+          lastInputAt: t0,
+          agentSeenAt: t0,
+        });
+        // 60 минут billable — тариф без начисления уже исчерпан.
+        yield* insertSegment({
+          sessionId: "s1",
+          userId: "u1",
+          startedAt: at(t0, -3600),
+          endedAt: t0,
+          billable: true,
+          open: false,
+        });
+        // Начисление посреди сессии — без перезапуска продолжает играть.
+        yield* db.insert(minuteCredits).values({
+          id: "c1",
+          userId: "u1",
+          minutes: 30,
+          createdAt: at(t0, -60),
+        });
+
+        yield* runner.tick(t0);
+        like(yield* sessionRow("s1"), { state: "playing", failReason: null });
       }),
     ));
 });

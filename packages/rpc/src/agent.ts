@@ -259,6 +259,9 @@ export type SteamLoginSeed = typeof SteamLoginSeed.Type;
  * `StartSession.ownGame` — есть, значит `appId` — своя игра (запускать пакет
  * `<slug>/<version>` из `ownGame`, а не Steam); нет поля — обычный Steam-запуск,
  * как раньше.
+ * `StartSession.maxBitrateMbps` — потолок битрейта Selkies (Мбит/с) из
+ * действующего тарифа пользователя (спека 2026-11-10 §2, Task 8); нет поля
+ * (старый оркестратор) — агент берёт потолок 40 Мбит/с.
  * `OpenTunnel` — открыть канал тоннеля стрима (спека 2026-11-09 §4):
  * WebSocket `/agent/tunnel/<tunnelId>` к оркестратору со своим токеном в
  * `Authorization: Bearer`, по нему — одно соединение с Selkies сессии
@@ -278,6 +281,7 @@ export const AgentCommand = Schema.Union([
     ),
     steamLoginResetAt: Schema.optional(Schema.String),
     ownGame: Schema.optional(OwnGamePackage),
+    maxBitrateMbps: Schema.optional(Schema.Int),
   }),
   Schema.TaggedStruct("StopSession", { sessionId: Schema.String }),
   Schema.TaggedStruct("InstallGame", {
