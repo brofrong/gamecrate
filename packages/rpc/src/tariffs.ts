@@ -6,7 +6,11 @@
 // Task 6 добавит сюда же `AccountRpcs` для игрока (свой тариф, покупка
 // пакета), поэтому файл сразу разложен на «форма записи» / «форма ввода».
 import { Schema } from "effect";
-import { maxBitrateMbps, minBitrateMbps, StreamResolution } from "./streamSettings";
+import {
+  maxBitrateMbps,
+  minBitrateMbps,
+  StreamResolution,
+} from "./streamSettings";
 
 /** Непустая строка длиной 1..60 после обрезки пробелов по краям (имя тарифа/пакета). */
 const Name60 = Schema.Trim.check(Schema.isBetweenLength(1, 60));
