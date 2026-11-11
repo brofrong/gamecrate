@@ -159,11 +159,12 @@ export const waitingInQueue: SQL = and(
 /**
  * Порядок размещения (спека 2026-11-10 §5): приоритет тарифа по убыванию,
  * затем время входа в очередь (`created_at`; после установки сессия его
- * сохраняет и не уходит в хвост).
+ * сохраняет и не уходит в хвост), при равенстве — `id` (как `rankQueue`).
  */
 export const queueOrder = [
   desc(sessions.queuePriority),
   asc(sessions.createdAt),
+  asc(sessions.id),
 ] as const;
 
 /**

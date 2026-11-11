@@ -284,6 +284,23 @@ describe("scheduler: tariff queue priority (спека 2026-11-10 §5)", () => {
         like(yield* sessionRow("s-old"), { state: "queued", workerId: null });
       }),
     ));
+
+  it("equal priority and created_at: tie broken by id, like rankQueue", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-b", "u-a");
+        yield* connectWorker(fake, "w1", 1);
+        // «b» вставлена первой — без сортировки по id Postgres отдал бы её.
+        yield* insertSession({ id: "s-b", userId: "u-b", createdAt: at(t0, -10) });
+        yield* insertSession({ id: "s-a", userId: "u-a", createdAt: at(t0, -10) });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s-a"), { state: "starting", workerId: "w1" });
+        like(yield* sessionRow("s-b"), { state: "queued", workerId: null });
+      }),
+    ));
 });
 
 describe("scheduler: game library of each server (спека 2026-11-09 §5)", () => {
