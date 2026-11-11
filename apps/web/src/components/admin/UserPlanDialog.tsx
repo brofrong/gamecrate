@@ -64,6 +64,19 @@ function CurrentPlan({ plan }: { plan: AdminUserPlan }) {
   );
 }
 
+/**
+ * `"YYYY-MM-DD"` (значение `<input type="date">`) → ISO конец этого дня по местному
+ * времени: дата окончания выдачи включительна (ревью Task 9, round 1, Finding 2) —
+ * «до 31 декабря» значит «до конца 31 декабря», а не до полуночи UTC этой даты
+ * (`new Date(endsAt)` на api парсит без времени как UTC-полночь — выбор «сегодня»
+ * тогда всегда попадал в прошлое и падал в `"badEnd"`). `formatShortDate` в `CurrentPlan`
+ * всё равно покажет выбранный день, время суток там не отображается.
+ */
+function endOfLocalDay(dateStr: string): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return new Date(year!, month! - 1, day!, 23, 59, 59, 999).toISOString();
+}
+
 /** «Выдать тариф»: выбор из открытых (не скрытых) тарифов и необязательная дата окончания. */
 function GrantTariffForm({
   tariffs,
@@ -93,7 +106,7 @@ function GrantTariffForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (tariffId === "") return;
-        onSubmit(tariffId, endsAt.trim() === "" ? null : endsAt);
+        onSubmit(tariffId, endsAt.trim() === "" ? null : endOfLocalDay(endsAt));
       }}
     >
       <div className="flex flex-col gap-1.5">

@@ -245,6 +245,28 @@ describe("TariffsTab", () => {
     toastError.mockRestore();
     createResult = "ok";
   });
+
+  it("rejects a fractional hours value instead of silently sending non-whole minutes", async () => {
+    createResult = "ok";
+    renderTariffsTab();
+
+    fireEvent.click(screen.getByRole("button", { name: "Добавить тариф" }));
+    fireEvent.change(screen.getByLabelText("Название тарифа"), {
+      target: { value: "Дробный" },
+    });
+    fireEvent.change(screen.getByLabelText("Часы в месяц"), {
+      target: { value: "2.5" },
+    });
+    const callsBefore = createCalls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Часы в месяц: целое число больше нуля (пусто — безлимит)",
+    );
+    // Ничего не отправили — проверка значения не доходит до вызова RPC.
+    expect(createCalls.length).toBe(callsBefore);
+  });
 });
 
 const plan = (patch: Partial<AdminUserPlan> = {}): AdminUserPlan => ({
@@ -280,7 +302,7 @@ describe("UserPlanDialog", () => {
     expect(await screen.findByText(/12 ч 30 м/)).toBeTruthy();
   });
 
-  it("grants a tariff with an end date", async () => {
+  it("grants a tariff with an end date, sent as the end of that day (inclusive, local time)", async () => {
     grantResult = "ok";
     renderUserPlanDialog();
 
@@ -292,9 +314,15 @@ describe("UserPlanDialog", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Выдать" }));
 
+    // Дата окончания включительна (ревью Task 9, round 1, Finding 2): «до 31 декабря»
+    // должно уйти как конец этого дня по местному времени, а не как
+    // `new Date("2026-12-31")`, которая на api разбирается как полночь UTC — тот же
+    // расчёт, что и в `endOfLocalDay` компонента, без зависимости от часового пояса
+    // прогона теста.
+    const expectedEndsAt = new Date(2026, 11, 31, 23, 59, 59, 999).toISOString();
     await waitFor(() => {
       expect(grantCalls.at(-1)).toEqual({
-        payload: { userId: "u1", tariffId: "t-pro", endsAt: "2026-12-31" },
+        payload: { userId: "u1", tariffId: "t-pro", endsAt: expectedEndsAt },
         reactivityKeys: ["admin"],
       });
     });

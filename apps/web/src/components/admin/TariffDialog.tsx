@@ -72,6 +72,20 @@ const toValues = (tariff: Tariff | null): Values =>
             : String(tariff.maxSessionMinutes),
       };
 
+/**
+ * Часы в месяц — только целое число (бриф: «админ вводит часы (целые)»), пустое поле —
+ * безлимит. Без этой проверки `2.5` часа тихо сохранялось бы как `150` минут (ревью
+ * Task 9, round 1, Finding 1): это проходит серверный `IntBetween(60, 100_000)` на
+ * минутах, но нарушает целые часы, которые ожидает форма.
+ */
+const hoursError = (hours: string): string | null => {
+  if (hours.trim() === "") return null;
+  const value = Number(hours);
+  return Number.isInteger(value) && value > 0
+    ? null
+    : "Часы в месяц: целое число больше нуля (пусто — безлимит)";
+};
+
 const toInput = (values: Values): TariffInput => ({
   name: values.name.trim(),
   priceRub: values.priceRub.trim() === "" ? null : Number(values.priceRub),
@@ -139,6 +153,11 @@ export function TariffDialog({
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
+    const hoursValidationError = hoursError(values.hours);
+    if (hoursValidationError !== null) {
+      setError(hoursValidationError);
+      return;
+    }
     const input = toInput(values);
     setSaving(true);
     const exit =
@@ -220,6 +239,7 @@ export function TariffDialog({
                 type="number"
                 inputMode="numeric"
                 min={0}
+                step={1}
                 placeholder="пусто — безлимит"
                 value={values.hours}
                 onChange={setField(setValues, "hours")}
