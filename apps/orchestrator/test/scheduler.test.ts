@@ -252,6 +252,37 @@ describe("scheduler: classes and hardware requirements", () => {
     ));
 });
 
+describe("scheduler: tariff queue priority (спека 2026-11-10 §5)", () => {
+  it("higher queue_priority is placed first even if newer", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-vip");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          createdAt: at(t0, -60),
+        });
+        yield* insertSession({
+          id: "s-vip",
+          userId: "u-vip",
+          createdAt: at(t0, -5),
+          queuePriority: 10,
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s-vip"), {
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+        });
+        like(yield* sessionRow("s-old"), { state: "queued", workerId: null });
+      }),
+    ));
+});
+
 describe("scheduler: game library of each server (спека 2026-11-09 §5)", () => {
   it("places on the worker that has the game", () =>
     run((fake) =>

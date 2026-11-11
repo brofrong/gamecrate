@@ -20,6 +20,7 @@ import {
 import {
   and,
   asc,
+  desc,
   eq,
   inArray,
   isNotNull,
@@ -97,6 +98,12 @@ const ownGameRow: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.a
 const ownGamePublished: SQL = sql`exists (select 1 from ${ownGames} where ${ownGames.appId} = ${sessions.appId} and ${ownGames.published})`;
 
 /**
+ * Игру сессии можно запустить: Steam-игра или открытая игрокам своя игра
+ * (`placeOne` просматривает только такие сессии).
+ */
+export const placeableGame: SQL = sql`(${ownGamePublished} or not ${ownGameRow})`;
+
+/**
  * Игры, у которых есть активная (`queued`/`running`) задача установки (на
  * любом сервере), которую админ попросил отменить (`cancel_requested_at`).
  * `startInstall` (`InstallRepo.lockActiveJob`) мог бы присоединить новую
@@ -126,27 +133,46 @@ const installCancellingApps = () =>
  * профиль пользователя в каждый момент держит ровно один процесс (спека §6),
  * иначе выгрузка установщика сделала бы выгрузку сессии устаревшей.
  */
-const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${installJobs.userId} = ${sessions.userId} and ${installJobs.state} in ('queued', 'running'))`;
+export const ownerFree: SQL = sql`not exists (select 1 from ${installJobs} where ${installJobs.userId} = ${sessions.userId} and ${installJobs.state} in ('queued', 'running'))`;
 
 /**
  * Пользователь сессии заблокирован админом (`user.blocked_at`). api проверяет
  * это при создании сессии, но админ мог заблокировать уже после — такую сессию
  * не размещаем и не ставим в установку, а валим (`blockedFailure`).
  */
-const userBlocked: SQL<boolean> = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${sessions.userId} and ${user.blockedAt} is not null)`;
+export const userBlocked: SQL<boolean> = sql<boolean>`exists (select 1 from ${user} where ${user.id} = ${sessions.userId} and ${user.blockedAt} is not null)`;
 
 /** Не больше стольких `queued`-сессий за один проход `placeOne`. */
 export const PLACE_SCAN = 50;
 
 /**
- * До `limit` самых старых `queued`-сессий (`created_at asc`) без запроса
- * остановки, чей пользователь не владеет активной задачей установки
- * (`ownerFree`), под условием `where`; `userBlocked` — заблокирован ли
- * пользователь каждой из них. `FOR UPDATE SKIP LOCKED` — параллельный
+ * Сессия ждёт в очереди: `queued` без запроса остановки, пользователь не
+ * владеет активной задачей установки (`ownerFree`).
+ */
+export const waitingInQueue: SQL = and(
+  eq(sessions.state, "queued"),
+  isNull(sessions.stopRequestedAt),
+  ownerFree,
+)!;
+
+/**
+ * Порядок размещения (спека 2026-11-10 §5): приоритет тарифа по убыванию,
+ * затем время входа в очередь (`created_at`; после установки сессия его
+ * сохраняет и не уходит в хвост).
+ */
+export const queueOrder = [
+  desc(sessions.queuePriority),
+  asc(sessions.createdAt),
+] as const;
+
+/**
+ * До `limit` первых по `queueOrder` сессий очереди (`waitingInQueue`) под
+ * условием `where`; `userBlocked` — заблокирован ли пользователь каждой из
+ * них. `FOR UPDATE SKIP LOCKED` — параллельный
  * `placeOne` их не увидит и возьмёт следующие; блокировка держится до конца
  * транзакции, так что непомещённые сессии освобождаются сразу после коммита.
  */
-const lockOldestQueued = (where: SQL, limit = 1) =>
+const lockQueueHead = (where: SQL, limit = 1) =>
   Effect.gen(function* () {
     const db = yield* Db;
     return yield* db
@@ -159,15 +185,8 @@ const lockOldestQueued = (where: SQL, limit = 1) =>
         userBlocked,
       })
       .from(sessions)
-      .where(
-        and(
-          eq(sessions.state, "queued"),
-          isNull(sessions.stopRequestedAt),
-          ownerFree,
-          where,
-        ),
-      )
-      .orderBy(asc(sessions.createdAt))
+      .where(and(waitingInQueue, where))
+      .orderBy(...queueOrder)
       .limit(limit)
       .for("update", { skipLocked: true });
   });
@@ -250,9 +269,9 @@ export const startInstall = (
   });
 
 /**
- * Одна транзакция на один проход: до `PLACE_SCAN` самых старых
- * `queued`-сессий Steam-игр и открытых игрокам своих игр (`ownGamePublished`,
- * спека 2026-11-03 «Свои игры»; `created_at asc`, `FOR UPDATE SKIP LOCKED`)
+ * Одна транзакция на один проход: до `PLACE_SCAN` первых по `queueOrder`
+ * `queued`-сессий Steam-игр и открытых игрокам своих игр (`placeableGame`,
+ * спека 2026-11-03 «Свои игры»; `FOR UPDATE SKIP LOCKED`)
  * просматриваются по очереди — очередь без затора (спека §2.5): сессия,
  * которой сейчас некуда, не держит следующие. Для каждой:
  *
@@ -296,10 +315,7 @@ const placeOne = (now: Date, candidates: ReadonlyArray<string>) =>
     const hub = yield* AgentHub;
     return yield* db.transaction(() =>
       Effect.gen(function* () {
-        const queued = yield* lockOldestQueued(
-          sql`(${ownGamePublished} or not ${ownGameRow})`,
-          PLACE_SCAN,
-        );
+        const queued = yield* lockQueueHead(placeableGame, PLACE_SCAN);
         if (queued.length === 0) return undefined;
         const cancelling = yield* installCancellingApps();
 

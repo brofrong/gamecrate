@@ -3,13 +3,14 @@
 // внутренний relay стрима для api на RELAY_PORT.
 import { Db, runMigrations } from "@cg/db";
 import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
-import { Effect, Layer } from "effect";
+import { Cause, DateTime, Effect, Layer, Schedule } from "effect";
 import { HttpRouter } from "effect/http";
 import { AgentHub } from "./AgentHub";
 import { OrchestratorConfig } from "./config";
 import { GameDeleter } from "./GameDeleter";
 import { HttpApp } from "./http";
 import { InstallDispatcher } from "./InstallDispatcher";
+import { QUEUE_REFRESH_INTERVAL, refreshQueue } from "./QueueSnapshot";
 import { RelayServer } from "./relay";
 import * as Scheduler from "./Scheduler";
 import { SessionRunner } from "./SessionRunner";
@@ -25,12 +26,30 @@ const BunServer = Layer.unwrap(
 );
 
 /**
- * Фоновая работа: подписки на хаб, таймеры сессий, планировщик, установки и
- * удаление игр, входы в Steam по QR.
+ * Снимок места в очереди (каждые 5 с, спека 2026-11-10 §5); сбои прохода
+ * логируются, как у планировщика.
+ */
+const QueueSnapshot = Layer.effectDiscard(
+  DateTime.nowAsDate.pipe(
+    Effect.flatMap(refreshQueue),
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.logError("Queue snapshot refresh failed", Cause.pretty(cause)),
+    ),
+    Effect.repeat(Schedule.spaced(QUEUE_REFRESH_INTERVAL)),
+    Effect.forkScoped,
+  ),
+);
+
+/**
+ * Фоновая работа: подписки на хаб, таймеры сессий, планировщик и снимок
+ * очереди, установки и удаление игр, входы в Steam по QR.
  */
 const Sessions = Layer.mergeAll(
   SessionRunner.layer,
   Scheduler.layer,
+  QueueSnapshot,
   InstallDispatcher.layer,
   GameDeleter.layer,
   SteamLoginRunner.layer.pipe(Layer.provide(SteamQr.live)),

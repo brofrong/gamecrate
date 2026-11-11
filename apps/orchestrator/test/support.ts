@@ -349,6 +349,7 @@ export const insertSession = (values: {
   lastInputAt?: Date;
   agentSeenAt?: Date;
   stopRequestedAt?: Date;
+  queuePriority?: number;
 }) =>
   Effect.gen(function* () {
     const db = yield* Db;

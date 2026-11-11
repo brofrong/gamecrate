@@ -24,6 +24,11 @@ import type { SessionSettings } from "@cg/rpc";
 export const CLIENT_TIMEOUT_MS = 15_000;
 /** Нет heartbeat агента дольше 90 с → сервер с игрой потерян. */
 export const AGENT_TIMEOUT_MS = 90_000;
+/**
+ * Нет heartbeat браузера дольше 2 мин у `queued`-сессии → игрок вышел из
+ * очереди (спека 2026-11-10 §5; heartbeat очереди идёт с любой страницы сайта).
+ */
+export const QUEUE_CLIENT_TIMEOUT_MS = 120_000;
 
 export type Snapshot = {
   state: SessionState;
@@ -72,6 +77,7 @@ export const failReasons = {
   clientGone: "Игрок отключился",
   installFailed: "Не удалось установить игру",
   installTimeout: "Установка не закончилась за отведённое время",
+  queueLeft: "Вы вышли из очереди",
 } as const;
 
 const MINUTE_MS = 60_000;
@@ -138,7 +144,8 @@ const onTick = (
 
   switch (s.state) {
     // Установка не оплачивается и браузера не ждёт: ушедший игрок не отменяет
-    // загрузку, сессия после неё вернётся в queued и там закончится по K.
+    // загрузку, сессия после неё вернётся в queued и там закончится по
+    // QUEUE_CLIENT_TIMEOUT_MS.
     case "installing":
       return inState > settings.installTimeoutMinutes * MINUTE_MS
         ? decision("failed", [], null, failReasons.installTimeout)
@@ -157,13 +164,16 @@ const onTick = (
           failReasons.startTimeout,
         );
       }
+      // Очередь ждёт браузер QUEUE_CLIENT_TIMEOUT_MS, запуск — K.
       const clientRef = s.clientSeenAt ?? s.stateSince;
-      if (ms(clientRef, now) > K) {
-        return s.state === "queued"
-          ? decision("ended", [], null, failReasons.clientGone)
-          : decision("stopping", [], "StopContainer", failReasons.clientGone);
+      if (s.state === "queued") {
+        return ms(clientRef, now) > QUEUE_CLIENT_TIMEOUT_MS
+          ? decision("ended", [], null, failReasons.queueLeft)
+          : keep;
       }
-      return keep;
+      return ms(clientRef, now) > K
+        ? decision("stopping", [], "StopContainer", failReasons.clientGone)
+        : keep;
     }
 
     case "playing":

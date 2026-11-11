@@ -8,6 +8,7 @@ import {
 import {
   AGENT_TIMEOUT_MS,
   CLIENT_TIMEOUT_MS,
+  QUEUE_CLIENT_TIMEOUT_MS,
   type Decision,
   type LifecycleEvent,
   type Snapshot,
@@ -407,19 +408,59 @@ describe("decide", () => {
     });
   });
 
-  it("queued session of a vanished client ends after K", () => {
+  it('queued without client for 2 min → ended with "Вы вышли из очереди"', () => {
+    expect(QUEUE_CLIENT_TIMEOUT_MS).toBe(120_000);
     const s = snap("queued", {
       clientSeenAt: T0,
       agentSeenAt: null,
       lastInputAt: null,
     });
-    expect(decide(s, tick, min(5), settings)).toEqual(unchanged("queued"));
-    expect(decide(s, tick, sec(5 * 60 + 1), settings)).toEqual({
+    expect(decide(s, tick, min(2), settings)).toEqual(unchanged("queued"));
+    expect(decide(s, tick, sec(2 * 60 + 1), settings)).toEqual({
       state: "ended",
       ops: [],
       command: null,
-      failReason: "Игрок отключился",
+      failReason: "Вы вышли из очереди",
     });
+    // heartbeat'а ещё не было — считаем от stateSince
+    expect(
+      decide({ ...s, clientSeenAt: null }, tick, sec(2 * 60 + 1), settings)
+        .failReason,
+    ).toBe("Вы вышли из очереди");
+    // порог не зависит от disconnectGraceMinutes
+    expect(
+      decide(s, tick, sec(2 * 60 + 1), {
+        ...settings,
+        disconnectGraceMinutes: 30,
+      }).state,
+    ).toBe("ended");
+  });
+
+  it("queued client seen 90 s ago → keep", () => {
+    const s = snap("queued", {
+      clientSeenAt: min(10),
+      agentSeenAt: null,
+      lastInputAt: null,
+    });
+    expect(decide(s, tick, sec(10 * 60 + 90), settings)).toEqual(
+      unchanged("queued"),
+    );
+  });
+
+  it("starting still uses disconnectGraceMinutes", () => {
+    // клиента нет 3 мин (> порога очереди, < K = 5) — starting ждёт
+    const now = min(3);
+    const s = snap("starting", { clientSeenAt: T0, agentSeenAt: now });
+    expect(decide(s, tick, now, settings)).toEqual(unchanged("starting"));
+    const later = sec(5 * 60 + 1);
+    expect(decide({ ...s, agentSeenAt: later }, tick, later, settings)).toEqual(
+      {
+        state: "stopping",
+        ops: [],
+        command: "StopContainer",
+        failReason: "Игрок отключился",
+      },
+    );
   });
 
   it("queued: scheduled → starting; user stop ends without a container", () => {
