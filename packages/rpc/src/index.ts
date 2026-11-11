@@ -19,6 +19,7 @@ export * from "./settings";
 export * from "./steamLogin";
 export * from "./streamBody";
 export * from "./streamSettings";
+export * from "./tariffs";
 export * from "./time";
 export * from "./tunnel";
 export * from "./wsBridge";

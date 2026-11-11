@@ -19,6 +19,17 @@ import {
 import { adminGameRequirements, setRequirements } from "./requirements";
 import { loadSessionSettings, saveSessionSettings } from "./settings";
 import { adminStop, listSessions } from "./sessions";
+import {
+  createHourPack,
+  createTariff,
+  listHourPacks,
+  listTariffs,
+  setArchivedHourPack,
+  setArchivedTariff,
+  setDefaultTariff,
+  updateHourPack,
+  updateTariff,
+} from "./tariffs";
 import { listUsers, resetSteamLogin, setBlocked, setRole } from "./users";
 import { createWorker, issueCode, revoke } from "./workerEnroll";
 import { listWorkers, setClass, setDraining, setRegion } from "./workers";
@@ -98,4 +109,21 @@ export const AdminRpcHandlers = AdminRpcs.toLayer({
   "admin.workers.revoke": ({ workerId }) => revoke(workerId),
   "admin.workers.setRegion": ({ workerId, regionId }) =>
     setRegion(workerId, regionId),
+  "admin.tariffs.list": () => listTariffs(),
+  "admin.tariffs.create": ({ input }) => createTariff(input),
+  "admin.tariffs.update": ({ id, input }) => updateTariff(id, input),
+  "admin.tariffs.setDefault": ({ id }) => setDefaultTariff(id),
+  "admin.tariffs.setArchived": ({ id, archived }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* setArchivedTariff(id, archived, now);
+    }),
+  "admin.hourPacks.list": () => listHourPacks(),
+  "admin.hourPacks.create": ({ input }) => createHourPack(input),
+  "admin.hourPacks.update": ({ id, input }) => updateHourPack(id, input),
+  "admin.hourPacks.setArchived": ({ id, archived }) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.nowAsDate;
+      return yield* setArchivedHourPack(id, archived, now);
+    }),
 });

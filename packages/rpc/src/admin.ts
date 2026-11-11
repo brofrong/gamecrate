@@ -10,6 +10,7 @@ import {
 import { AdminMiddleware, AuthMiddleware, Role } from "./auth";
 import { InstallStage, SessionStage, SessionState } from "./session";
 import { SessionSettings } from "./settings";
+import { HourPack, HourPackInput, Tariff, TariffInput } from "./tariffs";
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -380,6 +381,24 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // учётные данные сервера — `true`, нет — `false`.
 // `admin.workers.setRegion` — привязать сервер к региону (`null` — без
 // региона) — нет сервера или региона — `false`.
+//
+// `admin.tariffs.list` — тарифы, `queue_priority asc, name asc`.
+// `admin.tariffs.create` — новый тариф (не по умолчанию, не архивный);
+// занятое имя — `"duplicate"`.
+// `admin.tariffs.update` — изменить поля тарифа (кроме `isDefault`/
+// `archived`, их не трогает) — `"ok" | "duplicate" | "notFound"`.
+// `admin.tariffs.setDefault` — сделать тариф тарифом по умолчанию: снять
+// флаг со старого и поставить на новый одной транзакцией; архивный тариф —
+// `"archived"` (тарифом по умолчанию не становится), нет тарифа —
+// `"notFound"`.
+// `admin.tariffs.setArchived` — заархивировать/разархивировать
+// (`archived_at = now`/`null`); тариф по умолчанию нельзя архивировать —
+// `"isDefault"`, нет тарифа — `"notFound"`.
+// `admin.hourPacks.list` — пакеты часов (докупка сверх тарифа).
+// `admin.hourPacks.create` — новый пакет; имя не уникально — всегда `"ok"`.
+// `admin.hourPacks.update` — изменить поля — `"ok" | "notFound"`.
+// `admin.hourPacks.setArchived` — заархивировать/разархивировать —
+// `"ok" | "notFound"`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -519,6 +538,36 @@ export const AdminRpcs = RpcGroup.make(
       regionId: Schema.NullOr(Schema.String),
     }),
     success: Schema.Boolean,
+  }),
+  Rpc.make("admin.tariffs.list", { success: Schema.Array(Tariff) }),
+  Rpc.make("admin.tariffs.create", {
+    payload: Schema.Struct({ input: TariffInput }),
+    success: Schema.Literals(["ok", "duplicate"]),
+  }),
+  Rpc.make("admin.tariffs.update", {
+    payload: Schema.Struct({ id: Schema.String, input: TariffInput }),
+    success: Schema.Literals(["ok", "duplicate", "notFound"]),
+  }),
+  Rpc.make("admin.tariffs.setDefault", {
+    payload: Schema.Struct({ id: Schema.String }),
+    success: Schema.Literals(["ok", "archived", "notFound"]),
+  }),
+  Rpc.make("admin.tariffs.setArchived", {
+    payload: Schema.Struct({ id: Schema.String, archived: Schema.Boolean }),
+    success: Schema.Literals(["ok", "isDefault", "notFound"]),
+  }),
+  Rpc.make("admin.hourPacks.list", { success: Schema.Array(HourPack) }),
+  Rpc.make("admin.hourPacks.create", {
+    payload: Schema.Struct({ input: HourPackInput }),
+    success: Schema.Literal("ok"),
+  }),
+  Rpc.make("admin.hourPacks.update", {
+    payload: Schema.Struct({ id: Schema.String, input: HourPackInput }),
+    success: Schema.Literals(["ok", "notFound"]),
+  }),
+  Rpc.make("admin.hourPacks.setArchived", {
+    payload: Schema.Struct({ id: Schema.String, archived: Schema.Boolean }),
+    success: Schema.Literals(["ok", "notFound"]),
   }),
 )
   .middleware(AdminMiddleware)
