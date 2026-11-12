@@ -1,0 +1,161 @@
+// Хук очереди в оболочке сайта (спека §5, бриф задачи 11), монтируется один раз в
+// `__root.tsx` для вошедшего пользователя. Пока есть активная сессия
+// (`activeSessionAtom`), раз в 5 с шлёт `session.heartbeat` с `queueOnly: true` — так
+// игрок остаётся в очереди, даже листая другие страницы сайта (сервер учитывает этот
+// heartbeat только пока сессия `queued`; в остальных состояниях — принятый no-op).
+// Подписан на `sessionWatchAtom`: при переходе `queued → starting/playing/idle_warning`
+// (сервер и правда запустил сессию), если вкладка скрыта, играет короткий сигнал
+// (WebAudio, без файлов) и показывает уведомление браузера, если разрешение уже дано
+// (кнопка на экране загрузки, `LoadingScreen.tsx` — спека просит спросить при входе
+// в очередь, но Safari и другие браузеры разрешают запрос только по нажатию,
+// отступление записано в задаче 11). Переход в `ended`/`failed` (вышел из очереди по
+// 2-минутному таймауту клиента, отмена из другой вкладки) и в `installing`
+// (устанавливается и вернётся в очередь) — не «сервер готов», сигнала и уведомления
+// нет (ревью задачи 11, раунд 1: ложное уведомление при `queued → ended`). Ничего не
+// рендерит — чистый побочный эффект.
+//
+// Сессия стала терминальной (вышел из игры, простой, лимит, таймаут очереди, «Закончить
+// игру») — heartbeat прекращается и `activeSessionAtom` перезапрашивается: атом подписан
+// здесь всё время, без перезапроса `/app` и страницы игры показывали бы мёртвую сессию
+// (`ActiveSessionPanel`, `cardAction` → `blocked` у остальных игр).
+//
+// Только для вошедшего (`meAtom` успешен): гостю `session.active` не нужен.
+import {
+  isTerminalSessionState,
+  type SessionState,
+  type SessionView,
+} from "@cg/rpc";
+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Option } from "effect";
+import { AsyncResult } from "effect/reactivity";
+import { useEffect, useRef } from "react";
+import {
+  activeSessionAtom,
+  heartbeatAtom,
+  meAtom,
+  sessionWatchAtom,
+} from "@/rpc";
+
+/** Период heartbeat очереди (сервер учитывает его только пока сессия `queued`). */
+const QUEUE_HEARTBEAT_MS = 5_000;
+
+/** Текст уведомления браузера (спека §5, глобальные константы текстов задачи). */
+export const queueReadyNotification = "Сервер готов — возвращайтесь в игру";
+
+/** Короткий сигнал без файлов (спека §5): осциллятор ~0,3 с через WebAudio. */
+export function playQueueChime(): void {
+  try {
+    const ctor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!ctor) return;
+    const ctx = new ctor();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.frequency.value = 880;
+    gain.gain.value = 0.2;
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.3);
+    oscillator.onended = () => void ctx.close();
+  } catch {
+    // Окружение без WebAudio (или он бросил) — тихо пропускаем, игру не ломаем.
+  }
+}
+
+/** Уведомление браузера «Сервер готов…», только если разрешение уже дано. */
+export function notifyQueueReady(): void {
+  try {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    new Notification(queueReadyNotification);
+  } catch {
+    // `Notification` может бросать в некоторых окружениях — не мешаем игре.
+  }
+}
+
+/**
+ * Состояния, в которые переход из `queued` и правда значит «сервер нашёлся,
+ * возвращайтесь» — только вперёд к запуску. `ended`/`failed` (вышел из очереди по
+ * таймауту клиента, отмена из другой вкладки) и `installing` (сессия вернётся в
+ * очередь после установки, спека §5) сюда не входят.
+ */
+const queueClearedStates: ReadonlySet<SessionState> = new Set([
+  "starting",
+  "playing",
+  "idle_warning",
+]);
+
+/**
+ * `true` ровно на тот рендер, когда предыдущее состояние было `queued`, а текущее —
+ * из `queueClearedStates` (однократный «импульс» на переходе; на следующем рендере с
+ * тем же состоянием снова `false` — не залипает; переход в терминальное состояние
+ * или в `installing` — всегда `false`).
+ */
+export function useLeftQueue(state: SessionState | undefined): boolean {
+  const prev = useRef<SessionState | undefined>(undefined);
+  const left =
+    prev.current === "queued" &&
+    state !== undefined &&
+    queueClearedStates.has(state);
+  useEffect(() => {
+    prev.current = state;
+  });
+  return left;
+}
+
+/** Heartbeat `queueOnly` каждые 5 с, пока `enabled` (сессия не терминальная). */
+function useQueueHeartbeat(sessionId: string, enabled: boolean): void {
+  const send = useAtomSet(heartbeatAtom, { mode: "promiseExit" });
+  useEffect(() => {
+    if (!enabled) return;
+    const beat = () =>
+      void send({ payload: { sessionId, inputAgeMs: 0, queueOnly: true } });
+    beat();
+    const timer = setInterval(beat, QUEUE_HEARTBEAT_MS);
+    return () => clearInterval(timer);
+  }, [sessionId, send, enabled]);
+}
+
+function QueueWatcherActive({ sessionId }: { sessionId: string }) {
+  const watch = useAtomValue(sessionWatchAtom(sessionId));
+  const view = Option.getOrUndefined(AsyncResult.value(watch));
+  const terminal = view !== undefined && isTerminalSessionState(view.state);
+  useQueueHeartbeat(sessionId, !terminal);
+  const left = useLeftQueue(view?.state);
+
+  // Сессия закончилась — `session.active` перезапрашивается (вернёт null или уже новую).
+  const refreshActive = useAtomRefresh(activeSessionAtom);
+  useEffect(() => {
+    if (terminal) refreshActive();
+  }, [terminal, refreshActive]);
+
+  useEffect(() => {
+    if (!left) return;
+    if (!document.hidden) return;
+    playQueueChime();
+    notifyQueueReady();
+  }, [left]);
+
+  return null;
+}
+
+/** Монтируется один раз в `__root.tsx`; гостю и без активной сессии ничего не делает. */
+export function QueueWatcher() {
+  const me = useAtomValue(meAtom);
+  if (!AsyncResult.isSuccess(me)) return null;
+  return <QueueWatcherSignedIn />;
+}
+
+function QueueWatcherSignedIn() {
+  const active = useAtomValue(activeSessionAtom);
+  const session: SessionView | null = AsyncResult.isSuccess(active)
+    ? active.value
+    : null;
+  if (session === null) return null;
+  // `key` — чтобы смена сессии (новая игра сразу после прошлой) не унесла с собой
+  // «предыдущее состояние» старой сессии в `useLeftQueue`.
+  return <QueueWatcherActive key={session.id} sessionId={session.id} />;
+}

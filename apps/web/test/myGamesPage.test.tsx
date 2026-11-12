@@ -488,6 +488,8 @@ describe("активная сессия в узком окне и на план�
     playedSeconds: 10,
     previousPlayedAt: null,
     createdAt: "2026-11-05T09:45:15.000Z",
+    queue: null,
+    limit: null,
   };
   const library = ready([
     entry({ appId: 1, name: "Balatro", cloud: { _tag: "Ready" } }),

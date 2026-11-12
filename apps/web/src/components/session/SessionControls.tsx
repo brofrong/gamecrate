@@ -43,7 +43,12 @@ import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { cn } from "@/lib/utils";
 import { EscPrompt, type EscPromptState } from "./EscPrompt";
-import { type PlayedClock, SessionMenu } from "./SessionMenu";
+import {
+  noQualityLimits,
+  type PlayedClock,
+  type QualityLimits,
+  SessionMenu,
+} from "./SessionMenu";
 
 /**
  * Полупрозрачная квадратная кнопка поверх игры: ярче при наведении и фокусе. Клики берут
@@ -93,6 +98,7 @@ export function SessionControls({
   rootRef,
   frameRef,
   returning = false,
+  limits = noQualityLimits,
 }: {
   control: StreamSettingsControl;
   gameName: string;
@@ -105,6 +111,8 @@ export function SessionControls({
   frameRef: RefObject<HTMLIFrameElement | null>;
   /** Игрок вернулся после перерыва (`afterBreak`) — обучение ещё раз, даже пройденное. */
   returning?: boolean;
+  /** Потолок качества тарифа (меню «Качество»); план не загрузился — `noQualityLimits`. */
+  limits?: QualityLimits;
 }) {
   const { settings, loaded, update } = control;
   const fullscreen = useIsFullscreen();
@@ -310,6 +318,7 @@ export function SessionControls({
                   played={played}
                   settings={settings}
                   onChange={update}
+                  limits={limits}
                   onEndGame={() => {
                     toConfirm.current = true;
                     setMenuOpen(false);

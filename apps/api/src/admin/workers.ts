@@ -48,6 +48,7 @@ const workerColumns = {
   sessionEndedAt: sessions.endedAt,
   sessionLastInputAt: sessions.lastInputAt,
   sessionFailReason: sessions.failReason,
+  sessionQueuePosition: sessions.queuePosition,
 };
 
 /** Все воркеры по `id`, с активными сессиями на каждом. */
@@ -118,6 +119,7 @@ export const listWorkers = (
             endedAt: row.sessionEndedAt,
             lastInputAt: row.sessionLastInputAt,
             failReason: row.sessionFailReason,
+            queuePosition: row.sessionQueuePosition,
           }),
         );
       }

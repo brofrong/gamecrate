@@ -8,7 +8,10 @@ import {
   installJobs,
   ownGames,
   sessions,
+  tariffGrants,
+  tariffs,
   user,
+  userStreamSettings,
 } from "@cg/db";
 import type { WorkerHardware } from "@cg/rpc";
 import { eq } from "drizzle-orm";
@@ -248,6 +251,54 @@ describe("scheduler: classes and hardware requirements", () => {
           workerId: null,
           slot: null,
         });
+      }),
+    ));
+});
+
+describe("scheduler: tariff queue priority (спека 2026-11-10 §5)", () => {
+  it("higher queue_priority is placed first even if newer", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-old", "u-vip");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({
+          id: "s-old",
+          userId: "u-old",
+          createdAt: at(t0, -60),
+        });
+        yield* insertSession({
+          id: "s-vip",
+          userId: "u-vip",
+          createdAt: at(t0, -5),
+          queuePriority: 10,
+        });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s-vip"), {
+          state: "starting",
+          workerId: "w1",
+          slot: 0,
+        });
+        like(yield* sessionRow("s-old"), { state: "queued", workerId: null });
+      }),
+    ));
+
+  it("equal priority and created_at: tie broken by id, like rankQueue", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        yield* seedUsers("u-b", "u-a");
+        yield* connectWorker(fake, "w1", 1);
+        // «b» вставлена первой — без сортировки по id Postgres отдал бы её.
+        yield* insertSession({ id: "s-b", userId: "u-b", createdAt: at(t0, -10) });
+        yield* insertSession({ id: "s-a", userId: "u-a", createdAt: at(t0, -10) });
+
+        yield* Scheduler.tick(t0);
+
+        like(yield* sessionRow("s-a"), { state: "starting", workerId: "w1" });
+        like(yield* sessionRow("s-b"), { state: "queued", workerId: null });
       }),
     ));
 });
@@ -607,6 +658,79 @@ describe("scheduler: own games (спека 2026-11-03 «Свои игры»)", (
         expect(fake.sent).toEqual([]);
         const db = yield* Db;
         expect(yield* db.select().from(installJobs)).toEqual([]);
+      }),
+    ));
+});
+
+/** Выдаёт тариф `tariffId` пользователю `userId` бессрочно, с `startsAt` в прошлом. */
+const grantTariff = (userId: string, tariffId: string) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.insert(tariffGrants).values({
+      id: `g-${userId}-${tariffId}`,
+      userId,
+      tariffId,
+      startsAt: new Date("2026-01-01T00:00:00Z"),
+      endsAt: null,
+    });
+  });
+
+describe("scheduler: tariff limits (Task 8)", () => {
+  it("StartSession carries maxBitrateMbps of the tariff", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seedUsers("u1");
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-20mbps", name: "20 Мбит/с", maxBitrateMbps: 20 });
+        yield* grantTariff("u1", "t-20mbps");
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+
+        const sent = fake.sent[0]!;
+        expect(sent.command._tag).toBe("StartSession");
+        expect(
+          sent.command._tag === "StartSession"
+            ? sent.command.maxBitrateMbps
+            : undefined,
+        ).toBe(20);
+      }),
+    ));
+
+  it("display is capped by tariff", () =>
+    run((fake) =>
+      Effect.gen(function* () {
+        const t0 = new Date();
+        const db = yield* Db;
+        yield* seedUsers("u1");
+        yield* db
+          .insert(tariffs)
+          .values({ id: "t-720p", name: "720p", maxResolution: "720p" });
+        yield* grantTariff("u1", "t-720p");
+        // Ручной режим, 1440p — тариф позволяет только 720p.
+        yield* db.insert(userStreamSettings).values({
+          userId: "u1",
+          value: {
+            quality: "manual",
+            bitrateMbps: 10,
+            resolution: "1440p",
+            debug: "off",
+            menuTourSeen: true,
+          },
+        });
+        yield* connectWorker(fake, "w1", 1);
+        yield* insertSession({ id: "s1", userId: "u1", createdAt: at(t0, -5) });
+
+        yield* Scheduler.tick(t0);
+
+        const sent = fake.sent[0]!;
+        expect(
+          sent.command._tag === "StartSession" ? sent.command.display : null,
+        ).toEqual({ width: 1280, height: 720 });
       }),
     ));
 });

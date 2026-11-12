@@ -4,7 +4,13 @@
 //
 // - `{type:"settings", settings:{video_bitrate:<кбит/с>}}` — единственное, что реально нужно
 //   отправлять (сервер получает `vb,<n>`); потолок битрейта зависит от режима («авто» —
-//   фиксированный потолок контроля заторов `autoBitrateMbps`, ручной — выбранный ползунком).
+//   фиксированный потолок контроля заторов `autoBitrateMbps`, ручной — выбранный ползунком),
+//   а затем — от тарифа игрока (`capMbps`, `tariff.maxBitrateMbps`, дизайн §6/§8): итоговый
+//   потолок — меньшее из двух. Это браузерная граница; вторая, серверная, — переменная
+//   `SELKIES_VIDEO_BITRATE` (диапазон до `maxBitrateMbps` тарифа), которую агент ставит
+//   контейнеру при старте (`apps/agent/src/SessionSupervisor.ts`). Действуют обе: серверная
+//   держит потолок, даже если браузер пришлёт больше, браузерная — подрезает выбор игрока в
+//   меню до тарифа.
 // - `{type:"statsOpen", open}` включает/выключает сбор статистики самим Selkies — без него
 //   `window.stream_stats.latest` остаётся `null`.
 // - Selkies сам шлёт себе в своё же окно `{type:"serverSettings", payload}` после применения
@@ -30,14 +36,21 @@ export type SelkiesMessage =
 const ceilingMbps = (settings: StreamSettings): number =>
   settings.quality === "auto" ? autoBitrateMbps : settings.bitrateMbps;
 
-/** Сообщения, применяющие текущие настройки: ровно один `settings` с потолком в кбит/с. */
+/**
+ * Сообщения, применяющие текущие настройки: ровно один `settings` с потолком в кбит/с —
+ * меньшее из потолка режима (`ceilingMbps`) и потолка тарифа `capMbps` (дизайн §6/§8;
+ * плана ещё нет — вызывающий подставляет потолок без ограничения, см. `Player`).
+ */
 export function settingsMessages(
   settings: StreamSettings,
+  capMbps: number,
 ): ReadonlyArray<SelkiesMessage> {
   return [
     {
       type: "settings",
-      settings: { video_bitrate: ceilingMbps(settings) * 1_000 },
+      settings: {
+        video_bitrate: Math.min(ceilingMbps(settings), capMbps) * 1_000,
+      },
     },
   ];
 }
@@ -46,8 +59,11 @@ export function settingsMessages(
 export function changedSettingsMessages(
   prev: StreamSettings,
   next: StreamSettings,
+  capMbps: number,
 ): ReadonlyArray<SelkiesMessage> {
-  return ceilingMbps(prev) === ceilingMbps(next) ? [] : settingsMessages(next);
+  const prevCeiling = Math.min(ceilingMbps(prev), capMbps);
+  const nextCeiling = Math.min(ceilingMbps(next), capMbps);
+  return prevCeiling === nextCeiling ? [] : settingsMessages(next, capMbps);
 }
 
 /** Числовая статистика стрима за последнюю секунду; не число/не строка в источнике — `null`. */
@@ -118,12 +134,14 @@ export type SelkiesBridge = {
 };
 
 /**
- * Мост к Selkies: `getSettings` читается заново при каждом применении (`attach`,
- * переответ `serverSettings`), поэтому сюда достаточно передать геттер над текущим состоянием
- * меню — отдельного хранения настроек внутри моста не нужно.
+ * Мост к Selkies: `getSettings`/`getCapMbps` читаются заново при каждом применении (`attach`,
+ * переответ `serverSettings`), поэтому сюда достаточно передать геттеры над текущим состоянием
+ * меню и потолком тарифа — отдельного хранения внутри моста не нужно. Без своего тарифа
+ * (план ещё не загрузился) вызывающий передаёт геттер без ограничения (`Player`).
  */
 export function createSelkiesBridge(
   getSettings: () => StreamSettings,
+  getCapMbps: () => number,
 ): SelkiesBridge {
   let frame: HTMLIFrameElement | null = null;
   let statsOpen = false;
@@ -143,7 +161,8 @@ export function createSelkiesBridge(
   };
 
   const applyAll = (): void => {
-    for (const message of settingsMessages(getSettings())) send(message);
+    for (const message of settingsMessages(getSettings(), getCapMbps()))
+      send(message);
     if (statsOpen) send({ type: "statsOpen", open: true });
   };
 
@@ -175,7 +194,8 @@ export function createSelkiesBridge(
       applyAll();
     },
     update(prev, next) {
-      for (const message of changedSettingsMessages(prev, next)) send(message);
+      for (const message of changedSettingsMessages(prev, next, getCapMbps()))
+        send(message);
     },
     setStatsOpen(open) {
       statsOpen = open;

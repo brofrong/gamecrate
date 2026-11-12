@@ -2,13 +2,20 @@
 // шлёт `attach`/переответ Selkies `serverSettings`, и что читает `readSelkiesStats` из глобалов
 // окна стрима.
 import { describe, expect, it, mock } from "bun:test";
-import { defaultStreamSettings, type StreamSettings } from "@cg/rpc";
+import {
+  defaultStreamSettings,
+  maxBitrateMbps,
+  type StreamSettings,
+} from "@cg/rpc";
 import {
   changedSettingsMessages,
   createSelkiesBridge,
   readSelkiesStats,
   settingsMessages,
 } from "../src/lib/selkiesBridge";
+
+/** Потолок без ограничения тарифа — верхняя граница ручного режима (как у «Базового»). */
+const noCap = maxBitrateMbps;
 
 /** Фейковое окно iframe: `postMessage`-мок и слушатели, которые можно дёргать руками. */
 function fakeContentWindow() {
@@ -42,15 +49,39 @@ const PAGE_ORIGIN = "http://localhost:3000";
 
 describe("settingsMessages", () => {
   it("auto sends the 20 Mbit ceiling", () => {
-    expect(settingsMessages(defaultStreamSettings)).toEqual([
+    expect(settingsMessages(defaultStreamSettings, noCap)).toEqual([
       { type: "settings", settings: { video_bitrate: 20_000 } },
     ]);
     expect(
-      settingsMessages({
-        ...defaultStreamSettings,
-        quality: "manual",
-        bitrateMbps: 8,
-      }),
+      settingsMessages(
+        {
+          ...defaultStreamSettings,
+          quality: "manual",
+          bitrateMbps: 8,
+        },
+        noCap,
+      ),
+    ).toEqual([{ type: "settings", settings: { video_bitrate: 8_000 } }]);
+  });
+
+  it("caps auto and manual bitrate by capMbps (тариф, дизайн §6/§8)", () => {
+    // Авто: потолок режима (20) выше потолка тарифа (12) — идёт тариф.
+    expect(settingsMessages(defaultStreamSettings, 12)).toEqual([
+      { type: "settings", settings: { video_bitrate: 12_000 } },
+    ]);
+    // Ручной: выбранный битрейт (30) выше потолка тарифа (12) — идёт тариф.
+    expect(
+      settingsMessages(
+        { ...defaultStreamSettings, quality: "manual", bitrateMbps: 30 },
+        12,
+      ),
+    ).toEqual([{ type: "settings", settings: { video_bitrate: 12_000 } }]);
+    // Потолок тарифа выше выбранного — он не повышает битрейт сверх выбранного.
+    expect(
+      settingsMessages(
+        { ...defaultStreamSettings, quality: "manual", bitrateMbps: 8 },
+        30,
+      ),
     ).toEqual([{ type: "settings", settings: { video_bitrate: 8_000 } }]);
   });
 
@@ -67,7 +98,7 @@ describe("settingsMessages", () => {
           quality,
           resolution,
         };
-        for (const message of settingsMessages(settings)) {
+        for (const message of settingsMessages(settings, noCap)) {
           expect(message.type).toBe("settings");
         }
       }
@@ -75,7 +106,7 @@ describe("settingsMessages", () => {
 
     const prev: StreamSettings = { ...defaultStreamSettings, resolution: "720p" };
     const next: StreamSettings = { ...defaultStreamSettings, resolution: "1440p" };
-    expect(changedSettingsMessages(prev, next)).toEqual([]);
+    expect(changedSettingsMessages(prev, next, noCap)).toEqual([]);
   });
 });
 
@@ -87,42 +118,59 @@ describe("changedSettingsMessages", () => {
       bitrateMbps: 10,
     };
     const nextBitrate: StreamSettings = { ...prevBitrate, bitrateMbps: 15 };
-    expect(changedSettingsMessages(prevBitrate, nextBitrate)).toEqual([
+    expect(changedSettingsMessages(prevBitrate, nextBitrate, noCap)).toEqual([
       { type: "settings", settings: { video_bitrate: 15_000 } },
     ]);
 
     expect(
-      changedSettingsMessages(defaultStreamSettings, {
-        ...defaultStreamSettings,
-        debug: "short",
-      }),
+      changedSettingsMessages(
+        defaultStreamSettings,
+        {
+          ...defaultStreamSettings,
+          debug: "short",
+        },
+        noCap,
+      ),
     ).toEqual([]);
 
     expect(
-      changedSettingsMessages(defaultStreamSettings, {
-        ...defaultStreamSettings,
-        menuTourSeen: true,
-      }),
+      changedSettingsMessages(
+        defaultStreamSettings,
+        {
+          ...defaultStreamSettings,
+          menuTourSeen: true,
+        },
+        noCap,
+      ),
     ).toEqual([]);
 
     // defaultStreamSettings.bitrateMbps === autoBitrateMbps (20) — потолок не меняется.
     expect(
-      changedSettingsMessages(defaultStreamSettings, {
-        ...defaultStreamSettings,
-        quality: "manual",
-      }),
+      changedSettingsMessages(
+        defaultStreamSettings,
+        {
+          ...defaultStreamSettings,
+          quality: "manual",
+        },
+        noCap,
+      ),
+    ).toEqual([]);
+
+    // Та же пара настроек, но ниже потолка тарифа — он один давит оба, разницы нет.
+    expect(
+      changedSettingsMessages(prevBitrate, nextBitrate, 5),
     ).toEqual([]);
   });
 });
 
 describe("createSelkiesBridge", () => {
   it("attach posts all settings with the page origin", () => {
-    const bridge = createSelkiesBridge(() => defaultStreamSettings);
+    const bridge = createSelkiesBridge(() => defaultStreamSettings, () => noCap);
     const { frame, contentWindow } = fakeFrame();
 
     bridge.attach(frame);
 
-    for (const message of settingsMessages(defaultStreamSettings)) {
+    for (const message of settingsMessages(defaultStreamSettings, noCap)) {
       expect(contentWindow.postMessage).toHaveBeenCalledWith(
         message,
         PAGE_ORIGIN,
@@ -130,9 +178,21 @@ describe("createSelkiesBridge", () => {
     }
   });
 
+  it("attach applies the tariff bitrate cap", () => {
+    const bridge = createSelkiesBridge(() => defaultStreamSettings, () => 9);
+    const { frame, contentWindow } = fakeFrame();
+
+    bridge.attach(frame);
+
+    expect(contentWindow.postMessage).toHaveBeenCalledWith(
+      { type: "settings", settings: { video_bitrate: 9_000 } },
+      PAGE_ORIGIN,
+    );
+  });
+
   it("serverSettings re-applies the current settings", () => {
     let settings: StreamSettings = defaultStreamSettings;
-    const bridge = createSelkiesBridge(() => settings);
+    const bridge = createSelkiesBridge(() => settings, () => noCap);
     const { frame, contentWindow } = fakeFrame();
 
     bridge.attach(frame);
@@ -157,7 +217,7 @@ describe("createSelkiesBridge", () => {
   });
 
   it("reattach drops the old listener", () => {
-    const bridge = createSelkiesBridge(() => defaultStreamSettings);
+    const bridge = createSelkiesBridge(() => defaultStreamSettings, () => noCap);
     const first = fakeFrame();
     const second = fakeFrame();
 
@@ -183,7 +243,7 @@ describe("createSelkiesBridge", () => {
   });
 
   it("stats open survives a reload", () => {
-    const bridge = createSelkiesBridge(() => defaultStreamSettings);
+    const bridge = createSelkiesBridge(() => defaultStreamSettings, () => noCap);
     const first = fakeFrame();
     bridge.attach(first.frame);
 

@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "limit_grace_until" timestamp with time zone;

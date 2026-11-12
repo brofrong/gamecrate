@@ -1,9 +1,11 @@
 // Сессии в БД для оркестратора: настройки, снимок под блокировкой строки и
 // применение решений автомата (`decide`) одной транзакцией.
 import {
+  currentTariff,
   Db,
   playSegments,
   profiles,
+  sessionLimit,
   sessionStageMarks,
   sessionStages,
   type SessionStage,
@@ -15,17 +17,18 @@ import {
 } from "@cg/db";
 import {
   allowedDisplaySize,
+  capResolution,
   decodeStreamSettings,
-  defaultDisplaySize,
   defaultSessionSettings,
   type DisplaySize,
-  displaySizeOf,
   isSessionStreamUrl,
   type ProfileCommit,
   type ProfileRef,
   SessionSettings,
   sessionSettingsKey,
   sessionStreamUrl,
+  streamDisplaySizes,
+  type StreamResolution,
   withSessionSettingsDefaults,
 } from "@cg/rpc";
 import {
@@ -163,8 +166,13 @@ const lockSession = (sessionId: string) =>
     return row;
   });
 
-/** Снимок для `decide`: строка сессии + её открытый отрезок. */
-const snapshotOf = (row: SessionRow) =>
+/**
+ * Снимок для `decide`: строка сессии + её открытый отрезок + остаток по
+ * тарифу (`limit`, Task 8) — только в `playing`/`idle_warning` (вне них
+ * лимит часов/длины сессии не проверяется, `null`); читается на каждый тик,
+ * чтобы начисление минут или смена тарифа применялись без перезапуска сессии.
+ */
+const snapshotOf = (row: SessionRow, now: Date) =>
   Effect.gen(function* () {
     const db = yield* Db;
     const [segment] = yield* db
@@ -177,6 +185,10 @@ const snapshotOf = (row: SessionRow) =>
       .where(
         and(eq(playSegments.sessionId, row.id), eq(playSegments.open, true)),
       );
+    const limit =
+      row.state === "playing" || row.state === "idle_warning"
+        ? yield* sessionLimit(row.userId, row.id, now)
+        : null;
     return {
       state: row.state,
       stateSince: row.stateSince,
@@ -184,13 +196,16 @@ const snapshotOf = (row: SessionRow) =>
       lastInputAt: row.lastInputAt,
       agentSeenAt: row.agentSeenAt,
       openSegment: segment ?? null,
+      limit,
+      limitGraceUntil: row.limitGraceUntil,
     } satisfies Snapshot;
   });
 
 /**
  * Применяет решение автомата одной транзакцией: `state` и `stateSince = now`
  * (только если состояние сменилось), `endedAt = now` при переходе в
- * `ended`/`failed`, `failReason` (если задан), затем `SegmentOp` строго по
+ * `ended`/`failed`, `failReason` (если задан), `limitGraceUntil` (если задан —
+ * `Date` или `null`), затем `SegmentOp` строго по
  * порядку над единственным открытым отрезком сессии. Нет сессии — ничего.
  */
 export const apply = (sessionId: string, decision: Decision, now: Date) =>
@@ -201,7 +216,11 @@ export const apply = (sessionId: string, decision: Decision, now: Date) =>
         const row = yield* lockSession(sessionId);
         if (row === undefined) return;
         const changed = decision.state !== row.state;
-        if (changed || decision.failReason !== null) {
+        if (
+          changed ||
+          decision.failReason !== null ||
+          decision.limitGraceUntil !== undefined
+        ) {
           yield* db
             .update(sessions)
             .set({
@@ -212,6 +231,9 @@ export const apply = (sessionId: string, decision: Decision, now: Date) =>
               }),
               ...(decision.failReason !== null && {
                 failReason: decision.failReason,
+              }),
+              ...(decision.limitGraceUntil !== undefined && {
+                limitGraceUntil: decision.limitGraceUntil,
               }),
             })
             .where(eq(sessions.id, sessionId));
@@ -289,7 +311,7 @@ export const transition = (
       Effect.gen(function* () {
         const row = yield* lockSession(sessionId);
         if (row === undefined) return undefined;
-        const snapshot = yield* snapshotOf(row);
+        const snapshot = yield* snapshotOf(row, now);
         const picked = pick(row, snapshot);
         if (picked === null) return { row, decision: null } as Transition;
         const decision =
@@ -304,7 +326,8 @@ export const transition = (
         if (
           decision.state !== row.state ||
           decision.ops.length > 0 ||
-          decision.failReason !== null
+          decision.failReason !== null ||
+          decision.limitGraceUntil !== undefined
         )
           yield* apply(sessionId, decision, now);
         return { row, decision } as Transition;
@@ -475,14 +498,16 @@ export const activeOnWorker = (workerId: string) =>
   });
 
 /**
- * Размер экрана стрима для `StartSession` («меню сессии», спека §4.1):
- * настройки стрима пользователя → `decodeStreamSettings` (битая запись —
- * умолчания по полю) → `displaySizeOf` → `allowedDisplaySize` (белый список,
- * проверяется и здесь, и в агенте). Записи нет — размер по умолчанию
- * (1920×1080) без обращения к `decodeStreamSettings`.
+ * Размер экрана стрима для `StartSession` («меню сессии», спека §4.1, потолок
+ * тарифа §2 — Task 8): настройки стрима пользователя → `decodeStreamSettings`
+ * (битая запись или записи нет — умолчания, «Авто» → 1080p) → разрешение
+ * («Авто» — 1080p, ручной режим — `settings.resolution`) → `capResolution`
+ * потолком действующего тарифа (`currentTariff`, `maxResolution`) →
+ * `allowedDisplaySize` (белый список, проверяется и здесь, и в агенте).
  */
 export const displaySizeFor = (
   userId: string,
+  now: Date,
 ): Effect.Effect<DisplaySize, never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
@@ -491,8 +516,16 @@ export const displaySizeFor = (
       .from(userStreamSettings)
       .where(eq(userStreamSettings.userId, userId))
       .pipe(Effect.orDie);
-    if (row === undefined) return defaultDisplaySize;
-    return allowedDisplaySize(displaySizeOf(decodeStreamSettings(row.value)));
+    const streamSettings =
+      row === undefined ? undefined : decodeStreamSettings(row.value);
+    const wanted: StreamResolution =
+      streamSettings === undefined || streamSettings.quality === "auto"
+        ? "1080p"
+        : streamSettings.resolution;
+    const tariff = yield* currentTariff(userId, now);
+    return allowedDisplaySize(
+      streamDisplaySizes[capResolution(wanted, tariff.maxResolution)],
+    );
   });
 
 /** Текущая версия профиля пользователя для агента; профиля ещё нет — `null`. */

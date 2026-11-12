@@ -188,6 +188,7 @@ const session = (
   endedAt: null,
   lastInputAt: null,
   failReason: null,
+  queuePosition: null,
   ...patch,
 });
 

@@ -24,6 +24,7 @@ import { FilterSheet } from "@/components/app/FilterSheet";
 import { GameSection, SECTION_PAGE } from "@/components/app/GameSection";
 import { GameTile } from "@/components/app/GameTile";
 import { InstallsPanel } from "@/components/app/InstallsPanel";
+import { PlanPanel } from "@/components/app/PlanPanel";
 import { SteamPanel } from "@/components/app/SteamPanel";
 import { SummaryStrip } from "@/components/app/SummaryStrip";
 import { TimePanel } from "@/components/app/TimePanel";
@@ -46,6 +47,7 @@ import {
 import { usePlaySession } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import {
+  accountPlanAtom,
   activeSessionAtom,
   errorTag,
   libraryAtom,
@@ -127,6 +129,7 @@ export function MyGamesPage() {
   const recent = useAtomValue(recentAtom);
   const reloadRecent = useAtomRefresh(recentAtom);
   const reloadActive = useAtomRefresh(activeSessionAtom);
+  const plan = useAtomValue(accountPlanAtom);
   const summary = useAtomValue(timeSummaryAtom(currentMonth(new Date())));
   const refresh = useAtomSet(refreshLibraryAtom, { mode: "promiseExit" });
   const { active, activeSession, play } = usePlaySession();
@@ -358,6 +361,9 @@ export function MyGamesPage() {
             onResume={play.onResume}
           />
         )}
+        <PlanPanel
+          plan={AsyncResult.isSuccess(plan) ? plan.value : undefined}
+        />
         <TimePanel
           summary={AsyncResult.isSuccess(summary) ? summary.value : undefined}
         />

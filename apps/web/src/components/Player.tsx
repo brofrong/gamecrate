@@ -14,7 +14,12 @@ import type { StreamSettingsControl } from "@/lib/useStreamSettings";
 import { revealDue, showsLoading } from "@/lib/loadingSteps";
 import { IdlePrompt } from "./IdlePrompt";
 import { LoadingScreen } from "./LoadingScreen";
-import { afterBreak, SessionControls } from "./session/SessionControls";
+import {
+  afterBreak,
+  SessionControls,
+} from "./session/SessionControls";
+import { LimitWarning } from "./session/LimitWarning";
+import { noQualityLimits, type QualityLimits } from "./session/SessionMenu";
 import { StatsOverlay } from "./session/StatsOverlay";
 import { SessionStatus } from "./SessionStatus";
 import { SteamQrLogin, type SteamQrLoginComponent } from "./SteamQrLogin";
@@ -181,6 +186,8 @@ export function Player({
   QrLogin = SteamQrLogin,
   streamSettings = defaultStreamSettingsControl,
   bridge: bridgeProp,
+  qualityLimits = noQualityLimits,
+  higherTariffExists = false,
 }: {
   view: SessionView;
   /** Пользователь подтвердил «Закончить игру» (или «Отменить» на экране загрузки). */
@@ -197,12 +204,25 @@ export function Player({
   streamSettings?: StreamSettingsControl;
   /** Мост к Selkies; по умолчанию свой на каждый `Player` над текущими `streamSettings`. */
   bridge?: SelkiesBridge;
+  /**
+   * Потолок качества тарифа (дизайн §6/§8): ограничивает битрейт, отправляемый в Selkies
+   * (`capMbps`), и запирает разрешения выше потолка в меню «Качество». План не загрузился —
+   * `noQualityLimits` (верх ручного диапазона, как у тарифа по умолчанию «Базовый»).
+   */
+  qualityLimits?: QualityLimits;
+  /** В тарифе игрока есть открытый тариф выше — подсказка на экране загрузки (`LoadingScreen`). */
+  higherTariffExists?: boolean;
 }) {
   const { settings } = streamSettings;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const capMbpsRef = useRef(qualityLimits.maxBitrateMbps);
+  capMbpsRef.current = qualityLimits.maxBitrateMbps;
   const [ownBridge] = useState(() =>
-    createSelkiesBridge(() => settingsRef.current),
+    createSelkiesBridge(
+      () => settingsRef.current,
+      () => capMbpsRef.current,
+    ),
   );
   const bridge = bridgeProp ?? ownBridge;
   const { frameGeneration, onLoad } = useSelkiesBridge(
@@ -269,6 +289,7 @@ export function Player({
           nowServerMs={nowServerMs}
           onCancel={onExit}
           onReveal={offered ? () => setRevealedId(view.id) : undefined}
+          higherTariffExists={higherTariffExists}
         />
       )}
       {!loading &&
@@ -276,6 +297,8 @@ export function Player({
         view.idleDeadline !== null && (
           <IdlePrompt deadline={view.idleDeadline} onHere={onHere} />
         )}
+      {/* Внутри `<main>`: полный экран запрашивается на нём — снаружи плашку не видно. */}
+      {!loading && view.limit !== null && <LimitWarning limit={view.limit} />}
       {!loading && debug !== "off" && (
         <StatsOverlay mode={debug} snapshot={stats} />
       )}
@@ -292,6 +315,7 @@ export function Player({
           rootRef={rootRef}
           frameRef={frameRef}
           returning={afterBreak(view.previousPlayedAt, Date.now())}
+          limits={qualityLimits}
         />
       )}
     </main>

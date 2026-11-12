@@ -95,6 +95,29 @@ export const SessionTiming = Schema.Struct({
 export type SessionTiming = typeof SessionTiming.Type;
 
 /**
+ * Место в очереди (спека §5): `position`/`total` — место и длина очереди по приоритету
+ * тарифа, `etaMinutes` — оценка ожидания в минутах (округление и «больше часа» — на
+ * сайте, здесь целое число минут или `null`, когда оценить не вышло).
+ */
+export const SessionQueue = Schema.Struct({
+  position: Schema.Int,
+  total: Schema.Int,
+  etaMinutes: Schema.NullOr(Schema.Int),
+});
+export type SessionQueue = typeof SessionQueue.Type;
+
+/**
+ * Срок остановки сессии по лимиту тарифа (спека §3): `deadline` — ISO 8601 момента,
+ * когда закончатся минуты или истечёт длина сессии; `reason` — какой из двух лимитов
+ * сработал первым (`sessionLimit`, `@cg/db`).
+ */
+export const SessionLimitView = Schema.Struct({
+  deadline: Schema.String,
+  reason: Schema.Literals(["minutes", "session_length"]),
+});
+export type SessionLimitView = typeof SessionLimitView.Type;
+
+/**
  * Сессия для экрана игры.
  * - `streamReady` — стрим поднят: его можно открыть по `/stream/<id>/`.
  * - `failReason` — причина `failed` (для показа пользователю).
@@ -111,6 +134,10 @@ export type SessionTiming = typeof SessionTiming.Type;
  *   сессиях (когда он играл до этой), null — других сессий с игрой не было. По нему сайт
  *   повторяет обучение полному экрану после перерыва.
  * - `createdAt` — ISO 8601.
+ * - `queue` — место в очереди (спека §5), только пока `state === "queued"` и планировщик
+ *   уже посчитал позицию (`sessions.queue_position`); иначе null.
+ * - `limit` — срок, когда сессию пора останавливать по лимиту тарифа (спека §3), только в
+ *   `playing`/`idle_warning`; иначе null (в т. ч. когда у тарифа лимитов вовсе нет).
  */
 export const SessionView = Schema.Struct({
   id: Schema.String,
@@ -130,6 +157,8 @@ export const SessionView = Schema.Struct({
   playedSeconds: NonNegativeInt,
   previousPlayedAt: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
+  queue: Schema.NullOr(SessionQueue),
+  limit: Schema.NullOr(SessionLimitView),
 });
 export type SessionView = typeof SessionView.Type;
 
@@ -154,6 +183,15 @@ export const noServerReason = "Сейчас нет подходящего сер
 /** Сейчас нет ни одного воркера, который годится этой игре для пользователя (спека §3). */
 export class NoServer extends Schema.TaggedError<NoServer>()("NoServer", {}) {}
 
+/** Текст подписи, когда у игрока не осталось минут по тарифу (спека §3). */
+export const noMinutesReason = "Часы закончились";
+
+/** У пользователя не осталось минут по тарифу (`loadBalance`, `@cg/db`) — играть нельзя. */
+export class NoMinutes extends Schema.TaggedError<NoMinutes>()(
+  "NoMinutes",
+  {},
+) {}
+
 /** Сессии нет или она чужая (существование чужих сессий не раскрывается). */
 export class SessionNotFound extends Schema.TaggedError<SessionNotFound>()(
   "SessionNotFound",
@@ -177,14 +215,19 @@ const SessionId = Schema.Struct({ sessionId: Schema.String });
 
 /**
  * - `session.start` — запустить игру; если у пользователя уже есть активная
- *   сессия — вернуть её (любой игры). Игры нет в библиотеке — `GameNotOwned`;
- *   пользователь заблокирован (`admin.users.setBlocked`) — `AccessDenied`.
+ *   сессия — вернуть её (любой игры, даже если минуты уже кончились). Игры нет
+ *   в библиотеке — `GameNotOwned`; пользователь заблокирован
+ *   (`admin.users.setBlocked`) — `AccessDenied`; минут по тарифу не осталось
+ *   (и нет активной сессии) — `NoMinutes`.
  * - `session.active` — активная сессия пользователя или null.
  * - `session.watch` — поток: сразу текущее представление, затем при каждом
  *   изменении (и не реже чем раз в 5 с, пока меняется `playedSeconds`);
  *   завершается после терминального состояния. Чужая/нет — `SessionNotFound`.
  * - `session.heartbeat` — клиент жив; `inputAgeMs` — мс с последнего ввода
- *   пользователя (часы клиента не нужны). Только своя активная сессия.
+ *   пользователя (часы клиента не нужны). `queueOnly` — клиент ещё только
+ *   ждёт в очереди (вкладка открыта, но не играет): обновляется только
+ *   `client_seen_at`, и только пока сессия и правда `queued` — `last_input_at`
+ *   не трогается. Только своя активная сессия.
  * - `session.stop` — попросить остановить; остановку выполняет оркестратор.
  *   Уже завершённая своя сессия — ничего не делает.
  */
@@ -192,7 +235,7 @@ export const SessionRpcs = RpcGroup.make(
   Rpc.make("session.start", {
     payload: Schema.Struct({ appId: Schema.Int }),
     success: SessionView,
-    error: Schema.Union([GameNotOwned, AccessDenied, NoServer]),
+    error: Schema.Union([GameNotOwned, AccessDenied, NoServer, NoMinutes]),
   }),
   Rpc.make("session.active", { success: Schema.NullOr(SessionView) }),
   Rpc.make("session.watch", {
@@ -205,6 +248,7 @@ export const SessionRpcs = RpcGroup.make(
     payload: Schema.Struct({
       sessionId: Schema.String,
       inputAgeMs: NonNegativeInt,
+      queueOnly: Schema.optional(Schema.Boolean),
     }),
     error: SessionNotFound,
   }),

@@ -7,8 +7,10 @@ import {
   type InstallStage as DbInstallStage,
   installJobs,
   installStageMarks,
+  loadBalance,
   ownGameOf,
   playSegments,
+  sessionLimit,
   type SessionStage as DbSessionStage,
   type SessionState as DbSessionState,
   sessionStageMarks,
@@ -19,6 +21,8 @@ import {
 import {
   isOwnAppId,
   isSessionId,
+  type SessionLimitView,
+  type SessionQueue,
   type SessionState,
   type SessionTiming,
   type SessionView,
@@ -83,6 +87,10 @@ const sessionWithGame = {
   installStage: installJobs.stage,
   installBytesDownloaded: installJobs.bytesDownloaded,
   installBytesTotal: installJobs.bytesTotal,
+  queuePosition: sessions.queuePosition,
+  queueTotal: sessions.queueTotal,
+  queueEtaMinutes: sessions.queueEtaMinutes,
+  limitGraceUntil: sessions.limitGraceUntil,
 };
 
 type SessionWithGame = {
@@ -100,6 +108,10 @@ type SessionWithGame = {
   readonly installStage: DbInstallStage | null;
   readonly installBytesDownloaded: number | null;
   readonly installBytesTotal: number | null;
+  readonly queuePosition: number | null;
+  readonly queueTotal: number | null;
+  readonly queueEtaMinutes: number | null;
+  readonly limitGraceUntil: Date | null;
 };
 
 /** Сессии с названием игры, отобранные по `where`. */
@@ -252,6 +264,45 @@ const timingOf = (row: SessionWithGame, now: Date) =>
     } satisfies SessionTiming;
   });
 
+/**
+ * `SessionView.queue`: только в `queued` с посчитанной позицией
+ * (`queuePosition` не null — планировщик очереди пишет все три поля одним
+ * отчётом, `queueTotal`/`queueEtaMinutes` защищаемся запасным значением
+ * просто на случай рассинхрона, а не ломаем вид отсутствующим числом).
+ */
+const queueOf = (row: SessionWithGame): SessionQueue | null => {
+  if (row.state !== "queued" || row.queuePosition === null) return null;
+  return {
+    position: row.queuePosition,
+    total: row.queueTotal ?? row.queuePosition,
+    etaMinutes: row.queueEtaMinutes,
+  };
+};
+
+/**
+ * `SessionView.limit`: только в `playing`/`idle_warning`, когда у тарифа
+ * действует лимит минут или длины сессии (`sessionLimit`, `@cg/db`);
+ * `deadline` — `now + max(0, remainingMs)` (остаток не бывает отрицательным
+ * на экране, даже если расчёт между тиками на миг ушёл в долг), но не раньше
+ * `limit_grace_until` — окна предупреждения, раньше которого оркестратор сессию
+ * по лимиту не останавливает.
+ */
+const limitOf = (row: SessionWithGame, now: Date) =>
+  Effect.gen(function* () {
+    if (row.state !== "playing" && row.state !== "idle_warning") return null;
+    const limit = yield* sessionLimit(row.userId, row.id, now);
+    if (limit === null) return null;
+    const byRemainder = now.getTime() + Math.max(0, limit.remainingMs);
+    const deadline =
+      row.limitGraceUntil === null
+        ? byRemainder
+        : Math.max(byRemainder, row.limitGraceUntil.getTime());
+    return {
+      deadline: new Date(deadline).toISOString(),
+      reason: limit.reason,
+    } satisfies SessionLimitView;
+  });
+
 /** `SessionView` из строки: игровое время и (в `idle_warning`) срок автозакрытия. */
 const toView = (row: SessionWithGame) =>
   Effect.gen(function* () {
@@ -284,6 +335,8 @@ const toView = (row: SessionWithGame) =>
       previousPlayedAt:
         (yield* previousPlayedAt(row.userId, row.id))?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
+      queue: queueOf(row),
+      limit: yield* limitOf(row, now),
     } satisfies SessionView;
   });
 
@@ -355,18 +408,24 @@ const ownsGame = (userId: string, appId: number) =>
  * Активная сессия пользователя: существующая (любой игры) или новая `queued`
  * для `appId`. Пользователь заблокирован (`user.blocked_at`) — `"Blocked"`
  * (проверяется до владения игрой — блокировка важнее отсутствия игры). Игры
- * нет в библиотеке — `"NotOwned"`. Игра недоступна — нет сейчас ни одного
- * подходящего воркера (`gameAvailable`, спека §3) — `"NoServer"`; уже
- * активная сессия (любой игры) возвращается как есть, без этой проверки —
- * игра могла стать недоступной уже после запуска. Гонка двух вызовов решается
- * частичным уникальным индексом: вставка без конфликта не проходит (`ON
- * CONFLICT DO NOTHING`), и проигравший читает сессию победителя.
+ * нет в библиотеке — `"NotOwned"`. Минут по тарифу не осталось
+ * (`loadBalance`, `@cg/db`, спека §3) — `"NoMinutes"` (проверяется только
+ * когда активной сессии ещё нет — уже идущую игру нехватка минут не
+ * прерывает, это сделает отдельный тик оркестратора). Игра недоступна — нет
+ * сейчас ни одного подходящего воркера (`gameAvailable`, спека §3) —
+ * `"NoServer"`; уже активная сессия (любой игры) возвращается как есть, без
+ * проверок минут/доступности — игра могла стать недоступной или минуты
+ * кончиться уже после запуска. Новая сессия сохраняет приоритет очереди
+ * (`queuePriority`) действующего тарифа на момент постановки — тариф может
+ * поменяться позже, сессия приоритет не пересчитывает. Гонка двух вызовов
+ * решается частичным уникальным индексом: вставка без конфликта не проходит
+ * (`ON CONFLICT DO NOTHING`), и проигравший читает сессию победителя.
  */
 export const startSession = (
   userId: string,
   appId: number,
 ): Effect.Effect<
-  SessionView | "NotOwned" | "Blocked" | "NoServer",
+  SessionView | "NotOwned" | "Blocked" | "NoServer" | "NoMinutes",
   never,
   Db
 > =>
@@ -379,11 +438,20 @@ export const startSession = (
       const existing = yield* activeRow(userId);
       if (existing !== undefined) return yield* toView(existing);
       const now = yield* DateTime.nowAsDate;
+      const balance = yield* loadBalance(userId, now);
+      if (balance.remainingMs !== null && balance.remainingMs <= 0)
+        return "NoMinutes" as const;
       if (!(yield* gameAvailable(userId, appId, now)))
         return "NoServer" as const;
       const inserted = yield* db
         .insert(sessions)
-        .values({ id: crypto.randomUUID(), userId, appId, state: "queued" })
+        .values({
+          id: crypto.randomUUID(),
+          userId,
+          appId,
+          state: "queued",
+          queuePriority: balance.tariff.queuePriority,
+        })
         .onConflictDoNothing()
         .returning({ id: sessions.id });
       if (inserted.length > 0) {
@@ -403,17 +471,40 @@ export const clampInputAge = (inputAgeMs: number, max: number) =>
 /**
  * Heartbeat клиента для своей активной сессии: `clientSeenAt = now`,
  * `lastInputAt = now - inputAgeMs` (не раньше уже записанного — вторая вкладка
- * без ввода не отодвигает время последнего ввода назад). Нет такой — false.
+ * без ввода не отодвигает время последнего ввода назад). `queueOnly` — клиент
+ * только ждёт в очереди (вкладка открыта, не играет): обновляется только
+ * `clientSeenAt`, и только пока сессия и правда `queued` — `lastInputAt` не
+ * трогается вовсе (нет ввода, который можно было бы записать). Сессия уже не
+ * `queued` (ушла дальше, пока клиент ещё слал `queueOnly`) — не ошибка, просто
+ * ничего не обновляется, сессия своя и активна. Нет такой активной сессии —
+ * false.
  */
 export const heartbeat = (
   userId: string,
   sessionId: string,
   inputAgeMs: number,
+  queueOnly: boolean,
 ): Effect.Effect<boolean, never, Db> =>
   Effect.gen(function* () {
     if (!isSessionId(sessionId)) return false;
     const db = yield* Db;
     const now = yield* DateTime.nowAsDate;
+    const own = and(
+      eq(sessions.id, sessionId),
+      eq(sessions.userId, userId),
+      isActive,
+    );
+    if (queueOnly) {
+      yield* db
+        .update(sessions)
+        .set({ clientSeenAt: now })
+        .where(and(own, eq(sessions.state, "queued")));
+      const [found] = yield* db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(own);
+      return found !== undefined;
+    }
     const lastInputAt = new Date(now.getTime() - inputAgeMs);
     const updated = yield* db
       .update(sessions)
@@ -421,9 +512,7 @@ export const heartbeat = (
         clientSeenAt: now,
         lastInputAt: sql`greatest(${sessions.lastInputAt}, ${lastInputAt.toISOString()}::timestamptz)`,
       })
-      .where(
-        and(eq(sessions.id, sessionId), eq(sessions.userId, userId), isActive),
-      )
+      .where(own)
       .returning({ id: sessions.id });
     return updated.length > 0;
   }).pipe(Effect.orDie);

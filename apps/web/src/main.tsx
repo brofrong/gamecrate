@@ -9,6 +9,7 @@ import { adminRoute } from "./routes/admin";
 import {
   appCrateRoute,
   appIndexRoute,
+  appPlansRoute,
   appRoute,
   appTimeRoute,
   appGameRoute,
@@ -32,6 +33,7 @@ const routeTree = rootRoute.addChildren([
     appTrendingRoute,
     appCrateRoute,
     appTimeRoute,
+    appPlansRoute,
     appGameRoute,
   ]),
 ]);

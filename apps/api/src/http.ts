@@ -9,6 +9,7 @@ import {
   HttpStaticServer,
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
+import { AccountRpcHandlers } from "./account/rpc";
 import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
@@ -47,6 +48,7 @@ const AuthRoute = HttpRouter.use((router) =>
 export const RpcHandlers = Layer.mergeAll(
   AuthRpcHandlers,
   PublicAuthRpcHandlers,
+  AccountRpcHandlers,
   AdminRpcHandlers,
   LibraryRpcHandlers,
   SessionRpcHandlers.pipe(Layer.provide(SessionEvents.layer)),

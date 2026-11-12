@@ -13,6 +13,7 @@ import { AppShell } from "@/components/app/AppShell";
 import { CratePage } from "@/components/app/CratePage";
 import { GamePage } from "@/components/app/game/GamePage";
 import { MyGamesPage } from "@/components/app/MyGamesPage";
+import { PlansPage } from "@/components/app/PlansPage";
 import { TimePage } from "@/components/app/TimePage";
 import { TrendingPage } from "@/components/app/TrendingPage";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
@@ -110,6 +111,13 @@ export const appTimeRoute = createRoute({
   validateSearch: (search: Record<string, unknown>): { month?: string } =>
     typeof search.month === "string" ? { month: search.month } : {},
   component: TimePage,
+});
+
+/** Страница тарифов-заглушка `/app/plans` (дизайн §8, спека §7): «Докупить» на `PlanPanel`. */
+export const appPlansRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/plans",
+  component: PlansPage,
 });
 
 /**

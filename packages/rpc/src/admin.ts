@@ -10,8 +10,13 @@ import {
 import { AdminMiddleware, AuthMiddleware, Role } from "./auth";
 import { InstallStage, SessionStage, SessionState } from "./session";
 import { SessionSettings } from "./settings";
+import { HourPack, HourPackInput, Tariff, TariffInput } from "./tariffs";
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+/** Целое в диапазоне, инклюзивно с обеих сторон (как в `tariffs.ts`). */
+const IntBetween = (minimum: number, maximum: number) =>
+  Schema.Int.check(Schema.isBetween({ minimum, maximum }));
 
 /** Воркер считается online, если снимок загрузки (`WorkerStats`) младше этого порога. */
 export const WORKER_ONLINE_MS = 20_000;
@@ -20,7 +25,9 @@ export const WORKER_ONLINE_MS = 20_000;
  * Сессия для админки (часть 1 — без биллинга/стримов, их есть `SessionView`).
  * `userName` — `user.name`; почту здесь не отдаём (спека, часть 1). `workerId`/
  * `slot` — `null`, пока не размещена на воркере. `endedAt`/`lastInputAt` —
- * `null`, пока не наступили.
+ * `null`, пока не наступили. `queuePosition` — место в очереди
+ * (`sessions.queue_position`, спека §5, Task 6+); `null` — сессия не в
+ * очереди или оценка ещё не считалась.
  */
 export const AdminSession = Schema.Struct({
   id: Schema.String,
@@ -36,6 +43,7 @@ export const AdminSession = Schema.Struct({
   endedAt: Schema.NullOr(Schema.String),
   lastInputAt: Schema.NullOr(Schema.String),
   failReason: Schema.NullOr(Schema.String),
+  queuePosition: Schema.NullOr(Schema.Int),
 });
 export type AdminSession = typeof AdminSession.Type;
 
@@ -190,7 +198,9 @@ export type AdminGames = typeof AdminGames.Type;
  * игровую сессию (`session.start` → `AccessDenied`). `steamLoginResetPending`
  * — админ попросил сбросить вход Steam в контейнере (`steam_login_reset_at`),
  * оркестратор это обработает (Task 3). `activeSession` — есть сессия под
- * `isActive`.
+ * `isActive`. `tariffName` — имя действующего тарифа (спека §2): последняя
+ * действующая выдача, иначе тариф по умолчанию, иначе «Базовый» — подзапрос
+ * SQL в `userColumns` (`apps/api/src/admin/users.ts`), без N+1.
  */
 export const AdminUser = Schema.Struct({
   id: Schema.String,
@@ -207,8 +217,48 @@ export const AdminUser = Schema.Struct({
   blockedAt: Schema.NullOr(Schema.String),
   steamLoginResetPending: Schema.Boolean,
   activeSession: Schema.Boolean,
+  tariffName: Schema.String,
 });
 export type AdminUser = typeof AdminUser.Type;
+
+/**
+ * Тариф, остаток минут и история выдач/начислений пользователя (карточка
+ * пользователя, спека §2, §3, §8). `tariff` — полная форма действующего
+ * тарифа (как `admin.tariffs.list`), в том числе когда это встроенный
+ * `FALLBACK_TARIFF` (нет строки по умолчанию) — тогда `isDefault: true,
+ * archived: false, priceRub: null`. `grantEndsAt`/`periodEndsAt`/
+ * `remainingMinutes` — как `Balance` (`@cg/db`, Task 3):
+ * `remainingMinutes = floor(remainingMs / 60000)`, `null` — безлимит,
+ * отрицательный остаток (долг между тиками) показывается нулём. `grants`/
+ * `credits` — вся история, новые сверху; `grantedBy` — имя админа,
+ * выдавшего/начислившего вручную, `null` — покупка/системная выдача или
+ * админ уже удалён.
+ */
+export const AdminUserPlan = Schema.Struct({
+  tariff: Tariff,
+  grantEndsAt: Schema.NullOr(Schema.String),
+  periodEndsAt: Schema.String,
+  remainingMinutes: Schema.NullOr(Schema.Int),
+  grants: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      tariffName: Schema.String,
+      startsAt: Schema.String,
+      endsAt: Schema.NullOr(Schema.String),
+      grantedBy: Schema.NullOr(Schema.String),
+    }),
+  ),
+  credits: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      minutes: Schema.Int,
+      comment: Schema.String,
+      createdAt: Schema.String,
+      grantedBy: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type AdminUserPlan = typeof AdminUserPlan.Type;
 
 /** Состояние задачи установки, см. `installJobStates` в `@cg/db`. */
 const InstallJobState = Schema.Literals([
@@ -351,6 +401,18 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // (не трогает `steam_id`/`account`, только отметку для оркестратора) — `true`,
 // нет пользователя — `false`.
 //
+// `admin.users.plan` — тариф, остаток минут и история выдач/начислений
+// пользователя (карточка пользователя, спека §2, §3); нет пользователя —
+// `null`. `admin.users.grantTariff` — выдать тариф: закрывает действующую
+// выдачу текущим моментом и открывает новую с этого же момента (спека §2,
+// «новая выдача заменяет предыдущую»); `endsAt <= now` — `"badEnd"`,
+// архивный тариф — `"archived"`, нет пользователя/тарифа — `"notFound"`.
+// `admin.users.revokeTariff` — «Снять тариф»: закрыть действующую выдачу
+// текущим моментом (пользователь падает на тариф по умолчанию); нет
+// действующей выдачи — `"none"`. `admin.users.addMinutes` — ручное
+// начисление минут с комментарием (докупка/компенсация, спека §3); нет
+// пользователя — `"notFound"`.
+//
 // `admin.classes.list` — классы воркеров по силе (`rank desc`, сильнейший
 // сверху). `admin.classes.create` — новый класс самым слабым (`rank = min −
 // 1`, пустой список классов → `1`); занятое имя — `"duplicate"`.
@@ -380,6 +442,24 @@ export type AdminGameRequirements = typeof AdminGameRequirements.Type;
 // учётные данные сервера — `true`, нет — `false`.
 // `admin.workers.setRegion` — привязать сервер к региону (`null` — без
 // региона) — нет сервера или региона — `false`.
+//
+// `admin.tariffs.list` — тарифы, `queue_priority asc, name asc`.
+// `admin.tariffs.create` — новый тариф (не по умолчанию, не архивный);
+// занятое имя — `"duplicate"`.
+// `admin.tariffs.update` — изменить поля тарифа (кроме `isDefault`/
+// `archived`, их не трогает) — `"ok" | "duplicate" | "notFound"`.
+// `admin.tariffs.setDefault` — сделать тариф тарифом по умолчанию: снять
+// флаг со старого и поставить на новый одной транзакцией; архивный тариф —
+// `"archived"` (тарифом по умолчанию не становится), нет тарифа —
+// `"notFound"`.
+// `admin.tariffs.setArchived` — заархивировать/разархивировать
+// (`archived_at = now`/`null`); тариф по умолчанию нельзя архивировать —
+// `"isDefault"`, нет тарифа — `"notFound"`.
+// `admin.hourPacks.list` — пакеты часов (докупка сверх тарифа).
+// `admin.hourPacks.create` — новый пакет; имя не уникально — всегда `"ok"`.
+// `admin.hourPacks.update` — изменить поля — `"ok" | "notFound"`.
+// `admin.hourPacks.setArchived` — заархивировать/разархивировать —
+// `"ok" | "notFound"`.
 export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.ping", { success: Schema.Literal("pong") }),
   Rpc.make("admin.settings.get", { success: SessionSettings }),
@@ -447,6 +527,30 @@ export const AdminRpcs = RpcGroup.make(
   Rpc.make("admin.users.resetSteamLogin", {
     payload: Schema.Struct({ userId: Schema.String }),
     success: Schema.Boolean,
+  }),
+  Rpc.make("admin.users.plan", {
+    payload: Schema.Struct({ userId: Schema.String }),
+    success: Schema.NullOr(AdminUserPlan),
+  }),
+  Rpc.make("admin.users.grantTariff", {
+    payload: Schema.Struct({
+      userId: Schema.String,
+      tariffId: Schema.String,
+      endsAt: Schema.NullOr(Schema.String),
+    }),
+    success: Schema.Literals(["ok", "notFound", "archived", "badEnd"]),
+  }),
+  Rpc.make("admin.users.revokeTariff", {
+    payload: Schema.Struct({ userId: Schema.String }),
+    success: Schema.Literals(["ok", "none"]),
+  }),
+  Rpc.make("admin.users.addMinutes", {
+    payload: Schema.Struct({
+      userId: Schema.String,
+      minutes: IntBetween(1, 100_000),
+      comment: Schema.String.check(Schema.isMaxLength(200)),
+    }),
+    success: Schema.Literals(["ok", "notFound"]),
   }),
   Rpc.make("admin.classes.list", { success: Schema.Array(AdminWorkerClass) }),
   Rpc.make("admin.classes.create", {
@@ -519,6 +623,36 @@ export const AdminRpcs = RpcGroup.make(
       regionId: Schema.NullOr(Schema.String),
     }),
     success: Schema.Boolean,
+  }),
+  Rpc.make("admin.tariffs.list", { success: Schema.Array(Tariff) }),
+  Rpc.make("admin.tariffs.create", {
+    payload: Schema.Struct({ input: TariffInput }),
+    success: Schema.Literals(["ok", "duplicate"]),
+  }),
+  Rpc.make("admin.tariffs.update", {
+    payload: Schema.Struct({ id: Schema.String, input: TariffInput }),
+    success: Schema.Literals(["ok", "duplicate", "notFound"]),
+  }),
+  Rpc.make("admin.tariffs.setDefault", {
+    payload: Schema.Struct({ id: Schema.String }),
+    success: Schema.Literals(["ok", "archived", "notFound"]),
+  }),
+  Rpc.make("admin.tariffs.setArchived", {
+    payload: Schema.Struct({ id: Schema.String, archived: Schema.Boolean }),
+    success: Schema.Literals(["ok", "isDefault", "notFound"]),
+  }),
+  Rpc.make("admin.hourPacks.list", { success: Schema.Array(HourPack) }),
+  Rpc.make("admin.hourPacks.create", {
+    payload: Schema.Struct({ input: HourPackInput }),
+    success: Schema.Literal("ok"),
+  }),
+  Rpc.make("admin.hourPacks.update", {
+    payload: Schema.Struct({ id: Schema.String, input: HourPackInput }),
+    success: Schema.Literals(["ok", "notFound"]),
+  }),
+  Rpc.make("admin.hourPacks.setArchived", {
+    payload: Schema.Struct({ id: Schema.String, archived: Schema.Boolean }),
+    success: Schema.Literals(["ok", "notFound"]),
   }),
 )
   .middleware(AdminMiddleware)

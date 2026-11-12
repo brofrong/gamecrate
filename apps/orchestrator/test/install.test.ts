@@ -309,6 +309,7 @@ describe("install jobs", () => {
               profile: { version: 3, objectKey: "profiles/u2/p3.cgp" },
               steamLogin: null,
               display: { width: 1920, height: 1080 },
+              maxBitrateMbps: 40,
             },
           },
         ]);
@@ -1637,7 +1638,7 @@ describe("admin cancel", () => {
         like(job, { appId: DOTA, state: "queued", workerId: "gs" });
 
         // The admin's `cancelInstall` UPDATE commits strictly between
-        // `lockOldestQueued`'s `appInstallCancelling` read (not yet seeing
+        // `lockQueueHead`'s `appInstallCancelling` read (not yet seeing
         // the cancel) and `InstallRepo.lockActiveJob`'s lock in the same
         // transaction (sees it). We can't force Postgres to interleave two
         // real transactions mid-statement from a single-threaded test, so we

@@ -3,7 +3,7 @@
 // новой («Играть») и переход к активной («Вернуться в игру»). Ошибки
 // `session.start` разбирает `reportStartError` — его же зовёт «Играть снова»
 // на экране сессии.
-import { accessDeniedReason, noServerReason } from "@cg/rpc";
+import { accessDeniedReason, noMinutesReason, noServerReason } from "@cg/rpc";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Exit } from "effect";
@@ -20,7 +20,10 @@ import {
 
 /**
  * Тост (или уход на вход) по `_tag` ошибки `session.start`:
- * `GameNotOwned`/`AccessDenied`/`NoServer`/`Unauthorized`/остальное.
+ * `GameNotOwned`/`AccessDenied`/`NoServer`/`NoMinutes`/`Unauthorized`/остальное.
+ * `NoMinutes` (спека §4, §7) — минут по тарифу не осталось: тост с «Докупить» на
+ * страницу тарифов-заглушку; без роутера под рукой (зовётся и из статических
+ * мест вроде `playAgain`) — прямой переход, как у `Unauthorized`.
  */
 export function reportStartError(tag: string | undefined): void {
   if (tag === "GameNotOwned") {
@@ -29,6 +32,13 @@ export function reportStartError(tag: string | undefined): void {
     toast.error(accessDeniedReason);
   } else if (tag === "NoServer") {
     toast.error(noServerReason);
+  } else if (tag === "NoMinutes") {
+    toast.error(noMinutesReason, {
+      action: {
+        label: "Докупить",
+        onClick: () => window.location.assign("/app/plans"),
+      },
+    });
   } else if (tag === "Unauthorized") {
     window.location.assign("/");
   } else {

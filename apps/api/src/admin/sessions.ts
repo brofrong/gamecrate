@@ -35,6 +35,7 @@ const adminSessionColumns = {
   endedAt: sessions.endedAt,
   lastInputAt: sessions.lastInputAt,
   failReason: sessions.failReason,
+  queuePosition: sessions.queuePosition,
 };
 
 /** Строка `adminSessionColumns`, когда она гарантированно есть (строка сессии нашлась). */
@@ -52,6 +53,7 @@ type AdminSessionRow = {
   readonly endedAt: Date | null;
   readonly lastInputAt: Date | null;
   readonly failReason: string | null;
+  readonly queuePosition: number | null;
 };
 
 /** `AdminSessionRow` → `AdminSession` (используется и для сессий на воркере в `workers.ts`). */
@@ -69,6 +71,7 @@ export const toAdminSession = (row: AdminSessionRow): AdminSession => ({
   endedAt: row.endedAt?.toISOString() ?? null,
   lastInputAt: row.lastInputAt?.toISOString() ?? null,
   failReason: row.failReason,
+  queuePosition: row.queuePosition,
 });
 
 /**

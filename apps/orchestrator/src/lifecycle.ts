@@ -15,15 +15,28 @@
  *   `MarkOpenBillable` — пометить текущий открытый отрезок `billable = true`.
  * - если `state` отличается от `snapshot.state` — записать его и `stateSince = now`;
  * - `failReason !== null` — записать причину (`null` — не трогать);
+ * - `limitGraceUntil` задан (`Date` или `null`) — записать `sessions.limit_grace_until`
+ *   (`undefined` — не трогать);
  * - `command === "StopContainer"` — попросить агента погасить контейнер.
  */
-import type { SessionState } from "@cg/db";
+import type { SessionLimit, SessionState } from "@cg/db";
 import type { SessionSettings } from "@cg/rpc";
 
 /** Нет heartbeat браузера дольше 15 с → клиент отключён. */
 export const CLIENT_TIMEOUT_MS = 15_000;
 /** Нет heartbeat агента дольше 90 с → сервер с игрой потерян. */
 export const AGENT_TIMEOUT_MS = 90_000;
+/**
+ * Нет heartbeat браузера дольше 2 мин у `queued`-сессии → игрок вышел из
+ * очереди (спека 2026-11-10 §5; heartbeat очереди идёт с любой страницы сайта).
+ */
+export const QUEUE_CLIENT_TIMEOUT_MS = 120_000;
+/**
+ * Минимальное окно предупреждения перед остановкой по лимиту тарифа: остаток
+ * меньше этого впервые замечен — сессия доигрывает не меньше этого времени, даже
+ * если остаток разом ушёл в ноль (истекла выдача тарифа, админ урезал лимит).
+ */
+export const LIMIT_GRACE_MS = 120_000;
 
 export type Snapshot = {
   state: SessionState;
@@ -32,6 +45,17 @@ export type Snapshot = {
   lastInputAt: Date | null;
   agentSeenAt: Date | null;
   openSegment: { startedAt: Date; endedAt: Date; billable: boolean } | null;
+  /**
+   * Остаток минут/длины сессии по тарифу (`SessionRepo.snapshotOf`,
+   * `sessionLimit` из `@cg/db`, Task 8); считается только в `playing`/
+   * `idle_warning` — вне них `null` (никогда не запрещает очередь и запуск).
+   */
+  limit: SessionLimit | null;
+  /**
+   * `sessions.limit_grace_until`: раньше этого момента сессию по лимиту не
+   * останавливаем (`LIMIT_GRACE_MS`); `null` — окно не выставлено.
+   */
+  limitGraceUntil: Date | null;
 };
 
 export type LifecycleEvent =
@@ -64,6 +88,8 @@ export type Decision = {
   ops: ReadonlyArray<SegmentOp>;
   command: "StopContainer" | null;
   failReason: string | null;
+  /** Новое окно предупреждения о лимите: `Date` — выставить, `null` — снять, нет поля — не трогать. */
+  limitGraceUntil?: Date | null;
 };
 
 export const failReasons = {
@@ -72,6 +98,9 @@ export const failReasons = {
   clientGone: "Игрок отключился",
   installFailed: "Не удалось установить игру",
   installTimeout: "Установка не закончилась за отведённое время",
+  queueLeft: "Вы вышли из очереди",
+  minutesOut: "Часы закончились",
+  sessionTooLong: "Достигнут лимит длины сессии",
 } as const;
 
 const MINUTE_MS = 60_000;
@@ -111,6 +140,21 @@ const decision = (
 const clientVisible = (s: Snapshot, now: Date): boolean =>
   s.clientSeenAt !== null && ms(s.clientSeenAt, now) <= CLIENT_TIMEOUT_MS;
 
+/**
+ * Окно предупреждения о лимите в `playing`/`idle_warning` (клиент на месте):
+ * остаток впервые меньше `LIMIT_GRACE_MS` — окно `now + max(остаток, LIMIT_GRACE_MS)`;
+ * остаток снова не меньше (пополнение) или лимита больше нет — окно снимается,
+ * чтобы следующее падение получило свежее. `undefined` — не трогать.
+ */
+const limitGraceUpdate = (s: Snapshot, now: Date): Date | null | undefined => {
+  const grace = s.limitGraceUntil;
+  if (s.limit === null) return grace === null ? undefined : null;
+  const remaining = Math.max(0, s.limit.remainingMs);
+  if (remaining >= LIMIT_GRACE_MS) return grace === null ? undefined : null;
+  if (grace !== null) return undefined;
+  return new Date(now.getTime() + Math.max(remaining, LIMIT_GRACE_MS));
+};
+
 const onTick = (
   s: Snapshot,
   now: Date,
@@ -138,7 +182,8 @@ const onTick = (
 
   switch (s.state) {
     // Установка не оплачивается и браузера не ждёт: ушедший игрок не отменяет
-    // загрузку, сессия после неё вернётся в queued и там закончится по K.
+    // загрузку, сессия после неё вернётся в queued и там закончится по
+    // QUEUE_CLIENT_TIMEOUT_MS.
     case "installing":
       return inState > settings.installTimeoutMinutes * MINUTE_MS
         ? decision("failed", [], null, failReasons.installTimeout)
@@ -157,13 +202,20 @@ const onTick = (
           failReasons.startTimeout,
         );
       }
+      // Очередь ждёт браузер QUEUE_CLIENT_TIMEOUT_MS, запуск — K.
       const clientRef = s.clientSeenAt ?? s.stateSince;
-      if (ms(clientRef, now) > K) {
-        return s.state === "queued"
-          ? decision("ended", [], null, failReasons.clientGone)
-          : decision("stopping", [], "StopContainer", failReasons.clientGone);
+      if (s.state === "queued") {
+        // Heartbeat очереди обновляет clientSeenAt только в queued: во время
+        // установки он стоит, и после возврата в queued отсчёт идёт заново
+        // от stateSince, а не от давнего heartbeat'а.
+        const queueRef = max(clientRef, s.stateSince);
+        return ms(queueRef, now) > QUEUE_CLIENT_TIMEOUT_MS
+          ? decision("ended", [], null, failReasons.queueLeft)
+          : keep;
       }
-      return keep;
+      return ms(clientRef, now) > K
+        ? decision("stopping", [], "StopContainer", failReasons.clientGone)
+        : keep;
     }
 
     case "playing":
@@ -177,21 +229,44 @@ const onTick = (
           { _tag: "Open", at: openAt, billable: false },
         ]);
       }
+      // Клиент на месте: кончились минуты или длина сессии (тариф, спека §2–§3) —
+      // останавливаем, только когда истекло и окно предупреждения (`LIMIT_GRACE_MS`).
+      const grace = s.limitGraceUntil;
+      if (
+        s.limit !== null &&
+        s.limit.remainingMs <= 0 &&
+        grace !== null &&
+        now.getTime() >= grace.getTime()
+      ) {
+        return decision(
+          "stopping",
+          closeAt(s, now, now),
+          "StopContainer",
+          s.limit.reason === "minutes"
+            ? failReasons.minutesOut
+            : failReasons.sessionTooLong,
+        );
+      }
+      const graceUpdate = limitGraceUpdate(s, now);
+      const withGrace = (d: Decision): Decision =>
+        graceUpdate === undefined ? d : { ...d, limitGraceUntil: graceUpdate };
       if (s.state === "playing") {
         // Простой меряется внутри игрового времени: ввод до старта игры не в счёт.
         const lastInput = max(s.lastInputAt ?? s.stateSince, s.stateSince);
-        return ms(lastInput, now) > N ? decision("idle_warning") : keep;
+        return withGrace(
+          ms(lastInput, now) > N ? decision("idle_warning") : keep,
+        );
       }
       // idle_warning: ответ засчитывается, только если ввод пришёл в окне M.
       const answered =
         s.lastInputAt !== null &&
         s.lastInputAt.getTime() > s.stateSince.getTime() &&
         ms(s.stateSince, s.lastInputAt) <= M;
-      if (answered) return decision("playing");
+      if (answered) return withGrace(decision("playing"));
       if (inState > M) {
         return decision("stopping", closeAt(s, now, now), "StopContainer");
       }
-      return keep;
+      return withGrace(keep);
     }
 
     case "disconnected": {

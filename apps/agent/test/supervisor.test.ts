@@ -728,6 +728,7 @@ describe("SessionSupervisor", () => {
             SELKIES_MANUAL_HEIGHT: "1080",
             DISPLAY_SIZEW: "1920",
             DISPLAY_SIZEH: "1080",
+            SELKIES_VIDEO_BITRATE: "10000,2000-40000",
           },
           labels: {
             "cg.session": "s1",
@@ -815,6 +816,38 @@ describe("SessionSupervisor", () => {
           SELKIES_MANUAL_HEIGHT: "1080",
           DISPLAY_SIZEW: "1920",
           DISPLAY_SIZEH: "1080",
+        });
+      }),
+    ));
+
+  it("SELKIES_VIDEO_BITRATE uses the tariff ceiling, missing field falls back to 40", () =>
+    run((h) =>
+      Effect.gen(function* () {
+        const envOf = (sessionId: string) =>
+          sessionSpecs(h.fake).find(
+            (spec) => spec.name === `cg-session-${sessionId}`,
+          )?.env;
+
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s-20",
+          maxBitrateMbps: 20,
+        });
+        yield* h.tick("0 seconds");
+        expect(envOf("s-20")).toMatchObject({
+          SELKIES_VIDEO_BITRATE: "10000,2000-20000",
+        });
+
+        // Поля нет вовсе (старый оркестратор) — потолок 40 Мбит/с.
+        yield* h.supervisor.handle({
+          ...start,
+          sessionId: "s-none",
+          slot: 0,
+          udpPort: 59000,
+        });
+        yield* h.tick("0 seconds");
+        expect(envOf("s-none")).toMatchObject({
+          SELKIES_VIDEO_BITRATE: "10000,2000-40000",
         });
       }),
     ));

@@ -1,9 +1,11 @@
 // Effect RPC-клиент по WebSocket на `/rpc` (NDJSON, как на сервере) и атомы для React.
 import {
   AppRpcs,
+  type HourPackInput,
   type Requirements,
   type Role,
   type StreamSettings,
+  type TariffInput,
 } from "@cg/rpc";
 import { BrowserSocket } from "@effect/platform-browser";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
@@ -72,6 +74,15 @@ const sessionKeys = ["session"] as const;
 
 /** Активная сессия пользователя (не `ended`/`failed`) или null. */
 export const activeSessionAtom = Api.query("session.active", undefined, {
+  reactivityKeys: sessionKeys,
+});
+
+/**
+ * Тариф, остаток минут и каталог тарифов/пакетов часов текущего игрока (карточка
+ * `/app`, страница тарифов `/app/plans`, спека §2/§7). Ключ реактивности `session` —
+ * после `session.start` (и остановки) остаток минут мог измениться.
+ */
+export const accountPlanAtom = Api.query("account.plan", undefined, {
   reactivityKeys: sessionKeys,
 });
 
@@ -306,6 +317,87 @@ export const adminResetSteamLoginAtom = Api.mutation(
 );
 export const adminResetSteamLoginArgs = (userId: string) =>
   ({ payload: { userId }, reactivityKeys: adminKeys }) as const;
+
+/** Тарифы (вкладка «Тарифы», спека §1/§8). */
+export const adminTariffsAtom = Api.query("admin.tariffs.list", undefined, {
+  reactivityKeys: adminKeys,
+});
+
+/** Новый тариф («Добавить тариф»); занятое имя — `"duplicate"`. */
+export const adminCreateTariffAtom = Api.mutation("admin.tariffs.create");
+export const adminCreateTariffArgs = (input: TariffInput) =>
+  ({ payload: { input }, reactivityKeys: adminKeys }) as const;
+
+/** Изменить поля тарифа (кроме «по умолчанию»/«скрыт» — у них свои методы). */
+export const adminUpdateTariffAtom = Api.mutation("admin.tariffs.update");
+export const adminUpdateTariffArgs = (id: string, input: TariffInput) =>
+  ({ payload: { id, input }, reactivityKeys: adminKeys }) as const;
+
+/** «Сделать тарифом по умолчанию»; архивный тариф — `"archived"`. */
+export const adminSetTariffDefaultAtom = Api.mutation(
+  "admin.tariffs.setDefault",
+);
+export const adminSetTariffDefaultArgs = (id: string) =>
+  ({ payload: { id }, reactivityKeys: adminKeys }) as const;
+
+/** «Скрыть»/«Показать» тариф; тариф по умолчанию нельзя скрыть — `"isDefault"`. */
+export const adminSetTariffArchivedAtom = Api.mutation(
+  "admin.tariffs.setArchived",
+);
+export const adminSetTariffArchivedArgs = (id: string, archived: boolean) =>
+  ({ payload: { id, archived }, reactivityKeys: adminKeys }) as const;
+
+/** Пакеты часов (докупка сверх тарифа, пока только показ на странице-заглушке). */
+export const adminHourPacksAtom = Api.query(
+  "admin.hourPacks.list",
+  undefined,
+  { reactivityKeys: adminKeys },
+);
+
+/** Новый пакет часов («Добавить пакет»). */
+export const adminCreateHourPackAtom = Api.mutation("admin.hourPacks.create");
+export const adminCreateHourPackArgs = (input: HourPackInput) =>
+  ({ payload: { input }, reactivityKeys: adminKeys }) as const;
+
+/** Изменить поля пакета часов. */
+export const adminUpdateHourPackAtom = Api.mutation("admin.hourPacks.update");
+export const adminUpdateHourPackArgs = (id: string, input: HourPackInput) =>
+  ({ payload: { id, input }, reactivityKeys: adminKeys }) as const;
+
+/** «Скрыть»/«Показать» пакет часов. */
+export const adminSetHourPackArchivedAtom = Api.mutation(
+  "admin.hourPacks.setArchived",
+);
+export const adminSetHourPackArchivedArgs = (
+  id: string,
+  archived: boolean,
+) => ({ payload: { id, archived }, reactivityKeys: adminKeys }) as const;
+
+/** Тариф, остаток минут и история выдач/начислений пользователя (карточка пользователя). */
+export const adminUserPlanAtom = Atom.family((userId: string) =>
+  Api.query("admin.users.plan", { userId }, { reactivityKeys: adminKeys }),
+);
+
+/** «Выдать тариф»; архивный тариф — `"archived"`, дата окончания в прошлом — `"badEnd"`. */
+export const adminGrantTariffAtom = Api.mutation("admin.users.grantTariff");
+export const adminGrantTariffArgs = (
+  userId: string,
+  tariffId: string,
+  endsAt: string | null,
+) => ({ payload: { userId, tariffId, endsAt }, reactivityKeys: adminKeys }) as const;
+
+/** «Снять тариф»; нет действующей выдачи — `"none"`. */
+export const adminRevokeTariffAtom = Api.mutation("admin.users.revokeTariff");
+export const adminRevokeTariffArgs = (userId: string) =>
+  ({ payload: { userId }, reactivityKeys: adminKeys }) as const;
+
+/** «Начислить часы»: минуты с комментарием (докупка/компенсация). */
+export const adminAddMinutesAtom = Api.mutation("admin.users.addMinutes");
+export const adminAddMinutesArgs = (
+  userId: string,
+  minutes: number,
+  comment: string,
+) => ({ payload: { userId, minutes, comment }, reactivityKeys: adminKeys }) as const;
 
 /** `_tag` типизированной ошибки RPC (`Unauthorized`, `Forbidden`, `SteamUnavailable`, `RpcClientError`…). */
 export const errorTag = (cause: Cause.Cause<{ readonly _tag: string }>) =>

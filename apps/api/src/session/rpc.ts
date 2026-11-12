@@ -6,6 +6,7 @@ import {
   GameNotOwned,
   isTerminalSessionState,
   maxInputAgeMs,
+  NoMinutes,
   NoServer,
   SessionNotFound,
   SessionRpcs,
@@ -81,6 +82,7 @@ export const SessionRpcHandlers = SessionRpcs.toLayer(
           if (result === "Blocked") return yield* new AccessDenied();
           if (result === "NotOwned") return yield* new GameNotOwned({ appId });
           if (result === "NoServer") return yield* new NoServer();
+          if (result === "NoMinutes") return yield* new NoMinutes();
           return result;
         }),
       "session.active": () =>
@@ -91,13 +93,14 @@ export const SessionRpcHandlers = SessionRpcs.toLayer(
             Effect.succeed(watch(current.id, sessionId)),
           ),
         ).pipe(Stream.provideService(SessionEvents, events)),
-      "session.heartbeat": ({ sessionId, inputAgeMs }) =>
+      "session.heartbeat": ({ sessionId, inputAgeMs, queueOnly }) =>
         Effect.gen(function* () {
           const current = yield* CurrentUser;
           const accepted = yield* SessionRepo.heartbeat(
             current.id,
             sessionId,
             SessionRepo.clampInputAge(inputAgeMs, maxInputAgeMs),
+            queueOnly ?? false,
           );
           if (!accepted) return yield* new SessionNotFound({ sessionId });
         }),

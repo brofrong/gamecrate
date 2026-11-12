@@ -6,6 +6,8 @@ import {
   playSegments,
   profiles,
   sessions,
+  tariffGrants,
+  tariffs,
   type Role,
   user,
 } from "@cg/db";
@@ -32,8 +34,28 @@ const playedSecondsSql = sql<number>`(select coalesce(floor(extract(epoch from s
 /** Есть ли у пользователя активная (не `ended`/`failed`) сессия. */
 const activeSessionSql = sql<boolean>`exists (select 1 from ${sessions} where ${sessions.userId} = ${user.id} and ${isActive})`;
 
+/**
+ * Имя действующего тарифа (спека §2, та же логика, что `currentTariff`/
+ * `defaultTariff` в `@cg/db`, Task 3, но одним подзапросом, без похода в БД
+ * на каждого пользователя): последняя выдача с `startsAt <= now` и (`endsAt`
+ * пуст или `endsAt > now`), иначе тариф по умолчанию (`is_default = true`),
+ * иначе — встроенный `FALLBACK_TARIFF` («Базовый», нет строки по умолчанию).
+ */
+const tariffNameSql = (now: Date) => sql<string>`coalesce(
+  (select ${tariffs.name}
+     from ${tariffGrants}
+     join ${tariffs} on ${tariffs.id} = ${tariffGrants.tariffId}
+    where ${tariffGrants.userId} = ${user.id}
+      and ${tariffGrants.startsAt} <= ${now.toISOString()}::timestamptz
+      and (${tariffGrants.endsAt} is null or ${tariffGrants.endsAt} > ${now.toISOString()}::timestamptz)
+    order by ${tariffGrants.startsAt} desc
+    limit 1),
+  (select ${tariffs.name} from ${tariffs} where ${tariffs.isDefault} = true limit 1),
+  'Базовый'
+)`;
+
 /** Столбцы `AdminUser` одним select'ом (без N+1 по пользователям). */
-const userColumns = {
+const userColumns = (now: Date) => ({
   id: user.id,
   name: user.name,
   email: user.email,
@@ -48,7 +70,8 @@ const userColumns = {
   lastSessionAt: lastSessionAtSql,
   playedSeconds: playedSecondsSql,
   activeSession: activeSessionSql,
-};
+  tariffName: tariffNameSql(now),
+});
 
 /** Строка `userColumns`. */
 type UserRow = {
@@ -66,6 +89,7 @@ type UserRow = {
   readonly lastSessionAt: Date | null;
   readonly playedSeconds: number;
   readonly activeSession: boolean;
+  readonly tariffName: string;
 };
 
 /** `UserRow` → `AdminUser`; синтетическая почта (Steam/Telegram) → `null`. */
@@ -84,14 +108,17 @@ const toAdminUser = (row: UserRow): AdminUser => ({
   blockedAt: row.blockedAt?.toISOString() ?? null,
   steamLoginResetPending: row.steamLoginResetAt !== null,
   activeSession: row.activeSession,
+  tariffName: row.tariffName,
 });
 
 /** Все пользователи, новые сверху (`created_at desc`), одним запросом. */
-export const listUsers = (): Effect.Effect<Array<AdminUser>, never, Db> =>
+export const listUsers = (
+  now: Date,
+): Effect.Effect<Array<AdminUser>, never, Db> =>
   Effect.gen(function* () {
     const db = yield* Db;
     const rows = yield* db
-      .select(userColumns)
+      .select(userColumns(now))
       .from(user)
       .leftJoin(profiles, eq(profiles.userId, user.id))
       .orderBy(sql`${user.createdAt} desc`);

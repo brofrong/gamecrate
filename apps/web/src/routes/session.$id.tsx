@@ -13,10 +13,12 @@ import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
 import { useInputActivity } from "@/lib/inputActivity";
+import { hasHigherTariff } from "@/lib/planFormat";
 import { reportStartError } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import { useStreamSettings } from "@/lib/useStreamSettings";
 import {
+  accountPlanAtom,
   errorTag,
   heartbeatAtom,
   resultErrorTag,
@@ -106,6 +108,15 @@ function SessionPage() {
   const start = useAtomSet(startSessionAtom, { mode: "promiseExit" });
   const input = useInputActivity();
   const streamSettings = useStreamSettings();
+  const plan = useAtomValue(accountPlanAtom);
+  const qualityLimits = AsyncResult.isSuccess(plan)
+    ? {
+        maxResolution: plan.value.tariff.maxResolution,
+        maxBitrateMbps: plan.value.tariff.maxBitrateMbps,
+      }
+    : undefined;
+  const higherTariffExists =
+    AsyncResult.isSuccess(plan) && hasHigherTariff(plan.value);
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
   const tag = resultErrorTag(watch);
@@ -194,6 +205,8 @@ function SessionPage() {
         onFrameLoad={input.attachFrame}
         onPlayAgain={() => void onPlayAgain()}
         streamSettings={streamSettings}
+        higherTariffExists={higherTariffExists}
+        {...(qualityLimits !== undefined ? { qualityLimits } : {})}
       />
       {stalled && (
         // Стрим идёт отдельным соединением и может работать дальше — не закрываем его.

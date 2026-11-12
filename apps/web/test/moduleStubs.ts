@@ -39,6 +39,7 @@ export const rpcStub = () => ({
   gameAtom: queryFamily(),
   adminPingAtom: query(),
   activeSessionAtom: query(),
+  accountPlanAtom: query(),
   startSessionAtom: mutation(),
   startSessionArgs: (appId: number) => ({
     payload: { appId },
@@ -172,6 +173,63 @@ export const rpcStub = () => ({
   adminResetSteamLoginAtom: mutation(),
   adminResetSteamLoginArgs: (userId: string) => ({
     payload: { userId },
+    reactivityKeys: adminKeys,
+  }),
+  adminTariffsAtom: query(),
+  adminCreateTariffAtom: mutation(),
+  adminCreateTariffArgs: (input: unknown) => ({
+    payload: { input },
+    reactivityKeys: adminKeys,
+  }),
+  adminUpdateTariffAtom: mutation(),
+  adminUpdateTariffArgs: (id: string, input: unknown) => ({
+    payload: { id, input },
+    reactivityKeys: adminKeys,
+  }),
+  adminSetTariffDefaultAtom: mutation(),
+  adminSetTariffDefaultArgs: (id: string) => ({
+    payload: { id },
+    reactivityKeys: adminKeys,
+  }),
+  adminSetTariffArchivedAtom: mutation(),
+  adminSetTariffArchivedArgs: (id: string, archived: boolean) => ({
+    payload: { id, archived },
+    reactivityKeys: adminKeys,
+  }),
+  adminHourPacksAtom: query(),
+  adminCreateHourPackAtom: mutation(),
+  adminCreateHourPackArgs: (input: unknown) => ({
+    payload: { input },
+    reactivityKeys: adminKeys,
+  }),
+  adminUpdateHourPackAtom: mutation(),
+  adminUpdateHourPackArgs: (id: string, input: unknown) => ({
+    payload: { id, input },
+    reactivityKeys: adminKeys,
+  }),
+  adminSetHourPackArchivedAtom: mutation(),
+  adminSetHourPackArchivedArgs: (id: string, archived: boolean) => ({
+    payload: { id, archived },
+    reactivityKeys: adminKeys,
+  }),
+  adminUserPlanAtom: queryFamily(),
+  adminGrantTariffAtom: mutation(),
+  adminGrantTariffArgs: (
+    userId: string,
+    tariffId: string,
+    endsAt: string | null,
+  ) => ({
+    payload: { userId, tariffId, endsAt },
+    reactivityKeys: adminKeys,
+  }),
+  adminRevokeTariffAtom: mutation(),
+  adminRevokeTariffArgs: (userId: string) => ({
+    payload: { userId },
+    reactivityKeys: adminKeys,
+  }),
+  adminAddMinutesAtom: mutation(),
+  adminAddMinutesArgs: (userId: string, minutes: number, comment: string) => ({
+    payload: { userId, minutes, comment },
     reactivityKeys: adminKeys,
   }),
   errorTag,

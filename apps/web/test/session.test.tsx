@@ -1,6 +1,7 @@
 import { describe, expect, it, mock, spyOn } from "bun:test";
 import {
   accessDeniedReason,
+  noMinutesReason,
   noServerReason,
   type SessionState,
   type SessionView,
@@ -49,6 +50,8 @@ const view = (state: SessionState, patch: Partial<SessionView> = {}) =>
     playedSeconds: 0,
     previousPlayedAt: null,
     createdAt: "2026-10-17T10:00:00.000Z",
+    queue: null,
+    limit: null,
     ...patch,
   }) satisfies SessionView;
 
@@ -366,6 +369,35 @@ describe("session", () => {
       expect(toastError).toHaveBeenCalledWith(noServerReason);
       toastError.mockRestore();
     });
+
+    it("shows «Часы закончились» with a «Докупить» action to /app/plans and does not navigate on NoMinutes", async () => {
+      const toastError = spyOn(toast, "error").mockImplementation(
+        () => "" as never,
+      );
+      const start = mock(async () => Exit.fail({ _tag: "NoMinutes" } as const));
+      const navigate = mock((_to: unknown) => {});
+
+      await playAgain(620, { start, navigate });
+
+      expect(navigate).not.toHaveBeenCalled();
+      expect(toastError).toHaveBeenCalledWith(
+        noMinutesReason,
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Докупить" }),
+        }),
+      );
+      const [, options] = toastError.mock.calls[0] ?? [];
+      const action = (
+        options as unknown as { action?: { onClick: () => void } }
+      )?.action;
+      const assign = spyOn(window.location, "assign").mockImplementation(
+        () => {},
+      );
+      action?.onClick();
+      expect(assign).toHaveBeenCalledWith("/app/plans");
+      assign.mockRestore();
+      toastError.mockRestore();
+    });
   });
 
   it("failed after real play says the game was interrupted and shows played time", () => {
@@ -412,6 +444,18 @@ describe("session", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Я здесь" }));
     expect(onHere).toHaveBeenCalledTimes(1);
+  });
+
+  it("limit warning is rendered under the fullscreen root (Player's <main>)", () => {
+    // Полный экран запрашивается на `<main>` плеера — видно только его поддерево.
+    const deadline = new Date(Date.now() + 5 * 60_000).toISOString();
+    const { container } = renderPlayer(
+      view("playing", { limit: { deadline, reason: "minutes" } }),
+    );
+    const root = container.querySelector("main");
+    expect(root).not.toBeNull();
+    const alert = screen.getByText("Часы заканчиваются — сохранитесь");
+    expect(root?.contains(alert)).toBe(true);
   });
 
   it("exit asks for confirmation before stopping", async () => {

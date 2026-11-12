@@ -179,6 +179,21 @@ export const sessions = pgTable(
     // (отчёт `Stopped`/`Failed` владеющего воркера) и `releaseStaleSlots`
     // (сверка при переподключении агента).
     slotReleasedAt: timestamptz("slot_released_at"),
+    // Приоритет очереди (спека §2) — снимок тарифа пользователя на момент
+    // постановки в очередь (тариф мог поменяться позже, сессия приоритет не
+    // пересчитывает). `queuePosition`/`queueTotal`/`queueEtaMinutes` —
+    // последний отчёт планировщика очереди (Task 6+); `null` — сессия не в
+    // очереди или оценка ещё не считалась.
+    queuePriority: integer("queue_priority").notNull().default(0),
+    queuePosition: integer("queue_position"),
+    queueTotal: integer("queue_total"),
+    queueEtaMinutes: integer("queue_eta_minutes"),
+    // Минимальное окно предупреждения перед остановкой по лимиту тарифа (спека §4):
+    // оркестратор ставит `now + max(остаток, 2 мин)`, когда впервые видит остаток
+    // меньше 2 минут, и не останавливает сессию раньше этого момента, даже если
+    // остаток разом ушёл в ноль (истекла выдача тарифа, админ урезал лимит).
+    // Сбрасывается в `null`, когда остаток снова не меньше 2 минут (пополнение).
+    limitGraceUntil: timestamptz("limit_grace_until"),
   },
   (t) => [
     uniqueIndex("sessions_active_user_idx")
@@ -187,6 +202,13 @@ export const sessions = pgTable(
     uniqueIndex("sessions_held_worker_slot_idx")
       .on(t.workerId, t.slot)
       .where(sql`${t.slotReleasedAt} is null`),
+    // Порядок очереди: сначала приоритет тарифа (выше — раньше), затем
+    // время постановки (планировщик очереди, Task 6+).
+    index("sessions_queue_idx").on(
+      t.state,
+      t.queuePriority.desc(),
+      t.createdAt,
+    ),
   ],
 );
 

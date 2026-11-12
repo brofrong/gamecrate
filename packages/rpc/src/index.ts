@@ -6,6 +6,7 @@ import { LibraryRpcs } from "./library";
 import { SessionRpcs } from "./session";
 import { SteamLoginRpcs } from "./steamLogin";
 import { StreamSettingsRpcs } from "./streamSettings";
+import { AccountRpcs } from "./tariffs";
 import { TimeRpcs } from "./time";
 
 export * from "./admin";
@@ -19,6 +20,7 @@ export * from "./settings";
 export * from "./steamLogin";
 export * from "./streamBody";
 export * from "./streamSettings";
+export * from "./tariffs";
 export * from "./time";
 export * from "./tunnel";
 export * from "./wsBridge";
@@ -26,6 +28,7 @@ export * from "./wsBridge";
 /** Все RPC-группы приложения; сервер обслуживает их на `/rpc`, SPA строит по ней клиента. */
 export const AppRpcs = AuthRpcs.merge(
   PublicAuthRpcs,
+  AccountRpcs,
   AdminRpcs,
   LibraryRpcs,
   SessionRpcs,

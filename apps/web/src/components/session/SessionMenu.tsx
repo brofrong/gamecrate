@@ -4,13 +4,14 @@
 // владельца 2026-11-05): по разделу за шаг — подсвечен, остальные приглушены, под ним короткая фраза,
 // «Пропустить» и «Дальше»; шаг ведёт `SessionControls`.
 import {
+  capResolution,
   type DebugMode,
-  maxBitrateMbps,
+  maxBitrateMbps as globalMaxBitrateMbps,
   minBitrateMbps,
   type StreamResolution,
   type StreamSettings,
 } from "@cg/rpc";
-import { LogOut } from "lucide-react";
+import { Lock, LogOut } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
@@ -20,6 +21,22 @@ import { formatClock } from "@/lib/formatTime";
 import { cn } from "@/lib/utils";
 
 const resolutions: ReadonlyArray<StreamResolution> = ["720p", "1080p", "1440p"];
+
+/**
+ * Потолок качества тарифа (дизайн §6/§8): разрешения выше `maxResolution` показаны
+ * с замком («Доступно в тарифе выше»), ползунок битрейта не поднимается выше
+ * `maxBitrateMbps`. Плана ещё нет — вызывающий (`Player`) подставляет верхнюю границу
+ * без ограничения («Базовый» тариф по умолчанию: `1440p`, `maxBitrateMbps` глобальный).
+ */
+export type QualityLimits = {
+  readonly maxResolution: StreamResolution;
+  readonly maxBitrateMbps: number;
+};
+
+export const noQualityLimits: QualityLimits = {
+  maxResolution: "1440p",
+  maxBitrateMbps: globalMaxBitrateMbps,
+};
 
 const debugModes: ReadonlyArray<{ value: DebugMode; label: string }> = [
   { value: "off", label: "Выкл" },
@@ -140,6 +157,7 @@ export function SessionMenu({
   settings,
   onChange,
   onEndGame,
+  limits = noQualityLimits,
   tourStep = null,
   onTourStep = () => {},
 }: {
@@ -149,6 +167,8 @@ export function SessionMenu({
   onChange: (patch: Partial<StreamSettings>) => void;
   /** «Закончить игру» — дальше подтверждение (его показывает вызывающий). */
   onEndGame: () => void;
+  /** Потолок качества тарифа; план не загрузился — без ограничения (`noQualityLimits`). */
+  limits?: QualityLimits;
   /** Шаг обхода (индекс в `menuTour`) или `null` — обхода нет. */
   tourStep?: number | null;
   /** Следующий шаг; `null` — обход закончен («Пропустить», «Понятно»). */
@@ -158,6 +178,11 @@ export function SessionMenu({
   // Значение под пальцем, пока ползунок тянут; отпустили — `null`, на экране снова `settings`.
   const [dragMbps, setDragMbps] = useState<number | null>(null);
   const manual = settings.quality === "manual";
+  // Слайдер не выше потолка тарифа (дизайн §6); разрешения выше потолка — с замком.
+  const sliderMaxMbps = Math.min(globalMaxBitrateMbps, limits.maxBitrateMbps);
+  const lockedResolution = (resolution: StreamResolution) =>
+    capResolution(resolution, limits.maxResolution) !== resolution;
+  const anyLocked = resolutions.some(lockedResolution);
   const debugOptions = debugModes.map((mode) => mode.value);
   const touring =
     tourStep === null ? null : (menuTour[tourStep]?.section ?? null);
@@ -215,15 +240,16 @@ export function SessionMenu({
               <div className="flex items-baseline justify-between">
                 <span>Битрейт</span>
                 <span className="font-mono tabular-nums">
-                  {dragMbps ?? settings.bitrateMbps} Мбит/с
+                  {Math.min(dragMbps ?? settings.bitrateMbps, sliderMaxMbps)}{" "}
+                  Мбит/с
                 </span>
               </div>
               <Slider
                 thumbLabel="Битрейт"
                 min={minBitrateMbps}
-                max={maxBitrateMbps}
+                max={sliderMaxMbps}
                 step={1}
-                value={[dragMbps ?? settings.bitrateMbps]}
+                value={[Math.min(dragMbps ?? settings.bitrateMbps, sliderMaxMbps)]}
                 onValueChange={([value]) => {
                   if (value !== undefined) setDragMbps(value);
                 }}
@@ -245,16 +271,27 @@ export function SessionMenu({
                 value={settings.resolution}
                 onValueChange={(value) => {
                   const resolution = pick(resolutions, value);
-                  if (resolution !== undefined) onChange({ resolution });
+                  if (resolution !== undefined && !lockedResolution(resolution))
+                    onChange({ resolution });
                 }}
               >
-                {resolutions.map((resolution) => (
-                  <ToggleGroupItem key={resolution} value={resolution}>
-                    {resolution}
-                  </ToggleGroupItem>
-                ))}
+                {resolutions.map((resolution) => {
+                  const locked = lockedResolution(resolution);
+                  return (
+                    <ToggleGroupItem
+                      key={resolution}
+                      value={resolution}
+                      disabled={locked}
+                      aria-disabled={locked}
+                    >
+                      {locked && <Lock className="size-3" />}
+                      {resolution}
+                    </ToggleGroupItem>
+                  );
+                })}
               </ToggleGroup>
               <p className={note}>со следующего запуска</p>
+              {anyLocked && <p className={note}>Доступно в тарифе выше</p>}
             </div>
           </>
         )}

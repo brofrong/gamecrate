@@ -29,6 +29,7 @@ const session: AdminSession = {
   endedAt: null,
   lastInputAt: ago(4000),
   failReason: null,
+  queuePosition: null,
 };
 
 const classes: ReadonlyArray<AdminWorkerClass> = [

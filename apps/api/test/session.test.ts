@@ -9,6 +9,8 @@ import {
   sessionStageMarks,
   sessions,
   settings,
+  tariffGrants,
+  tariffs,
   user,
   userGames,
   workerClasses,
@@ -926,5 +928,273 @@ describe("session rpc", () => {
     expect(result.tags).toEqual(Array(result.count).fill("SessionNotFound"));
     expect(result.row.clientSeenAt).toBeNull();
     expect(result.row.stopRequestedAt).toBeNull();
+  });
+});
+
+/** Выдать alice тариф `tariffId` с момента `startsAt` (без конца). */
+const grantTariff = (tariffId: string, startsAt: Date) =>
+  Effect.gen(function* () {
+    const db = yield* Db;
+    yield* db.insert(tariffGrants).values({
+      id: crypto.randomUUID(),
+      userId: alice.id,
+      tariffId,
+      startsAt,
+      endsAt: null,
+    });
+  });
+
+describe("session.start и тариф", () => {
+  it("fails with NoMinutes when the current tariff's minutes are used up", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        yield* db.insert(tariffs).values({
+          id: "t-limited",
+          name: "Лимит",
+          monthlyMinutes: 1,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        const grantedAt = new Date(Date.now() - 120_000);
+        yield* grantTariff("t-limited", grantedAt);
+        // Прежняя (уже завершённая) сессия: 90 с billable-времени — больше
+        // лимита в 1 минуту, остаток уходит в долг.
+        const oldId = crypto.randomUUID();
+        yield* db
+          .insert(sessions)
+          .values({ id: oldId, userId: alice.id, appId: 10, state: "ended" });
+        yield* db.insert(playSegments).values({
+          sessionId: oldId,
+          userId: alice.id,
+          appId: 10,
+          startedAt: new Date(Date.now() - 100_000),
+          endedAt: new Date(Date.now() - 10_000),
+          billable: true,
+          open: false,
+        });
+        const rpc = yield* client;
+        const noMinutes = yield* Effect.flip(
+          rpc["session.start"]({ appId: 10 }),
+        );
+        const rows = yield* db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.state, "queued"));
+        return { noMinutes, rows };
+      }),
+    );
+    expect(result.noMinutes._tag).toBe("NoMinutes");
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("returns the existing active session even with zero minutes", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        const rpc = yield* client;
+        const first = yield* rpc["session.start"]({ appId: 10 });
+        yield* db.insert(tariffs).values({
+          id: "t-limited",
+          name: "Лимит",
+          monthlyMinutes: 1,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        yield* grantTariff("t-limited", new Date(Date.now() - 120_000));
+        yield* db.insert(playSegments).values({
+          sessionId: first.id,
+          userId: alice.id,
+          appId: 10,
+          startedAt: new Date(Date.now() - 100_000),
+          endedAt: new Date(Date.now() - 10_000),
+          billable: true,
+          open: false,
+        });
+        const second = yield* rpc["session.start"]({ appId: 10 });
+        return { first, second };
+      }),
+    );
+    expect(result.second.id).toBe(result.first.id);
+  });
+
+  it("stores queue_priority of the current tariff", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        yield* db.insert(tariffs).values({
+          id: "t-plus",
+          name: "Плюс",
+          queuePriority: 42,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        yield* grantTariff("t-plus", new Date(Date.now() - 60_000));
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        return yield* sessionRow(id);
+      }),
+    );
+    expect(result.queuePriority).toBe(42);
+  });
+});
+
+describe("session.heartbeat queueOnly", () => {
+  it("updates clientSeenAt of a queued session without touching lastInputAt", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        const before = Date.now();
+        yield* rpc["session.heartbeat"]({
+          sessionId: id,
+          inputAgeMs: 0,
+          queueOnly: true,
+        });
+        return { before, row: yield* sessionRow(id) };
+      }),
+    );
+    expect(result.row.clientSeenAt?.getTime() ?? 0).toBeGreaterThanOrEqual(
+      result.before - 50,
+    );
+    expect(result.row.lastInputAt).toBeNull();
+  });
+
+  it("does not touch a playing session", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* setSession(id, { state: "playing" });
+        yield* rpc["session.heartbeat"]({ sessionId: id, inputAgeMs: 0 });
+        const before = yield* sessionRow(id);
+        yield* rpc["session.heartbeat"]({
+          sessionId: id,
+          inputAgeMs: 0,
+          queueOnly: true,
+        });
+        const after = yield* sessionRow(id);
+        return { before, after };
+      }),
+    );
+    expect(result.after.clientSeenAt?.getTime()).toBe(
+      result.before.clientSeenAt?.getTime(),
+    );
+  });
+});
+
+describe("SessionView.queue и SessionView.limit", () => {
+  it("queue carries position/total/etaMinutes from columns only while queued", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* setSession(id, {
+          queuePosition: 2,
+          queueTotal: 5,
+          queueEtaMinutes: 10,
+        });
+        const queued = yield* rpc["session.active"]();
+        yield* setSession(id, { state: "starting", stage: "computer" });
+        const starting = yield* rpc["session.active"]();
+        return { queued, starting };
+      }),
+    );
+    expect(result.queued?.queue).toEqual({
+      position: 2,
+      total: 5,
+      etaMinutes: 10,
+    });
+    expect(result.starting?.queue).toBeNull();
+  });
+
+  it("limit carries a deadline while playing/idle_warning with a limited tariff, null otherwise", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        yield* db.insert(tariffs).values({
+          id: "t-limited",
+          name: "Лимит",
+          monthlyMinutes: 60,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        yield* grantTariff("t-limited", new Date(Date.now() - 60_000));
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* setSession(id, { state: "playing" });
+        const before = Date.now();
+        const playing = yield* rpc["session.active"]();
+        const after = Date.now();
+        yield* setSession(id, { state: "idle_warning" });
+        const idleWarning = yield* rpc["session.active"]();
+        yield* setSession(id, { state: "starting" });
+        const starting = yield* rpc["session.active"]();
+        return { playing, idleWarning, starting, before, after };
+      }),
+    );
+    expect(result.playing?.limit?.reason).toBe("minutes");
+    const deadline = Date.parse(result.playing?.limit?.deadline ?? "");
+    const hour = 60 * 60_000;
+    expect(deadline).toBeGreaterThanOrEqual(result.before + hour - 2000);
+    expect(deadline).toBeLessThanOrEqual(result.after + hour + 2000);
+    expect(result.idleWarning?.limit?.reason).toBe("minutes");
+    expect(result.starting?.limit).toBeNull();
+  });
+
+  it("limit deadline uses limit_grace_until when it is later than now + remainder (I3)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        yield* seed;
+        const db = yield* Db;
+        // Длина сессии 1 минута, сессия идёт уже 10 — остаток давно ≤ 0.
+        yield* db.insert(tariffs).values({
+          id: "t-short",
+          name: "Короткий",
+          maxSessionMinutes: 1,
+          maxResolution: "1080p",
+          maxBitrateMbps: 20,
+        });
+        yield* grantTariff("t-short", new Date(Date.now() - 60 * 60_000));
+        const rpc = yield* client;
+        const { id } = yield* rpc["session.start"]({ appId: 10 });
+        yield* setSession(id, { state: "playing" });
+        yield* db.insert(playSegments).values({
+          sessionId: id,
+          userId: alice.id,
+          appId: 10,
+          startedAt: new Date(Date.now() - 10 * 60_000),
+          endedAt: new Date(),
+          billable: true,
+          open: true,
+        });
+        const noGrace = yield* rpc["session.active"]();
+        const grace = new Date(Date.now() + 90_000);
+        yield* setSession(id, { limitGraceUntil: grace });
+        const withGrace = yield* rpc["session.active"]();
+        // Окно в прошлом — дедлайн не раньше «сейчас».
+        yield* setSession(id, {
+          limitGraceUntil: new Date(Date.now() - 60_000),
+        });
+        const before = Date.now();
+        const pastGrace = yield* rpc["session.active"]();
+        return { noGrace, withGrace, pastGrace, grace, before };
+      }),
+    );
+    expect(result.withGrace?.limit).toEqual({
+      deadline: result.grace.toISOString(),
+      reason: "session_length",
+    });
+    expect(result.noGrace?.limit?.reason).toBe("session_length");
+    expect(
+      Date.parse(result.pastGrace?.limit?.deadline ?? ""),
+    ).toBeGreaterThanOrEqual(result.before - 1000);
   });
 });

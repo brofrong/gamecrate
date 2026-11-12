@@ -2,7 +2,8 @@
 // арт игры на фоне, слева обложка, справа название, этапы списком и общая полоска.
 // Лежит поверх трансляции в `Player` — та подключается под ним и не пересоздаётся.
 import { isOwnAppId, type SessionView } from "@cg/rpc";
-import { ArrowLeft, Check, Monitor } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ArrowLeft, Bell, Check, Monitor } from "lucide-react";
 import { useState } from "react";
 import {
   AlertDialog,
@@ -86,12 +87,44 @@ function StepDot({ status }: { status: LoadingStep["status"] }) {
   );
 }
 
+/**
+ * Кнопка «Сообщить, когда подойдёт очередь» (спека §5 просит сайт самому спросить
+ * разрешение при входе в очередь — отступление записано в итоге плана задачи 11:
+ * Safari и другие браузеры разрешают запрос `Notification` только по нажатию, не
+ * автоматически). Видна только пока разрешение `"default"`; без поддержки
+ * `Notification` или при уже решённом разрешении — ничего.
+ */
+function NotifyWhenReady() {
+  const [permission, setPermission] = useState<NotificationPermission | null>(
+    () =>
+      typeof Notification === "undefined" ? null : Notification.permission,
+  );
+  if (permission !== "default") return null;
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => {
+        if (typeof Notification === "undefined") return;
+        void Notification.requestPermission()
+          .then(setPermission)
+          .catch(() => {});
+      }}
+      className="self-start border border-white/20 bg-white/10 text-brand-text/85 hover:bg-white/15 hover:text-brand-text dark:hover:bg-white/15"
+    >
+      <Bell />
+      Сообщить, когда подойдёт очередь
+    </Button>
+  );
+}
+
 export function LoadingScreen({
   view,
   msInStage,
   nowServerMs,
   onCancel,
   onReveal,
+  higherTariffExists = false,
 }: {
   view: SessionView;
   /** Сколько мс клиент видит текущий этап — для полоски, если у этапа нет отметки в `timing`. */
@@ -108,6 +141,12 @@ export function LoadingScreen({
    * (`revealDue`), и кнопки тоже.
    */
   onReveal: (() => void) | undefined;
+  /**
+   * В каталоге тарифа игрока есть открытый тариф с приоритетом очереди выше текущего
+   * (`hasHigherTariff`, спека §5/§7) — подсказка «В тарифе выше очередь короче» со
+   * ссылкой на страницу тарифов, пока сессия `queued`.
+   */
+  higherTariffExists?: boolean;
 }) {
   // Картинки нет (или CDN не ответил) — остаётся тёмный фон бренда, без значка битой картинки.
   const [backdropOk, setBackdropOk] = useState(true);
@@ -223,6 +262,19 @@ export function LoadingScreen({
               <p className="text-sm text-brand-text/60">
                 Время установки не входит в игровое
               </p>
+            )}
+            {view.state === "queued" && (
+              <div className="flex flex-col items-start gap-2">
+                {higherTariffExists && (
+                  <Link
+                    to="/app/plans"
+                    className="text-sm text-brand-cyan underline-offset-2 hover:underline"
+                  >
+                    В тарифе выше очередь короче
+                  </Link>
+                )}
+                <NotifyWhenReady />
+              </div>
             )}
           </div>
         </div>
