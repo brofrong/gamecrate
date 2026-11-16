@@ -162,6 +162,19 @@ describe("desktop login one-time token", () => {
     expect(sessionCookie(again)).toBeUndefined();
   });
 
+  it("two parallel exchanges of one token: exactly one gets a session", async () => {
+    const browser = await signIn("race@example.com");
+    const { token } = await generate(browser);
+    if (!token) throw new Error("no token");
+
+    const results = await Promise.all([verify(token), verify(token)]);
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses).toEqual([200, 400]);
+    expect(results.filter((r) => sessionCookie(r) !== undefined)).toHaveLength(
+      1,
+    );
+  });
+
   it("the token lives 2 minutes and is refused after that", async () => {
     const browser = await signIn("late@example.com");
     const before = Date.now();
