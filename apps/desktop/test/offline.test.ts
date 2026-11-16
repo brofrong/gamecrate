@@ -51,6 +51,17 @@ describe("конфиг приложения", () => {
     expect(conf.app.windows).toEqual([]);
   });
 
+  test("обновления подписаны нашим ключом, адрес — из GAMECRATE_URL, а не из конфига", async () => {
+    const conf = JSON.parse(await read("src-tauri/tauri.conf.json"));
+    expect(conf.bundle.createUpdaterArtifacts).toBe(true);
+    expect(conf.plugins.updater).toEqual({
+      pubkey:
+        "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4MDE0RERGNDFEQzQzNjgKUldSb1E5eEIzMDBCV0toSFVqaEd5UTNINzJSckpmQnFOOHp2QzZTTGZVais3cExQcTdMVTdwczcK",
+    });
+    // версия — только в Cargo.toml: джоб publish сверяет её с тегом
+    expect(conf.version).toBeUndefined();
+  });
+
   test("зависимости Cargo запинены точно", async () => {
     let section = "";
     const deps = (await read("src-tauri/Cargo.toml")).split("\n").filter((line) => {

@@ -2,8 +2,17 @@
 #
 # Живёт на публичном зеркале GitHub (GitLab → push mirror). Запускается тегом `desktop-vX.Y.Z`;
 # серверные теги `vX.Y.Z` под маску не подходят. GitLab CI этот файл не видит.
-# Релиз GitHub не создаём: tauri-action без tagName/releaseName только собирает, а установщики
-# уходят артефактами Actions (скачать со страницы запуска). Выкладку на сайт делает отдельная задача.
+# Релиз GitHub не создаём: tauri-action без tagName/releaseName только собирает, установщики
+# уходят артефактами Actions (скачать со страницы запуска). Тег `desktop-vX.Y.Z` (без `-`, т.е. не
+# rc/beta) после сборки выкладывает на сайт джоб `publish`: файлы и `latest.json` — через
+# `PUT /download/desktop/*` API главного сервера с токеном `DESKTOP_UPLOAD_TOKEN`.
+#
+# Секреты (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD — подпись обновлений (minisign);
+#     без них сборка падает: `createUpdaterArtifacts` в tauri.conf.json требует ключ;
+#   DESKTOP_UPLOAD_TOKEN — тот же, что в `.env` главного сервера (нужен только `publish`).
+# Переменная GAMECRATE_URL (Variables) — адрес сайта для сборки по тегу и для выкладки; не задана —
+# прод https://game.brofrong.ru.
 name: desktop
 
 on:
@@ -12,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       gamecrate_url:
-        description: 'Адрес сайта, зашиваемый в сборку (GAMECRATE_URL). Пусто — прод https://game.brofrong.ru'
+        description: 'Адрес сайта, зашиваемый в сборку (GAMECRATE_URL). Пусто — переменная GAMECRATE_URL репозитория, без неё прод https://game.brofrong.ru'
         required: false
         default: ''
         type: string
@@ -101,14 +110,15 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
-      # Свой адрес сайта (только при ручном запуске). Пустое значение нельзя оставлять в окружении:
-      # `option_env!` увидит `Some("")` вместо адреса по умолчанию.
+      # Свой адрес сайта: поле ручного запуска, иначе переменная репозитория GAMECRATE_URL (тот же
+      # адрес берёт `publish` — приложение спрашивает обновления там, куда их выложили). Пустое
+      # значение нельзя оставлять в окружении: `option_env!` увидит `Some("")` вместо прода.
       - name: Адрес сайта (GAMECRATE_URL)
-        if: github.event_name == 'workflow_dispatch' && inputs.gamecrate_url != ''
+        if: inputs.gamecrate_url != '' || vars.GAMECRATE_URL != ''
         shell: bash
         env:
-          INPUT_URL: ${{ inputs.gamecrate_url }}
-        run: echo "GAMECRATE_URL=$INPUT_URL" >> "$GITHUB_ENV"
+          SITE_URL: ${{ inputs.gamecrate_url || vars.GAMECRATE_URL }}
+        run: echo "GAMECRATE_URL=$SITE_URL" >> "$GITHUB_ENV"
 
       # --- Подпись кода: нет сертификатов, сборки без подписи. ---
       # macOS: «Apple Developer ID» + нотаризация. Windows: сертификат Authenticode.
@@ -141,9 +151,11 @@ jobs:
           tauriScript: bun run tauri
           args: ${{ matrix.args }}
           uploadUpdaterJson: false
-        # env:
-        #   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}            # подпись обновлений (задача 8)
-        #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # Подпись обновлений (`.sig` рядом с `.app.tar.gz`, `-setup.exe`, `.AppImage`). Без секретов
+        # сборка падает на подписи — это ожидаемо: неподписанное обновление updater не примет.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Что собралось
         if: always()
@@ -152,10 +164,117 @@ jobs:
           BUNDLE_DIR: ${{ matrix.bundle_dir }}
         run: find "$BUNDLE_DIR" -type f \( -name '*.dmg' -o -name '*.tar.gz*' -o -name '*.exe*' -o -name '*.AppImage*' -o -name '*.deb' \) 2>/dev/null || true
 
-      # Подписи `.sig` появятся с задачи 8 (updater); пока шаблон просто ничего не находит.
+      # `.sig` — подписи файлов обновления, их читает `publish` (scripts/manifest.ts).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gamecrate-${{ matrix.name }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
           retention-days: 30
+
+  # Выкладка на сайт: только тег `desktop-vX.Y.Z` (rc/beta с `-` в версии — только сборка).
+  # Файлы версии → `PUT <сайт>/download/desktop/<X.Y.Z>/<файл>`, `latest.json` — последним:
+  # пока его нет, новая версия никому не видна, а оборванная выкладка ничего не ломает.
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.ref_name }}
+      SITE_URL: ${{ vars.GAMECRATE_URL || 'https://game.brofrong.ru' }}
+    steps:
+      - name: Версия из тега
+        id: version
+        shell: bash
+        run: |
+          version="${TAG#desktop-v}"
+          if [[ "$version" == *-* ]]; then
+            echo "::notice::$TAG — предрелиз, на сайт не выкладываем"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::тег $TAG: ожидался desktop-vX.Y.Z"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.version.outputs.publish == 'true'
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.version.outputs.publish == 'true'
+        with:
+          bun-version: 1.4.4
+
+      # Версия приложения — из Cargo.toml (в tauri.conf.json её нет; если появится — сверяем и её).
+      - name: Тег совпадает с версией приложения
+        if: steps.version.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # shellcheck disable=SC2016 # JS в одинарных кавычках — так и задумано
+          bun -e '
+            const want = process.env.VERSION;
+            const cargo = Bun.TOML.parse(await Bun.file("apps/desktop/src-tauri/Cargo.toml").text());
+            const conf = await Bun.file("apps/desktop/src-tauri/tauri.conf.json").json();
+            const found = { "Cargo.toml": cargo.package?.version, "tauri.conf.json": conf.version ?? want };
+            const bad = Object.entries(found).filter(([, v]) => v !== want);
+            if (bad.length > 0) {
+              for (const [file, v] of bad) console.error(`::error::${file}: версия ${v}, а тег — ${want}`);
+              process.exit(1);
+            }
+          '
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.version.outputs.publish == 'true'
+        with:
+          pattern: gamecrate-*
+          path: artifacts
+
+      - name: Манифест latest.json
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        run: |
+          base="${SITE_URL%/}/download/desktop"
+          bun apps/desktop/scripts/manifest.ts --tag "$TAG" --dir artifacts \
+            --out latest.json --base-url "$base" > uploads.txt
+          echo "К выкладке:"; cat uploads.txt
+          cat latest.json
+
+      # Токен — в файле заголовков (`-H @файл`), не в аргументах curl: аргументы видны в списке
+      # процессов, а `printf` — встроенная команда bash. В логе GitHub секрет ещё и замаскирован.
+      - name: Выкладка на сайт
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DESKTOP_UPLOAD_TOKEN: ${{ secrets.DESKTOP_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DESKTOP_UPLOAD_TOKEN" ]; then
+            echo "::error::нет секрета DESKTOP_UPLOAD_TOKEN (тот же, что в .env главного сервера)"
+            exit 1
+          fi
+          headers="$RUNNER_TEMP/upload-headers"
+          trap 'rm -f "$headers"' EXIT
+          (umask 077; printf 'Authorization: Bearer %s\n' "$DESKTOP_UPLOAD_TOKEN" > "$headers")
+          unset DESKTOP_UPLOAD_TOKEN
+          base="${SITE_URL%/}/download/desktop"
+          put() {
+            # Expect: — без 100-continue; повтор только на сетевых сбоях и 5xx/429
+            curl --fail-with-body --silent --show-error --retry 3 --max-time 900 \
+              -H @"$headers" -H 'Expect:' -T "$1" "$2"
+            echo
+          }
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            echo "→ $VERSION/${path##*/}"
+            put "artifacts/$path" "$base/$VERSION/${path##*/}"
+          done < uploads.txt
+          echo "→ latest.json"
+          put latest.json "$base/latest.json"
+          echo "::notice::GameCrate $VERSION выложен: $base/latest.json"
