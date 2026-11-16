@@ -68,13 +68,18 @@ services:
       ORCHESTRATOR_RELAY_URL: http://cg-orchestrator:${RELAY_PORT:-3002}
       # Общий секрет с relay (тот же у cg-orchestrator), не короче 32 символов.
       RELAY_SECRET: ${RELAY_SECRET:?RELAY_SECRET is required}
-      # Раздача десктоп-приложения (/download/desktop/*): бакет cg-desktop в cg-rustfs, ключ
-      # только на чтение этого бакета (не корневые RUSTFS_*). Необязательно: без ключей API
-      # стартует как раньше, а /download/desktop/* отвечает 404 («Скачать» покажет «Скоро»).
+      # Раздача десктоп-приложения (/download/desktop/*): бакет cg-desktop в cg-rustfs. API и
+      # раздаёт файлы, и принимает их выкладку из GitHub Actions (PUT, RustFS снаружи не виден),
+      # поэтому ключу нужны чтение и запись cg-desktop. По умолчанию — корневые ключи RustFS;
+      # можно завести отдельного пользователя RustFS с доступом только к cg-desktop/* и задать
+      # его DESKTOP_S3_ACCESS_KEY/DESKTOP_S3_SECRET_KEY.
       DESKTOP_S3_ENDPOINT: ${DESKTOP_S3_ENDPOINT:-http://cg-rustfs:9000}
       DESKTOP_S3_BUCKET: ${DESKTOP_S3_BUCKET:-cg-desktop}
-      DESKTOP_S3_ACCESS_KEY: ${DESKTOP_S3_ACCESS_KEY:-}
-      DESKTOP_S3_SECRET_KEY: ${DESKTOP_S3_SECRET_KEY:-}
+      DESKTOP_S3_ACCESS_KEY: ${DESKTOP_S3_ACCESS_KEY:-${RUSTFS_ACCESS_KEY}}
+      DESKTOP_S3_SECRET_KEY: ${DESKTOP_S3_SECRET_KEY:-${RUSTFS_SECRET_KEY}}
+      # Токен выкладки сборок (PUT /download/desktop/*, тот же — секрет GitHub DESKTOP_UPLOAD_TOKEN).
+      # Пусто — выкладка выключена (PUT → 404), раздача работает.
+      DESKTOP_UPLOAD_TOKEN: ${DESKTOP_UPLOAD_TOKEN:-}
     mem_limit: 512m
     logging: *logging
     networks:

@@ -93,12 +93,29 @@ GameCrate. `X-Forwarded-Host` прокси перезаписывает, а не
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — по `openssl rand -hex 24` (корневые ключи RustFS, они
   же S3-ключи, которые оркестратор выдаёт агентам).
 - Необязательно, раздача десктоп-приложения (страница `/download`, файлы `/download/desktop/*`):
-  `DESKTOP_S3_ACCESS_KEY`, `DESKTOP_S3_SECRET_KEY` — отдельный пользователь RustFS **только на чтение**
-  бакета `cg-desktop` (не корневые `RUSTFS_*`), `DESKTOP_S3_ENDPOINT` (по умолчанию
-  `http://cg-rustfs:9000`) и `DESKTOP_S3_BUCKET` (по умолчанию `cg-desktop`). Ключи задаются только
-  парой; без них `cg-api` стартует, а `/download/desktop/*` отвечает 404, на странице «Скачать» будет
-  «Скоро». Бакет создаётся один раз (см. ниже). Файлы туда загружает публикация сборки
-  (GitHub Actions) отдельным ключом на запись, API их не пишет.
+  `DESKTOP_S3_ENDPOINT` (по умолчанию `http://cg-rustfs:9000`), `DESKTOP_S3_BUCKET` (по умолчанию
+  `cg-desktop`), `DESKTOP_S3_ACCESS_KEY`/`DESKTOP_S3_SECRET_KEY` — ключ на чтение и запись
+  `cg-desktop`; пустые в `.env` = корневые `RUSTFS_*` (compose подставляет сам), отдельный
+  пользователь RustFS только на `cg-desktop/*` — по желанию. Бакет создаётся один раз (см. ниже).
+- Необязательно, выкладка сборок из GitHub Actions: `DESKTOP_UPLOAD_TOKEN` — `openssl rand -hex 32`.
+  RustFS снаружи docker-сети не виден, поэтому джоб `publish` (`.github/workflows/desktop.yml`) шлёт
+  файлы в API: `PUT /download/desktop/<версия>/<файл>` и последним `PUT /download/desktop/latest.json`
+  с `Authorization: Bearer <токен>`, тело до 500 МиБ потоком в бакет. Пусто — `PUT` отвечает 404.
+  Тот же токен владелец кладёт в секрет GitHub `DESKTOP_UPLOAD_TOKEN` (Settings → Secrets and
+  variables → Actions) и в Bitwarden. Включить выкладку:
+
+  ```sh
+  # пустую строку из .env.example заменить, нет строки — дописать; уже задан — не трогать
+  T=$(openssl rand -hex 32)
+  sed -i "s/^DESKTOP_UPLOAD_TOKEN=$/DESKTOP_UPLOAD_TOKEN=$T/" .env
+  grep -q '^DESKTOP_UPLOAD_TOKEN=' .env || printf 'DESKTOP_UPLOAD_TOKEN=%s\n' "$T" >> .env
+  unset T
+  docker compose -f compose.main.yaml --env-file .env up -d cg-api
+  ```
+
+  Обратный прокси перед `cg-api` не должен ограничивать тело запроса меньше 500 МиБ (у Caddy
+  по умолчанию лимита нет; `request_body max_size` в его конфиге — не наш файл, проверить).
+  Если выкладка падает на 413 от прокси, а не от API, — это он.
 - `RELAY_SECRET` — `openssl rand -hex 32` (не короче 32 символов): общий секрет `cg-api` и relay
   оркестратора, compose передаёт его обоим.
 - `PROFILE_KEY`, `SEED_KEY` — по `openssl rand -base64 32` (base64 ровно 32 байт).
@@ -112,7 +129,7 @@ grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base6
 ```
 
 Каждый сервис получает только свои переменные (`POSTGRES_PASSWORD` — только `cg-postgres`,
-`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор, `DESKTOP_S3_*` — только `cg-api`).
+`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор, `DESKTOP_S3_*` и `DESKTOP_UPLOAD_TOKEN` — только `cg-api`).
 
 ### Запуск и обновление главного
 

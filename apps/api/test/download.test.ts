@@ -1,30 +1,36 @@
 // Раздача десктоп-сборок: `GET /download/desktop/latest.json` и
 // `GET /download/desktop/:version/:file` из фейкового бакета (Map). Маршруты публичные.
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, spyOn } from "bun:test";
 import { BunHttpServer } from "@effect/platform-bun";
-import { ConfigProvider, Effect, Layer, Option } from "effect";
+import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
 import { HttpRouter } from "effect/http";
 import { desktopConfig } from "../src/config";
 import {
   contentTypeOf,
   DesktopReleases,
+  DesktopReleasesError,
 } from "../src/download/DesktopReleases";
-import { DesktopRoutes } from "../src/download/routes";
+import {
+  DesktopRoutes,
+  DesktopUpload,
+  maxUploadBytes,
+} from "../src/download/routes";
 
 const exe = new Uint8Array([77, 90, 144, 0, 3, 0, 0, 0]);
 const objects = new Map<string, { body: Uint8Array; contentType?: string }>([
-  [
-    "latest.json",
-    { body: new TextEncoder().encode('{"version":"0.1.0"}') },
-  ],
+  ["latest.json", { body: new TextEncoder().encode('{"version":"0.1.0"}') }],
   ["0.1.0/GameCrate_0.1.0_x64-setup.exe", { body: exe }],
   ["0.1.0/GameCrate_0.1.0_universal.app.tar.gz", { body: new Uint8Array(3) }],
-  ["0.1.0/GameCrate_0.1.0_universal.app.tar.gz.sig", { body: new Uint8Array(2) }],
+  [
+    "0.1.0/GameCrate_0.1.0_universal.app.tar.gz.sig",
+    { body: new Uint8Array(2) },
+  ],
 ]);
 
 const app = HttpRouter.toWebHandler(
   DesktopRoutes.pipe(
     Layer.provide(DesktopReleases.test(objects)),
+    Layer.provide(DesktopUpload.none),
     Layer.provide(BunHttpServer.layerHttpServices),
   ),
   { disableLogger: true },
@@ -47,6 +53,7 @@ describe("GET /download/desktop/latest.json", () => {
     const empty = HttpRouter.toWebHandler(
       DesktopRoutes.pipe(
         Layer.provide(DesktopReleases.test(new Map())),
+        Layer.provide(DesktopUpload.none),
         Layer.provide(BunHttpServer.layerHttpServices),
       ),
       { disableLogger: true },
@@ -117,6 +124,12 @@ describe("GET /download/desktop/:version/:file", () => {
   });
 
   it("is 404 for other methods and unknown paths, not the SPA page", async () => {
+    // выкладка не настроена (нет DESKTOP_UPLOAD_TOKEN) — PUT тоже 404
+    const put = await get(
+      "/download/desktop/0.1.0/GameCrate_0.1.0_x64-setup.exe",
+      { method: "PUT", body: exe, headers: { authorization: "Bearer x" } },
+    );
+    expect(put.status).toBe(404);
     const post = await get(
       "/download/desktop/0.1.0/GameCrate_0.1.0_x64-setup.exe",
       { method: "POST" },
@@ -124,7 +137,9 @@ describe("GET /download/desktop/:version/:file", () => {
     expect(post.status).toBe(404);
     expect((await get("/download/desktop")).status).toBe(404);
     expect((await get("/download/desktop/0.1.0")).status).toBe(404);
-    expect((await get("/download/desktop/0.1.0", { method: "HEAD" })).status).toBe(404);
+    expect(
+      (await get("/download/desktop/0.1.0", { method: "HEAD" })).status,
+    ).toBe(404);
   });
 });
 
@@ -150,14 +165,25 @@ describe("desktopConfig", () => {
     expect(config.endpoint).toBe("http://cg-rustfs:9000");
     expect(config.bucket).toBe("cg-desktop");
     expect(Option.isNone(config.credentials)).toBe(true);
+    expect(Option.isNone(config.uploadToken)).toBe(true);
   });
 
   it("empty compose placeholders are the same as unset", async () => {
     const config = await parse({
       DESKTOP_S3_ACCESS_KEY: "",
       DESKTOP_S3_SECRET_KEY: "",
+      DESKTOP_UPLOAD_TOKEN: "",
     });
     expect(Option.isNone(config.credentials)).toBe(true);
+    expect(Option.isNone(config.uploadToken)).toBe(true);
+  });
+
+  it("reads the upload token as a secret", async () => {
+    const config = await parse({ DESKTOP_UPLOAD_TOKEN: "tok-123" });
+    expect(Option.isSome(config.uploadToken)).toBe(true);
+    if (!Option.isSome(config.uploadToken)) return;
+    expect(Redacted.value(config.uploadToken.value)).toBe("tok-123");
+    expect(String(config.uploadToken.value)).not.toContain("tok-123");
   });
 
   it("reads both keys together", async () => {
@@ -184,12 +210,24 @@ describe("desktopConfig", () => {
 
 describe("DesktopReleases on Bun.S3Client", () => {
   const seen: string[] = [];
+  const stored = new Map<string, { body: Uint8Array; type: string | null }>();
   const s3 = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       const { pathname } = new URL(request.url);
       seen.push(`${request.method} ${pathname}`);
+      if (request.method === "PUT" && pathname === "/cg-desktop/fail.exe")
+        return new Response("<Error><Code>AccessDenied</Code></Error>", {
+          status: 403,
+        });
+      if (request.method === "PUT") {
+        stored.set(pathname, {
+          body: new Uint8Array(await request.arrayBuffer()),
+          type: request.headers.get("content-type"),
+        });
+        return new Response(null, { headers: { etag: '"x"' } });
+      }
       if (pathname === "/cg-desktop/0.1.0/a.exe")
         return new Response(request.method === "HEAD" ? null : "abcde", {
           headers: { "content-length": "5", etag: '"x"' },
@@ -236,6 +274,25 @@ describe("DesktopReleases on Bun.S3Client", () => {
     );
     expect(result._tag).toBe("Failure");
   });
+
+  it("writes a stream with its content type through a path-style URL", async () => {
+    const body = new Blob([new Uint8Array([4, 5, 6])]).stream();
+    await Effect.runPromise(
+      releases.put("0.2.0/up.exe", body, contentTypeOf("up.exe"), 3),
+    );
+    const object = stored.get("/cg-desktop/0.2.0/up.exe");
+    expect(object?.body).toEqual(new Uint8Array([4, 5, 6]));
+    expect(object?.type).toBe("application/vnd.microsoft.portable-executable");
+  });
+
+  it("fails when the storage refuses the write", async () => {
+    const result = await Effect.runPromise(
+      releases
+        .put("fail.exe", new Blob(["x"]).stream(), "application/octet-stream")
+        .pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
 });
 
 describe("DesktopReleases without keys", () => {
@@ -246,5 +303,241 @@ describe("DesktopReleases without keys", () => {
       ),
     );
     expect(Option.isNone(result)).toBe(true);
+  });
+
+  it("refuses writes", async () => {
+    const result = await Effect.runPromise(
+      DesktopReleases.use((releases) =>
+        releases.put(
+          "latest.json",
+          new Blob(["{}"]).stream(),
+          "application/json",
+        ),
+      ).pipe(Effect.provide(DesktopReleases.disabled), Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
+});
+
+describe("PUT /download/desktop/* (выкладка из GitHub Actions)", () => {
+  const token = "upload-token-0123456789abcdef";
+  const limit = 1024;
+  const bucket = new Map<string, { body: Uint8Array }>();
+  const upload = HttpRouter.toWebHandler(
+    DesktopRoutes.pipe(
+      Layer.provide(DesktopReleases.test(bucket)),
+      // маленький лимит, чтобы не гонять в тесте 500 МБ
+      Layer.provide(DesktopUpload.withToken(token, limit)),
+      Layer.provide(BunHttpServer.layerHttpServices),
+    ),
+    { disableLogger: true },
+  );
+  afterAll(() => upload.dispose());
+  afterEach(() => bucket.clear());
+
+  const put = (
+    path: string,
+    body: BodyInit | null,
+    headers: Record<string, string> = { authorization: `Bearer ${token}` },
+  ) =>
+    upload.handler(
+      new Request(`http://localhost${path}`, { method: "PUT", body, headers }),
+    );
+  const getFrom = (path: string, init?: RequestInit) =>
+    upload.handler(new Request(`http://localhost${path}`, init));
+
+  const file = "/download/desktop/0.2.0/GameCrate_0.2.0_x64-setup.exe";
+  const payload = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
+
+  it("stores the file with the right token (201), then GET and HEAD serve it", async () => {
+    const response = await put(file, payload);
+    expect(response.status).toBe(201);
+    expect(bucket.get("0.2.0/GameCrate_0.2.0_x64-setup.exe")?.body).toEqual(
+      payload,
+    );
+    const served = await getFrom(file);
+    expect(served.status).toBe(200);
+    expect(served.headers.get("cache-control")).toBe(
+      "public, max-age=31536000, immutable",
+    );
+    expect(new Uint8Array(await served.arrayBuffer())).toEqual(payload);
+    const head = await getFrom(file, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(payload.length));
+  });
+
+  it("stores latest.json at its own path", async () => {
+    const manifest = '{"version":"0.2.0"}';
+    const response = await put("/download/desktop/latest.json", manifest, {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    });
+    expect(response.status).toBe(201);
+    const served = await getFrom("/download/desktop/latest.json");
+    expect(served.headers.get("cache-control")).toBe("no-cache");
+    expect(await served.json()).toEqual({ version: "0.2.0" });
+  });
+
+  it("streams a body without Content-Length (chunked)", async () => {
+    const chunks = [new Uint8Array([9, 9]), new Uint8Array([8])];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const response = await put(file, stream);
+    expect(response.status).toBe(201);
+    expect(bucket.get("0.2.0/GameCrate_0.2.0_x64-setup.exe")?.body).toEqual(
+      new Uint8Array([9, 9, 8]),
+    );
+  });
+
+  it.each([
+    ["no Authorization", {}],
+    ["wrong token", { authorization: "Bearer nope" }],
+    ["token prefix", { authorization: `Bearer ${token.slice(0, -1)}` }],
+    ["token with suffix", { authorization: `Bearer ${token}x` }],
+    ["not Bearer", { authorization: `Basic ${token}` }],
+    ["empty Bearer", { authorization: "Bearer " }],
+  ])("is 401 with %s and stores nothing", async (_name, headers) => {
+    const response = await put(file, payload, headers);
+    expect(response.status).toBe(401);
+    expect(bucket.size).toBe(0);
+  });
+
+  it.each([
+    ["1.0", "/download/desktop/1.0/a.exe"],
+    ["v-prefix", "/download/desktop/v0.2.0/a.exe"],
+    ["dotdot file", "/download/desktop/0.2.0/..%2Flatest.json"],
+    ["encoded slash", "/download/desktop/0.2.0/a%2Fb.exe"],
+    ["extra segment", "/download/desktop/0.2.0/a/b.exe"],
+    ["space", "/download/desktop/0.2.0/a%20b.exe"],
+    ["no file", "/download/desktop/0.2.0"],
+    ["other json", "/download/desktop/other.json"],
+  ])("is 404 for a bad path: %s", async (_name, path) => {
+    const response = await put(path, payload);
+    expect(response.status).toBe(404);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("is 413 when Content-Length is over the limit, before reading the body", async () => {
+    let pulled = false;
+    // highWaterMark 0: pull только когда тело действительно читают
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled = true;
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const response = await upload.handler(
+      new Request(`http://localhost${file}`, {
+        method: "PUT",
+        body: stream,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-length": String(limit + 1),
+        },
+      }),
+    );
+    expect(response.status).toBe(413);
+    expect(pulled).toBe(false);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("is 413 when a chunked body grows over the limit, and nothing is stored", async () => {
+    const chunk = new Uint8Array(300);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // чуть больше лимита
+        if (sent > limit) return controller.close();
+        sent += chunk.length;
+        controller.enqueue(chunk);
+      },
+    });
+    const response = await put(file, stream);
+    expect(response.status).toBe(413);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("accepts a body of exactly the limit", async () => {
+    const response = await put(file, new Uint8Array(limit));
+    expect(response.status).toBe(201);
+  });
+
+  it("is 400 without a body", async () => {
+    const response = await put(file, null);
+    expect(response.status).toBe(400);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("never logs the token, even when the storage fails", async () => {
+    const broken = HttpRouter.toWebHandler(
+      DesktopRoutes.pipe(
+        Layer.provide(
+          Layer.succeed(DesktopReleases, {
+            get: () => Effect.succeed(Option.none()),
+            put: (key) =>
+              Effect.fail(new DesktopReleasesError({ message: `boom ${key}` })),
+          }),
+        ),
+        Layer.provide(DesktopUpload.withToken(token)),
+        Layer.provide(BunHttpServer.layerHttpServices),
+      ),
+      { disableLogger: true },
+    );
+    const output: string[] = [];
+    const capture = (...args: unknown[]) => {
+      output.push(
+        args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" "),
+      );
+    };
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map(
+      (method) => spyOn(console, method).mockImplementation(capture),
+    );
+    try {
+      const failed = await broken.handler(
+        new Request(`http://localhost${file}`, {
+          method: "PUT",
+          body: payload,
+          headers: { authorization: `Bearer ${token}` },
+        }),
+      );
+      expect(failed.status).toBe(502);
+      const denied = await put(file, payload, {
+        authorization: "Bearer wrong-token-value",
+      });
+      expect(denied.status).toBe(401);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+      await broken.dispose();
+    }
+    // сбой хранилища залогирован (перехват работает), токена в логе нет
+    expect(output.join("\n")).toContain(
+      "boom 0.2.0/GameCrate_0.2.0_x64-setup.exe",
+    );
+    expect(output.join("\n")).not.toContain(token);
+    expect(output.join("\n")).not.toContain("wrong-token-value");
+  });
+});
+
+describe("DesktopUpload", () => {
+  it("defaults to a 500 MiB limit", () => {
+    expect(maxUploadBytes).toBe(500 * 1024 * 1024);
+  });
+
+  it("withToken() keeps the token redacted", async () => {
+    const value = await Effect.runPromise(
+      DesktopUpload.use((t) => Effect.succeed(t)).pipe(
+        Effect.provide(DesktopUpload.withToken("secret-x")),
+      ),
+    );
+    expect(Option.isSome(value.token)).toBe(true);
+    expect(value.maxBytes).toBe(maxUploadBytes);
+    expect(JSON.stringify(value)).not.toContain("secret-x");
   });
 });

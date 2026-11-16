@@ -13,7 +13,7 @@ import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
 import { BrandedStaticRoute } from "./brand/route";
 import { AppConfig, rpcAllowedOrigins } from "./config";
 import { DesktopReleases } from "./download/DesktopReleases";
-import { DesktopRoutes } from "./download/routes";
+import { DesktopRoutes, DesktopUpload } from "./download/routes";
 import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
 import { SessionRpcHandlers } from "./session/rpc";
@@ -100,12 +100,14 @@ const RpcRoute = RpcServer.layer(AppRpcs).pipe(
 );
 
 /**
- * Раздача десктоп-сборок `/download/desktop/*` — публично. Хранилище берёт из окружения само
- * (`DESKTOP_S3_*`, без ключей — 404), поэтому в `HttpApp` оно не входит зависимостью и
- * остальным тестам/деплоям ничего нового не нужно.
+ * Раздача десктоп-сборок `/download/desktop/*` — публично; выкладка (`PUT`) — по
+ * `DESKTOP_UPLOAD_TOKEN`. Хранилище и токен берёт из окружения само (`DESKTOP_S3_*`, без ключей —
+ * 404), поэтому в `HttpApp` они не входят зависимостью и остальным тестам/деплоям ничего нового
+ * не нужно.
  */
 const DesktopDownloadRoute = DesktopRoutes.pipe(
   Layer.provide(DesktopReleases.layer),
+  Layer.provide(DesktopUpload.layer),
 );
 
 /** Всё приложение; запускается через `HttpRouter.serve` (main.ts) или `toWebHandler` (тесты). */

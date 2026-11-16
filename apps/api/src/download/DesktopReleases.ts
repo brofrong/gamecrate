@@ -1,6 +1,7 @@
 // Хранилище десктоп-сборок: бакет `cg-desktop` в `cg-rustfs` (S3, path-style, как
-// `apps/agent/src/profile/ProfileStore.ts`), API только читает. Ключи объектов:
-// `latest.json` (манифест updater) и `<версия>/<файл>` (установщики, `.sig`).
+// `apps/agent/src/profile/ProfileStore.ts`). API раздаёт объекты и кладёт новые (выкладка из
+// GitHub Actions через `PUT /download/desktop/*`: RustFS снаружи docker-сети не виден). Ключи
+// объектов: `latest.json` (манифест updater) и `<версия>/<файл>` (установщики, `.sig`).
 import { Context, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { desktopConfig } from "../config";
 
@@ -21,6 +22,17 @@ export interface DesktopReleasesShape {
   readonly get: (
     key: string,
   ) => Effect.Effect<Option.Option<DesktopObject>, DesktopReleasesError>;
+  /**
+   * Положить объект потоком (в память целиком не читается). Ошибка потока `body` (например,
+   * превышен лимит размера) — тоже `DesktopReleasesError`, объект при этом не появляется.
+   * `size` — длина из `Content-Length`, если известна.
+   */
+  readonly put: (
+    key: string,
+    body: ReadableStream<Uint8Array>,
+    contentType: string,
+    size?: number,
+  ) => Effect.Effect<void, DesktopReleasesError>;
 }
 
 const octet = "application/octet-stream";
@@ -29,7 +41,8 @@ const octet = "application/octet-stream";
 export const contentTypeOf = (key: string): string => {
   const name = key.toLowerCase();
   if (name.endsWith(".json")) return "application/json";
-  if (name.endsWith(".exe")) return "application/vnd.microsoft.portable-executable";
+  if (name.endsWith(".exe"))
+    return "application/vnd.microsoft.portable-executable";
   if (name.endsWith(".dmg")) return "application/x-apple-diskimage";
   if (name.endsWith(".deb")) return "application/vnd.debian.binary-package";
   if (name.endsWith(".tar.gz") || name.endsWith(".tgz"))
@@ -56,7 +69,10 @@ export type DesktopReleasesOptions = {
   readonly secretAccessKey: string;
 };
 
-/** Клиент на `Bun.S3Client`: размер из HEAD, тело — поток (в память файл не читаем). */
+/**
+ * Клиент на `Bun.S3Client`: размер из HEAD, тело — поток (в память файл не читаем). Запись из
+ * потока Bun ведёт multipart-загрузкой частями по 5 МиБ (малый файл — одним PUT).
+ */
 export const make = (options: DesktopReleasesOptions): DesktopReleasesShape => {
   const client = new Bun.S3Client({
     endpoint: options.endpoint,
@@ -86,6 +102,12 @@ export const make = (options: DesktopReleasesOptions): DesktopReleasesShape => {
         },
         catch: failure,
       }),
+    put: (key, body, contentType) =>
+      Effect.tryPromise({
+        try: () =>
+          client.file(key).write(new Response(body), { type: contentType }),
+        catch: failure,
+      }).pipe(Effect.asVoid),
   };
 };
 
@@ -98,7 +120,16 @@ export class DesktopReleases extends Context.Service<
   /** Без ключей S3: ничего не раздаём (маршруты отвечают 404), API при этом стартует как прежде. */
   static readonly disabled: Layer.Layer<DesktopReleases> = Layer.succeed(
     DesktopReleases,
-    { get: () => Effect.succeed(Option.none()) },
+    {
+      get: () => Effect.succeed(Option.none()),
+      put: () =>
+        Effect.fail(
+          new DesktopReleasesError({
+            message:
+              "хранилище не настроено (DESKTOP_S3_ACCESS_KEY/DESKTOP_S3_SECRET_KEY)",
+          }),
+        ),
+    },
   );
 
   /** Из окружения (`desktopConfig`): ключи заданы — `Bun.S3Client`, нет — `disabled`. */
@@ -123,9 +154,9 @@ export class DesktopReleases extends Context.Service<
     ),
   );
 
-  /** Тестовый слой: объекты в `Map` (ключ → тело). */
+  /** Тестовый слой: объекты в `Map` (ключ → тело); `put` дочитывает поток и кладёт в неё. */
   static readonly test = (
-    objects: ReadonlyMap<string, { readonly body: Uint8Array }>,
+    objects: Map<string, { readonly body: Uint8Array }>,
   ): Layer.Layer<DesktopReleases> =>
     Layer.succeed(DesktopReleases, {
       get: (key) =>
@@ -139,5 +170,14 @@ export class DesktopReleases extends Context.Service<
             contentType: contentTypeOf(key),
           });
         }),
+      put: (key, body) =>
+        Effect.tryPromise({
+          try: () => new Response(body).bytes(),
+          catch: failure,
+        }).pipe(
+          Effect.map((bytes) => {
+            objects.set(key, { body: bytes });
+          }),
+        ),
     });
 }

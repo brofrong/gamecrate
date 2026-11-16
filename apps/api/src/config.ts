@@ -8,6 +8,7 @@ import {
   Effect,
   Layer,
   Option,
+  Redacted,
   Schema,
 } from "effect";
 
@@ -217,10 +218,13 @@ export const appConfig = Config.all({
 });
 
 /**
- * Раздача десктоп-сборок (`download/`): бакет `cg-desktop` в `cg-rustfs`, доступ только на чтение.
+ * Раздача десктоп-сборок (`download/`): бакет `cg-desktop` в `cg-rustfs`. API отдаёт файлы и
+ * принимает выкладку из GitHub Actions (`PUT`, только с `DESKTOP_UPLOAD_TOKEN`), поэтому ключу
+ * нужны чтение и запись `cg-desktop/*`.
  * Отдельно от `appConfig`: переменные необязательные — на деплое без ключей API стартует как
  * раньше, а `/download/desktop/*` отвечает 404 (`DesktopReleases.disabled`). Ключи — парой:
  * `Some` только если заданы оба, одиночный ключ — ConfigError (как у OAuth-провайдеров).
+ * Нет `DESKTOP_UPLOAD_TOKEN` (или он пуст) — `PUT` отвечает 404, раздача работает.
  */
 export const desktopConfig = Config.all({
   endpoint: Config.String("DESKTOP_S3_ENDPOINT").pipe(
@@ -237,6 +241,10 @@ export const desktopConfig = Config.all({
     Config.map(
       Option.map(([accessKey, secretKey]) => ({ accessKey, secretKey })),
     ),
+  ),
+  uploadToken: Config.option(Config.Redacted("DESKTOP_UPLOAD_TOKEN")).pipe(
+    // пустой плейсхолдер compose (`${DESKTOP_UPLOAD_TOKEN:-}`) — то же, что не задан
+    Config.map(Option.filter((token) => Redacted.value(token).length > 0)),
   ),
 });
 

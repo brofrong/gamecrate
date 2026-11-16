@@ -5,6 +5,7 @@ import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter } from "effect/http";
 import { BetterAuth } from "./auth/auth";
 import { AppConfig } from "./config";
+import { maxUploadBytes } from "./download/routes";
 import { HttpApp } from "./http";
 import { OwnGameCatalog } from "./library/OwnGameCatalog";
 import { Mailer } from "./mail/Mailer";
@@ -12,8 +13,18 @@ import { ProtonDb } from "./steam/ProtonDb";
 import { SteamApi } from "./steam/SteamApi";
 import { SteamStoreApi } from "./steam/SteamStoreApi";
 
+/**
+ * `maxRequestBodySize`: по умолчанию Bun режет тело на 128 МБ, а выкладка десктоп-сборок
+ * (`PUT /download/desktop/*`) — до `maxUploadBytes`. Запас в 1 МиБ — чтобы сверх лимита ответил
+ * сам маршрут (413), а не обрыв потока в Bun.
+ */
 const BunServer = Layer.unwrap(
-  AppConfig.useSync((config) => BunHttpServer.layer({ port: config.port })),
+  AppConfig.useSync((config) =>
+    BunHttpServer.layer({
+      port: config.port,
+      maxRequestBodySize: maxUploadBytes + 1024 * 1024,
+    }),
+  ),
 );
 
 /**
