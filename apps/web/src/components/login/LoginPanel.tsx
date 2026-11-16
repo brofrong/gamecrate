@@ -1,12 +1,21 @@
 // Правая панель страницы входа: кнопки провайдеров, вход по одноразовому коду на почту,
 // скелетон до загрузки списка провайдеров, репортит сцене слева уровень сборки, подсветку
 // провайдера и момент успешного входа («зажигание» куба).
+// В десктоп-приложении OAuth идёт через системный браузер (`/login/desktop`): провайдеры
+// не пускают webview, а чужие хосты окно и так отдаёт браузеру. Код на почту — в окне.
 import { useEffect, useRef, useState } from "react";
 import type { AuthProviders } from "@cg/rpc";
-import { sendEmailCode, signInWithEmailCode, signInWithProvider } from "@/auth";
+import {
+  sendEmailCode,
+  signInWithEmailCode,
+  signInWithProvider,
+  type SocialProvider,
+} from "@/auth";
 import { useBrand } from "@/brands";
 import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
+import { desktopOpenExternal, isDesktop } from "@/lib/desktop";
+import { desktopLoginUrl } from "@/lib/desktopLogin";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
 import { ProviderButtons } from "./ProviderButtons";
 
@@ -39,6 +48,8 @@ export function LoginPanel({
   const [submitted, setSubmitted] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const autoSubmitted = useRef<string | null>(null);
+  // приложение: OAuth открыт в системном браузере — ждём ссылку `gamecrate://auth`
+  const [browser, setBrowser] = useState<SocialProvider | null>(null);
 
   const requestCode = async (email: string) => {
     setPending(true);
@@ -71,7 +82,16 @@ export function LoginPanel({
     window.location.assign(next);
   };
 
+  const openBrowser = (p: SocialProvider) => {
+    setBrowser(p);
+    void desktopOpenExternal(desktopLoginUrl(p));
+  };
+
   const handleProvider = (p: Provider) => {
+    if (isDesktop()) {
+      openBrowser(p);
+      return;
+    }
     setSubmitted(true);
     onLit();
     void signInWithProvider(p, next);
@@ -123,6 +143,35 @@ export function LoginPanel({
         {[0, 1, 2].map((i) => (
           <div key={i} className="h-11 animate-pulse rounded-xl bg-white/6" />
         ))}
+      </div>
+    );
+  }
+
+  if (browser !== null) {
+    return (
+      <div className="grid w-full max-w-sm gap-5">
+        <h1 className="text-2xl font-semibold tracking-[-0.02em] text-brand-text">
+          Продолжите вход в браузере
+        </h1>
+        <p className="text-sm text-brand-muted">
+          Мы открыли страницу входа в браузере. Войдите там — {brand.name}{" "}
+          откроется сам, уже с вашим аккаунтом.
+        </p>
+        <Button
+          type="button"
+          onClick={() => openBrowser(browser)}
+          className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
+        >
+          Открыть браузер ещё раз
+        </Button>
+        <Button
+          type="button"
+          variant="link"
+          onClick={() => setBrowser(null)}
+          className="h-auto justify-self-start p-0 text-brand-cyan"
+        >
+          Назад
+        </Button>
       </div>
     );
   }
@@ -248,7 +297,11 @@ export function LoginPanel({
         <Button
           type="button"
           variant="link"
-          onClick={() => void signInWithProvider("pocket-id", "/admin")}
+          onClick={() =>
+            isDesktop()
+              ? openBrowser("pocket-id")
+              : void signInWithProvider("pocket-id", "/admin")
+          }
           className="h-auto justify-self-start p-0 text-xs text-brand-muted"
         >
           Вход для команды
