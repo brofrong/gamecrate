@@ -199,6 +199,30 @@ curl -s https://<домен>/healthz                             # ok
   `--data-dir /raid/cloud-gaming --public-ip 37.153.14.138`; в его `.env` шаблон Steam и scratch
   переведены на `/home/brofrong/cloud-gaming-steam{,/client}` и `/home/brofrong/cloud-gaming-scratch`
   (там они лежали со стенда). UDP `59000`.
+- Десктоп-приложение (один раз, перед первым тегом `desktop-v*`). Сборки по умолчанию зашивают
+  `https://gamecrate.srv5.wbrofrong.ru`. Переменная репозитория GitHub `GAMECRATE_URL` перекрывает
+  этот адрес для сборки и для `publish`.
+  1. В `.env` прописать `DESKTOP_UPLOAD_TOKEN`: тот же токен, что в секрете GitHub, Bitwarden
+     01608fd5. Подставлять из `bw`, на экран не выводить.
+  2. В каталоге проекта создать бакет:
+     `docker compose run --rm -e BUCKET=cg-desktop cg-rustfs-bucket`.
+  3. Пересоздать API: `docker compose up -d cg-api`.
+  4. В сайт nginx добавить отдельный `location`, у nginx по умолчанию `client_max_body_size 1m`:
+
+     ```nginx
+     location /download/desktop/ {
+         client_max_body_size 600m;   # API режет на 500 МиБ, остальное — запас
+         proxy_pass http://127.0.0.1:13000;
+         # те же proxy_set_header и таймауты, что у location /
+     }
+     ```
+
+     Без этого `PUT` сборок получает 413 от nginx. Остальным путям API хватает 1 МиБ: `BodyLimit`
+     и так режет тело больше 1 МиБ и запросы без `Content-Length` (411).
+  5. Проверить: `nginx -t && nginx -s reload`, затем
+     `curl -sI https://gamecrate.srv5.wbrofrong.ru/download/desktop/latest.json`. До первого релиза
+     ответ 404. Вход через `/api/auth` тоже должен работать: браузеры шлют `Content-Length`. 411 на
+     обычные запросы значит, что nginx переделывает тело в chunked.
 
 ## Игровой сервер
 

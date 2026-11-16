@@ -6,7 +6,7 @@ use tauri::Url;
 /// в конце. Снаружи — только через [`public_base`] и [`public_url`].
 const RAW_PUBLIC_URL: &str = match option_env!("GAMECRATE_URL") {
     Some(url) => url,
-    None => "https://game.brofrong.ru",
+    None => "https://gamecrate.srv5.wbrofrong.ru",
 };
 
 /// Что сделать с переходом окна.
@@ -20,7 +20,7 @@ pub enum Nav {
     Block,
 }
 
-/// Базовый адрес без `/` в конце: `https://game.brofrong.ru/` → `https://game.brofrong.ru`.
+/// Базовый адрес без `/` в конце: `https://gamecrate.srv5.wbrofrong.ru/` → `https://gamecrate.srv5.wbrofrong.ru`.
 pub fn trim_base(base: &str) -> &str {
     base.trim_end_matches('/')
 }

@@ -24,7 +24,7 @@
 
 ```sh
 bun install                    # из корня репозитория
-bun run --cwd apps/desktop dev # окно с https://game.brofrong.ru
+bun run --cwd apps/desktop dev # окно с https://gamecrate.srv5.wbrofrong.ru
 ```
 
 Корневые `bun run dev` и `bun run build` приложение не собирают (`--filter=!@cg/desktop`): ему
@@ -33,7 +33,7 @@ bun run --cwd apps/desktop dev # окно с https://game.brofrong.ru
 ### Другой адрес сайта — `GAMECRATE_URL`
 
 Адрес зашивается в сборку при компиляции (`option_env!`, `/` в конце отбрасывается), по умолчанию
-`https://game.brofrong.ru`:
+`https://gamecrate.srv5.wbrofrong.ru`:
 
 ```sh
 GAMECRATE_URL=http://localhost:3000 bun run --cwd apps/desktop dev
@@ -132,7 +132,7 @@ RustFS главного сервера, а наружу их отдаёт API б
 ```sh
 bun apps/desktop/scripts/manifest.ts \
   --tag desktop-v0.1.0 --dir artifacts --out latest.json \
-  --base-url https://game.brofrong.ru/download/desktop \
+  --base-url https://gamecrate.srv5.wbrofrong.ru/download/desktop \
   [--notes "Что нового" | --notes-file notes.md] [--pub-date 2026-11-16T12:00:00Z]
 ```
 

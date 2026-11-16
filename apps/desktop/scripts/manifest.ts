@@ -4,7 +4,7 @@
 //
 // CLI (bun, без зависимостей):
 //   bun apps/desktop/scripts/manifest.ts --tag desktop-v0.1.0 --dir artifacts --out latest.json \
-//     --base-url https://game.brofrong.ru/download/desktop [--notes "Что нового"] \
+//     --base-url https://gamecrate.srv5.wbrofrong.ru/download/desktop [--notes "Что нового"] \
 //     [--notes-file notes.md] [--pub-date 2026-11-16T12:00:00Z] [--platforms darwin-universal,windows-x86_64]
 // `--dir` — каталог со скачанными артефактами (ищется рекурсивно, как кладёт download-artifact);
 // в stdout — пути файлов к загрузке (файл обновления с его `.sig`, установщик macOS `.dmg`), по

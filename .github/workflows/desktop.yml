@@ -12,7 +12,7 @@
 #     без них сборка падает: `createUpdaterArtifacts` в tauri.conf.json требует ключ;
 #   DESKTOP_UPLOAD_TOKEN — тот же, что в `.env` главного сервера (нужен только `publish`).
 # Переменная GAMECRATE_URL (Variables) — адрес сайта для сборки по тегу и для выкладки; не задана —
-# прод https://game.brofrong.ru.
+# прод https://gamecrate.srv5.wbrofrong.ru.
 name: desktop
 
 on:
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       gamecrate_url:
-        description: 'Адрес сайта, зашиваемый в сборку (GAMECRATE_URL). Пусто — переменная GAMECRATE_URL репозитория, без неё прод https://game.brofrong.ru'
+        description: 'Адрес сайта, зашиваемый в сборку (GAMECRATE_URL). Пусто — переменная GAMECRATE_URL репозитория, без неё прод https://gamecrate.srv5.wbrofrong.ru'
         required: false
         default: ''
         type: string
@@ -186,7 +186,7 @@ jobs:
     timeout-minutes: 30
     env:
       TAG: ${{ github.ref_name }}
-      SITE_URL: ${{ vars.GAMECRATE_URL || 'https://game.brofrong.ru' }}
+      SITE_URL: ${{ vars.GAMECRATE_URL || 'https://gamecrate.srv5.wbrofrong.ru' }}
     steps:
       - name: Версия из тега
         id: version
