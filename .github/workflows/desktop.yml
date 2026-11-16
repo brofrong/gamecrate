@@ -174,7 +174,11 @@ jobs:
 
   # Выкладка на сайт: только тег `desktop-vX.Y.Z` (rc/beta с `-` в версии — только сборка).
   # Файлы версии → `PUT <сайт>/download/desktop/<X.Y.Z>/<файл>`, `latest.json` — последним:
-  # пока его нет, новая версия никому не видна, а оборванная выкладка ничего не ломает.
+  # пока он старый, новую версию не видят ни updater, ни страница /download. Выложенный файл
+  # версии API не перезаписывает (409): оборванная выкладка оставляет в бакете часть файлов,
+  # и её повтор с теми же артефактами («Re-run failed jobs») пропускает файлы с тем же sha256
+  # и докладывает остальные. Пересборка («Re-run all jobs») даёт другие байты — тогда ошибка,
+  # и версию нужно поднять.
   publish:
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')
@@ -260,15 +264,37 @@ jobs:
             exit 1
           fi
           headers="$RUNNER_TEMP/upload-headers"
-          trap 'rm -f "$headers"' EXIT
+          trap 'rm -f "$headers" "$RUNNER_TEMP/upload-reply"' EXIT
           (umask 077; printf 'Authorization: Bearer %s\n' "$DESKTOP_UPLOAD_TOKEN" > "$headers")
           unset DESKTOP_UPLOAD_TOKEN
           base="${SITE_URL%/}/download/desktop"
+          reply="$RUNNER_TEMP/upload-reply"
           put() {
-            # Expect: — без 100-continue; повтор только на сетевых сбоях и 5xx/429
-            curl --fail-with-body --silent --show-error --retry 3 --max-time 900 \
-              -H @"$headers" -H 'Expect:' -T "$1" "$2"
-            echo
+            local file="$1" url="$2" code published mine
+            # Expect: — без 100-continue; curl повторяет только сетевые сбои и 408/429/5xx
+            code=$(curl --silent --show-error --retry 3 --max-time 900 \
+              -H @"$headers" -H 'Expect:' -T "$file" -o "$reply" -w '%{http_code}' "$url")
+            case "$code" in
+              201) echo "  выложен" ;;
+              409)
+                # Файл этой версии уже на сайте (повтор джоба или ответ потерялся на прошлой
+                # попытке): тот же файл — пропускаем, другой — версию надо поднять.
+                published=$(curl --fail --silent --show-error --retry 3 --max-time 900 "$url" \
+                  | sha256sum | cut -d' ' -f1)
+                mine=$(sha256sum "$file" | cut -d' ' -f1)
+                if [ "$published" = "$mine" ]; then
+                  echo "  уже выложен, sha256 совпадает — пропускаю"
+                else
+                  echo "::error::версия $VERSION уже выложена с другими файлами (${url##*/}) — поднимите версию"
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "::error::PUT ${url##*/}: HTTP $code"
+                cat "$reply"; echo
+                exit 1
+                ;;
+            esac
           }
           while IFS= read -r path; do
             [ -n "$path" ] || continue
