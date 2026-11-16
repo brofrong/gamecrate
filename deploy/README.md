@@ -115,7 +115,25 @@ GameCrate. `X-Forwarded-Host` прокси перезаписывает, а не
 
   Обратный прокси перед `cg-api` не должен ограничивать тело запроса меньше 500 МиБ (у Caddy
   по умолчанию лимита нет; `request_body max_size` в его конфиге — не наш файл, проверить).
-  Если выкладка падает на 413 от прокси, а не от API, — это он.
+  Если выкладка падает на 413 от прокси, а не от API, — это он. Большое тело API принимает только
+  у `PUT /download/desktop/*`, всем остальным маршрутам — не больше 1 МиБ и только с
+  `Content-Length` (`apps/api/src/bodyLimit.ts`).
+  Выложенный файл версии API не перезаписывает (409), `latest.json` — перезаписывает. Повтор джоба
+  с теми же файлами проходит (sha256 совпал — файл пропускается), с другими — ошибка: поднять версию.
+  Бакет `cg-desktop` создаётся один раз (`run --rm -e BUCKET=cg-desktop cg-rustfs-bucket`, см.
+  «Запуск и обновление главного»). Оборванная выкладка большого файла оставляет в бакете
+  незавершённые части multipart (место на диске, объекта нет). Их убирает правило lifecycle —
+  поставить один раз после создания бакета:
+
+  ```sh
+  docker compose -f compose.main.yaml --env-file .env run --rm --entrypoint aws cg-rustfs-bucket \
+    s3api put-bucket-lifecycle-configuration --bucket cg-desktop --lifecycle-configuration \
+    '{"Rules":[{"ID":"abort-incomplete-uploads","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+  ```
+
+  RustFS 1.0.3 правило принимает и отдаёт обратно (`get-bucket-lifecycle-configuration`); что он
+  действительно чистит части через сутки, не проверялось — при сомнении посмотреть
+  `aws s3api list-multipart-uploads --bucket cg-desktop` и снять лишнее `abort-multipart-upload`.
 - `RELAY_SECRET` — `openssl rand -hex 32` (не короче 32 символов): общий секрет `cg-api` и relay
   оркестратора, compose передаёт его обоим.
 - `PROFILE_KEY`, `SEED_KEY` — по `openssl rand -base64 32` (base64 ровно 32 байт).
