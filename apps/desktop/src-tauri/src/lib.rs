@@ -58,7 +58,7 @@ fn show_main(app: &AppHandle) {
 /// сразу уходит на `<сайт>/app`; без сети остаётся на экране с кнопкой «Повторить».
 fn build_main(app: &AppHandle) -> tauri::Result<()> {
     let public = nav::public_url();
-    let start = nav::start_url(nav::PUBLIC_URL);
+    let start = nav::start_url(nav::public_base());
 
     let nav_app = app.clone();
     let nav_public = public.clone();

@@ -2,8 +2,9 @@
 
 use tauri::Url;
 
-/// Адрес сайта, зашитый в сборку (`GAMECRATE_URL` при компиляции); без `/` в конце — см. [`public_url`].
-pub const PUBLIC_URL: &str = match option_env!("GAMECRATE_URL") {
+/// Адрес сайта, зашитый в сборку (`GAMECRATE_URL` при компиляции), как задан — возможно с `/`
+/// в конце. Снаружи — только через [`public_base`] и [`public_url`].
+const RAW_PUBLIC_URL: &str = match option_env!("GAMECRATE_URL") {
     Some(url) => url,
     None => "https://game.brofrong.ru",
 };
@@ -24,9 +25,15 @@ pub fn trim_base(base: &str) -> &str {
     base.trim_end_matches('/')
 }
 
-/// [`PUBLIC_URL`] как `Url`. Кривой адрес в `GAMECRATE_URL` — ошибка сборки, а не игрока.
+/// Адрес сайта без `/` в конце.
+pub fn public_base() -> &'static str {
+    trim_base(RAW_PUBLIC_URL)
+}
+
+/// [`public_base`] как `Url`. Кривой адрес в `GAMECRATE_URL` роняет приложение при запуске —
+/// сборку с ним сразу видно на первой проверке.
 pub fn public_url() -> Url {
-    Url::parse(trim_base(PUBLIC_URL)).expect("GAMECRATE_URL должен быть адресом вида https://host")
+    Url::parse(public_base()).expect("GAMECRATE_URL должен быть адресом вида https://host")
 }
 
 /// Стартовая страница окна: `<сайт>/app` (гостя сайт сам уведёт на `/login`).
@@ -43,11 +50,14 @@ pub fn is_internal(url: &Url, public: &Url) -> bool {
 }
 
 /// Страница из бандла (заглушка без сети): `tauri://localhost` на macOS и Linux,
-/// `http(s)://tauri.localhost` на Windows.
+/// `http(s)://tauri.localhost` на Windows. На macOS и Linux `tauri.localhost` — обычный
+/// loopback, там это был бы чужой локальный сервер, поэтому только Windows и без порта.
 fn is_bundled(url: &Url) -> bool {
     match url.scheme() {
         "tauri" => url.host_str() == Some("localhost"),
-        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        "http" | "https" => {
+            cfg!(windows) && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+        }
         _ => false,
     }
 }
@@ -149,9 +159,22 @@ mod tests {
             decide(&url("tauri://localhost/index.html"), &public()),
             Nav::Allow
         );
+        let windows_bundle = if cfg!(windows) {
+            Nav::Allow
+        } else {
+            Nav::OpenInBrowser
+        };
         assert_eq!(
             decide(&url("http://tauri.localhost/index.html"), &public()),
-            Nav::Allow
+            windows_bundle
+        );
+    }
+
+    #[test]
+    fn tauri_localhost_with_port_is_not_bundled() {
+        assert_eq!(
+            decide(&url("http://tauri.localhost:8080/index.html"), &public()),
+            Nav::OpenInBrowser
         );
     }
 
