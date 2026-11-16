@@ -152,12 +152,22 @@
 **Interfaces:**
 - Produces: `/login/desktop?provider=google|yandex` (браузер): гость → `signInWithProvider(provider, "/login/desktop?done=1")`; вошедший → генерирует токен и `location = "gamecrate://auth?token=<t>"`, на странице «Можно вернуться в GameCrate». `/login/desktop/finish?token=<t>` (окно приложения): verify → cookie сессии → `/app`; ошибка → `/login?error=DESKTOP_TOKEN` с текстом «Ссылка входа устарела — войдите ещё раз» (в `authErrorMessage`). Rust: `deep_link::target(url: &Url, public: &Url) -> Option<Url>`: `gamecrate://auth?token=T` → `public/login/desktop/finish?token=T`; `gamecrate://open?path=/app/game/1` → `public/app/game/1`; путь не с `/`, с `//`, со схемой, `auth` без токена, другой host — `None`.
 
-- [ ] **Step 1: Тесты API** `desktopLogin.test.ts` (по образцу `auth.test.ts`, настоящий better-auth на тестовой БД): вошедший генерирует токен → verify с ним ставит cookie сессии того же пользователя; второй verify тем же токеном — отказ; токен старше 2 мин — отказ; без сессии генерация — 401; в таблице нет токена в открытом виде.
-- [ ] **Step 2: Тесты Rust** `deep_link.rs` — все случаи из Interfaces. **Тесты сайта** `loginDesktop.test.tsx`: вошедший на `/login/desktop` → `location.assign("gamecrate://auth?token=…")`; гость → `signIn.social` с `callbackURL: "/login/desktop?done=1"`; `finish` с ошибкой verify → редирект на `/login?error=DESKTOP_TOKEN`; в приложении кнопка Google зовёт `invoke("open_external", { url: ".../login/desktop?provider=google" })`.
-- [ ] **Step 3:** FAIL везде.
-- [ ] **Step 4: Реализация** API, сайта и Rust: deep link и second-instance (из single-instance argv) → `deep_link::target` → `main.navigate(url)` + показать/фокус; на старте — тоже разобрать ссылку, если приложение запущено ею. Яндекс: сначала проверить вход прямо в окне; если пускает — в приложении только Google идёт через браузер.
+- [x] **Step 1: Тесты API** `desktopLogin.test.ts` (по образцу `auth.test.ts`, настоящий better-auth на тестовой БД): вошедший генерирует токен → verify с ним ставит cookie сессии того же пользователя; второй verify тем же токеном — отказ; токен старше 2 мин — отказ; без сессии генерация — 401; в таблице нет токена в открытом виде.
+- [x] **Step 2: Тесты Rust** `deep_link.rs` — все случаи из Interfaces. **Тесты сайта** `loginDesktop.test.tsx`: вошедший на `/login/desktop` → `location.assign("gamecrate://auth?token=…")`; гость → `signIn.social` с `callbackURL: "/login/desktop?done=1"`; `finish` с ошибкой verify → редирект на `/login?error=DESKTOP_TOKEN`; в приложении кнопка Google зовёт `invoke("open_external", { url: ".../login/desktop?provider=google" })`.
+- [x] **Step 3:** FAIL везде.
+- [x] **Step 4: Реализация** API, сайта и Rust: deep link и second-instance (из single-instance argv) → `deep_link::target` → `main.navigate(url)` + показать/фокус; на старте — тоже разобрать ссылку, если приложение запущено ею. Яндекс: сначала проверить вход прямо в окне; если пускает — в приложении только Google идёт через браузер.
 - [ ] **Step 5:** Тесты PASS (`bun run --cwd apps/api test`, `apps/web`, `cargo test`). Ручная проверка на Mac (dev-сборка с `GAMECRATE_URL` стенда или prod после деплоя): Google через браузер → приложение вошло; та же ссылка `gamecrate://auth?...` второй раз → «Ссылка входа устарела»; `open gamecrate://open?path=/app/crate` при открытом приложении → то же окно.
-- [ ] **Step 6:** Commit `feat(auth): вход в приложение через системный браузер и одноразовый токен`.
+- [x] **Step 6:** Commit `feat(auth): вход в приложение через системный браузер и одноразовый токен`.
+
+> **Исполнено (2026-11-16), отличия от шагов выше:** плагин `oneTimeToken` (better-auth 1.7.10) дал всё нужное —
+> `expiresIn: 2`, `storeToken: "hashed"`, одноразовость атомарно; свой маршрут и миграция не понадобились. Токен
+> приходит в окно во **фрагменте** (`/login/desktop/finish#token=…`, не в query): страница сразу убирает его из адреса и
+> меняет POST-ом. Через браузер в приложении идут **все** OAuth-кнопки (Google, Яндекс, Telegram, «Вход для команды»):
+> окно и так отдаёт чужие хосты браузеру; код на почту — в окне. Вошёл ли игрок, `/login/desktop` узнаёт по 401 от
+> генерации токена; `done=1` без сессии — ошибка, не цикл. Rust: `tauri-plugin-deep-link =2.6.3`, single-instance с
+> фичей `deep-link`; `register_all()` только в debug на Windows/Linux; сайту права deep-link не выданы (тест ACL).
+> Приложение получает ту же сессию, что браузер (выход в браузере — выход и в приложении). Шаг 5 — ручная проверка
+> владельцем (чек-лист в отчёте задачи 7). Привязка соцсети в профиле из приложения (`linkSocial`) — не сделана.
 
 ### Task 8: Раздача, страница «Скачать», автообновление, загрузка из GitHub
 
