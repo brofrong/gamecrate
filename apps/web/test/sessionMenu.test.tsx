@@ -449,7 +449,8 @@ describe("session menu", () => {
       window.dispatchEvent(new Event("blur"));
     });
     expect(menuShown()).toBe(false);
-  });
+    // Три открытия меню подряд: на общем раннере CI не укладывается в стандартные 5 с.
+  }, 15_000);
 
   it("escape does not close the menu in fullscreen", async () => {
     touchScreen();

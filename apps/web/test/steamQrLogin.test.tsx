@@ -67,7 +67,8 @@ describe("SteamQrLogin", () => {
 
     current = viewResult({ status: "done", qrUrl: null });
     await waitFor(() => expect(screen.getByText("Готово")).toBeTruthy());
-    expect(onDone).toHaveBeenCalledTimes(1);
+    // `onDone` зовётся эффектом уже после отрисовки «Готово» — ждём и его.
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
   it("shows what to pick in the Steam app next to the QR and after scanning", async () => {

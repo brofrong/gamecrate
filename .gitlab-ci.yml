@@ -43,8 +43,12 @@ check:
     - printf 'DATABASE_URL=%s\nTEST_DATABASE_URL=%s\n' "${DATABASE_URL}" "${TEST_DATABASE_URL}" > .env
     - bun install --frozen-lockfile
     - bun run check
-    - bun run lint
-    - bun run test
+    # `bun lint` (скрипты lint пакетов) — встроенный линтер есть только в canary-сборках Bun;
+    # в релизном oven/bun:1.4 команды нет, и `bun lint` вызывает сам скрипт "lint" рекурсивно
+    # (E2BIG). Линт — локальная проверка, пока линтер не попадёт в релиз Bun.
+    # Пакеты api/orchestrator/db тестируются на одной базе — параллельно они ждут друг друга
+    # на блокировках и падают по таймауту 5 с, поэтому пакеты гоняются по очереди.
+    - bun run test --concurrency=1
     - bun test deploy/test
 
 # Общее для build-app и build-session: образы собираются и пушатся только на тег релиза
