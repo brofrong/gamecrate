@@ -90,6 +90,7 @@ pub fn offline_query(retry: &Url) -> String {
 /// бывает токен входа (`/login/desktop/finish#token=…`, а на холодном старте по ссылке —
 /// `index.html?retry=<адрес с токеном>` у заглушки).
 /// У адресов без хоста (`about:`, `data:`) — только схема.
+#[cfg(any(debug_assertions, test))]
 pub fn loggable(url: &Url) -> String {
     let Some(host) = url.host_str() else {
         return format!("{}:", url.scheme());
