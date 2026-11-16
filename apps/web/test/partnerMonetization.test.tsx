@@ -1,6 +1,6 @@
-// Монетизация витрины: у GameCrate свои тарифы и цены, у партнёра (билайн) — подписка
-// без цен, каталога и кнопок покупки. Лендинг, `/app/plans`, `PlanPanel`, пункт меню,
-// плашка лимита в стриме и подсказка про тариф выше в очереди.
+// Монетизация витрины: у GameCrate свои тарифы и цены, у партнёра (билайн) — карточки
+// его подписок, без нашего каталога и кнопок покупки. Лендинг, `/app/plans`, `PlanPanel`,
+// пункт меню, плашка лимита в стриме и подсказка про тариф выше в очереди.
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { PlayerPlan, PublicTariff } from "@cg/rpc";
 import { RegistryProvider } from "@effect/atom-react";
@@ -57,6 +57,33 @@ const partner = (brand: Brand) => {
   return brand.monetization;
 };
 
+/** Билайн с подменёнными полями подписки (url, plans). */
+const withPartner = (
+  patch: Partial<ReturnType<typeof partner>>,
+): Brand => ({
+  ...WEB_BRANDS.beeline,
+  monetization: { ...partner(WEB_BRANDS.beeline), ...patch },
+});
+
+/** Карточки подписок билайна — тексты старого сайта beeplaycloud.ru. */
+const expectBeelineCards = () => {
+  for (const name of ["Стандартная подписка", "Недельная подписка"]) {
+    expect(screen.getByRole("heading", { level: 3, name })).toBeTruthy();
+  }
+  const text = document.body.textContent ?? "";
+  for (const line of [
+    "75 ₽",
+    "299 ₽",
+    "стоимость подключения, 1 час",
+    "стоимость подключения, 7 часов",
+    "получай часы ежедневно",
+    "бонусные часы за активное использование",
+    "получай часы каждую неделю",
+  ]) {
+    expect(text).toContain(line);
+  }
+};
+
 afterEach(() => {
   delete document.documentElement.dataset.brand;
 });
@@ -69,20 +96,41 @@ describe("лендинг", () => {
       </BrandProvider>,
     );
 
-  it("билайн: подписка вместо тарифов — без ₽", async () => {
+  it("билайн: подписка и карточки со старого сайта вместо тарифов", async () => {
     renderLanding(WEB_BRANDS.beeline);
     await screen.findByRole("heading", { level: 1 });
     const { title, text } = partner(WEB_BRANDS.beeline);
-    expect(document.body.textContent).not.toContain("₽");
     expect(screen.getByRole("heading", { name: title })).toBeTruthy();
     expect(document.body.textContent).toContain(text);
+    expectBeelineCards();
     expect(document.body.textContent).not.toContain("Платишь за часы игры");
   });
 
-  it("билайн: ссылки на партнёра нет, пока url = null", async () => {
+  it("билайн: ссылок на партнёра нет, пока url = null", async () => {
     renderLanding(WEB_BRANDS.beeline);
     await screen.findByRole("heading", { level: 1 });
     expect(screen.queryByRole("link", { name: /Перейти в/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Подключить" })).toBeNull();
+  });
+
+  it("билайн: «Подключить» в каждой карточке, когда url задан", async () => {
+    renderLanding(withPartner({ url: "https://example.test/sub" }));
+    await screen.findByRole("heading", { level: 1 });
+    const links = screen.getAllByRole("link", { name: "Подключить" });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe("https://example.test/sub");
+      expect(link.getAttribute("target")).toBe("_blank");
+    }
+  });
+
+  it("партнёр без подписок: карточек нет", async () => {
+    renderLanding(withPartner({ plans: [] }));
+    await screen.findByRole("heading", { level: 1 });
+    expect(
+      screen.queryByRole("heading", { name: "Стандартная подписка" }),
+    ).toBeNull();
+    expect(document.querySelector("#plans ul")).toBeNull();
   });
 
   it("GameCrate: секция тарифов с ценами, как раньше", async () => {
@@ -135,14 +183,16 @@ describe("страница тарифов /app/plans", () => {
     );
   };
 
-  it("билайн: «Базовый», безлимит, без ₽ и без кнопок покупки", async () => {
+  it("билайн: карточки подписок, «Базовый», безлимит, без кнопок покупки", async () => {
     await renderPlans(WEB_BRANDS.beeline);
     const { title, text } = partner(WEB_BRANDS.beeline);
     expect(await screen.findByRole("heading", { name: title })).toBeTruthy();
     expect(document.body.textContent).toContain(text);
+    expectBeelineCards();
     expect(screen.getByText("Базовый")).toBeTruthy();
     expect(screen.getByText("без лимита")).toBeTruthy();
-    expect(document.body.textContent).not.toContain("₽");
+    expect(document.body.textContent).not.toContain("490 ₽");
+    expect(screen.queryByRole("link", { name: "Подключить" })).toBeNull();
     expect(screen.queryByText("Про")).toBeNull();
     expect(screen.queryByText("Пакеты часов")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
@@ -150,16 +200,14 @@ describe("страница тарифов /app/plans", () => {
   });
 
   it("билайн: ссылка «Перейти в билайн», когда url задан", async () => {
-    const brand: Brand = {
-      ...WEB_BRANDS.beeline,
-      monetization: {
-        ...partner(WEB_BRANDS.beeline),
-        url: "https://example.test/sub",
-      },
-    };
-    await renderPlans(brand);
+    await renderPlans(withPartner({ url: "https://example.test/sub" }));
     const link = await screen.findByRole("link", { name: "Перейти в билайн" });
     expect(link.getAttribute("href")).toBe("https://example.test/sub");
+    const connect = screen.getAllByRole("link", { name: "Подключить" });
+    expect(connect).toHaveLength(2);
+    for (const a of connect) {
+      expect(a.getAttribute("href")).toBe("https://example.test/sub");
+    }
   });
 
   it("GameCrate: каталог тарифов и пакеты с ценами, как раньше", async () => {

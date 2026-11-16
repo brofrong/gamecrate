@@ -190,6 +190,28 @@ describe("название и логотип витрины", () => {
     expect(container.querySelector("text")).toBeNull();
   });
 
+  it("логотип билайна: шар, квадрат, свой id градиента у каждого экземпляра", () => {
+    const { container } = render(
+      <BrandProvider brand={WEB_BRANDS.beeline}>
+        <BrandLogo height={36} />
+        <BrandLogo height={36} />
+      </BrandProvider>,
+    );
+    const svgs = [...container.querySelectorAll("svg")];
+    expect(svgs).toHaveLength(2);
+    const ids = svgs.map((svg) => {
+      expect(svg.getAttribute("width")).toBe("36");
+      expect(svg.getAttribute("height")).toBe("36");
+      expect(svg.getAttribute("viewBox")).toBe("0 0 44 44");
+      expect(svg.querySelector('path[fill="#FFC800"]')).not.toBeNull();
+      const id = svg.querySelector("radialGradient")?.getAttribute("id") ?? "";
+      expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(svg.querySelector(`path[fill="url(#${id})"]`)).not.toBeNull();
+      return id;
+    });
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
   it("authErrorMessage подставляет название витрины", () => {
     expect(
       authErrorMessage("ACCOUNT_ALREADY_LINKED_TO_DIFFERENT_USER", "билайн"),
