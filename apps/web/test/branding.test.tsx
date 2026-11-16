@@ -34,7 +34,8 @@ describe("branding", () => {
     expect(css).not.toContain("@fontsource-variable");
     expect(css).toContain('--font-sans: "Inter Variable"');
     expect(css).toContain('--font-mono: "JetBrains Mono Variable"');
-    expect(css).toContain("--brand-cyan: #3cc2ff");
+    expect(css).toContain("--brand-accent: #3cc2ff");
+    expect(css).toContain("--brand-cyan: var(--brand-accent)");
     expect(css).toContain("--color-brand-cyan: var(--brand-cyan)");
     expect(css).not.toContain("googleapis");
   });

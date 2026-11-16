@@ -54,7 +54,7 @@ export function ActiveSessionPanel({
 
   if (compact) {
     return (
-      <div className="mx-3 mb-2 flex items-center gap-2.5 rounded-2xl border border-[#3cc2ff]/30 bg-[#13161d] p-2">
+      <div className="mx-3 mb-2 flex items-center gap-2.5 rounded-2xl border border-brand-accent/30 bg-[#13161d] p-2">
         <div className="aspect-[460/215] w-[58px] shrink-0 overflow-hidden rounded-[8px] bg-[#1a1d26]">
           <GameCover game={cover} showNameInPlaceholder={false} />
         </div>

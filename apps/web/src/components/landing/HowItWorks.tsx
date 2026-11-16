@@ -122,7 +122,7 @@ export function HowItWorks() {
       ref={sectionRef}
       className="relative overflow-hidden py-[110px]"
     >
-      <div className="pointer-events-none absolute top-0 -left-[300px] size-[700px] rounded-full bg-[radial-gradient(circle,rgba(58,108,255,0.16),rgba(0,0,0,0)_65%)]" />
+      <div className="pointer-events-none absolute top-0 -left-[300px] size-[700px] rounded-full bg-[radial-gradient(circle,rgb(var(--brand-accent-2-rgb)/0.16),rgba(0,0,0,0)_65%)]" />
       <div className="relative mx-auto max-w-[1180px] px-7">
         <div className="mb-12 max-w-[680px]">
           <div className="mb-3.5 text-xs font-bold tracking-[0.16em] text-brand-cyan uppercase">
@@ -178,7 +178,7 @@ export function HowItWorks() {
 
           <div
             ref={demoRef}
-            className="relative h-[480px] overflow-hidden rounded-3xl border border-brand-line bg-[radial-gradient(ellipse_at_30%_20%,rgba(58,108,255,0.14),transparent_60%),#0a0d1c]"
+            className="relative h-[480px] overflow-hidden rounded-3xl border border-brand-line bg-[radial-gradient(ellipse_at_30%_20%,rgb(var(--brand-accent-2-rgb)/0.14),transparent_60%),var(--brand-surface)]"
           >
             {!reduced && (
               <svg
@@ -222,7 +222,7 @@ export function HowItWorks() {
                     />
                   ))}
                   {!cues.has("linked") && !reduced && (
-                    <div className="absolute inset-x-0 top-0 h-[3px] animate-[gc-scan_1.6s_ease-in-out_infinite] bg-brand-cyan shadow-[0_0_16px_#3cc2ff]" />
+                    <div className="absolute inset-x-0 top-0 h-[3px] animate-[gc-scan_1.6s_ease-in-out_infinite] bg-brand-cyan shadow-[0_0_16px_var(--brand-accent)]" />
                   )}
                 </div>
                 <div>
@@ -268,7 +268,7 @@ export function HowItWorks() {
                         className={cn(
                           "relative aspect-[2/3] overflow-hidden rounded-lg bg-[#141834] transition-[transform,box-shadow] duration-300",
                           hot &&
-                            "z-[2] scale-112 shadow-[0_20px_40px_rgba(0,0,0,0.6),0_0_0_2px_#3cc2ff]",
+                            "z-[2] scale-112 shadow-[0_20px_40px_rgba(0,0,0,0.6),0_0_0_2px_var(--brand-accent)]",
                         )}
                       >
                         <img
@@ -294,7 +294,7 @@ export function HowItWorks() {
                             hot ? "opacity-100" : "opacity-0",
                           )}
                         >
-                          <b className="block rounded-md bg-brand-gradient p-1.5 text-center text-[11px] text-white">
+                          <b className="block rounded-md bg-brand-gradient p-1.5 text-center text-[11px] text-brand-on-accent">
                             Играть
                           </b>
                         </div>

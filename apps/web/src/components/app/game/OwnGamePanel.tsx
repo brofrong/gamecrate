@@ -80,7 +80,7 @@ export function OwnGamePanel({ own }: { own: OwnGameInfo }) {
                   href={own.source.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[#3cc2ff] hover:underline"
+                  className="text-brand-accent hover:underline"
                 >
                   {own.source.label} ↗
                 </a>

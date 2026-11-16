@@ -31,7 +31,7 @@ export function PlayButton({
       className={cn(
         "h-12 rounded-xl px-6 text-[15px] font-semibold transition-[transform,box-shadow] hover:-translate-y-px",
         primary
-          ? "bg-brand-gradient text-white shadow-[0_10px_30px_rgba(60,110,255,0.35)] hover:shadow-[0_14px_40px_rgba(60,110,255,0.5)]"
+          ? "bg-brand-gradient text-brand-on-accent shadow-[0_10px_30px_rgb(var(--brand-shadow-rgb)/0.35)] hover:shadow-[0_14px_40px_rgb(var(--brand-shadow-rgb)/0.5)]"
           : "h-10 border border-white/12 bg-white/6 px-4 text-sm text-brand-text backdrop-blur-md hover:bg-white/10",
         className,
       )}

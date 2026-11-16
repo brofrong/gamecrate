@@ -5,6 +5,7 @@
 // заходя на него, показывает те же кадры (canvas рисует их из видео ноутбука), геймпад
 // покачивается и «жмёт» кнопки. Снизу — три заметки.
 import { useCallback, useRef, useState } from "react";
+import { type BrandPalette, readBrandPalette } from "@/lib/brandColors";
 import {
   type CanvasSize,
   type DrawFrame,
@@ -44,28 +45,31 @@ type Anchors = {
   narrow: boolean;
 };
 
-const PALETTE: ReadonlyArray<Rgb> = [
-  [60, 194, 255],
-  [58, 108, 255],
-  [91, 47, 255],
-  [140, 90, 255],
-  [40, 160, 240],
+/** Цвета частиц — палитра витрины: три акцента и два промежуточных оттенка. */
+const particlePalette = (p: BrandPalette): ReadonlyArray<Rgb> => [
+  p.glowRgb,
+  p.accent2Rgb,
+  p.accent3Rgb,
+  p.mixRgb[1],
+  p.mixRgb[2],
 ];
 const PARTICLES = 600;
 const AVOID_RADIUS = 160;
 const GLOW_RADIUS = 120;
 
-const makeParticles = (): Particle[] =>
-  Array.from({ length: PARTICLES }, (_, i) => ({
+const makeParticles = (palette: BrandPalette): Particle[] => {
+  const colors = particlePalette(palette);
+  return Array.from({ length: PARTICLES }, (_, i) => ({
     p: Math.random(),
     off: (Math.random() - 0.5) * 120,
     sp: 0.0016 + Math.random() * 0.0022,
-    col: PALETTE[i % PALETTE.length] as Rgb,
+    col: colors[i % colors.length] as Rgb,
     sz: 1.5 + Math.random() * 2.5,
     tw: Math.random() * 6,
     dx: 0,
     dy: 0,
   }));
+};
 
 const rgb = (c: Rgb, k = 1) =>
   `rgb(${(c[0] * k) | 0},${(c[1] * k) | 0},${(c[2] * k) | 0})`;
@@ -252,6 +256,7 @@ const gamepad = (
   y: number,
   k: number,
   t: number,
+  accent: string,
 ) => {
   const pose = gamepadPose(t);
   ctx.save();
@@ -275,7 +280,7 @@ const gamepad = (
   const buttons: ReadonlyArray<[number, number, string]> = [
     [24, -7, "#3ddc97"],
     [30, -1, "#ffd166"],
-    [18, -1, "#3cc2ff"],
+    [18, -1, accent],
     [24, 5, "#ff6b6b"],
   ];
   buttons.forEach(([bx, by, col], i) => {
@@ -317,6 +322,8 @@ export const drawTechFlow = (
   parts: Particle[],
   /** Видео ноутбука: его кадры повторяет экран телефона (пока кадров нет — градиент). */
   video?: HTMLVideoElement | null,
+  /** Палитра витрины; вызывающий читает её один раз при монтировании. */
+  palette: BrandPalette = readBrandPalette(),
 ): number => {
   const { width: W, height: H } = size;
   const narrow = W < 760;
@@ -353,7 +360,9 @@ export const drawTechFlow = (
       ? Math.max(0, 1 - Math.hypot(cursor.x - px, cursor.y - py) / GLOW_RADIUS)
       : 0;
     const a = (0.2 + spread * 0.8) * (0.6 + 0.4 * Math.sin(t / 300 + p.tw));
-    ctx.fillStyle = `rgba(${(p.col[0] + near * 120) | 0},${(p.col[1] + near * 60) | 0},255,${Math.min(1, a + near * 0.5)})`;
+    // Синий канал у холодной палитры (GameCrate) поднимаем до 255, у тёплой не трогаем.
+    const blue = p.col[2] >= 200 ? 255 : p.col[2];
+    ctx.fillStyle = `rgba(${(p.col[0] + near * 120) | 0},${(p.col[1] + near * 60) | 0},${blue},${Math.min(1, a + near * 0.5)})`;
     ctx.fillRect(px, py, p.sz + near * 1.5, p.sz + near * 1.5);
   }
 
@@ -361,10 +370,10 @@ export const drawTechFlow = (
   const s = narrow ? 16 : 24;
   const base = ay + s * 1.1;
   const stackColors: ReadonlyArray<Rgb> = [
-    [60, 194, 255],
-    [58, 108, 255],
-    [91, 47, 255],
-    [80, 70, 230],
+    palette.glowRgb,
+    palette.accent2Rgb,
+    palette.accent3Rgb,
+    palette.mixRgb[0],
   ];
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
@@ -378,8 +387,9 @@ export const drawTechFlow = (
     }
   }
   const glow = ctx.createRadialGradient(ax, ay, 0, ax, ay, 200);
-  glow.addColorStop(0, "rgba(60,194,255,0.18)");
-  glow.addColorStop(1, "rgba(60,194,255,0)");
+  const glowRgb = palette.glowRgb.join(",");
+  glow.addColorStop(0, `rgba(${glowRgb},0.18)`);
+  glow.addColorStop(1, `rgba(${glowRgb},0)`);
   ctx.fillStyle = glow;
   ctx.fillRect(ax - 200, ay - 200, 400, 400);
 
@@ -388,7 +398,7 @@ export const drawTechFlow = (
   const { bw, bh } = laptop;
   ctx.save();
   ctx.translate(bx - bw / 2, by - bh / 2);
-  ctx.shadowColor = "rgba(58,108,255,0.35)";
+  ctx.shadowColor = `rgba(${palette.accent2Rgb.join(",")},0.35)`;
   ctx.shadowBlur = 40;
   roundRect(ctx, 0, 0, bw, bh, 12);
   ctx.fillStyle = "#10132a";
@@ -446,7 +456,7 @@ export const drawTechFlow = (
   ctx.restore();
   ctx.restore();
 
-  gamepad(ctx, pad.x, pad.y, pad.k, t);
+  gamepad(ctx, pad.x, pad.y, pad.k, t, palette.accent);
 
   // Насколько курсор близко к вершине дуги — добавка к «задержке» в HUD (0..6).
   return cursor.inside
@@ -462,24 +472,30 @@ export function TechFlow() {
   const hudRef = useRef<HudHandle>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const lastSize = useRef("");
+  // Палитра витрины читается один раз при монтировании.
+  const [palette] = useState(readBrandPalette);
 
-  const draw = useCallback<DrawFrame>((ctx, size, t) => {
-    const key = `${size.width}x${size.height}`;
-    if (key !== lastSize.current) {
-      lastSize.current = key;
-      setAnchors(anchorsFor(size));
-    }
-    parts.current ??= makeParticles();
-    const boost = drawTechFlow(
-      ctx,
-      size,
-      t,
-      cursor.current,
-      parts.current,
-      videoRef.current,
-    );
-    hudRef.current?.tick(t, boost);
-  }, []);
+  const draw = useCallback<DrawFrame>(
+    (ctx, size, t) => {
+      const key = `${size.width}x${size.height}`;
+      if (key !== lastSize.current) {
+        lastSize.current = key;
+        setAnchors(anchorsFor(size));
+      }
+      parts.current ??= makeParticles(palette);
+      const boost = drawTechFlow(
+        ctx,
+        size,
+        t,
+        cursor.current,
+        parts.current,
+        videoRef.current,
+        palette,
+      );
+      hudRef.current?.tick(t, boost);
+    },
+    [palette],
+  );
   useCanvasLoop(canvasRef, draw);
 
   const onMove = (e: React.MouseEvent<HTMLDivElement>) => {

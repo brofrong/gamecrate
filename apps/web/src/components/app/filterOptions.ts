@@ -18,4 +18,4 @@ export const PROTON_OPTIONS: ReadonlyArray<{
 ];
 
 export const chipActiveClassName =
-  "bg-[#3cc2ff]/14 text-[#eef1ff] shadow-[inset_0_0_0_1px_rgba(60,194,255,.45)]";
+  "bg-brand-accent/14 text-[#eef1ff] shadow-[inset_0_0_0_1px_rgb(var(--brand-glow-rgb)/0.45)]";

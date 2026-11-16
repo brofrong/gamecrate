@@ -180,7 +180,7 @@ export function LoginPanel({
             <Button
               type="submit"
               disabled={pending || step.email.trim().length === 0}
-              className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
+              className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
             >
               Получить код
             </Button>
@@ -215,7 +215,7 @@ export function LoginPanel({
             type="button"
             disabled={pending || step.otp.length !== 6}
             onClick={() => void submitCode(step.email, step.otp)}
-            className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
+            className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
           >
             Войти
           </Button>

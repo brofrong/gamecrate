@@ -78,7 +78,7 @@ export function FaqChat() {
                 className={cn(
                   "max-w-[78%] rounded-[18px] px-4 py-3 text-[15px] leading-normal",
                   m.me
-                    ? "rounded-br-md bg-brand-blue text-white"
+                    ? "rounded-br-md bg-brand-blue text-brand-on-accent"
                     : "rounded-bl-md border border-brand-line bg-brand-card text-[#d6d9f2]",
                 )}
               >

@@ -318,7 +318,7 @@ export function MyGamesPage() {
           {hasOwnGames && (
             <Link
               to="/app/crate"
-              className="mx-auto text-sm font-medium text-[#3cc2ff] hover:text-[#eef1ff]"
+              className="mx-auto text-sm font-medium text-brand-accent hover:text-[#eef1ff]"
             >
               Без Steam можно играть в играх «Из ящика» →
             </Link>
