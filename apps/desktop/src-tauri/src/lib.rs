@@ -6,6 +6,7 @@ mod fullscreen;
 mod nav;
 mod status;
 mod tray;
+mod update;
 
 use nav::Nav;
 use status::{close_action, hidden_notice, AppState, CloseAction};
@@ -183,6 +184,7 @@ fn reset_status<R: Runtime>(app: &AppHandle<R>) {
     let idle = status::Status::Idle;
     if app.state::<AppState>().replace_status(idle.clone()) != idle {
         tray::update(app, &idle);
+        update::on_status(app, &idle);
     }
 }
 
@@ -233,7 +235,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // адрес latest.json задаёт update.rs из GAMECRATE_URL, в конфиге — только ключ
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
+        .manage(update::UpdateState::default())
         .invoke_handler(commands::handler())
         .on_window_event(|window, event| {
             if window.label() != MAIN {
@@ -275,6 +280,7 @@ pub fn run() {
             if let Err(err) = handle.deep_link().register_all() {
                 eprintln!("gamecrate: схема gamecrate:// не зарегистрирована: {err}");
             }
+            update::start(&handle);
             Ok(())
         })
         .build(context())

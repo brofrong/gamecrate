@@ -82,6 +82,8 @@ pub fn notify<R: Runtime>(app: AppHandle<R>, title: String, body: String) -> Res
 pub fn set_status<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>, status: Status) {
     if state.replace_status(status.clone()) != status {
         crate::tray::update(&app, &status);
+        // игра кончилась — можно предложить скачанное обновление
+        crate::update::on_status(&app, &status);
     }
 }
 
@@ -145,6 +147,7 @@ mod tests {
         let app = mock_builder()
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_deep_link::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
             .manage(AppState::default())
             .invoke_handler(handler())
             .build(crate::context())
@@ -285,6 +288,25 @@ mod tests {
                 cmd,
                 "https://game.brofrong.ru/app",
                 serde_json::json!({ "protocol": "gamecrate" }),
+            );
+            assert!(denied(&result), "{cmd}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn site_page_gets_no_updater_commands() {
+        let window = mock_app();
+        for cmd in [
+            "plugin:updater|check",
+            "plugin:updater|download",
+            "plugin:updater|install",
+            "plugin:updater|download_and_install",
+        ] {
+            let result = invoke(
+                &window,
+                cmd,
+                "https://game.brofrong.ru/app",
+                serde_json::json!({ "rid": 0 }),
             );
             assert!(denied(&result), "{cmd}: {result:?}");
         }
