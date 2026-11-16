@@ -1,6 +1,7 @@
 // Секция лендинга у партнёрской витрины (билайн) вместо тарифов: текст про подписку у
-// партнёра, ссылка на неё (если адрес известен) и кнопка входа. Цен нет.
+// партнёра, карточки его подписок, ссылка на неё (если адрес известен) и кнопка входа.
 import { useBrand } from "@/brands";
+import { PartnerPlanCards } from "@/components/brand/PartnerPlanCards";
 import { PlayButton } from "./PlayButton";
 import { SectionHead } from "./SectionHead";
 
@@ -15,6 +16,12 @@ export function PartnerSubscription() {
         <SectionHead label="Подписка" title={monetization.title}>
           {monetization.text}
         </SectionHead>
+        <div className="mb-10 empty:hidden">
+          <PartnerPlanCards
+            plans={monetization.plans}
+            url={monetization.url}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <PlayButton variant="primary" />
           {monetization.url !== null && (

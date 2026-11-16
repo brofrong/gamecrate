@@ -1,10 +1,11 @@
 // `/app/plans` у партнёрской витрины (билайн): вместо каталога тарифов и пакетов — текст
-// про подписку у партнёра, ссылка на неё (если адрес известен) и блок «Ваш тариф»:
-// имя и остаток минут из `account.plan`. Цен и кнопок покупки нет.
+// про подписку у партнёра, ссылка на неё (если адрес известен), карточки его подписок и
+// блок «Ваш тариф»: имя и остаток минут из `account.plan`. Кнопок покупки у нас нет.
 import type { PlayerPlan } from "@cg/rpc";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { useBrand } from "@/brands";
+import { PartnerPlanCards } from "@/components/brand/PartnerPlanCards";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatMinutes } from "@/lib/planFormat";
@@ -51,6 +52,7 @@ export function PartnerPlansPage() {
           {`Перейти в ${brand.name}`}
         </a>
       )}
+      <PartnerPlanCards plans={monetization.plans} url={monetization.url} />
       {AsyncResult.isFailure(result) || stalled ? (
         <ServerUnreachable
           onRetry={() => {
