@@ -94,8 +94,9 @@ build-session:
   before_script:
     - !reference [.docker_build, before_script]
     # docker:27 — Alpine; bash для deploy/ci/build-session-images.sh, curl для скачивания .run,
-    # ca-certificates — иначе curl не проверит TLS us.download.nvidia.com.
-    - apk add --no-cache bash curl ca-certificates
+    # ca-certificates — иначе curl не проверит TLS us.download.nvidia.com, gcompat — .run
+    # распаковывается своим zstd, собранным под glibc (без gcompat: «zstd: not found»).
+    - apk add --no-cache bash curl ca-certificates gcompat
   # Кэш .run между пайплайнами (~300 МБ на версию драйвера, скачивать на каждый тег не нужно).
   # Ключ — хэш drivers.txt: список версий поменялся — кэш новый, старых .run он не унаследует.
   cache:

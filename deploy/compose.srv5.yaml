@@ -1,0 +1,23 @@
+# Оверлей главного сервера на srv5 (прод с 2026-11-16): обратный прокси — nginx хоста srv5, а не
+# контейнер в сети proxy. Порты публикуются только на 127.0.0.1, nginx проксирует:
+#   gamecrate.srv5.wbrofrong.ru, beeline.srv5.wbrofrong.ru → 127.0.0.1:13000 (cg-api),
+#   …/agent* → 127.0.0.1:13001 (cg-orchestrator), gamecrate-s3.srv5.wbrofrong.ru → 127.0.0.1:19000.
+# Relay оркестратора (3002) наружу не публикуется. Сеть proxy — своя, не внешняя.
+#
+# Arcane берёт один файл, поэтому на srv5 лежит слияние без подстановки переменных:
+#   docker compose -f compose.main.yaml -f compose.srv5.yaml config --no-interpolate > compose.yaml
+services:
+  cg-api:
+    ports:
+      - "127.0.0.1:13000:3000"
+  cg-orchestrator:
+    ports:
+      - "127.0.0.1:13001:3001"
+  cg-rustfs:
+    ports:
+      - "127.0.0.1:19000:9000"
+
+networks:
+  proxy:
+    name: cg-proxy
+    external: false

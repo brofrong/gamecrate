@@ -4,7 +4,10 @@
 сервер (сайт, api, оркестратор, база, хранилище профилей, без GPU) и **игровые** серверы с GPU, на
 каждом только агент. Образы собирает GitLab CI на тег релиза и кладёт в реестр
 `registry.imtechnologies.ru/gamecrate/imt-cloud-gaming`; на серверах ничего не собирается.
-**brofrong** (`game.brofrong.ru`) — тестовый стенд: главный и игровой на одной машине, своя база.
+**Прод с 2026-11-16:** главный — **srv5** (`gamecrate.srv5.wbrofrong.ru`, витрина Билайна
+`beeline.srv5.wbrofrong.ru`), игровой сервер — **brofrong** (только агент). Прежний стенд brofrong
+(`game.brofrong.ru`, главный и игровой на одной машине) выключен — раздел «Стенд brofrong» оставлен
+как история.
 
 ## Что здесь
 
@@ -17,6 +20,8 @@
 - `compose.main.yaml` — главный сервер: `cg-api`, `cg-orchestrator`, `cg-postgres`, `cg-rustfs`;
   одноразовый `cg-rustfs-bucket` (профиль `tools`).
 - `compose.worker.yaml` — игровой сервер: только `cg-agent`.
+- `compose.srv5.yaml` — оверлей главного на srv5: порты на `127.0.0.1` под nginx хоста вместо
+  внешней сети `proxy` (раздел «Прод: srv5»).
 - `compose.stand.yaml` — оверлей стенда brofrong поверх двух предыдущих (агент по внутренней сети
   `cg`, пути brofrong).
 - `worker/install.sh` — установка игрового сервера одной командой (её показывает админка);
@@ -170,6 +175,31 @@ curl -s https://<домен>/healthz                             # ok
 `/api/auth/oauth2/callback/…`) и группа админов; у Google, Яндекса и Telegram redirect
 `https://<домен>/api/auth/callback/<google|yandex|telegram>`.
 
+## Прод: srv5
+
+Главный сервер на srv5 (`ssh srv5`, root; srv5 общий — чужие контейнеры и сайты nginx не трогать).
+
+- Проект Arcane `cloud-gaming`: `/data0/arcane/projects/cloud-gaming/` — `compose.yaml` и `.env`
+  (права 600). Arcane берёт один файл, поэтому `compose.yaml` — слияние без подстановки переменных:
+  `docker compose -f compose.main.yaml -f compose.srv5.yaml config --no-interpolate > compose.yaml`
+  (пересобрать, если менялись `compose.main.yaml` или `compose.srv5.yaml`).
+- Обратный прокси — nginx хоста, сайт `/etc/nginx/sites-available/gamecrate.srv5.wbrofrong.ru.conf`:
+  `gamecrate.` и `beeline.srv5.wbrofrong.ru` → `127.0.0.1:13000` (`cg-api`), `…/agent` →
+  `127.0.0.1:13001` (`cg-orchestrator`), `gamecrate-s3.srv5.wbrofrong.ru` → `127.0.0.1:19000`
+  (`cg-rustfs`); передаются `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto`, WebSocket, таймауты
+  3600 с, без буферизации. Сертификаты — certbot (`/usr/local/bin/certbot --nginx`). nginx на srv5
+  запущен **не systemd**: `systemctl reload nginx` падает, перечитать — `nginx -t && nginx -s reload`.
+- `.env`: `BRAND_HOSTS=beeline.srv5.wbrofrong.ru=beeline`; сгенерированные секреты (в том числе
+  `PROFILE_KEY`) продублированы в Bitwarden, папка `AI agents`, запись «GameCrate srv5 prod (.env
+  secrets)».
+- Обновление: `CG_VERSION=<тег>` в `.env`, затем в каталоге проекта `docker compose pull && docker
+  compose up -d`; проверка `curl -s https://gamecrate.srv5.wbrofrong.ru/healthz` и то же на
+  `beeline.`.
+- Игровой сервер brofrong поставлен `install.sh` (`/opt/cloud-gaming`, регион `spb`) с
+  `--data-dir /raid/cloud-gaming --public-ip 37.153.14.138`; в его `.env` шаблон Steam и scratch
+  переведены на `/home/brofrong/cloud-gaming-steam{,/client}` и `/home/brofrong/cloud-gaming-scratch`
+  (там они лежали со стенда). UDP `59000`.
+
 ## Игровой сервер
 
 Требования: Linux x86_64 (Debian или Ubuntu), Docker Engine с плагином compose, драйвер NVIDIA
@@ -287,6 +317,11 @@ brofrong sudo нет — там правила не применяются.
 
 ## Стенд brofrong
 
+> **Выключен 2026-11-16.** Контейнеры главного на brofrong (`cg-api`, `cg-orchestrator`,
+> `cg-postgres`, `cg-rustfs`) удалены, тома `cg-postgres-data` и `cg-rustfs-data` оставлены;
+> маршрут `game.brofrong.ru` в Ingressi выключен (`enabled=false`). brofrong теперь игровой сервер
+> srv5 (раздел «Прод: srv5»), `deploy-stand.sh` к нему больше не применять. Ниже — как было.
+
 `~/cloud-gaming` на brofrong: `.env`, `compose.main.yaml`, `compose.worker.yaml`,
 `compose.stand.yaml` (копирует `deploy-stand.sh`; старая копия репозитория от прежнего `deploy.sh`
 там больше не нужна). Главный и агент — один compose-проект `cloud-gaming`. Агент ходит к
@@ -365,9 +400,11 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep -m1 "Connected to orchestrator"' 
 1. Тег `vX.Y.Z` на коммите `main` (и `git push origin vX.Y.Z` — только с согласия владельца).
 2. CI (`.gitlab-ci.yml`): проверки, `cg-app:vX.Y.Z` (+ `latest`, кроме `-rc`) и
    `cg-session:<драйвер>-vX.Y.Z` на каждую строку `images/session/drivers.txt`.
-3. Стенд: `./deploy/deploy-stand.sh vX.Y.Z`, проверка.
-4. Главный: `CG_VERSION=vX.Y.Z` в его `.env`, `pull`, `up -d` (раздел «Главный сервер»). Новые
+3. Главный (srv5): `CG_VERSION=vX.Y.Z` в его `.env`, `pull`, `up -d` (раздел «Прод: srv5»). Новые
    игровые серверы с этого момента ставятся этой версией.
+4. CI на общем раннере: `bun lint` в джобе не запускается (встроенного линтера нет в релизном Bun),
+   тесты пакетов идут по очереди с таймаутом 30 с; образу сессии в Alpine нужен `gcompat`
+   (распаковщик драйвера NVIDIA собран под glibc).
 5. Игровые серверы: руками по разделу «Игровой сервер» (кнопка «Обновить» — третья часть).
 
 Новый драйвер на игровом сервере — сначала строка в `images/session/drivers.txt` и новый релиз
