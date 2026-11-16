@@ -15,7 +15,7 @@ import { useBrand } from "@/brands";
 import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
 import { desktopOpenExternal, isDesktop } from "@/lib/desktop";
-import { desktopLoginUrl } from "@/lib/desktopLogin";
+import { desktopLoginUrl, rememberDesktopState } from "@/lib/desktopLogin";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
 import { ProviderButtons } from "./ProviderButtons";
 
@@ -24,6 +24,11 @@ export type PanelStep =
   | { kind: "code"; email: string; otp: string; resendAt: number };
 
 type Provider = "yandex" | "google" | "telegram";
+
+const NO_STORAGE =
+  "Не удалось начать вход через браузер: окну недоступно хранилище. Войдите по почте.";
+const NO_BROWSER =
+  "Не удалось открыть браузер. Попробуйте ещё раз или войдите по почте.";
 
 /** Сколько ждать до повторной отправки письма с кодом. */
 const RESEND_MS = 30_000;
@@ -48,8 +53,13 @@ export function LoginPanel({
   const [submitted, setSubmitted] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const autoSubmitted = useRef<string | null>(null);
-  // приложение: OAuth открыт в системном браузере — ждём ссылку `gamecrate://auth`
-  const [browser, setBrowser] = useState<SocialProvider | null>(null);
+  // приложение: OAuth открыт в системном браузере — ждём ссылку `gamecrate://auth` с этим
+  // `state` (он же в `sessionStorage` окна, его сверит `/login/desktop/finish`)
+  const [browser, setBrowser] = useState<{
+    provider: SocialProvider;
+    state: string;
+  } | null>(null);
+  const [browserError, setBrowserError] = useState<string | null>(null);
 
   const requestCode = async (email: string) => {
     setPending(true);
@@ -82,14 +92,36 @@ export function LoginPanel({
     window.location.assign(next);
   };
 
-  const openBrowser = (p: SocialProvider) => {
-    setBrowser(p);
-    void desktopOpenExternal(desktopLoginUrl(p));
+  /** Открыть `/login/desktop` в браузере; не открылся — ошибка в панели, без экрана ожидания. */
+  const openBrowser = async (provider: SocialProvider, state: string) => {
+    setBrowserError(null);
+    // `desktopOpenExternal` не бросает по контракту; catch — чтобы сбой не стал unhandled rejection
+    const opened = await desktopOpenExternal(
+      desktopLoginUrl(provider, state),
+    ).catch(() => false);
+    if (opened) {
+      setBrowser({ provider, state });
+    } else {
+      setBrowser(null);
+      setBrowserError(NO_BROWSER);
+    }
+  };
+
+  /** Новый вход через браузер: свежий `state` в `sessionStorage`, без хранилища — не начинаем. */
+  const startBrowserLogin = (provider: SocialProvider) => {
+    let state: string;
+    try {
+      state = rememberDesktopState();
+    } catch {
+      setBrowserError(NO_STORAGE);
+      return;
+    }
+    void openBrowser(provider, state);
   };
 
   const handleProvider = (p: Provider) => {
     if (isDesktop()) {
-      openBrowser(p);
+      startBrowserLogin(p);
       return;
     }
     setSubmitted(true);
@@ -159,7 +191,7 @@ export function LoginPanel({
         </p>
         <Button
           type="button"
-          onClick={() => openBrowser(browser)}
+          onClick={() => void openBrowser(browser.provider, browser.state)}
           className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
         >
           Открыть браузер ещё раз
@@ -201,6 +233,11 @@ export function LoginPanel({
             onHover={onTint}
             pending={pending}
           />
+          {browserError && (
+            <p role="alert" className="text-sm text-red-400">
+              {browserError}
+            </p>
+          )}
           {hasProviderButtons && (
             <div className="flex items-center gap-3 text-xs text-brand-muted">
               <span className="h-px flex-1 bg-brand-line" />
@@ -299,7 +336,7 @@ export function LoginPanel({
           variant="link"
           onClick={() =>
             isDesktop()
-              ? openBrowser("pocket-id")
+              ? startBrowserLogin("pocket-id")
               : void signInWithProvider("pocket-id", "/admin")
           }
           className="h-auto justify-self-start p-0 text-xs text-brand-muted"

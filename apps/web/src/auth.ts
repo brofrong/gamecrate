@@ -39,6 +39,24 @@ export const createDesktopToken = async (): Promise<
 };
 
 /**
+ * Кто вошёл в этом браузере (`/login/desktop` спрашивает подтверждение входа в приложение):
+ * `label` — почта, а без неё имя. Без сессии — `guest`, сбой запроса — `failed`.
+ */
+export const currentAccount = async (): Promise<
+  { kind: "signed-in"; label: string } | { kind: "guest" } | { kind: "failed" }
+> => {
+  try {
+    const { data, error } = await authClient.getSession();
+    if (error) return { kind: "failed" };
+    if (!data) return { kind: "guest" };
+    const { email, name } = data.user;
+    return { kind: "signed-in", label: email || name };
+  } catch {
+    return { kind: "failed" };
+  }
+};
+
+/**
  * Обмен токена из ссылки `gamecrate://auth` на cookie сессии в окне приложения
  * (`/login/desktop/finish`). Токен уходит в теле POST, не в URL.
  */

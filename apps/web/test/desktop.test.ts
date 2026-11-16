@@ -30,7 +30,7 @@ describe("desktop bridge outside the app", () => {
     await desktopSetStatus({ kind: "idle" });
     await desktopEnterGameFullscreen();
     await desktopExitGameFullscreen();
-    await desktopOpenExternal("https://example.com");
+    expect(await desktopOpenExternal("https://example.com")).toBe(false);
     expect(await desktopAppInfo()).toBeNull();
   });
 });
@@ -61,7 +61,7 @@ describe("desktop bridge inside the app", () => {
     await desktopNotify("Сервер готов", "Заходите");
     await desktopEnterGameFullscreen();
     await desktopExitGameFullscreen();
-    await desktopOpenExternal("https://example.com/a");
+    expect(await desktopOpenExternal("https://example.com/a")).toBe(true);
     expect(invoke.mock.calls.map((c) => c[0])).toEqual([
       "notify",
       "enter_game_fullscreen",
@@ -86,13 +86,15 @@ describe("desktop bridge inside the app", () => {
     await desktopSetStatus({ kind: "playing" });
     await desktopEnterGameFullscreen();
     await desktopExitGameFullscreen();
-    await desktopOpenExternal("https://example.com");
+    // отказ приложения открыть браузер виден вызывающему, но не бросает
+    expect(await desktopOpenExternal("https://example.com")).toBe(false);
     expect(await desktopAppInfo()).toBeNull();
 
     setBridge(() => {
       throw new Error("sync boom");
     });
     await desktopNotify("t", "b");
+    expect(await desktopOpenExternal("https://example.com")).toBe(false);
     expect(await desktopAppInfo()).toBeNull();
   });
 

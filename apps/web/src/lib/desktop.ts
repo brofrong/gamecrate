@@ -16,11 +16,19 @@ declare global {
 /** Состояние для трея приложения. */
 export type DesktopStatus =
   | { kind: "idle" }
-  | { kind: "queued"; position: number; total: number; etaMinutes: number | null }
+  | {
+      kind: "queued";
+      position: number;
+      total: number;
+      etaMinutes: number | null;
+    }
   | { kind: "starting" }
   | { kind: "playing" };
 
-export type DesktopInfo = { version: string; os: "windows" | "macos" | "linux" };
+export type DesktopInfo = {
+  version: string;
+  os: "windows" | "macos" | "linux";
+};
 
 const bridge = (): TauriInternals | undefined =>
   typeof window === "undefined" ? undefined : window.__TAURI_INTERNALS__;
@@ -52,7 +60,9 @@ export const desktopNotify = async (
   await call("notify", { title, body });
 };
 
-export const desktopSetStatus = async (status: DesktopStatus): Promise<void> => {
+export const desktopSetStatus = async (
+  status: DesktopStatus,
+): Promise<void> => {
   await call("set_status", { status });
 };
 
@@ -83,8 +93,19 @@ export const onDesktopGameFullscreen = (
   return () => window.removeEventListener(GAME_FULLSCREEN_EVENT, onEvent);
 };
 
-export const desktopOpenExternal = async (url: string): Promise<void> => {
-  await call("open_external", { url });
+/**
+ * Открыть адрес в системном браузере: `true` — приложение открыло, `false` — вне приложения или
+ * отказ (например, не https). Не бросает, как и остальные обёртки.
+ */
+export const desktopOpenExternal = async (url: string): Promise<boolean> => {
+  const b = bridge();
+  if (b === undefined) return false;
+  try {
+    await b.invoke("open_external", { url });
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 const isOs = (v: unknown): v is DesktopInfo["os"] =>
