@@ -1,6 +1,7 @@
 // Чистая модель сборки изометрического куба 3×3×3 для сцены на странице входа: без
 // DOM/canvas — только уровень сборки по состоянию формы, 27 кубиков с детерминированным
 // порядком и их целевые позиции (дома или в дрейфе).
+import { type BrandPalette, readBrandPalette } from "./brandColors";
 
 export type Level = 0 | 1 | 2;
 
@@ -34,15 +35,22 @@ export interface Cube {
   y: number;
 }
 
-export const PALETTE: ReadonlyArray<readonly [number, number, number]> = [
-  [60, 194, 255],
-  [58, 108, 255],
-  [91, 47, 255],
-  [80, 70, 230],
+/** Цвета кубиков — палитра витрины (`readBrandPalette()`), четыре оттенка по кругу. */
+export const cubePalette = (
+  p: BrandPalette,
+): ReadonlyArray<readonly [number, number, number]> => [
+  p.glowRgb,
+  p.accent2Rgb,
+  p.accent3Rgb,
+  p.mixRgb[0],
 ];
 
 /** 27 кубиков 3×3×3, порядок — по возрастанию `i+j+k` (нижний слой первым). */
-export const makeCubes = (random: () => number): Cube[] => {
+export const makeCubes = (
+  random: () => number,
+  palette: BrandPalette = readBrandPalette(),
+): Cube[] => {
+  const colors = cubePalette(palette);
   const cubes: Cube[] = [];
   for (let i = 0; i < 3; i++)
     for (let j = 0; j < 3; j++)
@@ -54,7 +62,7 @@ export const makeCubes = (random: () => number): Cube[] => {
           fx: (random() - 0.5) * 520,
           fy: (random() - 0.5) * 420,
           phase: random() * 6,
-          color: PALETTE[(i + j + k) % 4] as readonly [number, number, number],
+          color: colors[(i + j + k) % 4] as readonly [number, number, number],
           x: 0,
           y: 0,
         });

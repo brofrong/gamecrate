@@ -173,7 +173,7 @@ describe("singleFileTar", () => {
       expect(list.exitCode).toBe(0);
       const line = new TextDecoder().decode(list.stdout).trim();
       expect(line).toStartWith("-rw-r--r--");
-      expect(line).toMatch(/\b1000\s+1000\b/);
+      expect(line).toMatch(/\b1000[\s/]+1000\b/);
       expect(line).toEndWith("appmanifest_736260.acf");
       const extract = Bun.spawnSync(["tar", "-xf", tarPath, "-C", dir]);
       expect(extract.exitCode).toBe(0);
@@ -219,7 +219,7 @@ describe("filesTar", () => {
       expect(dirLine).toStartWith("d");
       expect(fileLine).toBeDefined();
       expect(fileLine).toStartWith("-");
-      expect(fileLine).toMatch(/\b1000\s+1000\b/);
+      expect(fileLine).toMatch(/\b1000[\s/]+1000\b/);
       const extract = Bun.spawnSync(["tar", "-xf", tarPath, "-C", dir]);
       expect(extract.exitCode).toBe(0);
       expect(readFileSync(join(dir, "a", "b"), "utf8")).toBe("hi");

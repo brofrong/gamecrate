@@ -6,6 +6,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { linkProvider, listLinkedAccounts, unlinkProvider } from "@/auth";
+import { pageProviders } from "@/brands";
 import { AppHeader } from "@/components/AppHeader";
 import { DownloadLink } from "@/components/DownloadLink";
 import { AccountSummary } from "@/components/profile/AccountSummary";
@@ -75,7 +76,7 @@ function ProfilePage() {
 
   const user = AsyncResult.isSuccess(me) ? me.value : undefined;
   const providers = AsyncResult.isSuccess(providersResult)
-    ? providersResult.value
+    ? pageProviders(providersResult.value)
     : undefined;
   const unreachable =
     AsyncResult.isFailure(me) ||

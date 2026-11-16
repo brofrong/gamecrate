@@ -19,6 +19,7 @@ COPY apps/agent/package.json apps/agent/package.json
 COPY apps/api/package.json apps/api/package.json
 COPY apps/orchestrator/package.json apps/orchestrator/package.json
 COPY apps/web/package.json apps/web/package.json
+COPY packages/brands/package.json packages/brands/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/rpc/package.json packages/rpc/package.json
 

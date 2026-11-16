@@ -1,19 +1,16 @@
 // HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
-// прокси стрима (/stream/<id>/*), раздача десктоп-сборок (/download/desktop/*), статика SPA.
+// прокси стрима (/stream/<id>/*), раздача десктоп-сборок (/download/desktop/*),
+// статика SPA (`index.html` по витрине хоста, brand/route.ts).
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
-import {
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-  HttpStaticServer,
-} from "effect/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AccountRpcHandlers } from "./account/rpc";
 import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
+import { BrandedStaticRoute } from "./brand/route";
 import { AppConfig, rpcAllowedOrigins } from "./config";
 import { DesktopReleases } from "./download/DesktopReleases";
 import { DesktopRoutes } from "./download/routes";
@@ -102,13 +99,6 @@ const RpcRoute = RpcServer.layer(AppRpcs).pipe(
   Layer.provide(RpcSerialization.layerNdjson),
 );
 
-/** Остальные GET — файлы из `webDistDir`; неизвестные страницы → `index.html` (SPA). */
-const StaticRoute = Layer.unwrap(
-  AppConfig.useSync((config) =>
-    HttpStaticServer.layer({ root: config.webDistDir, spa: true }),
-  ),
-);
-
 /**
  * Раздача десктоп-сборок `/download/desktop/*` — публично. Хранилище берёт из окружения само
  * (`DESKTOP_S3_*`, без ключей — 404), поэтому в `HttpApp` оно не входит зависимостью и
@@ -125,5 +115,5 @@ export const HttpApp = Layer.mergeAll(
   RpcRoute,
   StreamProxyRoute,
   DesktopDownloadRoute,
-  StaticRoute,
+  BrandedStaticRoute,
 );

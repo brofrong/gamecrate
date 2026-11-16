@@ -182,7 +182,7 @@ describe("clearSteamLogin", () => {
     for (const name of ["local.vdf", "registry.vdf"]) {
       const line = tarEntryInfo(tar, name);
       expect(line).toStartWith("-rw-------");
-      expect(line).toMatch(/\b1000\s+1000\b/);
+      expect(line).toMatch(/\b1000[\s/]+1000\b/);
     }
   });
 
@@ -405,7 +405,7 @@ describe("launch options", () => {
     expect(c.launchOptions("10")).toBe("-console");
     const line = tarEntryInfo(c.put[0]!, "localconfig.vdf");
     expect(line).toStartWith("-rw-------");
-    expect(line).toMatch(/\b1000\s+1000\b/);
+    expect(line).toMatch(/\b1000[\s/]+1000\b/);
 
     await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));
     expect(c.put).toHaveLength(2);
@@ -424,7 +424,7 @@ describe("launch options", () => {
       ".local/share/Steam/userdata/22202/config/",
     ])
       expect(tarEntryInfo(c.put[0]!, dir)).toMatch(
-        /^drwx------.*\b1000\s+1000\b/,
+        /^drwx------.*\b1000[\s/]+1000\b/,
       );
 
     await c.runIn(clearLaunchOptions({ container: "c1", appId: 570 }));

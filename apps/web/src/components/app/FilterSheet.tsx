@@ -96,7 +96,7 @@ function FilterSheetContent({
           <button
             type="button"
             onClick={() => setDraft(DEFAULT_FILTERS)}
-            className="text-sm font-semibold text-[#3cc2ff]"
+            className="text-sm font-semibold text-brand-accent"
           >
             Сбросить
           </button>
@@ -194,7 +194,7 @@ function FilterSheetContent({
             onApply(draft);
             onClose();
           }}
-          className="h-[46px] w-full rounded-full bg-gradient-to-br from-[#3cc2ff] via-[#3a6cff] to-[#5b2fff] text-sm font-bold text-white"
+          className="h-[46px] w-full rounded-full bg-gradient-to-br from-brand-accent via-brand-accent-2 to-brand-accent-3 text-sm font-bold text-brand-on-accent"
         >
           Показать {countFor(draft)} игр
         </button>

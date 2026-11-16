@@ -29,7 +29,7 @@ export function UserAvatar({
     <span
       aria-hidden
       className={cn(
-        "flex items-center justify-center rounded-full bg-gradient-to-br from-[#3cc2ff] via-[#3a6cff] to-[#5b2fff] text-sm font-semibold text-[#eef1ff]",
+        "flex items-center justify-center rounded-full bg-gradient-to-br from-brand-accent via-brand-accent-2 to-brand-accent-3 text-sm font-semibold text-brand-on-accent-soft",
         className,
       )}
     >

@@ -6,6 +6,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { createRoute, Navigate } from "@tanstack/react-router";
 import type { CurrentUserShape } from "@cg/rpc";
 import { AsyncResult } from "effect/reactivity";
+import { BrandSlot } from "@/components/brand/BrandSlot";
 import { LandingPage } from "@/components/landing/LandingPage";
 import { isDesktop } from "@/lib/desktop";
 import { meAtom } from "@/rpc";
@@ -18,7 +19,13 @@ export const landingSignedIn = (
 
 function BrowserLanding() {
   const me = useAtomValue(meAtom);
-  return <LandingPage signedIn={landingSignedIn(me)} />;
+  return (
+    <BrandSlot
+      name="landing"
+      fallback={LandingPage}
+      signedIn={landingSignedIn(me)}
+    />
+  );
 }
 
 /** В десктоп-приложении лендинга нет — сразу библиотека; в браузере — лендинг. */

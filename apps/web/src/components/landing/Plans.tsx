@@ -34,11 +34,11 @@ export function Plans() {
               className={cn(
                 "relative flex flex-col rounded-3xl border border-brand-line bg-brand-card p-[30px] transition-[transform,border-color] duration-200 hover:-translate-y-1 hover:border-brand-cyan/35",
                 plan.popular &&
-                  "border-brand-cyan/50 bg-[linear-gradient(160deg,rgba(60,194,255,0.12),rgba(91,47,255,0.12)),#0f1326]",
+                  "border-brand-cyan/50 bg-[linear-gradient(160deg,rgb(var(--brand-glow-rgb)/0.12),rgb(var(--brand-accent-3-rgb)/0.12)),var(--brand-card)]",
               )}
             >
               {plan.popular && (
-                <div className="absolute -top-3 left-[30px] rounded-full bg-brand-gradient px-2.5 py-[5px] text-[11px] font-bold tracking-[0.06em] text-white">
+                <div className="absolute -top-3 left-[30px] rounded-full bg-brand-gradient px-2.5 py-[5px] text-[11px] font-bold tracking-[0.06em] text-brand-on-accent">
                   ПОПУЛЯРНЫЙ
                 </div>
               )}

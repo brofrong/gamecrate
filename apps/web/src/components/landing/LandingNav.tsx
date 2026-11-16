@@ -1,7 +1,8 @@
 // Фиксированная шапка лендинга: прозрачная наверху, после 40px скролла — фон с блюром.
 // Логотип сворачивается в GC-куб по прогрессу скролла; якоря скрыты уже < 860px.
 import { useEffect, useState } from "react";
-import { Logo } from "@/components/brand/Logo";
+import { useBrand } from "@/brands";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { useScrollProgress } from "@/components/brand/useScrollProgress";
 import { cn } from "@/lib/utils";
 import { PlayButton } from "./PlayButton";
@@ -15,6 +16,13 @@ export const navLinks = [
 ] as const;
 
 export function LandingNav() {
+  const brand = useBrand();
+  // У партнёрской витрины секция «Тарифы» — подписка у партнёра (тот же якорь).
+  const links = navLinks.map(([href, name]) =>
+    href === "#plans" && brand.monetization.kind === "partner"
+      ? ([href, "Подписка"] as const)
+      : ([href, name] as const),
+  );
   const progress = useScrollProgress();
   const [solid, setSolid] = useState(false);
 
@@ -34,11 +42,11 @@ export function LandingNav() {
       )}
     >
       <div className="mx-auto flex h-[68px] max-w-[1180px] items-center justify-between px-7">
-        <a href="#top" className="flex items-center" aria-label="GameCrate">
-          <Logo progress={progress} height={36} title="GameCrate" />
+        <a href="#top" className="flex items-center" aria-label={brand.name}>
+          <BrandLogo progress={progress} height={36} title={brand.name} />
         </a>
         <div className="hidden items-center gap-7 text-sm text-brand-muted min-[860px]:flex">
-          {navLinks.map(([href, name]) => (
+          {links.map(([href, name]) => (
             <a
               key={href}
               href={href}

@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { readBrandPalette } from "@/lib/brandColors";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +34,8 @@ type Stat = {
   format: (v: number) => string;
 };
 
-const STATS: ReadonlyArray<Stat> = [
+/** Показатели HUD; `accent` — акцент витрины (читается один раз при монтировании). */
+const buildStats = (accent: string): ReadonlyArray<Stat> => [
   {
     key: "fps",
     label: "FPS",
@@ -45,7 +47,7 @@ const STATS: ReadonlyArray<Stat> = [
   {
     key: "ft",
     label: "FRAMETIME",
-    color: "#3cc2ff",
+    color: accent,
     min: 10,
     max: 25,
     format: (v) => `${v.toFixed(1)} ms`,
@@ -53,7 +55,7 @@ const STATS: ReadonlyArray<Stat> = [
   {
     key: "lat",
     label: "LATENCY",
-    color: "#3cc2ff",
+    color: accent,
     min: 0,
     max: 40,
     format: (v) => `${Math.round(v)} ms`,
@@ -115,6 +117,7 @@ export function Hud({
   className?: string;
 }) {
   const reduced = usePrefersReducedMotion();
+  const [stats] = useState(() => buildStats(readBrandPalette().accent));
   const [values, setValues] = useState(() => sample(0));
   const lastTick = useRef(-Infinity);
   const seriesRef = useRef<Record<Key, number[]>>({
@@ -134,7 +137,7 @@ export function Hud({
     if (time - lastTick.current < TICK_MS) return;
     lastTick.current = time;
     const next = sample(boost);
-    for (const stat of STATS) {
+    for (const stat of stats) {
       const s = seriesRef.current[stat.key];
       s.push(next[stat.key]);
       if (s.length > POINTS) s.shift();
@@ -167,7 +170,7 @@ export function Hud({
         className,
       )}
     >
-      {STATS.map((stat) => (
+      {stats.map((stat) => (
         <div
           key={stat.key}
           className="grid grid-cols-[64px_54px_1fr] items-center gap-2.5 text-[#c9cdf0] min-[860px]:grid-cols-[78px_64px_1fr]"

@@ -7,6 +7,7 @@ import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useBrand } from "@/brands";
 import { FullscreenLoader } from "@/components/FullscreenLoader";
 import { Player } from "@/components/Player";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
@@ -15,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { homePath } from "@/lib/desktop";
 import { useDesktopGameStatus } from "@/lib/desktopStatus";
 import { useInputActivity } from "@/lib/inputActivity";
-import { hasHigherTariff } from "@/lib/planFormat";
+import { showHigherTariffHint } from "@/lib/planFormat";
 import { reportStartError } from "@/lib/usePlaySession";
 import { useStalled } from "@/lib/useStalled";
 import { useStreamSettings } from "@/lib/useStreamSettings";
@@ -111,6 +112,7 @@ function SessionPage() {
   const input = useInputActivity();
   const streamSettings = useStreamSettings();
   const plan = useAtomValue(accountPlanAtom);
+  const { monetization } = useBrand();
   const qualityLimits = AsyncResult.isSuccess(plan)
     ? {
         maxResolution: plan.value.tariff.maxResolution,
@@ -118,7 +120,8 @@ function SessionPage() {
       }
     : undefined;
   const higherTariffExists =
-    AsyncResult.isSuccess(plan) && hasHigherTariff(plan.value);
+    AsyncResult.isSuccess(plan) &&
+    showHigherTariffHint(monetization, plan.value);
 
   const view = Option.getOrUndefined(AsyncResult.value(watch));
   const tag = resultErrorTag(watch);

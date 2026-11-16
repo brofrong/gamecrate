@@ -24,7 +24,7 @@ function Cover({ appId }: { appId: number }) {
   };
   return (
     <div
-      className="relative h-[225px] w-[150px] shrink-0 overflow-hidden rounded-[10px] bg-[#141834] shadow-[0_20px_40px_rgba(0,0,0,0.5)] transition-[transform,box-shadow] duration-400 ease-out group-[.hold]:-translate-y-1 group-[.hold]:shadow-[0_26px_50px_rgba(0,0,0,0.6),0_0_0_1px_rgba(60,194,255,0.35)]"
+      className="relative h-[225px] w-[150px] shrink-0 overflow-hidden rounded-[10px] bg-[#141834] shadow-[0_20px_40px_rgba(0,0,0,0.5)] transition-[transform,box-shadow] duration-400 ease-out group-[.hold]:-translate-y-1 group-[.hold]:shadow-[0_26px_50px_rgba(0,0,0,0.6),0_0_0_1px_rgb(var(--brand-glow-rgb)/0.35)]"
       data-failed={state === "failed" ? "" : undefined}
     >
       <img

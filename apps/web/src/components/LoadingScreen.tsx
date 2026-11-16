@@ -70,7 +70,7 @@ function CancelButton({
 function StepDot({ status }: { status: LoadingStep["status"] }) {
   if (status === "done") {
     return (
-      <span className="flex size-5 flex-none items-center justify-center rounded-full bg-brand-blue text-white">
+      <span className="flex size-5 flex-none items-center justify-center rounded-full bg-brand-blue text-brand-on-accent">
         <Check className="size-3" strokeWidth={3} />
       </span>
     );

@@ -200,7 +200,7 @@ function FilterPanel({
         <button
           type="button"
           onClick={onClose}
-          className="text-sm font-semibold text-[#3cc2ff]"
+          className="text-sm font-semibold text-brand-accent"
         >
           Готово
         </button>
@@ -308,7 +308,7 @@ export function FilterBar({
             <SlidersHorizontal aria-hidden className="size-4" />
             Фильтры
             {activeCount > 0 && (
-              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#3cc2ff] px-1.5 text-[11px] font-bold text-[#0d0f14]">
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-brand-accent px-1.5 text-[11px] font-bold text-[#0d0f14]">
                 {activeCount}
               </span>
             )}
@@ -342,7 +342,7 @@ export function FilterBar({
           );
         })}
         <Link to="/app/crate" className={chipClassName}>
-          <span aria-hidden className="size-1.5 rounded-sm bg-[#3cc2ff]" />
+          <span aria-hidden className="size-1.5 rounded-sm bg-brand-accent" />
           Играть бесплатно
         </Link>
         {activeCount > 0 && (

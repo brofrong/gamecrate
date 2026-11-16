@@ -1,5 +1,6 @@
 // Конфигурация сервера из окружения (`.env`). Секреты — только Redacted.
 import { fileURLToPath } from "node:url";
+import { normalizeHost, parseBrandHosts } from "@cg/brands";
 import {
   Config,
   ConfigProvider,
@@ -41,6 +42,36 @@ const pairOrNone = <A, B>(
     }),
   );
 
+const configError = (message: string) =>
+  new Config.ConfigError(new ConfigProvider.SourceError({ message }));
+
+/**
+ * Хосты, на которых провайдер входа принимает возврат (`OAUTH_HOSTS_*`, через запятую, без порта):
+ * не задано или пустая строка — только хост `PUBLIC_URL`. Нормализуются (нижний регистр).
+ */
+const oauthHostsOf = (name: string): Config.Config<ReadonlySet<string>> =>
+  Config.all([
+    Config.String("PUBLIC_URL"),
+    Config.option(Config.String(name)),
+  ]).pipe(
+    Config.mapEffect(([publicUrl, raw]) => {
+      if (Option.isSome(raw))
+        return Effect.succeed(
+          new Set(
+            raw.value
+              .split(",")
+              .map(normalizeHost)
+              .filter((host) => host.length > 0),
+          ),
+        );
+      return Effect.try({
+        try: () => new Set([normalizeHost(new URL(publicUrl).host)]),
+        catch: () =>
+          configError("PUBLIC_URL: нужен адрес http(s)://host[:port]"),
+      });
+    }),
+  );
+
 /** Описание переменных окружения сервера. */
 export const appConfig = Config.all({
   port: Config.Port("PORT").pipe(Config.withDefault(3000)),
@@ -67,6 +98,34 @@ export const appConfig = Config.all({
     ),
     Config.withDefault<ReadonlyArray<string>>([]),
   ),
+  /**
+   * Витрины партнёров: `host=бренд` через запятую (`play.beeline.ru=beeline`).
+   * Хосты вне списка — основной бренд. Не задано или пустая строка — пустая карта;
+   * неизвестный бренд или пара без `=` — ConfigError при старте.
+   */
+  brandHosts: Config.String("BRAND_HOSTS").pipe(
+    Config.withDefault(""),
+    Config.mapEffect((value) =>
+      Effect.try({
+        try: () => parseBrandHosts(value),
+        catch: (cause) =>
+          configError(
+            `BRAND_HOSTS: нужен список host=бренд (${cause instanceof Error ? cause.message : String(cause)})`,
+          ),
+      }),
+    ),
+  ),
+  /**
+   * Хосты, на которых доступен вход через провайдера
+   * (`OAUTH_HOSTS_GOOGLE/YANDEX/POCKET_ID/TELEGRAM`, через запятую): redirect URI
+   * провайдера зарегистрирован только для них. По умолчанию — хост `PUBLIC_URL`.
+   */
+  oauthHosts: Config.all({
+    google: oauthHostsOf("OAUTH_HOSTS_GOOGLE"),
+    yandex: oauthHostsOf("OAUTH_HOSTS_YANDEX"),
+    pocketId: oauthHostsOf("OAUTH_HOSTS_POCKET_ID"),
+    telegram: oauthHostsOf("OAUTH_HOSTS_TELEGRAM"),
+  }),
   /**
    * Адрес relay оркестратора (спека §4): прокси стрима (`/stream/<id>/…`,
    * `session/streamProxy.ts`) ходит сюда (`<orchestratorRelayUrl>/relay/<id>/…`),
@@ -191,11 +250,26 @@ export class AppConfig extends Context.Service<AppConfig, AppConfigValues>()(
     Layer.effect(AppConfig, appConfig);
 }
 
+/** Хост `PUBLIC_URL` и все хосты `BRAND_HOSTS` (без порта, в нижнем регистре, без повторов). */
+export const appHosts = (config: AppConfigValues): ReadonlyArray<string> => [
+  ...new Set([
+    normalizeHost(new URL(config.publicUrl).host),
+    ...config.brandHosts.keys(),
+  ]),
+];
+
 /**
  * Origin, которым разрешены WebSocket `/rpc` и прокси стрима (WS-апгрейд и
- * небезопасные методы): origin `PUBLIC_URL` + `ALLOWED_ORIGINS`.
+ * небезопасные методы), а также `trustedOrigins` Better Auth: origin `PUBLIC_URL`,
+ * `ALLOWED_ORIGINS` и домены витрин `BRAND_HOSTS` (со схемой `PUBLIC_URL`).
  */
 export const rpcAllowedOrigins = (
   config: AppConfigValues,
-): ReadonlySet<string> =>
-  new Set([new URL(config.publicUrl).origin, ...config.allowedOrigins]);
+): ReadonlySet<string> => {
+  const { protocol, origin } = new URL(config.publicUrl);
+  return new Set([
+    origin,
+    ...config.allowedOrigins,
+    ...[...config.brandHosts.keys()].map((host) => `${protocol}//${host}`),
+  ]);
+};

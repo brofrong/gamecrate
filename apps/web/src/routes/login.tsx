@@ -5,7 +5,9 @@ import { createRoute, Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Logo } from "@/components/brand/Logo";
+import { pageProviders, useBrand } from "@/brands";
+import { BrandLogo } from "@/components/brand/BrandLogo";
+import { BrandSlot } from "@/components/brand/BrandSlot";
 import { CubeScene } from "@/components/login/CubeScene";
 import { LoginPanel } from "@/components/login/LoginPanel";
 import { authErrorMessage } from "@/lib/authErrors";
@@ -20,6 +22,7 @@ export const loginNext = (search: { next?: string }): string =>
   safeNext(search.next);
 
 function LoginPage() {
+  const brand = useBrand();
   const me = useAtomValue(meAtom);
   const providersResult = useAtomValue(providersAtom);
   const { next, error } = loginRoute.useSearch();
@@ -30,8 +33,8 @@ function LoginPage() {
   const [lit, setLit] = useState(false);
 
   useEffect(() => {
-    if (error) toast.error(authErrorMessage(error));
-  }, [error]);
+    if (error) toast.error(authErrorMessage(error, brand.name));
+  }, [error, brand.name]);
 
   if (AsyncResult.isSuccess(me)) {
     window.location.assign(target);
@@ -39,7 +42,7 @@ function LoginPage() {
   }
 
   const providers = AsyncResult.isSuccess(providersResult)
-    ? providersResult.value
+    ? pageProviders(providersResult.value)
     : undefined;
 
   return (
@@ -47,19 +50,23 @@ function LoginPage() {
       <div className="relative order-2 h-[240px] lg:order-1 lg:h-auto">
         <Link
           to={homePath()}
-          aria-label="GameCrate"
+          aria-label={brand.name}
           className="absolute top-7 left-7 z-10"
         >
-          <Logo height={36} />
+          <BrandLogo height={36} />
         </Link>
         <CubeScene level={level} tint={tint} lit={lit} />
       </div>
       <div className="order-1 flex items-center justify-center p-6 lg:order-2">
         <div className="grid w-full max-w-sm gap-4">
           {error && (
-            <p className="text-sm text-red-400">{authErrorMessage(error)}</p>
+            <p className="text-sm text-red-400">
+              {authErrorMessage(error, brand.name)}
+            </p>
           )}
-          <LoginPanel
+          <BrandSlot
+            name="loginPanel"
+            fallback={LoginPanel}
             providers={providers}
             next={target}
             onLevel={setLevel}

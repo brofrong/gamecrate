@@ -11,7 +11,7 @@ import {
 } from "@/components/app/game/KeyValueList";
 import { storeUrl } from "@/lib/gameHero";
 
-const linkClassName = "text-[#3cc2ff] hover:underline";
+const linkClassName = "text-brand-accent hover:underline";
 
 export function FactsPanel({ game }: { game: GameView }) {
   const details = game.details;

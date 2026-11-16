@@ -3,6 +3,7 @@
 // `formatMinutes` сокращает до букв («2 ч 14 м», сводка времени), здесь — до слов
 // («12 ч 30 мин», «45 мин»), как того просит бриф задачи.
 import type { PlayerPlan, PublicTariff } from "@cg/rpc";
+import type { Monetization } from "@/brands";
 
 /** «12 ч 30 мин», «40 ч», «45 мин», «0 мин» — остаток минут плана. */
 export function formatMinutes(minutes: number): string {
@@ -51,4 +52,15 @@ export function tariffPriorityLabel(
  */
 export function hasHigherTariff(plan: PlayerPlan): boolean {
   return plan.tariffs.some((t) => t.queuePriority > plan.tariff.queuePriority);
+}
+
+/**
+ * Показывать ли в очереди подсказку «В тарифе выше очередь короче»: только у витрины со
+ * своими тарифами — у партнёра каталога тарифов нет, ссылка вела бы на страницу подписки.
+ */
+export function showHigherTariffHint(
+  monetization: Monetization,
+  plan: PlayerPlan,
+): boolean {
+  return monetization.kind === "own" && hasHigherTariff(plan);
 }

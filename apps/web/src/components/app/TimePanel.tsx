@@ -22,7 +22,7 @@ export function TimePanel({ summary }: { summary: TimeSummary | undefined }) {
         icon={<Clock className="size-4" />}
         title="Время"
         pill={
-          <span className="rounded-xl bg-[#3cc2ff]/10 px-2.5 py-1 text-xs font-medium text-[#3cc2ff]">
+          <span className="rounded-xl bg-brand-accent/10 px-2.5 py-1 text-xs font-medium text-brand-accent">
             {formatMonth(month).split(" ")[0]}
           </span>
         }

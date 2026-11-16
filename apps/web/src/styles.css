@@ -33,9 +33,27 @@
   --brand-surface: #0a0d1c;
   --brand-card: #0f1326;
   --brand-line: rgba(255, 255, 255, 0.08);
-  --brand-cyan: #3cc2ff;
-  --brand-blue: #3a6cff;
-  --brand-violet: #5b2fff;
+  /* Акценты витрины: `[data-brand]` ниже переопределяет их целиком. `--brand-cyan/blue/violet` —
+     алиасы прежних имён, чтобы классы Tailwind не переписывать разом. */
+  --brand-accent: #3cc2ff;
+  --brand-accent-2: #3a6cff;
+  --brand-accent-3: #5b2fff;
+  --brand-cyan: var(--brand-accent);
+  --brand-blue: var(--brand-accent-2);
+  --brand-violet: var(--brand-accent-3);
+  /* Те же цвета как `r g b` — для свечений с альфой: `rgb(var(--brand-glow-rgb) / 0.35)`. */
+  --brand-glow-rgb: 60 194 255;
+  --brand-accent-2-rgb: 58 108 255;
+  --brand-accent-3-rgb: 91 47 255;
+  /* Промежуточные оттенки для кубиков и частиц на canvas (`readBrandPalette`). */
+  --brand-mix-1-rgb: 80 70 230;
+  --brand-mix-2-rgb: 140 90 255;
+  --brand-mix-3-rgb: 40 160 240;
+  /* Тень кнопки «Играть». */
+  --brand-shadow-rgb: 60 110 255;
+  /* Текст на акцентном фоне (кнопка, активный чип, бейдж); «мягкий» — на аватаре. */
+  --brand-on-accent: #ffffff;
+  --brand-on-accent-soft: #eef1ff;
   --brand-text: #f3f4ff;
   --brand-muted: #8b90b8;
   --brand-dim: #6d729a;
@@ -43,12 +61,36 @@
   --brand-warn: #ffd166;
   --brand-gradient: linear-gradient(
     135deg,
-    #3cc2ff 0%,
-    #3a6cff 50%,
-    #5b2fff 100%
+    var(--brand-accent) 0%,
+    var(--brand-accent-2) 50%,
+    var(--brand-accent-3) 100%
   );
   --font-sans: "Inter Variable", system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
+}
+
+/* Витрина Билайна: жёлтый акцент на тёмном, текст на акцентной кнопке тёмный (контраст).
+   Выбирается по домену: сервер ставит `<html data-brand="beeline">`. */
+[data-brand="beeline"] {
+  --primary: oklch(0.86 0.17 88);
+  --primary-foreground: oklch(0.2 0.02 270);
+  --ring: oklch(0.75 0.15 88);
+  --brand-bg: #0d0f14;
+  --brand-surface: #151821;
+  --brand-card: #1b1f2a;
+  --brand-accent: #ffc800;
+  --brand-accent-2: #ffb300;
+  --brand-accent-3: #ff9f00;
+  --brand-glow-rgb: 255 200 0;
+  --brand-accent-2-rgb: 255 179 0;
+  --brand-accent-3-rgb: 255 159 0;
+  --brand-mix-1-rgb: 255 170 0;
+  --brand-mix-2-rgb: 255 214 64;
+  --brand-mix-3-rgb: 255 190 30;
+  --brand-shadow-rgb: 255 179 0;
+  --brand-on-accent: #14161c;
+  --brand-on-accent-soft: #14161c;
+  --brand-gradient: linear-gradient(135deg, #ffc800 0%, #ff9f00 100%);
 }
 
 /* Пятая колонка плиток `/app` от 1440 px: именованный брейкпоинт, а не `min-[1440px]:`,
@@ -85,6 +127,11 @@
   --color-brand-surface: var(--brand-surface);
   --color-brand-card: var(--brand-card);
   --color-brand-line: var(--brand-line);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-2: var(--brand-accent-2);
+  --color-brand-accent-3: var(--brand-accent-3);
+  --color-brand-on-accent: var(--brand-on-accent);
+  --color-brand-on-accent-soft: var(--brand-on-accent-soft);
   --color-brand-cyan: var(--brand-cyan);
   --color-brand-blue: var(--brand-blue);
   --color-brand-violet: var(--brand-violet);

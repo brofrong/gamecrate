@@ -83,7 +83,7 @@ export function AchievementsPanel({
             href="https://steamcommunity.com/my/edit/settings"
             target="_blank"
             rel="noreferrer"
-            className="text-[#3cc2ff] hover:underline"
+            className="text-brand-accent hover:underline"
           >
             Настройки приватности ↗
           </a>

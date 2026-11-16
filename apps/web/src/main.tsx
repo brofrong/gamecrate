@@ -1,4 +1,5 @@
 // Точка входа SPA: роутер TanStack, реестр атомов Effect.
+import { brandForHost } from "@cg/brands";
 import { RegistryProvider } from "@effect/atom-react";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
@@ -47,6 +48,13 @@ declare module "@tanstack/react-router" {
     router: typeof router;
   }
 }
+
+// Прод: api уже поставил `data-brand` в index.html. Dev без api — по хосту
+// (`beeline.localhost`), иначе gamecrate. `data-oauth` в dev не трогаем.
+document.documentElement.dataset.brand ??= brandForHost(
+  location.host,
+  new Map(),
+);
 
 loadBrandFonts();
 

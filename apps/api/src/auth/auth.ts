@@ -12,7 +12,13 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { Context, Effect, FiberSet, Layer, Option, Redacted } from "effect";
 import type { Headers } from "effect/http/Headers";
-import { AppConfig, type AppConfigValues } from "../config";
+import { brandOfRequest } from "../brand/requestBrand";
+import {
+  AppConfig,
+  type AppConfigValues,
+  appHosts,
+  rpcAllowedOrigins,
+} from "../config";
 import { syncOnLogin } from "../library/LibraryService";
 import { Mailer, type Mail } from "../mail/Mailer";
 import { changeEmailCodeMail, loginCodeMail } from "../mail/templates";
@@ -71,7 +77,20 @@ export const makeAuth = (
     (() => Promise.reject(new Error("mailer not configured")));
 
   return betterAuth({
-    baseURL: config.publicUrl,
+    // Один Better Auth на все домены витрин: baseURL (redirect_uri OAuth, ссылки, cookie)
+    // берётся из хоста запроса, но только из списка PUBLIC_URL + BRAND_HOSTS; чужой хост
+    // получает fallback. За прокси хост приходит в x-forwarded-host (trustedProxyHeaders).
+    // Схема — всегда схема PUBLIC_URL, не "auto": с "auto" Better Auth 1.7 не ставит
+    // `__Secure-` и Secure на cookie (имя сессии на проде сменилось бы — все разлогинены),
+    // а redirect_uri без x-forwarded-proto стал бы `http://`.
+    baseURL: {
+      allowedHosts: [...appHosts(config)],
+      fallback: config.publicUrl,
+      protocol:
+        new URL(config.publicUrl).protocol === "https:" ? "https" : "http",
+    },
+    trustedOrigins: [...rpcAllowedOrigins(config)],
+    advanced: { trustedProxyHeaders: true },
     secret: Redacted.value(config.authSecret),
     database: drizzleAdapter(db, {
       provider: "pg",
@@ -215,13 +234,19 @@ export const makeAuth = (
         resendStrategy: "rotate",
         changeEmail: { enabled: true, verifyCurrentEmail: false },
         rateLimit: { window: 30, max: 1 },
-        sendVerificationOTP: ({ email, otp, type }) =>
-          sendMail({
+        sendVerificationOTP: ({ email, otp, type }, ctx) => {
+          // Письмо от имени витрины, с которой запросили код.
+          const brandName = brandOfRequest(
+            ctx?.request?.headers ?? ctx?.headers,
+            config,
+          ).name;
+          return sendMail({
             to: email,
             ...(type === "change-email"
-              ? changeEmailCodeMail(otp)
-              : loginCodeMail(otp)),
-          }),
+              ? changeEmailCodeMail(otp, brandName)
+              : loginCodeMail(otp, brandName)),
+          });
+        },
       }),
     ],
   });

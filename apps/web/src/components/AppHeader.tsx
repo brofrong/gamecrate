@@ -4,7 +4,8 @@ import { Link } from "@tanstack/react-router";
 import { LogOut } from "lucide-react";
 import type * as React from "react";
 import { signOut } from "@/auth";
-import { Logo } from "@/components/brand/Logo";
+import { useBrand } from "@/brands";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { avatarInitial } from "@/lib/accountDisplay";
 
@@ -15,12 +16,13 @@ export function AppHeader({
   user: CurrentUserShape | undefined;
   children?: React.ReactNode;
 }) {
+  const brand = useBrand();
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-screen-2xl items-center gap-4 px-4 sm:px-6">
         <Link to="/app" className="flex items-center gap-2 font-semibold">
-          <Logo iconOnly height={28} />
-          <span className="hidden sm:inline">GameCrate</span>
+          <BrandLogo iconOnly height={28} />
+          <span className="hidden sm:inline">{brand.name}</span>
         </Link>
         {user?.role === "admin" && (
           <Link
