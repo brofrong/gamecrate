@@ -325,6 +325,39 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep -m1 "Connected to orchestrator"' 
 Новый драйвер на игровом сервере — сначала строка в `images/session/drivers.txt` и новый релиз
 (образ сессии собирается только в CI), потом установка или обновление сервера.
 
+## Новая витрина
+
+Витрина партнёра — тот же сайт и тот же аккаунт на другом домене: свои название, цвета, логотип и
+способ монетизации (у партнёра вместо тарифов GameCrate — подписка в его сервисе, без цен). Витрину
+выбирает `cg-api` по хосту запроса и подставляет её в `index.html` (`<html data-brand>`).
+
+В коде (один релиз):
+
+1. Папка `apps/web/src/brands/<id>/`: `index.tsx` (логотип, `monetization`, `overrides`), логотип,
+   `public/favicon.svg` и `public/apple-touch-icon.png` (отдаются как `/brands/<id>/…`). Цвета — блок
+   `[data-brand="<id>"]` в `apps/web/src/styles.css`.
+2. Запись в `packages/brands` (`BRAND_IDS`, `BRANDS`: название, `<title>`, описание, `theme-color`,
+   пути значков) и в `WEB_BRANDS` (`apps/web/src/brands/index.ts`).
+
+В окружении и на стороне владельца (без кода):
+
+3. `BRAND_HOSTS` в `.env` главного: `play.example.ru=<id>` (несколько — через запятую). Хост вне
+   списка — GameCrate. Домен также попадает в разрешённые origin для `/rpc`. Локально хост
+   `<id>.localhost` открывает витрину без настройки (`http://beeline.localhost:5173/`).
+4. DNS и TLS на новый домен; маршруты обратного прокси из таблицы главного сервера (`https://<домен>`
+   на `cg-api:3000`, `https://<домен>/agent*` на `cg-orchestrator:3001`, если агенты ходят через него).
+5. Вход через провайдеров на новом домене: callback у провайдера
+   `https://<домен>/api/auth/callback/<google|yandex|telegram|pocket-id>` (для generic OAuth —
+   `/api/auth/oauth2/callback/<id>`). **Только после того, как callback прописан**, добавить домен в
+   `OAUTH_HOSTS_GOOGLE`/`_YANDEX`/`_POCKET_ID`/`_TELEGRAM` (хосты через запятую, без порта). Пока
+   переменная не задана, провайдер включён только на хосте `PUBLIC_URL`.
+6. `cg-api` пересоздать (`docker compose -f compose.main.yaml --env-file .env up -d`) и открыть домен:
+   название, цвета и логотип партнёра, на странице входа нет «GameCrate».
+
+Ссылка «Перейти в <название>» на странице подписки появится, когда у витрины задан
+`monetization.url` (сейчас `null`). Логотип Билайна временный (`TODO(owner)`): официальный SVG и
+значки дают владелец или партнёр.
+
 ## Админка
 
 `/admin` (вход через Pocket ID, роль `admin`) заменяет хождение по ssh за `docker ps`/`df`/
