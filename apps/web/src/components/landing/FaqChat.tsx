@@ -1,8 +1,9 @@
-// FAQ в виде чата: вопрос — пузырь справа («Ты»), ответ — слева со знаком GameCrate.
+// FAQ в виде чата: вопрос — пузырь справа («Ты»), ответ — слева со знаком витрины.
 // Сообщения проявляются, когда доезжают до экрана (ответ — с задержкой 250 мс);
 // без IntersectionObserver или при reduced motion видно всё сразу.
 import { useEffect, useRef, useState } from "react";
-import { Logo } from "@/components/brand/Logo";
+import { useBrand } from "@/brands";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { usePrefersReducedMotion } from "@/lib/usePrefersReducedMotion";
 import { cn } from "@/lib/utils";
 import { faq } from "./data";
@@ -11,6 +12,7 @@ import { SectionHead } from "./SectionHead";
 const ANSWER_DELAY_MS = 250;
 
 export function FaqChat() {
+  const brand = useBrand();
   const reduced = usePrefersReducedMotion();
   const listRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<ReadonlySet<number>>(() => new Set());
@@ -72,7 +74,11 @@ export function FaqChat() {
                   m.me ? "bg-[#23284a]" : "bg-brand-gradient p-1.5",
                 )}
               >
-                {m.me ? "Ты" : <Logo iconOnly height={20} title="GameCrate" />}
+                {m.me ? (
+                  "Ты"
+                ) : (
+                  <BrandLogo iconOnly height={20} title={brand.name} />
+                )}
               </div>
               <div
                 className={cn(
