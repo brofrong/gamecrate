@@ -1,12 +1,13 @@
 // Знак билайна — фирменный шар из шапки старого сайта beeplaycloud.ru
 // (assets/images/icons/beeline-ball.svg): жёлтый круг, тёмные полосы и белый блик по краю.
-// Слова рядом нет, как на старом сайте; шар один и тот же в шапке, футере и приложении.
+// Полный логотип (шапка лендинга, вход) — шар и название сервиса «beePlay Cloud» рядом;
+// `iconOnly` (футер, чат FAQ, приложение) — только шар.
 import { useId } from "react";
 
 type BeelineLogoProps = {
-  /** Высота (и ширина — шар квадратный) в px. */
+  /** Высота (и ширина шара — он квадратный) в px. */
   height?: number;
-  /** Знак и так без слова — пропс ничего не меняет. */
+  /** Только шар, без «beePlay Cloud». */
   iconOnly?: boolean;
   /** Анимации нет — свёртка по скроллу игнорируется. */
   progress?: number;
@@ -14,20 +15,54 @@ type BeelineLogoProps = {
   title?: string;
 };
 
-export function BeelineLogo({ height = 36, title = "билайн" }: BeelineLogoProps) {
+/** Название сервиса на старом сайте билайна — пишется рядом с шаром. */
+const WORDMARK = "beePlay Cloud";
+
+export function BeelineLogo({
+  height = 36,
+  iconOnly = false,
+  title = "билайн",
+}: BeelineLogoProps) {
+  if (iconOnly) return <BeelineBall height={height} title={title} />;
+  return (
+    <span
+      role="img"
+      aria-label={title}
+      className="inline-flex items-center font-bold tracking-[-0.02em] whitespace-nowrap text-brand-text"
+      style={{ gap: height * 0.28, fontSize: height * 0.5 }}
+    >
+      <BeelineBall height={height} title={null} />
+      {/* На экранах уже 380 px рядом с кнопкой «В библиотеку» в шапке не помещается. */}
+      <span aria-hidden="true" className="max-[379px]:hidden">
+        {WORDMARK}
+      </span>
+    </span>
+  );
+}
+
+/** Шар; `title: null` — декоративный (подпись у обёртки с названием). */
+function BeelineBall({
+  height,
+  title,
+}: {
+  height: number;
+  title: string | null;
+}) {
   // Несколько шаров на странице: id градиента свой у каждого, без «:» из useId.
   const gradient = `beeline-ball-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
   return (
     <svg
-      role="img"
-      aria-label={title}
+      {...(title === null
+        ? { "aria-hidden": true }
+        : { role: "img", "aria-label": title })}
       width={height}
       height={height}
       viewBox="0 0 44 44"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
+      className="shrink-0"
     >
-      <title>{title}</title>
+      {title !== null && <title>{title}</title>}
       <path
         d="M21.9964 43.9949C34.143 43.9949 43.9897 34.1463 43.9897 21.9975C43.9897 9.8486 34.143 0 21.9964 0C9.84976 0 0.00298767 9.8486 0.00298767 21.9975C0.00298767 34.1463 9.84976 43.9949 21.9964 43.9949Z"
         fill="#FFC800"
