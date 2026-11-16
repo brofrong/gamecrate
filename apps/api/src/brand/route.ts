@@ -21,9 +21,12 @@ const isReservedPath = (pathname: string): boolean =>
   pathname.startsWith("/api/") ||
   pathname.startsWith("/stream/");
 
-/** Страница SPA: последний сегмент пути без расширения файла (`/`, `/app/game/570`). */
+/** Страница SPA: последний сегмент пути без расширения файла (`/`, `/app/game/570`) и сам
+ *  `/index.html` — исходный шаблон без витрины наружу не отдаётся. */
 const isPagePath = (pathname: string): boolean =>
-  !isReservedPath(pathname) && !(pathname.split("/").pop() ?? "").includes(".");
+  pathname === "/index.html" ||
+  (!isReservedPath(pathname) &&
+    !(pathname.split("/").pop() ?? "").includes("."));
 
 /**
  * Остальные GET: страницы SPA → `index.html` витрины хоста (шаблон читается при первом запросе
@@ -36,9 +39,11 @@ export const BrandedStaticRoute = Layer.effectDiscard(
     const router = yield* HttpRouter.HttpRouter;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    // Без `spa`: страницы обслуживает этот маршрут, а встроенный SPA-откат статики отдал бы
+    // исходный `index.html` без витрины (например, `/api/x` с `Accept: text/html`).
     const staticApp = yield* HttpStaticServer.make({
       root: config.webDistDir,
-      spa: true,
+      spa: false,
     });
     const indexPath = path.join(config.webDistDir, "index.html");
 

@@ -1,7 +1,7 @@
 // `index.html` по витрине домена и флаги способов входа по хосту: маршрут через `toWebHandler`
 // с временным WEB_DIST_DIR (как в streamProxy.test.ts) и чистые функции `oauthForHost`/`renderIndexHtml`.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRANDS } from "@cg/brands";
@@ -94,6 +94,23 @@ describe("renderIndexHtml", () => {
     expect(html).toContain('data-brand="gamecrate" data-oauth=""');
     expect(html).toContain('href="/favicon-s1sq26pm.svg"');
     expect(html).toContain('href="/apple-touch-icon-15jczx5w.png"');
+  });
+
+  it("real web index.html has no GameCrate left for beeline", async () => {
+    const source = await readFile(
+      join(import.meta.dir, "../../web/src/index.html"),
+      "utf8",
+    );
+    const html = renderIndexHtml(source, BRANDS.beeline, {
+      google: false,
+      yandex: false,
+      pocketId: false,
+      telegram: false,
+    });
+    expect(html).toContain('data-brand="beeline"');
+    expect(html).toContain('href="/brands/beeline/favicon.svg"');
+    expect(html).toContain('href="/brands/beeline/apple-touch-icon.png"');
+    expect(html).not.toContain("GameCrate");
   });
 
   it("escapes < and quotes in values", () => {
@@ -259,7 +276,28 @@ describe("index.html route", () => {
       "auth",
     );
     const missing = await get("/api/unknown", "play.beeline.ru");
+    expect(missing.status).toBe(404);
     expect(await missing.text()).not.toContain("data-brand");
+  });
+
+  it("raw template never leaks to a brand host", async () => {
+    const index = await get("/index.html", "play.beeline.ru");
+    expect(index.status).toBe(200);
+    const html = await index.text();
+    expect(html).toContain('data-brand="beeline"');
+    expect(html).not.toContain("GameCrate");
+    const reserved = await get("/api/x", "play.beeline.ru", {
+      accept: "text/html",
+    });
+    expect(reserved.status).toBe(404);
+    expect(await reserved.text()).not.toContain("GameCrate");
+  });
+
+  it("missing asset with an extension is 404, not html", async () => {
+    const response = await get("/assets/missing.js", "play.beeline.ru", {
+      accept: "text/html",
+    });
+    expect(response.status).toBe(404);
   });
 });
 
