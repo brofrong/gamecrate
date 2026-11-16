@@ -53,3 +53,27 @@ bun run --cwd apps/desktop test:rust  # cargo test: nav.rs (в CI GitLab cargo �
 ```
 
 Релизная сборка: `bun run --cwd apps/desktop build` (установщики — в `src-tauri/target/release/bundle`).
+
+## Релиз
+
+Установщики собирает GitHub Actions (`.github/workflows/desktop.yml`) на публичном зеркале; GitLab
+CI приложение не собирает.
+
+1. Поднять версию в `src-tauri/tauri.conf.json` (`version`), `src-tauri/Cargo.toml` и
+   `package.json` (во всех трёх одинаковую; после правки `Cargo.toml` обновить `Cargo.lock`).
+2. Закоммитить в `main` и поставить в GitLab тег `desktop-vX.Y.Z` (например `desktop-v0.1.0`).
+   Теги сервера `vX.Y.Z` сборку не запускают.
+3. GitLab push mirror переносит ветки и теги на GitHub — на тег срабатывает workflow `desktop`:
+   три джоба (macOS universal, Windows, Linux) без релиза GitHub.
+4. Установщики — артефакты запуска на вкладке Actions: `gamecrate-macos` (`.dmg`, `.app.tar.gz`),
+   `gamecrate-windows` (NSIS `.exe`), `gamecrate-linux` (`.AppImage`, `.deb`). Хранятся 30 дней.
+
+Проверить сборку без тега: Actions → `desktop` → Run workflow на нужной ветке (в поле «Адрес
+сайта» можно задать свой `GAMECRATE_URL`, пустое — прод).
+
+Сборки **без подписи кода** (сертификатов нет; шаги подписи в workflow закомментированы):
+
+- macOS: открыть `.dmg`, перетащить приложение в «Программы», первый запуск — ПКМ → «Открыть»
+  (иначе Gatekeeper не пустит);
+- Windows: SmartScreen покажет «Windows защитила ваш компьютер» — «Подробнее» → «Выполнить в любом
+  случае».
