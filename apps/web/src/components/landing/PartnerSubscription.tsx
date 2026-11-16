@@ -21,16 +21,20 @@ export function PartnerSubscription() {
           {/* Знак бренда на фоне — декор, без подписи. */}
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute -top-20 -right-24 -z-10 opacity-20 sm:-top-16 sm:-right-16 sm:opacity-35 lg:opacity-50 [filter:drop-shadow(0_0_80px_rgb(var(--brand-glow-rgb)/0.6))]"
+            className="pointer-events-none absolute -top-20 -right-24 -z-10 opacity-20 sm:-top-16 sm:-right-16 sm:opacity-35 lg:-top-32 lg:-right-32 lg:opacity-45 [filter:drop-shadow(0_0_80px_rgb(var(--brand-glow-rgb)/0.6))]"
           >
             <brand.Logo iconOnly height={380} />
           </div>
 
-          <SectionHead label="Подписка" title={monetization.title}>
+          <SectionHead
+            label="Подписка"
+            title={monetization.title}
+            align="center"
+          >
             {monetization.text}
           </SectionHead>
 
-          <div className="max-w-[860px]">
+          <div className="mx-auto max-w-[860px]">
             <PartnerPlanCards
               plans={monetization.plans}
               url={monetization.url}
@@ -53,7 +57,7 @@ export function PartnerSubscription() {
           </div>
 
           {(!hasPlans || monetization.url !== null) && (
-            <div className="mt-10 flex flex-wrap items-center gap-3">
+            <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
               {!hasPlans && <PlayButton variant="primary" />}
               {monetization.url !== null && (
                 <a
@@ -71,7 +75,7 @@ export function PartnerSubscription() {
           <div className="mt-14 border-t border-white/8 pt-10">
             <h3
               id="partner-perks"
-              className="mb-6 text-xs font-bold tracking-[0.16em] text-brand-cyan uppercase"
+              className="mb-6 text-center text-xs font-bold tracking-[0.16em] text-brand-cyan uppercase"
             >
               В любой подписке
             </h3>
