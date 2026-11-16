@@ -143,6 +143,13 @@ beforeAll(async () => {
     pocketIdClientSecret: Redacted.make("unused"),
     pocketIdAdminGroup: "cloud_gaming_admins",
     allowedOrigins: [],
+    brandHosts: new Map(),
+    oauthHosts: {
+      google: new Set(["localhost"]),
+      yandex: new Set(["localhost"]),
+      pocketId: new Set(["localhost"]),
+      telegram: new Set(["localhost"]),
+    },
     orchestratorRelayUrl: "http://cg-orchestrator:3002",
     relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
     webDistDir: "unused",

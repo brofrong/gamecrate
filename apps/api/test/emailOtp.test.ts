@@ -1,5 +1,6 @@
 // Вход по коду на почту (emailOTP), регистрация Google/Яндекс и правила склейки аккаунтов.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import type { BrandId } from "@cg/brands";
 import { migrationsFolder, user } from "@cg/db";
 import { SQL } from "bun";
 import { count, eq } from "drizzle-orm";
@@ -8,6 +9,7 @@ import { migrate } from "drizzle-orm/bun-sql/migrator";
 import { Option, Redacted } from "effect";
 import type { Mail } from "../src/mail/Mailer";
 import { type Auth, makeAuth } from "../src/auth/auth";
+import { changeEmailCodeMail } from "../src/mail/templates";
 
 const origin = "http://localhost:3000";
 const serverUrl = process.env["TEST_DATABASE_URL"];
@@ -34,6 +36,13 @@ const baseConfig = () => ({
   pocketIdClientSecret: Redacted.make("unused"),
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
+  brandHosts: new Map<string, BrandId>([["play.beeline.ru", "beeline"]]),
+  oauthHosts: {
+    google: new Set(["localhost"]),
+    yandex: new Set(["localhost"]),
+    pocketId: new Set(["localhost"]),
+    telegram: new Set(["localhost"]),
+  },
   orchestratorRelayUrl: "http://cg-orchestrator:3002",
   relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
   webDistDir: "unused",
@@ -78,6 +87,24 @@ const sendOtp = (email: string) =>
     new Request(`${origin}/api/auth/email-otp/send-verification-otp`, {
       method: "POST",
       headers: { origin, "content-type": "application/json" },
+      body: JSON.stringify({ email, type: "sign-in" }),
+    }),
+  );
+
+/** Код входа с заголовками хоста, как их ставит браузер или прокси (`origin` — витрины). */
+const sendOtpFromHost = (
+  email: string,
+  headers: Record<string, string>,
+  originHeader = origin,
+) =>
+  auth.handler(
+    new Request(`${origin}/api/auth/email-otp/send-verification-otp`, {
+      method: "POST",
+      headers: {
+        origin: originHeader,
+        "content-type": "application/json",
+        ...headers,
+      },
       body: JSON.stringify({ email, type: "sign-in" }),
     }),
   );
@@ -214,5 +241,53 @@ describe("email otp sign-in", () => {
       }),
     });
     expect(withGoogle.options.socialProviders?.google).toBeDefined();
+  });
+});
+
+describe("email otp mail brand", () => {
+  const beelineOrigin = "https://play.beeline.ru";
+
+  it("host of a brand domain picks the brand name in subject and text", async () => {
+    sent.length = 0;
+    const response = await sendOtpFromHost(
+      "brand-host@example.com",
+      { host: "play.beeline.ru" },
+      beelineOrigin,
+    );
+    expect(response.status).toBe(200);
+    expect(sent[0]?.subject).toBe("Код для входа в билайн");
+    expect(sent[0]?.text).toContain("билайн");
+    expect(sent[0]?.text).not.toContain("GameCrate");
+    expect(sent[0]?.html).not.toContain("GameCrate");
+  });
+
+  it("x-forwarded-host of a brand domain works the same", async () => {
+    sent.length = 0;
+    const response = await sendOtpFromHost(
+      "brand-forwarded@example.com",
+      { host: "cg-api:3000", "x-forwarded-host": "play.beeline.ru" },
+      beelineOrigin,
+    );
+    expect(response.status).toBe(200);
+    expect(sent[0]?.subject).toBe("Код для входа в билайн");
+    expect(sent[0]?.text).not.toContain("GameCrate");
+  });
+
+  it("a host outside the brand list falls back to GameCrate", async () => {
+    sent.length = 0;
+    const response = await sendOtpFromHost("brand-none@example.com", {
+      host: "localhost:3000",
+    });
+    expect(response.status).toBe(200);
+    expect(sent[0]?.subject).toBe("Код для входа в GameCrate");
+    expect(sent[0]?.text).toContain("GameCrate");
+  });
+
+  it("change-email code mail also carries the brand name", async () => {
+    // Шаблон чистый: тот же brandName, что получает sendVerificationOTP.
+    const mail = changeEmailCodeMail("123456", "билайн");
+    expect(mail.subject).toBe("Подтверди новую почту в билайн");
+    expect(mail.text).not.toContain("GameCrate");
+    expect(mail.html).not.toContain("GameCrate");
   });
 });

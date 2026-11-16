@@ -2,30 +2,36 @@
 import type { Mail } from "./Mailer";
 
 /** Письмо с кодом для одноразового входа по e-mail. */
-export const loginCodeMail = (code: string): Omit<Mail, "to"> => ({
-  subject: "Код для входа в GameCrate",
+export const loginCodeMail = (
+  code: string,
+  brandName: string,
+): Omit<Mail, "to"> => ({
+  subject: `Код для входа в ${brandName}`,
   text: [
-    `Твой код для входа в GameCrate: ${code}`,
+    `Твой код для входа в ${brandName}: ${code}`,
     "Код действует 10 минут.",
     "Если это не ты — просто проигнорируй письмо.",
   ].join("\n\n"),
   html: [
-    `<p>Твой код для входа в GameCrate: <strong>${code}</strong></p>`,
+    `<p>Твой код для входа в ${brandName}: <strong>${code}</strong></p>`,
     "<p>Код действует 10 минут.</p>",
     "<p>Если это не ты — просто проигнорируй письмо.</p>",
   ].join(""),
 });
 
 /** Письмо с кодом подтверждения новой почты при её смене. */
-export const changeEmailCodeMail = (code: string): Omit<Mail, "to"> => ({
-  subject: "Подтверди новую почту в GameCrate",
+export const changeEmailCodeMail = (
+  code: string,
+  brandName: string,
+): Omit<Mail, "to"> => ({
+  subject: `Подтверди новую почту в ${brandName}`,
   text: [
-    `Код для подтверждения новой почты в GameCrate: ${code}`,
+    `Код для подтверждения новой почты в ${brandName}: ${code}`,
     "Код действует 10 минут.",
     "Если это не ты — просто проигнорируй письмо.",
   ].join("\n\n"),
   html: [
-    `<p>Код для подтверждения новой почты в GameCrate: <strong>${code}</strong></p>`,
+    `<p>Код для подтверждения новой почты в ${brandName}: <strong>${code}</strong></p>`,
     "<p>Код действует 10 минут.</p>",
     "<p>Если это не ты — просто проигнорируй письмо.</p>",
   ].join(""),

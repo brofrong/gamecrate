@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Db } from "@cg/db";
+import { Db, migrationsFolder } from "@cg/db";
 import { DbTest } from "@cg/db/test";
 import {
   AdminRpcs,
@@ -12,6 +12,9 @@ import {
   PublicAuthRpcs,
 } from "@cg/rpc";
 import { BunHttpServer } from "@effect/platform-bun";
+import { SQL } from "bun";
+import { drizzle } from "drizzle-orm/bun-sql";
+import { migrate } from "drizzle-orm/bun-sql/migrator";
 import {
   ConfigProvider,
   Effect,
@@ -23,7 +26,12 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 import { RpcTest } from "effect/rpc";
 import { AdminRpcHandlers } from "../src/admin/rpc";
-import { BetterAuth, pocketIdRole } from "../src/auth/auth";
+import {
+  type Auth,
+  BetterAuth,
+  makeAuth,
+  pocketIdRole,
+} from "../src/auth/auth";
 import { RpcMiddlewares } from "../src/auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "../src/auth/rpc";
 import { AppConfig, type AppConfigValues, appConfig } from "../src/config";
@@ -145,6 +153,13 @@ const providersConfig = (
   pocketIdClientSecret: Redacted.make("unused"),
   pocketIdAdminGroup: "cloud_gaming_admins",
   allowedOrigins: [],
+  brandHosts: new Map(),
+  oauthHosts: {
+    google: new Set(["localhost"]),
+    yandex: new Set(["localhost"]),
+    pocketId: new Set(["localhost"]),
+    telegram: new Set(["localhost"]),
+  },
   orchestratorRelayUrl: "http://cg-orchestrator:3002",
   relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
   webDistDir: "unused",
@@ -227,6 +242,13 @@ const appDeps = (webDistDir: string) =>
         pocketIdClientSecret: Redacted.make("unused"),
         pocketIdAdminGroup: "cloud_gaming_admins",
         allowedOrigins: ["http://localhost:5173"],
+        brandHosts: new Map(),
+        oauthHosts: {
+          google: new Set(["localhost"]),
+          yandex: new Set(["localhost"]),
+          pocketId: new Set(["localhost"]),
+          telegram: new Set(["localhost"]),
+        },
         orchestratorRelayUrl: "http://cg-orchestrator:3002",
         relaySecret: Redacted.make("test-relay-secret-test-relay-secret-0001"),
         webDistDir,
@@ -420,5 +442,118 @@ describe("config ALLOWED_ORIGINS", () => {
       "http://localhost:5173",
       "https://a.example",
     ]);
+  });
+});
+
+describe("oauth redirect_uri follows the request host (real better auth)", () => {
+  const serverUrl = process.env["TEST_DATABASE_URL"];
+  if (!serverUrl) throw new Error("TEST_DATABASE_URL is not set");
+  const database = `cg_test_${crypto.randomUUID().replaceAll("-", "")}`;
+  const databaseUrl = Object.assign(new URL(serverUrl), {
+    pathname: `/${database}`,
+  }).toString();
+
+  let adminDb: SQL;
+  let db: SQL;
+  let idp: ReturnType<typeof Bun.serve>;
+  let auth: Auth;
+
+  beforeAll(async () => {
+    adminDb = new SQL(serverUrl);
+    await adminDb.unsafe(`CREATE DATABASE "${database}"`);
+    db = new SQL(databaseUrl);
+    await migrate(drizzle({ client: db }), { migrationsFolder });
+    // Фейковый Pocket ID: только discovery, до обмена кода дело не доходит.
+    idp = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        const base = `http://127.0.0.1:${idp.port}`;
+        if (new URL(request.url).pathname.endsWith("/openid-configuration")) {
+          return Response.json({
+            issuer: base,
+            authorization_endpoint: `${base}/authorize`,
+            token_endpoint: `${base}/token`,
+            userinfo_endpoint: `${base}/userinfo`,
+            jwks_uri: `${base}/jwks`,
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    auth = makeAuth(
+      providersConfig({
+        publicUrl: "https://game.x.ru",
+        databaseUrl: Redacted.make(databaseUrl),
+        authSecret: Redacted.make("test-secret-test-secret-test-secret-0123"),
+        pocketIdUrl: `http://127.0.0.1:${idp.port}`,
+        brandHosts: new Map([["play.beeline.ru", "beeline"]]),
+      }),
+    );
+  });
+  afterAll(async () => {
+    await idp?.stop(true);
+    await db?.close();
+    await adminDb?.unsafe(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+    await adminDb?.close();
+  });
+
+  /** `redirect_uri` из адреса провайдера, который Better Auth вернул на вход через Pocket ID. */
+  const redirectUri = async (headers: Record<string, string>) => {
+    const response = await auth.handler(
+      new Request("http://cg-api:3000/api/auth/sign-in/social", {
+        method: "POST",
+        headers: {
+          origin: "https://game.x.ru",
+          "content-type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify({ provider: "pocket-id", callbackURL: "/app" }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const { url } = (await response.json()) as { url: string };
+    const value = new URL(url).searchParams.get("redirect_uri");
+    if (value === null) throw new Error("no redirect_uri in provider url");
+    return value;
+  };
+
+  it("brand host in Host gets its own redirect_uri", async () => {
+    expect(
+      await redirectUri({
+        host: "play.beeline.ru",
+        "x-forwarded-proto": "https",
+      }),
+    ).toStartWith("https://play.beeline.ru/api/auth/");
+  });
+
+  it("brand host in x-forwarded-host (reverse proxy) gets its own redirect_uri", async () => {
+    expect(
+      await redirectUri({
+        host: "cg-api:3000",
+        "x-forwarded-host": "play.beeline.ru",
+        "x-forwarded-proto": "https",
+      }),
+    ).toStartWith("https://play.beeline.ru/api/auth/");
+  });
+
+  it("main host keeps PUBLIC_URL", async () => {
+    expect(
+      await redirectUri({ host: "game.x.ru", "x-forwarded-proto": "https" }),
+    ).toStartWith("https://game.x.ru/api/auth/");
+  });
+
+  it("foreign host falls back to PUBLIC_URL", async () => {
+    for (const headers of [
+      { host: "evil.ru", "x-forwarded-proto": "https" },
+      {
+        host: "cg-api:3000",
+        "x-forwarded-host": "evil.ru",
+        "x-forwarded-proto": "https",
+      },
+    ]) {
+      expect(await redirectUri(headers)).toStartWith(
+        "https://game.x.ru/api/auth/",
+      );
+    }
   });
 });

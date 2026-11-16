@@ -182,7 +182,7 @@ describe("makeMailer", () => {
   });
 
   it("login code mail contains the code and the ttl", () => {
-    const mail = loginCodeMail("123456");
+    const mail = loginCodeMail("123456", "GameCrate");
     expect(mail.subject).toBe("Код для входа в GameCrate");
     expect(mail.text).toContain("123456");
     expect(mail.text).toContain("10 минут");
@@ -190,7 +190,7 @@ describe("makeMailer", () => {
   });
 
   it("change email code mail contains the code and the ttl", () => {
-    const mail = changeEmailCodeMail("654321");
+    const mail = changeEmailCodeMail("654321", "GameCrate");
     expect(mail.subject).toBe("Подтверди новую почту в GameCrate");
     expect(mail.text).toContain("654321");
     expect(mail.text).toContain("10 минут");
