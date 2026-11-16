@@ -4,6 +4,7 @@
 import { steamOpenIDClient } from "better-auth-steam/client";
 import { createAuthClient } from "better-auth/client";
 import { emailOTPClient } from "better-auth/client/plugins";
+import { homePath } from "@/lib/desktop";
 
 export const authClient = createAuthClient({
   plugins: [steamOpenIDClient(), emailOTPClient()],
@@ -92,5 +93,5 @@ export const confirmEmailChange = (newEmail: string, otp: string) =>
  */
 export const signOut = async () => {
   await authClient.signOut();
-  window.location.assign("/");
+  window.location.assign(homePath());
 };

@@ -12,6 +12,7 @@ import { Player } from "@/components/Player";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
+import { homePath } from "@/lib/desktop";
 import { useInputActivity } from "@/lib/inputActivity";
 import { hasHigherTariff } from "@/lib/planFormat";
 import { reportStartError } from "@/lib/usePlaySession";
@@ -183,7 +184,7 @@ function SessionPage() {
     resubscribe();
   };
 
-  if (unauthorized) return <Navigate to="/" />;
+  if (unauthorized) return <Navigate to={homePath()} />;
   if (notFound) return <SessionMissing onLibrary={toLibrary} />;
   if (view === undefined) {
     return stalled ? (

@@ -2,7 +2,13 @@ import { describe, expect, it, mock } from "bun:test";
 import type { CurrentUserShape } from "@cg/rpc";
 import { Unauthorized } from "@cg/rpc";
 import { render, screen } from "@testing-library/react";
-import { RouterProvider } from "@tanstack/react-router";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { authStub } from "./moduleStubs";
 import { testRouter } from "./router";
@@ -11,7 +17,7 @@ import { testRouter } from "./router";
 mock.module("../src/auth", authStub);
 
 const { LandingPage } = await import("../src/components/landing/LandingPage");
-const { landingSignedIn } = await import("../src/routes/index");
+const { IndexPage, landingSignedIn } = await import("../src/routes/index");
 
 const user: CurrentUserShape = {
   id: "u1",
@@ -80,6 +86,33 @@ describe("landing", () => {
     );
     // Пока `auth.me` не ответил — лендинг сразу, с кнопками на /login.
     expect(landingSignedIn(AsyncResult.initial())).toBe(false);
+  });
+
+  it("в десктоп-приложении `/` без лендинга уводит на /app", async () => {
+    Object.assign(window, { __TAURI_INTERNALS__: { invoke: async () => {} } });
+    try {
+      const root = createRootRoute();
+      const index = createRoute({
+        getParentRoute: () => root,
+        path: "/",
+        component: IndexPage,
+      });
+      const app = createRoute({
+        getParentRoute: () => root,
+        path: "/app",
+        component: () => <p>library</p>,
+      });
+      const router = createRouter({
+        routeTree: root.addChildren([index, app]),
+        history: createMemoryHistory({ initialEntries: ["/"] }),
+      });
+      render(<RouterProvider router={router} />);
+      await screen.findByText("library");
+      expect(router.state.location.pathname).toBe("/app");
+      expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    } finally {
+      Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    }
   });
 
   it("landing has every section anchor", async () => {

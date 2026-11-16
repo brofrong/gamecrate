@@ -3,6 +3,7 @@ import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import { QueueWatcher } from "@/components/QueueWatcher";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
+import { homePath } from "@/lib/desktop";
 
 function RootLayout() {
   return (
@@ -22,7 +23,7 @@ function NotFound() {
     <main className="flex min-h-dvh flex-col items-center justify-center gap-4">
       <p className="text-lg">Страница не найдена</p>
       <Button asChild variant="outline">
-        <Link to="/">На главную</Link>
+        <Link to={homePath()}>На главную</Link>
       </Button>
     </main>
   );
