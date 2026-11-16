@@ -15,6 +15,8 @@ export type PartnerPlan = {
   /** Что за цена, например «стоимость подключения, 1 час». */
   readonly priceNote: string;
   readonly perks: readonly string[];
+  /** Бейдж выделенной карточки, например «Выгоднее на 43%»; нет — обычная карточка. */
+  readonly highlight?: string;
 };
 
 /** Как витрина зарабатывает: свои тарифы или подписка у партнёра. */
