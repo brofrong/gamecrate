@@ -15,7 +15,7 @@ import {
 import { DesktopReleases, type DesktopReleasesShape } from "./DesktopReleases";
 
 const versionPattern = /^\d+\.\d+\.\d+$/;
-const filePattern = /^[A-Za-z0-9._-]+$/;
+const filePattern = /^[A-Za-z0-9._-]{1,200}$/;
 /** `/download/desktop/<версия>/<файл>` и больше ничего (без query-части). */
 const filePath = /^\/download\/desktop\/([^/?#]+)\/([^/?#]+)(?:\?.*)?$/;
 
@@ -47,9 +47,12 @@ const serve = (releases: DesktopReleasesShape, key: string, cacheControl: string
           ),
       }),
     ),
-    Effect.catch(() =>
-      Effect.succeed(
-        HttpServerResponse.text("Storage unavailable", { status: 502 }),
+    // в сообщении ошибки нет ключей доступа, только код и путь объекта
+    Effect.catch((error) =>
+      Effect.logWarning(`desktop download: ${key}: ${error.message}`).pipe(
+        Effect.as(
+          HttpServerResponse.text("Storage unavailable", { status: 502 }),
+        ),
       ),
     ),
   );
@@ -86,8 +89,20 @@ export const DesktopRoutes = HttpRouter.use((router) =>
         ? Effect.succeed(notFound())
         : serve(releases, key, "public, max-age=31536000, immutable");
     });
-    yield* router.add("*", "/download/desktop/*", () =>
-      Effect.succeed(notFound()),
-    );
+    // Не `"*"`: он занял бы и HEAD, а HEAD без своего маршрута роутер сам отдаёт GET-маршрутам
+    // (`curl -I` и менеджеры загрузок видят настоящий размер файла).
+    for (const method of [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+      "QUERY",
+    ] as const) {
+      yield* router.add(method, "/download/desktop/*", () =>
+        Effect.succeed(notFound()),
+      );
+    }
   }),
 );

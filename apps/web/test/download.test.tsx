@@ -36,6 +36,9 @@ describe("detectOs", () => {
   it("телефоны и неизвестное — null (Android — тоже Linux в UA, но приложения для него нет)", () => {
     expect(detectOs({ userAgent: ua.android })).toBeNull();
     expect(detectOs({ userAgent: ua.iphone })).toBeNull();
+    // iPadOS Safari пишет в UA «Macintosh», но у него сенсорный экран
+    expect(detectOs({ userAgent: ua.mac, maxTouchPoints: 5 })).toBeNull();
+    expect(detectOs({ userAgent: ua.mac, maxTouchPoints: 0 })).toBe("macos");
     expect(detectOs({ userAgent: "curl/8.0" })).toBeNull();
     expect(detectOs({ userAgent: "" })).toBeNull();
   });

@@ -7,6 +7,8 @@ export type NavigatorLike = {
   readonly userAgent: string;
   /** Client Hints (Chromium): надёжнее User-Agent, который браузеры замораживают. */
   readonly userAgentData?: { readonly platform?: string };
+  /** iPadOS Safari притворяется Mac в User-Agent; отличает его сенсорный экран. */
+  readonly maxTouchPoints?: number;
 };
 
 const fromPlatform = (platform: string): DesktopOs | null => {
@@ -29,7 +31,8 @@ export const detectOs = (
   // Android и ChromeOS в User-Agent тоже «Linux», а iOS — «like Mac OS X».
   if (/android|iphone|ipad|ipod|cros/i.test(agent)) return null;
   if (/windows/i.test(agent)) return "windows";
-  if (/macintosh|mac os x/i.test(agent)) return "macos";
+  if (/macintosh|mac os x/i.test(agent))
+    return (nav.maxTouchPoints ?? 0) > 1 ? null : "macos";
   if (/linux/i.test(agent)) return "linux";
   return null;
 };

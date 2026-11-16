@@ -100,7 +100,7 @@ function UnsignedHelp() {
         <li>
           <b className="text-brand-text">Linux.</b> Сделайте файл исполняемым:{" "}
           <code className="rounded bg-white/10 px-1.5 py-0.5 text-brand-text">
-            chmod +x GameCrate.AppImage
+            chmod +x GameCrate_*.AppImage
           </code>{" "}
           и запустите его.
         </li>

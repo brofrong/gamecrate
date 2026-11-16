@@ -101,9 +101,30 @@ describe("GET /download/desktop/:version/:file", () => {
     ["dotdot file", "/download/desktop/0.1.0/..%2Flatest.json"],
     ["encoded slash", "/download/desktop/0.1.0/a%2Fb.exe"],
     ["extra segment", "/download/desktop/0.1.0/a/b.exe"],
+    ["too long file", `/download/desktop/0.1.0/${"a".repeat(201)}.exe`],
   ])("is 404 for a bad path: %s", async (_name, path) => {
     const response = await get(path);
     expect(response.status).toBe(404);
+  });
+
+  it("answers HEAD with the real size (download managers, curl -I)", async () => {
+    const response = await get(
+      "/download/desktop/0.1.0/GameCrate_0.1.0_x64-setup.exe",
+      { method: "HEAD" },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-length")).toBe(String(exe.length));
+  });
+
+  it("is 404 for other methods and unknown paths, not the SPA page", async () => {
+    const post = await get(
+      "/download/desktop/0.1.0/GameCrate_0.1.0_x64-setup.exe",
+      { method: "POST" },
+    );
+    expect(post.status).toBe(404);
+    expect((await get("/download/desktop")).status).toBe(404);
+    expect((await get("/download/desktop/0.1.0")).status).toBe(404);
+    expect((await get("/download/desktop/0.1.0", { method: "HEAD" })).status).toBe(404);
   });
 });
 
