@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@better-auth/core": "1.7.10",
+    "@cg/brands": "workspace:*",
     "@cg/db": "workspace:*",
     "@cg/rpc": "workspace:*",
     "@effect/platform-bun": "4.0.5",
