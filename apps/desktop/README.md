@@ -59,8 +59,9 @@ bun run --cwd apps/desktop test:rust  # cargo test: nav.rs (в CI GitLab cargo �
 Установщики собирает GitHub Actions (`.github/workflows/desktop.yml`) на публичном зеркале; GitLab
 CI приложение не собирает.
 
-1. Поднять версию в `src-tauri/tauri.conf.json` (`version`), `src-tauri/Cargo.toml` и
-   `package.json` (во всех трёх одинаковую; после правки `Cargo.toml` обновить `Cargo.lock`).
+1. Поднять `version` в `src-tauri/Cargo.toml` — единственный источник версии: в `tauri.conf.json`
+   её нет, Tauri берёт из `Cargo.toml` (`package.json` — служебный пакет монорепо, `0.0.0`).
+   Обновить `Cargo.lock`: `cargo update -p gamecrate-desktop --manifest-path src-tauri/Cargo.toml`.
 2. Закоммитить в `main` и поставить в GitLab тег `desktop-vX.Y.Z` (например `desktop-v0.1.0`).
    Теги сервера `vX.Y.Z` сборку не запускают.
 3. GitLab push mirror переносит ветки и теги на GitHub — на тег срабатывает workflow `desktop`:
