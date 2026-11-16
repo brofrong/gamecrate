@@ -3,8 +3,10 @@
 // проксируются на apps/api, чтобы браузер видел один origin и cookie сессии Better Auth
 // ходили и в HTTP, и в апгрейд сокета (iframe стрима тоже должен быть same-origin).
 // `/own-games/<appId>/<file>` — картинки своих игр прямо из `games/<slug>/site/`.
+// `/brands/<id>/<file>` — файлы витрин (favicon и т. п.) из `src/brands/<id>/public/`.
 //   WEB_PORT — порт dev-сервера (по умолчанию 5173), API_URL — адрес api (http://localhost:3000).
 import { join } from "node:path";
+import { isBrandId } from "@cg/brands";
 import { OWN_ASSET_FILE, ownGameSiteDirs } from "./scripts/ownGameAssets";
 import index from "./src/index.html";
 
@@ -33,6 +35,24 @@ async function ownGameAsset(
   if (siteDir === undefined || !OWN_ASSET_FILE.test(file))
     return new Response("Not Found", { status: 404 });
   const asset = Bun.file(join(siteDir, file));
+  return (await asset.exists())
+    ? new Response(asset)
+    : new Response("Not Found", { status: 404 });
+}
+
+/** Простое имя файла витрины: без `/`, `\` и начальной точки (`..`, `.env`) — за пределы каталога не выйти. */
+const BRAND_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Файл витрины: только известный id бренда и простое имя файла. */
+async function brandAsset(
+  request: Bun.BunRequest<"/brands/:id/:file">,
+): Promise<Response> {
+  const { id, file } = request.params;
+  if (!isBrandId(id) || !BRAND_FILE.test(file))
+    return new Response("Not Found", { status: 404 });
+  const asset = Bun.file(
+    new URL(`./src/brands/${id}/public/${file}`, import.meta.url).pathname,
+  );
   return (await asset.exists())
     ? new Response(asset)
     : new Response("Not Found", { status: 404 });
@@ -123,6 +143,7 @@ const server = Bun.serve({
           : new Response("Ожидался WebSocket", { status: 426 })
         : proxyHttp(request),
     "/own-games/:appId/:file": ownGameAsset,
+    "/brands/:id/:file": brandAsset,
     "/*": index,
   },
   websocket: {
