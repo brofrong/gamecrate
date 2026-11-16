@@ -9,12 +9,11 @@
 use crate::status::{AppState, Status};
 use serde::Serialize;
 use tauri::ipc::CapabilityBuilder;
-use tauri::{AppHandle, Runtime, State, Url};
+use tauri::{AppHandle, Runtime, State, Url, WebviewWindow};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
-/// Команды моста — те же, что в build.rs. Полный экран (`*_game_fullscreen`) реализует задача 6;
-/// права на них выданы уже сейчас, чтобы список прав сайта не менялся.
+/// Команды моста — те же, что в build.rs.
 pub const BRIDGE_COMMANDS: [&str; 6] = [
     "notify",
     "set_status",
@@ -86,9 +85,27 @@ pub fn set_status<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>, sta
     }
 }
 
+/// Игровой полный экран окна, из которого позвали (права — только у `main`).
+#[tauri::command]
+pub fn enter_game_fullscreen<R: Runtime>(window: WebviewWindow<R>) -> Result<(), String> {
+    crate::fullscreen::enter(&window).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn exit_game_fullscreen<R: Runtime>(window: WebviewWindow<R>) -> Result<(), String> {
+    crate::fullscreen::exit(&window).map_err(|err| err.to_string())
+}
+
 /// Обработчик команд моста.
 pub fn handler<R: Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![notify, set_status, open_external, app_info]
+    tauri::generate_handler![
+        notify,
+        set_status,
+        enter_game_fullscreen,
+        exit_game_fullscreen,
+        open_external,
+        app_info
+    ]
 }
 
 #[cfg(test)]
@@ -185,6 +202,41 @@ mod tests {
             serde_json::json!({ "url": "file:///etc/passwd" }),
         );
         assert!(bad.is_err() && !denied(&bad), "{bad:?}");
+    }
+
+    #[test]
+    fn site_page_toggles_game_fullscreen() {
+        use std::sync::atomic::Ordering;
+        let window = mock_app();
+        let active = || {
+            window
+                .state::<AppState>()
+                .game_fullscreen
+                .load(Ordering::SeqCst)
+        };
+        let from = "https://game.brofrong.ru/app/session/1";
+        invoke(
+            &window,
+            "enter_game_fullscreen",
+            from,
+            serde_json::json!({}),
+        )
+        .expect("вход с сайта");
+        assert!(active());
+        invoke(&window, "exit_game_fullscreen", from, serde_json::json!({}))
+            .expect("выход с сайта");
+        assert!(!active());
+        // повторный выход — не ошибка
+        invoke(&window, "exit_game_fullscreen", from, serde_json::json!({}))
+            .expect("повторный выход");
+        let foreign = invoke(
+            &window,
+            "enter_game_fullscreen",
+            "https://evil.com/",
+            serde_json::json!({}),
+        );
+        assert!(denied(&foreign), "{foreign:?}");
+        assert!(!active());
     }
 
     #[test]

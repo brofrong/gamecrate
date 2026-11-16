@@ -64,6 +64,25 @@ export const desktopExitGameFullscreen = async (): Promise<void> => {
   await call("exit_game_fullscreen");
 };
 
+/**
+ * DOM-событие приложения о входе в игровой полный экран и выходе из него (в т.ч. средствами
+ * ОС: зелёная кнопка, Ctrl+Cmd+F): `detail` — `true`/`false`. Его шлёт Rust
+ * (`fullscreen::event_script`) через `eval` — не событие Tauri, чтобы не расширять права сайта.
+ */
+export const GAME_FULLSCREEN_EVENT = "gamecrate:game-fullscreen";
+
+/** Подписка на [GAME_FULLSCREEN_EVENT]; событие с не-boolean `detail` пропускается. */
+export const onDesktopGameFullscreen = (
+  listener: (on: boolean) => void,
+): (() => void) => {
+  const onEvent = (event: Event) => {
+    const { detail } = event as CustomEvent<unknown>;
+    if (typeof detail === "boolean") listener(detail);
+  };
+  window.addEventListener(GAME_FULLSCREEN_EVENT, onEvent);
+  return () => window.removeEventListener(GAME_FULLSCREEN_EVENT, onEvent);
+};
+
 export const desktopOpenExternal = async (url: string): Promise<void> => {
   await call("open_external", { url });
 };

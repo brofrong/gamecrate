@@ -21,6 +21,12 @@ tauri-plugin-single-instance = "=2.5.5"
 serde = { version = "=1.0.229", features = ["derive"] }
 url = "=2.5.8"
 
+# Перехват в игровом полном экране: `NSApplication.presentationOptions` (src/fullscreen/macos.rs).
+# Те же версии, что у tao; `exception` — поймать NSInvalidArgumentException, а не упасть.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.5", features = ["exception"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+
 [dev-dependencies]
 # мок-рантайм Tauri: проверка ACL команд (какие страницы их зовут) без окна
 tauri = { version = "=2.12.5", features = ["tray-icon", "test"] }

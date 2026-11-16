@@ -36,6 +36,10 @@ pub struct AppState {
     pub status: Mutex<Status>,
     /// Уведомление «GameCrate в трее…» уже показывали в этом запуске.
     pub hidden_notice_shown: AtomicBool,
+    /// Окно в игровом полном экране (`enter_game_fullscreen`, `crate::fullscreen`).
+    pub game_fullscreen: AtomicBool,
+    /// Открыт диалог «Выйти из GameCrate?» — второй не открываем.
+    pub quit_dialog_open: AtomicBool,
 }
 
 impl AppState {
@@ -100,6 +104,30 @@ pub fn quit_confirmation(status: &Status) -> Option<&'static str> {
         Status::Starting | Status::Playing => {
             Some("Игра продолжится, пока не истечёт время ожидания.")
         }
+    }
+}
+
+/// Что сделать с Cmd+Q / «Выйти» в меню приложения (оно своё только на macOS, `app_menu.rs`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuQuit {
+    /// В игровом полном экране сочетание не срабатывает вовсе.
+    Ignore,
+    /// Выйти сразу.
+    Quit,
+    /// Спросить, как «Выйти» в трее (текст — [`quit_confirmation`]).
+    Confirm(&'static str),
+}
+
+/// Cmd+Q / «Выйти» в меню приложения: в игре на весь экран — ничего, иначе как «Выйти» в трее.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn menu_quit(status: &Status, game_fullscreen: bool) -> MenuQuit {
+    if game_fullscreen {
+        return MenuQuit::Ignore;
+    }
+    match quit_confirmation(status) {
+        Some(text) => MenuQuit::Confirm(text),
+        None => MenuQuit::Quit,
     }
 }
 
@@ -220,5 +248,26 @@ mod tests {
             quit_confirmation(&Status::Starting),
             Some("Игра продолжится, пока не истечёт время ожидания.")
         );
+    }
+
+    #[test]
+    fn menu_quit_confirms_like_tray_and_is_off_in_game_fullscreen() {
+        assert_eq!(menu_quit(&Status::Idle, false), MenuQuit::Quit);
+        assert_eq!(
+            menu_quit(&queued(2, 4, None), false),
+            MenuQuit::Confirm("Вы выйдете из очереди.")
+        );
+        assert_eq!(
+            menu_quit(&Status::Starting, false),
+            MenuQuit::Confirm("Игра продолжится, пока не истечёт время ожидания.")
+        );
+        assert_eq!(
+            menu_quit(&Status::Playing, false),
+            MenuQuit::Confirm("Игра продолжится, пока не истечёт время ожидания.")
+        );
+        // в игровом полном экране Cmd+Q не срабатывает при любом статусе
+        for status in [Status::Idle, Status::Playing, queued(1, 1, Some(1))] {
+            assert_eq!(menu_quit(&status, true), MenuQuit::Ignore, "{status:?}");
+        }
     }
 }

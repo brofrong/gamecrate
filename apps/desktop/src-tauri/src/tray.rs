@@ -1,6 +1,7 @@
 //! Иконка в трее: «Открыть GameCrate», строка статуса (неактивная), «Выйти».
 
 use crate::status::{quit_confirmation, tray_label, AppState, Status};
+use std::sync::atomic::Ordering;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime};
@@ -82,10 +83,19 @@ pub fn update<R: Runtime>(app: &AppHandle<R>, status: &Status) {
 /// «Выйти»: в очереди и в игре — сначала спросить. Сессию приложение не завершает.
 fn request_quit<R: Runtime>(app: &AppHandle<R>) {
     let status = app.state::<AppState>().status();
-    let Some(text) = quit_confirmation(&status) else {
-        app.exit(0);
+    match quit_confirmation(&status) {
+        Some(text) => confirm_quit(app, text),
+        None => app.exit(0),
+    }
+}
+
+/// Диалог «Выйти из GameCrate?» (трей и Cmd+Q). Второй, пока открыт первый, не открываем.
+/// «Выйти» — `exit(0)` без повторного вопроса.
+pub(crate) fn confirm_quit<R: Runtime>(app: &AppHandle<R>, text: &str) {
+    let state = app.state::<AppState>();
+    if state.quit_dialog_open.swap(true, Ordering::SeqCst) {
         return;
-    };
+    }
     let handle = app.clone();
     app.dialog()
         .message(text)
@@ -96,6 +106,10 @@ fn request_quit<R: Runtime>(app: &AppHandle<R>) {
             "Остаться".into(),
         ))
         .show(move |quit| {
+            handle
+                .state::<AppState>()
+                .quit_dialog_open
+                .store(false, Ordering::SeqCst);
             if quit {
                 handle.exit(0);
             }

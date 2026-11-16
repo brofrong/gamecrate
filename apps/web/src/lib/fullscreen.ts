@@ -5,7 +5,21 @@
 // стрима, чтобы клавиши снова шли в игру. Мышь захватывается сразу при входе (слово владельца
 // 2026-11-03), а отпущенная — снова кликом по игре (`lockPointerOnClick`). Нажатия Esc для
 // подсказки «зажми Esc» — `watchEscape`.
+//
+// В десктоп-приложении (`isDesktop()`) полный экран — нативный, окна (`enter_game_fullscreen`):
+// на macOS и Linux без HTML Fullscreen API — в WKWebView Esc из него сразу выходит, а в нативном
+// полном экране Esc уходит в игру. На Windows (WebView2, Chromium) — ещё `requestFullscreen` и
+// `keyboard.lock()`, если они есть: так Win и Alt+Tab уходят в игру. Состояние — по событию
+// приложения (`onDesktopGameFullscreen`), выход — удержанием Esc (`escHold`) через
+// `exit_game_fullscreen`.
 import { useEffect, useState } from "react";
+import {
+  desktopAppInfo,
+  desktopEnterGameFullscreen,
+  desktopExitGameFullscreen,
+  isDesktop,
+  onDesktopGameFullscreen,
+} from "./desktop";
 
 /** Keyboard Lock API — пока не в `lib.dom.d.ts`, поэтому локальное расширение `Navigator`. */
 type KeyboardLockNavigator = Navigator & {
@@ -29,6 +43,82 @@ export const keyboardLockSupported = (): boolean =>
  * в Chromium (`chrome/browser/ui/exclusive_access/keyboard_lock_controller.cc`) — 1,5 с.
  */
 export const ESC_HOLD_MS = 1_500;
+
+/**
+ * Esc в полном экране уходит в игру, а выход — удержанием: в приложении всегда (нативный полный
+ * экран Esc не закрывает), в браузере — с Keyboard Lock API.
+ */
+export const escHoldExits = (): boolean =>
+  isDesktop() || keyboardLockSupported();
+
+/**
+ * Таймер удержания Esc для приложения (в браузере выход по удержанию делает сам Chrome):
+ * `down` — нажали, `up` — отпустили, через `ESC_HOLD_MS` без отпускания — `onHold`.
+ */
+export function escHold(onHold: () => void): {
+  readonly down: () => void;
+  readonly up: () => void;
+  readonly stop: () => void;
+} {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  return {
+    down: () => {
+      stop();
+      timer = setTimeout(() => {
+        timer = undefined;
+        onHold();
+      }, ESC_HOLD_MS);
+    },
+    up: stop,
+    stop,
+  };
+}
+
+/** Выход из HTML-полного экрана страницы, если он есть; отказ — не ошибка. */
+const leavePageFullscreen = async (): Promise<void> => {
+  if (document.fullscreenElement == null) return;
+  try {
+    await document.exitFullscreen();
+  } catch {
+    // уже вышли / документ выгружается.
+  }
+};
+
+/** Выход из игрового полного экрана приложения (и полного экрана страницы на Windows). */
+export async function exitGameFullscreen(): Promise<void> {
+  await leavePageFullscreen();
+  await desktopExitGameFullscreen();
+}
+
+/**
+ * Windows: полный экран страницы и захват клавиш. Захват отказал — полный экран страницы
+ * снимаем: остаётся нативный, как на macOS.
+ */
+const lockKeysInPageFullscreen = async (root: HTMLElement): Promise<void> => {
+  try {
+    await root.requestFullscreen();
+  } catch {
+    return;
+  }
+  try {
+    await keyboard()?.lock?.();
+  } catch {
+    await leavePageFullscreen();
+  }
+};
+
+/** Вход в приложении: нативный полный экран окна (+ на Windows полный экран страницы и захват). */
+const enterDesktopFullscreen = async (root: HTMLElement): Promise<void> => {
+  const info = await desktopAppInfo();
+  if (info?.os === "windows" && keyboardLockSupported()) {
+    await lockKeysInPageFullscreen(root);
+  }
+  await desktopEnterGameFullscreen();
+};
 
 /** Отдаёт фокус стриму: сам iframe и его окно (иначе клавиши остаются на странице). */
 export function focusStream(frame: HTMLIFrameElement | null): void {
@@ -55,6 +145,11 @@ export async function enterFullscreen(
 ): Promise<void> {
   focusStream(frame);
   if (frame !== null) lockPointer(frame);
+  if (isDesktop()) {
+    await enterDesktopFullscreen(root);
+    focusStream(frame);
+    return;
+  }
   try {
     await root.requestFullscreen();
   } catch (error) {
@@ -158,13 +253,39 @@ export function lockPointerOnClick(frame: HTMLIFrameElement): () => void {
   };
 }
 
-/** Страница сейчас в полном экране; при выходе из него снимает захват клавиш. */
+/**
+ * Страница сейчас в полном экране; при выходе из него снимает захват клавиш. В приложении — по
+ * событию приложения (игровой полный экран окна), а выход из полного экрана страницы во время
+ * игры (Windows) выводит и окно.
+ */
 export function useIsFullscreen(): boolean {
+  const desktop = isDesktop();
   const [fullscreen, setFullscreen] = useState(
-    () => document.fullscreenElement != null,
+    () => !desktop && document.fullscreenElement != null,
   );
 
   useEffect(() => {
+    if (desktop) {
+      let game = false;
+      const stopEvents = onDesktopGameFullscreen((on) => {
+        game = on;
+        setFullscreen(on);
+        if (!on) {
+          keyboard()?.unlock?.();
+          void leavePageFullscreen();
+        }
+      });
+      const onPageChange = () => {
+        if (document.fullscreenElement != null || !game) return;
+        keyboard()?.unlock?.();
+        void desktopExitGameFullscreen();
+      };
+      document.addEventListener("fullscreenchange", onPageChange);
+      return () => {
+        stopEvents();
+        document.removeEventListener("fullscreenchange", onPageChange);
+      };
+    }
     const onChange = () => {
       const now = document.fullscreenElement != null;
       setFullscreen(now);
@@ -172,7 +293,7 @@ export function useIsFullscreen(): boolean {
     };
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+  }, [desktop]);
 
   return fullscreen;
 }

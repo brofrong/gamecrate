@@ -1,4 +1,7 @@
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod commands;
+mod fullscreen;
 mod nav;
 mod status;
 mod tray;
@@ -7,7 +10,7 @@ use nav::Nav;
 use status::{close_action, hidden_notice, AppState, CloseAction};
 use std::sync::atomic::Ordering;
 use tauri::utils::config::BackgroundThrottlingPolicy;
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::window::Color;
 use tauri::{
     AppHandle, Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
@@ -130,6 +133,10 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
     builder = builder.on_page_load(move |webview, payload| {
         #[cfg(debug_assertions)]
         eprintln!("gamecrate: {:?} {}", payload.event(), payload.url());
+        if payload.event() == PageLoadEvent::Started {
+            // страница сменилась — экрана сессии больше нет, игровой полный экран снять
+            fullscreen::on_page_load(&webview);
+        }
         if !nav::is_internal(payload.url(), &load_public) {
             reset_status(webview.app_handle());
         }
@@ -178,7 +185,13 @@ fn on_close_requested<R: Runtime>(window: &Window<R>, api: &tauri::CloseRequestA
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS: своё меню приложения — Cmd+Q через подтверждение, в игре Cmd+Q/Cmd+W не работают
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(app_menu::build)
+        .on_menu_event(|app, event| app_menu::on_event(app, &event));
+    builder
         // первым: второй запуск не поднимает остальное, а будит уже открытое окно
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app)
@@ -189,11 +202,13 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(commands::handler())
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == MAIN {
-                    on_close_requested(window, api);
-                }
+            if window.label() != MAIN {
+                return;
             }
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                on_close_requested(window, api);
+            }
+            fullscreen::on_window_event(window, event);
         })
         .setup(|app| {
             let handle = app.handle().clone();
