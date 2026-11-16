@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { PlayerPlan, PublicTariff } from "@cg/rpc";
 import { RegistryProvider } from "@effect/atom-react";
 import { RouterProvider } from "@tanstack/react-router";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { authStub, rpcStub } from "./moduleStubs";
 import { testRouter } from "./router";
@@ -124,13 +124,44 @@ describe("лендинг", () => {
     }
   });
 
-  it("партнёр без подписок: карточек нет", async () => {
+  it("билайн: недельная выделена «Выгоднее на 43%», в каждой карточке «Играть»", async () => {
+    renderLanding(WEB_BRANDS.beeline);
+    await screen.findByRole("heading", { level: 1 });
+    const cards = screen.getByRole("list", { name: "Подписки" });
+    expect(within(cards).getByText("Выгоднее на 43%")).toBeTruthy();
+    expect(within(cards).getByText("≈43 ₽ за час вместо 75 ₽")).toBeTruthy();
+    const play = within(cards).getAllByRole("link", { name: "Играть" });
+    expect(play).toHaveLength(2);
+    for (const link of play) expect(link.getAttribute("href")).toBe("/login");
+  });
+
+  it("билайн: полоса «В любой подписке» с реальными плюсами", async () => {
+    renderLanding(WEB_BRANDS.beeline);
+    await screen.findByRole("heading", { level: 1 });
+    expect(
+      screen.getByRole("heading", { level: 3, name: "В любой подписке" }),
+    ).toBeTruthy();
+    const perks = screen.getByRole("list", { name: "В любой подписке" });
+    expect(within(perks).getAllByRole("listitem")).toHaveLength(8);
+    for (const title of [
+      "Вся библиотека Steam",
+      "Сейвы в Steam Cloud",
+      "Сессия ждёт",
+    ]) {
+      expect(within(perks).getByText(title)).toBeTruthy();
+    }
+    expect(perks.textContent).not.toMatch(/4K|FPS|RTX/);
+  });
+
+  it("партнёр без подписок: карточек нет, «Играть» под текстом", async () => {
     renderLanding(withPartner({ plans: [] }));
     await screen.findByRole("heading", { level: 1 });
     expect(
       screen.queryByRole("heading", { name: "Стандартная подписка" }),
     ).toBeNull();
-    expect(document.querySelector("#plans ul")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Подписки" })).toBeNull();
+    const section = document.querySelector("#plans") as HTMLElement;
+    expect(within(section).getByRole("link", { name: "Играть" })).toBeTruthy();
   });
 
   it("GameCrate: секция тарифов с ценами, как раньше", async () => {
@@ -193,6 +224,8 @@ describe("страница тарифов /app/plans", () => {
     expect(screen.getByText("без лимита")).toBeTruthy();
     expect(document.body.textContent).not.toContain("490 ₽");
     expect(screen.queryByRole("link", { name: "Подключить" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Играть" })).toBeNull();
+    expect(screen.getByText("Выгоднее на 43%")).toBeTruthy();
     expect(screen.queryByText("Про")).toBeNull();
     expect(screen.queryByText("Пакеты часов")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();

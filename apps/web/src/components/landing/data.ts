@@ -2,8 +2,11 @@
 import {
   CloudUpload,
   Gamepad2,
+  Gift,
+  Hourglass,
   LibraryBig,
   type LucideIcon,
+  MapPin,
   MonitorCheck,
   MonitorSmartphone,
   Zap,
@@ -54,6 +57,38 @@ export const perks: ReadonlyArray<{
     title: "С любого экрана",
     text: "Начал на ПК, продолжил с телефона",
   },
+];
+
+/** «В любой подписке» у партнёра (билайн): только то, что сервис уже даёт, без железа и FPS. */
+export const partnerPerks: ReadonlyArray<{
+  icon: LucideIcon;
+  title: string;
+  text: string;
+}> = [
+  {
+    icon: LibraryBig,
+    title: "Вся библиотека Steam",
+    text: "Твои игры, а не чужой каталог",
+  },
+  { icon: Zap, title: "Без скачивания", text: "Старт за секунды, без патчей" },
+  {
+    icon: CloudUpload,
+    title: "Сейвы в Steam Cloud",
+    text: "Прогресс остаётся в твоём аккаунте",
+  },
+  {
+    icon: MonitorSmartphone,
+    title: "С любого экрана",
+    text: "Браузер, ПК и телефон",
+  },
+  { icon: Gamepad2, title: "Любой ввод", text: "Геймпад, клава и мышь" },
+  { icon: Gift, title: "Игры без Steam", text: "Бесплатные сборки, Steam-аккаунт не нужен" },
+  {
+    icon: Hourglass,
+    title: "Сессия ждёт",
+    text: "Оборвалась связь — игра подождёт",
+  },
+  { icon: MapPin, title: "Сервера в России", text: "Короткий пинг" },
 ];
 
 /** Три заметки под сценой «Технология». */
