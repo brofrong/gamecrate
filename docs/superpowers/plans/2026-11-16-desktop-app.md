@@ -110,12 +110,19 @@
 - Consumes: `DesktopStatus` и команды из задачи 4 (JSON `{"kind":"queued","position":3,"total":5,"etaMinutes":4}`).
 - Produces (Rust): `enum Status { Idle, Queued { position: u32, total: u32, eta_minutes: Option<u32> }, Starting, Playing }` (serde `tag = "kind"`, `rename_all = "camelCase"`, `rename_all_fields = "camelCase"` — иначе поле `etaMinutes` не совпадёт); `status::tray_label(&Status) -> Option<String>`; `status::close_action(&Status, hidden_notice_shown: bool) -> CloseAction` где `enum CloseAction { Quit, HideToTray { notify: bool } }`; общее состояние `AppState { status: Mutex<Status>, hidden_notice_shown: AtomicBool }`.
 
-- [ ] **Step 1: Тесты `status.rs`:** `tray_label(Queued{3,5,Some(4)})` = `"Вы 3-й в очереди · ~4 мин"`; без ETA — `"Вы 3-й в очереди"`; `Starting` → `"Сервер готовится"`; `Playing` → `"Идёт игра"`; `Idle` → `None`. `close_action(Idle, _)` = `Quit`; `close_action(Queued{..}, false)` = `HideToTray{notify:true}`; `close_action(Playing, true)` = `HideToTray{notify:false}`. Десериализация JSON из Interfaces → `Queued{3,5,Some(4)}`.
-- [ ] **Step 2:** `cargo test` — FAIL.
-- [ ] **Step 3: Реализация.** Команды `notify`, `set_status`, `open_external` (только `https://`, иначе ошибка), `app_info`; `capabilities/remote.json`: `"remote": { "urls": ["https://game.brofrong.ru/*"] }` (из `PUBLIC_URL` сборки; dev-сборка — её адрес), `"windows": ["main"]`, permissions — только эти команды и `notification:default`, ничего из fs/shell/http. Трей: иконка, меню «Открыть GameCrate» / строка `tray_label` (disabled, скрыта при `None`) / «Выйти»; клик по иконке и по уведомлению — показать+фокус `main`. `CloseRequested` → `close_action`: `HideToTray` — `prevent_close` + `hide`, при `notify` — уведомление «GameCrate в трее — вы остаётесь в очереди» / «…игра продолжается»; «Выйти» в `Queued`/`Playing` — диалог подтверждения «Выйти из GameCrate? Вы выйдете из очереди.» / «Игра продолжится, пока не истечёт время ожидания.» (сессию приложение не завершает). Если задача 3 показала троттлинг скрытого окна — heartbeat очереди из Rust: пока `Queued` и окно скрыто, раз в 30 с `fetch` в окне через `eval` вызова существующего heartbeat (или отключение троттлинга средствами webview) — выбрать по итогам задачи 3.
-- [ ] **Step 4: Тесты сайта** `queueWatcher.test.tsx`: в приложении (фейковый `__TAURI_INTERNALS__`) готовность сервера зовёт `invoke("notify", …)` с `queueReadyNotification`, а не `new Notification`; позиция очереди меняется → `invoke("set_status", {status:{kind:"queued",…}})`; в браузере — как раньше.
+- [x] **Step 1: Тесты `status.rs`:** `tray_label(Queued{3,5,Some(4)})` = `"Вы 3-й в очереди · ~4 мин"`; без ETA — `"Вы 3-й в очереди"`; `Starting` → `"Сервер готовится"`; `Playing` → `"Идёт игра"`; `Idle` → `None`. `close_action(Idle, _)` = `Quit`; `close_action(Queued{..}, false)` = `HideToTray{notify:true}`; `close_action(Playing, true)` = `HideToTray{notify:false}`. Десериализация JSON из Interfaces → `Queued{3,5,Some(4)}`.
+- [x] **Step 2:** `cargo test` — FAIL.
+- [x] **Step 3: Реализация.** Команды `notify`, `set_status`, `open_external` (только `https://`, иначе ошибка), `app_info`; `capabilities/remote.json`: `"remote": { "urls": ["https://game.brofrong.ru/*"] }` (из `PUBLIC_URL` сборки; dev-сборка — её адрес), `"windows": ["main"]`, permissions — только эти команды и `notification:default`, ничего из fs/shell/http. Трей: иконка, меню «Открыть GameCrate» / строка `tray_label` (disabled, скрыта при `None`) / «Выйти»; клик по иконке и по уведомлению — показать+фокус `main`. `CloseRequested` → `close_action`: `HideToTray` — `prevent_close` + `hide`, при `notify` — уведомление «GameCrate в трее — вы остаётесь в очереди» / «…игра продолжается»; «Выйти» в `Queued`/`Playing` — диалог подтверждения «Выйти из GameCrate? Вы выйдете из очереди.» / «Игра продолжится, пока не истечёт время ожидания.» (сессию приложение не завершает). Если задача 3 показала троттлинг скрытого окна — heartbeat очереди из Rust: пока `Queued` и окно скрыто, раз в 30 с `fetch` в окне через `eval` вызова существующего heartbeat (или отключение троттлинга средствами webview) — выбрать по итогам задачи 3.
+- [x] **Step 4: Тесты сайта** `queueWatcher.test.tsx`: в приложении (фейковый `__TAURI_INTERNALS__`) готовность сервера зовёт `invoke("notify", …)` с `queueReadyNotification`, а не `new Notification`; позиция очереди меняется → `invoke("set_status", {status:{kind:"queued",…}})`; в браузере — как раньше.
 - [ ] **Step 5:** `cargo test`, `bun run --cwd apps/web test` — PASS. Ручная проверка на Mac: очередь (занять brofrong второй сессией) → трей показывает позицию; крестик прячет окно, уведомление один раз; «Сервер готов» приходит при скрытом окне, клик открывает окно; **окно скрыто 5 минут — игрок в очереди** (Review Focus 1). Капабилити: открыть в окне внешнюю страницу нельзя (уходит в браузер) — Review Focus 2.
-- [ ] **Step 6:** Commit `feat(desktop): трей, уведомления очереди, крестик прячет в трей в очереди и игре`.
+- [x] **Step 6:** Commit `feat(desktop): трей, уведомления очереди, крестик прячет в трей в очереди и игре`.
+
+> **Исполнено (2026-11-16), отличия от шагов выше:** капабилити не файлом `capabilities/remote.json`, а в рантайме
+> (`commands::site_capability(nav::public_base())` — адрес сайта из сборки, dev-адрес тоже работает); команды объявлены в
+> `build.rs` (`AppManifest`), поэтому заглушка из бандла и любые чужие страницы не зовут ничего. `notification:default`
+> странице не выдан — уведомление показывает Rust по команде `notify`. Heartbeat из Rust не делали: окну выставлен
+> `background_throttling(Disabled)` (WKWebView, macOS 14+) — проверить пунктом «окно скрыто 5 минут». Место 0 в трее —
+> «Вы в очереди». Статус шлют `QueueWatcher` (зеркало сервера) и экран игры (`starting`/`playing`, при уходе — `idle`).
 
 ### Task 6: Полный экран и перехват сочетаний
 
@@ -212,3 +219,33 @@ _(заполняется в задачах 1 и 3)_
       нажать «Повторить» — открывается `/app`.
 - [ ] Сессия на brofrong в окне: идёт стрим в WKWebView, звук, клавиши, мышь, Pointer Lock (полноэкранный режим).
 - [ ] В логах nginx/API у запросов окна UA с `GameCrateDesktop/0.1.0`.
+
+### Задача 5 — дымовой прогон (агент, Mac, 2026-11-16)
+
+- `cargo test` — 24 passed (в т.ч. ACL на мок-рантайме: сайт зовёт команды моста; `evil.com`, `game.brofrong.ru.evil.com`,
+  `http://`, чужой порт, Steam, `tauri://localhost` и `http://tauri.localhost` — «not allowed»; плагин `opener` сайту закрыт);
+  `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` — чисто; `bun run --cwd apps/web test` — 655 pass,
+  1 fail (давний `SteamQrLogin > shows QR and statuses`); корневые `bun run check` и `bun run lint` — чисто.
+- `GAMECRATE_URL=http://127.0.0.1:53178/ bun run --cwd apps/desktop dev` против заглушки сайта: окно ушло на `/app`, страница
+  через `__TAURI_INTERNALS__` получила `app_info` = `{version:"0.1.0", os:"macos"}`, `set_status` — ok, `open_external("file://…")` —
+  «нужен адрес https://», `plugin:opener|open_url` и `plugin:notification|is_permission_granted` — «not allowed».
+- Трей, уведомления, диалог «Выйти» и скрытое окно агент глазами не смотрел — это ручной чек-лист ниже.
+
+### Задача 5 — проверить вручную (Mac)
+
+Запуск: `bun run --cwd apps/desktop dev`. В dev-режиме macOS приписывает уведомления «Терминалу» — разрешить ему уведомления;
+клик по уведомлению проверять лучше на собранном `.app`.
+
+- [ ] Очередь (занять brofrong второй сессией): в меню трея строка «Вы N-й в очереди · ~M мин» (до подсчёта места — «Вы в очереди»),
+      подсказка у иконки «GameCrate — …»; при сдвиге очереди строка меняется.
+- [ ] Крестик в очереди прячет окно в трей, уведомление «GameCrate в трее — вы остаётесь в очереди» — только первый раз за запуск.
+- [ ] Крестик во время игры — окно в трей, «…игра продолжается» (если уведомления ещё не было).
+- [ ] Крестик без сессии — приложение закрывается.
+- [ ] **Окно скрыто 5 минут — игрок в очереди** (Review Focus 1): место в очереди не потеряно, позиция в трее обновляется.
+      На macOS ниже 14 отключение троттлинга не работает — если место теряется, нужен heartbeat из Rust.
+- [ ] «Сервер готов — возвращайтесь в игру» приходит при скрытом окне; клик по уведомлению показывает окно.
+- [ ] Клик по иконке трея и «Открыть GameCrate» показывают и фокусируют окно; клик по иконке в Доке — тоже.
+- [ ] «Выйти» в трее: в очереди — «Выйти из GameCrate?» / «Вы выйдете из очереди.», в игре — «Игра продолжится, пока не истечёт
+      время ожидания.»; «Остаться» — ничего не меняется; без сессии — выход без вопроса.
+- [ ] После конца сессии (или ухода с экрана игры) строка статуса из трея пропадает, крестик снова закрывает приложение.
+- [ ] Чужая страница в окне не открывается (уходит в браузер) — Review Focus 2; команд у неё нет (проверено тестами ACL).

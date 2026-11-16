@@ -13,6 +13,7 @@ import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { SessionMissing } from "@/components/SessionStatus";
 import { Button } from "@/components/ui/button";
 import { homePath } from "@/lib/desktop";
+import { useDesktopGameStatus } from "@/lib/desktopStatus";
 import { useInputActivity } from "@/lib/inputActivity";
 import { hasHigherTariff } from "@/lib/planFormat";
 import { reportStartError } from "@/lib/usePlaySession";
@@ -142,6 +143,9 @@ function SessionPage() {
     const timer = setTimeout(resubscribe, RESUBSCRIBE_MS);
     return () => clearTimeout(timer);
   }, [failedTransiently, resubscribe]);
+
+  // десктоп-приложение: в игре крестик прячет окно в трей
+  useDesktopGameStatus(view);
 
   const beatNow = useHeartbeat(
     id,
