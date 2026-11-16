@@ -21,6 +21,14 @@ const isReservedPath = (pathname: string): boolean =>
   pathname.startsWith("/api/") ||
   pathname.startsWith("/stream/");
 
+const safeDecode = (pathname: string): string => {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+};
+
 /** Страница SPA: последний сегмент пути без расширения файла (`/`, `/app/game/570`) и сам
  *  `/index.html` — исходный шаблон без витрины наружу не отдаётся. */
 const isPagePath = (pathname: string): boolean =>
@@ -65,7 +73,8 @@ export const BrandedStaticRoute = Layer.effectDiscard(
     const handler = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const pathname = new URL(request.url, "http://localhost").pathname;
-      if (isPagePath(pathname)) {
+      // Статика ищет файл по декодированному пути: `/%69ndex.html` — тот же `/index.html`.
+      if (isPagePath(safeDecode(pathname))) {
         if (template === undefined) {
           template = yield* fileSystem
             .readFileString(indexPath)

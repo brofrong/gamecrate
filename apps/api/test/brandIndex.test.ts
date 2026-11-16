@@ -286,6 +286,10 @@ describe("index.html route", () => {
     const html = await index.text();
     expect(html).toContain('data-brand="beeline"');
     expect(html).not.toContain("GameCrate");
+    const encoded = await (
+      await get("/%69ndex.html", "play.beeline.ru")
+    ).text();
+    expect(encoded).toContain('data-brand="beeline"');
     const reserved = await get("/api/x", "play.beeline.ru", {
       accept: "text/html",
     });
