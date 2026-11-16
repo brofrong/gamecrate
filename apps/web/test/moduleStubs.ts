@@ -251,4 +251,7 @@ export const authStub = () => ({
   requestEmailChange: async () => ({ data: null, error: null }),
   confirmEmailChange: async () => ({ data: null, error: null }),
   signOut: async () => {},
+  createDesktopToken: async () => ({ error: "UNAUTHORIZED" }),
+  currentAccount: async () => ({ kind: "guest" }),
+  exchangeDesktopToken: async () => ({ error: null }),
 });

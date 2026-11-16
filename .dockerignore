@@ -17,6 +17,10 @@ node_modules
 .superpowers
 spike/nv
 images/session/nv
+# сборка десктоп-приложения (apps/desktop) серверному образу не нужна; сам apps/desktop
+# оставляем — turbo в `bun run build` исключает его по имени (--filter=!@cg/desktop)
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
 **/*.tgz
 
 # Файлы Nintendo (ROM и архивы активов SoH) — никогда в образ (games/README.md)

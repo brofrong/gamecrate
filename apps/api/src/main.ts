@@ -4,6 +4,7 @@ import { BunHttpServer, BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient, HttpRouter } from "effect/http";
 import { BetterAuth } from "./auth/auth";
+import { serverMaxRequestBodySize } from "./bodyLimit";
 import { AppConfig } from "./config";
 import { HttpApp } from "./http";
 import { OwnGameCatalog } from "./library/OwnGameCatalog";
@@ -12,8 +13,17 @@ import { ProtonDb } from "./steam/ProtonDb";
 import { SteamApi } from "./steam/SteamApi";
 import { SteamStoreApi } from "./steam/SteamStoreApi";
 
+/**
+ * `maxRequestBodySize` ≈ 501 МиБ — только ради выкладки десктоп-сборок (`PUT /download/desktop/*`);
+ * всем остальным маршрутам `BodyLimit` в `HttpApp` (bodyLimit.ts) оставляет 1 МиБ.
+ */
 const BunServer = Layer.unwrap(
-  AppConfig.useSync((config) => BunHttpServer.layer({ port: config.port })),
+  AppConfig.useSync((config) =>
+    BunHttpServer.layer({
+      port: config.port,
+      maxRequestBodySize: serverMaxRequestBodySize,
+    }),
+  ),
 );
 
 /**

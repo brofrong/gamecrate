@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GameCrate</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="retry.js"></script>
+  </head>
+  <body data-state="checking">
+    <main>
+      <img class="logo" src="logo.svg" alt="GameCrate" width="80" height="88" />
+      <p class="checking" role="status">Подключаемся к GameCrate…</p>
+      <div class="offline">
+        <h1>Нет связи с сервером</h1>
+        <p>Проверьте интернет и попробуйте ещё раз.</p>
+        <button id="retry" type="button" disabled>Повторить</button>
+      </div>
+    </main>
+  </body>
+</html>

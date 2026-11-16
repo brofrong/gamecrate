@@ -1,12 +1,21 @@
 // Правая панель страницы входа: кнопки провайдеров, вход по одноразовому коду на почту,
 // скелетон до загрузки списка провайдеров, репортит сцене слева уровень сборки, подсветку
 // провайдера и момент успешного входа («зажигание» куба).
+// В десктоп-приложении OAuth идёт через системный браузер (`/login/desktop`): провайдеры
+// не пускают webview, а чужие хосты окно и так отдаёт браузеру. Код на почту — в окне.
 import { useEffect, useRef, useState } from "react";
 import type { AuthProviders } from "@cg/rpc";
-import { sendEmailCode, signInWithEmailCode, signInWithProvider } from "@/auth";
+import {
+  sendEmailCode,
+  signInWithEmailCode,
+  signInWithProvider,
+  type SocialProvider,
+} from "@/auth";
 import { useBrand } from "@/brands";
 import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
+import { desktopOpenExternal, isDesktop } from "@/lib/desktop";
+import { desktopLoginUrl, rememberDesktopState } from "@/lib/desktopLogin";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
 import { ProviderButtons } from "./ProviderButtons";
 
@@ -15,6 +24,11 @@ export type PanelStep =
   | { kind: "code"; email: string; otp: string; resendAt: number };
 
 type Provider = "yandex" | "google" | "telegram";
+
+const NO_STORAGE =
+  "Не удалось начать вход через браузер: окну недоступно хранилище. Войдите по почте.";
+const NO_BROWSER =
+  "Не удалось открыть браузер. Попробуйте ещё раз или войдите по почте.";
 
 /** Сколько ждать до повторной отправки письма с кодом. */
 const RESEND_MS = 30_000;
@@ -39,6 +53,13 @@ export function LoginPanel({
   const [submitted, setSubmitted] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const autoSubmitted = useRef<string | null>(null);
+  // приложение: OAuth открыт в системном браузере — ждём ссылку `gamecrate://auth` с этим
+  // `state` (он же в `sessionStorage` окна, его сверит `/login/desktop/finish`)
+  const [browser, setBrowser] = useState<{
+    provider: SocialProvider;
+    state: string;
+  } | null>(null);
+  const [browserError, setBrowserError] = useState<string | null>(null);
 
   const requestCode = async (email: string) => {
     setPending(true);
@@ -71,7 +92,38 @@ export function LoginPanel({
     window.location.assign(next);
   };
 
+  /** Открыть `/login/desktop` в браузере; не открылся — ошибка в панели, без экрана ожидания. */
+  const openBrowser = async (provider: SocialProvider, state: string) => {
+    setBrowserError(null);
+    // `desktopOpenExternal` не бросает по контракту; catch — чтобы сбой не стал unhandled rejection
+    const opened = await desktopOpenExternal(
+      desktopLoginUrl(provider, state),
+    ).catch(() => false);
+    if (opened) {
+      setBrowser({ provider, state });
+    } else {
+      setBrowser(null);
+      setBrowserError(NO_BROWSER);
+    }
+  };
+
+  /** Новый вход через браузер: свежий `state` в `sessionStorage`, без хранилища — не начинаем. */
+  const startBrowserLogin = (provider: SocialProvider) => {
+    let state: string;
+    try {
+      state = rememberDesktopState();
+    } catch {
+      setBrowserError(NO_STORAGE);
+      return;
+    }
+    void openBrowser(provider, state);
+  };
+
   const handleProvider = (p: Provider) => {
+    if (isDesktop()) {
+      startBrowserLogin(p);
+      return;
+    }
     setSubmitted(true);
     onLit();
     void signInWithProvider(p, next);
@@ -127,6 +179,35 @@ export function LoginPanel({
     );
   }
 
+  if (browser !== null) {
+    return (
+      <div className="grid w-full max-w-sm gap-5">
+        <h1 className="text-2xl font-semibold tracking-[-0.02em] text-brand-text">
+          Продолжите вход в браузере
+        </h1>
+        <p className="text-sm text-brand-muted">
+          Мы открыли страницу входа в браузере. Войдите там — {brand.name}{" "}
+          откроется сам, уже с вашим аккаунтом.
+        </p>
+        <Button
+          type="button"
+          onClick={() => void openBrowser(browser.provider, browser.state)}
+          className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
+        >
+          Открыть браузер ещё раз
+        </Button>
+        <Button
+          type="button"
+          variant="link"
+          onClick={() => setBrowser(null)}
+          className="h-auto justify-self-start p-0 text-brand-cyan"
+        >
+          Назад
+        </Button>
+      </div>
+    );
+  }
+
   // Разделитель «или по почте» имеет смысл только когда выше есть хотя бы одна
   // кнопка провайдера (pocketId сюда не входит — это отдельная «Вход для команды»).
   const hasProviderButtons = Boolean(
@@ -152,6 +233,11 @@ export function LoginPanel({
             onHover={onTint}
             pending={pending}
           />
+          {browserError && (
+            <p role="alert" className="text-sm text-red-400">
+              {browserError}
+            </p>
+          )}
           {hasProviderButtons && (
             <div className="flex items-center gap-3 text-xs text-brand-muted">
               <span className="h-px flex-1 bg-brand-line" />
@@ -248,7 +334,11 @@ export function LoginPanel({
         <Button
           type="button"
           variant="link"
-          onClick={() => void signInWithProvider("pocket-id", "/admin")}
+          onClick={() =>
+            isDesktop()
+              ? startBrowserLogin("pocket-id")
+              : void signInWithProvider("pocket-id", "/admin")
+          }
           className="h-auto justify-self-start p-0 text-xs text-brand-muted"
         >
           Вход для команды

@@ -12,7 +12,11 @@
 // кнопки не дотянуться. На сенсорном экране без мыши кнопка остаётся — тап до неё достаёт.
 // Панель и диалог порталятся в корень экрана сессии (`rootRef`): в полном экране браузер
 // показывает только поддерево полноэкранного элемента. Закрылись — фокус обратно в стрим.
-import { Maximize, Menu, X } from "lucide-react";
+// В десктоп-приложении полный экран — нативный (`enterFullscreen` → `enter_game_fullscreen`),
+// Esc уходит в игру, а удержание Esc (`escHold`) выходит через `exit_game_fullscreen`; уход с
+// экрана сессии в игровом полном экране — тоже выход (иначе на macOS Dock и Cmd+Tab остались бы
+// выключенными).
+import { Maximize, Menu, Minimize, X } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
   AlertDialog,
@@ -30,10 +34,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { isDesktop } from "@/lib/desktop";
 import {
   enterFullscreen,
+  escHold,
+  escHoldExits,
+  exitGameFullscreen,
   focusStream,
-  keyboardLockSupported,
   lockPointerOnClick,
   useIsFullscreen,
   watchEscape,
@@ -142,7 +149,7 @@ export function SessionControls({
   // Шаг 3: подсказка у меню — после шагов 1–2 и вне полного экрана.
   const hint = tourPending && !tutorial && !fullscreen;
   const menuHidden = fullscreen && !touchOnly();
-  const holdable = keyboardLockSupported();
+  const holdable = escHoldExits();
   const [tutorialStep2, setTutorialStep2] = useState(false);
   const [esc, setEsc] = useState<EscPromptState | null>(null);
 
@@ -177,13 +184,18 @@ export function SessionControls({
   }, [fullscreen]);
 
   // В полном экране с захватом клавиш нажатый Esc — полоска «Зажми Esc» со шкалой; отпустили —
-  // уходит через `ESC_PROMPT_LINGER_MS`. Без захвата Esc выходит сразу — полоске не успеть.
+  // уходит через `ESC_PROMPT_LINGER_MS`. Без захвата Esc выходит сразу — полоске не успеть. В
+  // приложении выход по удержанию — наш таймер (`escHold`), в браузере его делает сам Chrome.
   useEffect(() => {
     const frame = frameRef.current;
     if (!fullscreen || !holdable || frame === null) return;
     let hide: ReturnType<typeof setTimeout> | undefined;
+    const hold = isDesktop()
+      ? escHold(() => void exitGameFullscreen())
+      : undefined;
     const stop = watchEscape(frame, {
       onDown: () => {
+        hold?.down();
         clearTimeout(hide);
         setTutorialStep2(false);
         setEsc((prev) => ({
@@ -193,6 +205,7 @@ export function SessionControls({
         }));
       },
       onUp: () => {
+        hold?.up();
         setEsc((prev) =>
           prev?.mode === "pressed" ? { ...prev, holding: false } : prev,
         );
@@ -202,10 +215,22 @@ export function SessionControls({
     });
     return () => {
       stop();
+      hold?.stop();
       clearTimeout(hide);
       setEsc(null);
     };
   }, [fullscreen, holdable, frameRef]);
+
+  // Приложение: ушли с экрана сессии в игровом полном экране — выйти из него. Состояние — через
+  // ref: выход нужен только при размонтировании, не при каждой смене `fullscreen`.
+  const fullscreenRef = useRef(fullscreen);
+  fullscreenRef.current = fullscreen;
+  useEffect(
+    () => () => {
+      if (fullscreenRef.current && isDesktop()) void exitGameFullscreen();
+    },
+    [],
+  );
 
   const goFullscreen = () => {
     const root = rootRef.current;
@@ -364,6 +389,19 @@ export function SessionControls({
               На весь экран
             </Button>
           </div>
+        )}
+        {/* Приложение на сенсорном экране без клавиатуры: удержать Esc нечем, а жестов выхода,
+            как у браузера, у окна нет. */}
+        {fullscreen && isDesktop() && touchOnly() && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="pointer-events-auto h-[34px] self-start opacity-60 hover:opacity-100 focus-visible:opacity-100"
+            onClick={() => void exitGameFullscreen()}
+          >
+            <Minimize />
+            Выйти из полного экрана
+          </Button>
         )}
         <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <AlertDialogContent

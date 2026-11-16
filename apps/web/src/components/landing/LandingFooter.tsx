@@ -1,6 +1,7 @@
 // Футер лендинга: знак, имя и слоган, копирайт и упоминание Valve.
 import { useBrand } from "@/brands";
 import { BrandLogo } from "@/components/brand/BrandLogo";
+import { DownloadLink } from "@/components/DownloadLink";
 
 export function LandingFooter() {
   const brand = useBrand();
@@ -13,8 +14,11 @@ export function LandingFooter() {
             ? brand.name
             : `${brand.name} · ${brand.tagline}`}
         </span>
-        <span>
-          © 2026 {brand.name}. Steam является торговой маркой Valve Corporation.
+        <span className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <DownloadLink className="font-medium text-brand-text hover:underline" />
+          <span>
+            © 2026 {brand.name}. Steam является торговой маркой Valve Corporation.
+          </span>
         </span>
       </div>
     </footer>

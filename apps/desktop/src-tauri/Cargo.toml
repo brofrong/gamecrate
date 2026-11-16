@@ -1,0 +1,38 @@
+[package]
+name = "gamecrate-desktop"
+version = "0.1.0"
+description = "GameCrate — десктоп-приложение"
+edition = "2021"
+publish = false
+
+[lib]
+# `_lib` — чтобы имя библиотеки не совпало с бинарником (на Windows это ломает сборку).
+name = "gamecrate_desktop_lib"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = ["tray-icon"] }
+tauri-plugin-deep-link = "=2.6.3"
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-notification = "=2.8.0"
+tauri-plugin-opener = "=2.7.3"
+# `deep-link`: ссылка `gamecrate://` из второго запуска (Windows/Linux — в argv) уходит первому
+tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }
+# автообновление: проверка, тихое скачивание, установка (src/update.rs); сайту права не выдаются
+tauri-plugin-updater = "=2.14.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+# `generate_context!` встраивает конфиг плагинов (`plugins.deep-link`) через serde_json
+serde_json = "=1.0.154"
+url = "=2.5.8"
+
+# Перехват в игровом полном экране: `NSApplication.presentationOptions` (src/fullscreen/macos.rs).
+# Те же версии, что у tao; `exception` — поймать NSInvalidArgumentException, а не упасть.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.5", features = ["exception"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+
+[dev-dependencies]
+# мок-рантайм Tauri: проверка ACL команд (какие страницы их зовут) без окна
+tauri = { version = "=2.12.5", features = ["tray-icon", "test"] }

@@ -1,5 +1,5 @@
 // Better Auth: вход через Steam (OpenID), Pocket ID (OIDC), Google, Яндекс и код
-// на почту; роли пользователей.
+// на почту; одноразовый токен входа в десктоп-приложение; роли пользователей.
 import { defineRequestState, hasRequestState } from "@better-auth/core/context";
 import { account, type Db, session, user, verification } from "@cg/db";
 import { type CurrentUserShape, isSyntheticEmail, type Role } from "@cg/rpc";
@@ -7,6 +7,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
+import { oneTimeToken } from "better-auth/plugins/one-time-token";
 import { steamOpenID } from "better-auth-steam";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
@@ -248,6 +249,12 @@ export const makeAuth = (
           });
         },
       }),
+      // Вход в десктоп-приложение через системный браузер (Google не пускает webview):
+      // вошедший в браузере берёт токен (`GET /one-time-token/generate`, без сессии — 401)
+      // и отдаёт его приложению ссылкой `gamecrate://auth?token=…`; окно приложения меняет
+      // его на cookie той же сессии (`POST /one-time-token/verify`, токен в теле, не в URL).
+      // Срок 2 минуты, одно использование, в `verification` — только SHA-256.
+      oneTimeToken({ expiresIn: 2, storeToken: "hashed" }),
     ],
   });
 };

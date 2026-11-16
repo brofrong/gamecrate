@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { linkProvider, listLinkedAccounts, unlinkProvider } from "@/auth";
 import { pageProviders } from "@/brands";
 import { AppHeader } from "@/components/AppHeader";
+import { DownloadLink } from "@/components/DownloadLink";
 import { AccountSummary } from "@/components/profile/AccountSummary";
 import { EmailSection } from "@/components/profile/EmailSection";
 import {
@@ -16,6 +17,7 @@ import {
 } from "@/components/profile/LoginMethods";
 import { ServerUnreachable } from "@/components/ServerUnreachable";
 import { authErrorMessage } from "@/lib/authErrors";
+import { isDesktop } from "@/lib/desktop";
 import { useStalled } from "@/lib/useStalled";
 import { meAtom, providersAtom, resultErrorTag } from "@/rpc";
 import { rootRoute } from "./__root";
@@ -123,6 +125,15 @@ function ProfilePage() {
                 }}
                 busy={busy}
               />
+            )}
+            {!isDesktop() && (
+              <section className="grid gap-2">
+                <h2 className="text-lg font-semibold">Приложение</h2>
+                <p className="text-sm text-muted-foreground">
+                  Играйте в отдельном окне на Windows, macOS или Linux.
+                </p>
+                <DownloadLink className="w-fit text-sm font-medium underline underline-offset-4" />
+              </section>
             )}
           </div>
         ) : null}

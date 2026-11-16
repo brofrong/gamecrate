@@ -1,12 +1,14 @@
 // Клиент Better Auth: вход по коду на email, через соцпровайдеров (Google/Яндекс/Telegram/
-// Pocket ID), привязка/отвязка способов входа в профиле, выход.
+// Pocket ID), одноразовый токен входа в десктоп-приложение, привязка/отвязка способов входа в
+// профиле, выход.
 // Адрес не задаём: клиент ходит на `/api/auth` того же origin (в dev — через прокси dev.ts).
 import { steamOpenIDClient } from "better-auth-steam/client";
 import { createAuthClient } from "better-auth/client";
-import { emailOTPClient } from "better-auth/client/plugins";
+import { emailOTPClient, oneTimeTokenClient } from "better-auth/client/plugins";
+import { homePath } from "@/lib/desktop";
 
 export const authClient = createAuthClient({
-  plugins: [steamOpenIDClient(), emailOTPClient()],
+  plugins: [steamOpenIDClient(), emailOTPClient(), oneTimeTokenClient()],
 });
 
 /** Соцпровайдеры входа/привязки через `signIn.social`/`linkSocial` (без Steam — у него свой поток, и он только привязка). */
@@ -19,6 +21,55 @@ export const signInWithProvider = (provider: SocialProvider, next: string) =>
     callbackURL: next,
     errorCallbackURL: "/login",
   });
+
+/**
+ * Одноразовый токен входа в десктоп-приложение для того, кто вошёл в этом браузере
+ * (`/login/desktop`). Без сессии — `{ error: "UNAUTHORIZED" }`. Токен не логируем.
+ */
+export const createDesktopToken = async (): Promise<
+  { token: string } | { error: string }
+> => {
+  try {
+    const { data, error } = await authClient.oneTimeToken.generate();
+    if (data) return { token: data.token };
+    return { error: error?.status === 401 ? "UNAUTHORIZED" : "FAILED" };
+  } catch {
+    return { error: "FAILED" };
+  }
+};
+
+/**
+ * Кто вошёл в этом браузере (`/login/desktop` спрашивает подтверждение входа в приложение):
+ * `label` — почта, а без неё имя. Без сессии — `guest`, сбой запроса — `failed`.
+ */
+export const currentAccount = async (): Promise<
+  { kind: "signed-in"; label: string } | { kind: "guest" } | { kind: "failed" }
+> => {
+  try {
+    const { data, error } = await authClient.getSession();
+    if (error) return { kind: "failed" };
+    if (!data) return { kind: "guest" };
+    const { email, name } = data.user;
+    return { kind: "signed-in", label: email || name };
+  } catch {
+    return { kind: "failed" };
+  }
+};
+
+/**
+ * Обмен токена из ссылки `gamecrate://auth` на cookie сессии в окне приложения
+ * (`/login/desktop/finish`). Токен уходит в теле POST, не в URL.
+ */
+export const exchangeDesktopToken = async (
+  token: string,
+): Promise<{ error: string | null }> => {
+  try {
+    const { error } = await authClient.oneTimeToken.verify({ token });
+    return { error: error ? (error.code ?? "UNKNOWN") : null };
+  } catch {
+    return { error: "FAILED" };
+  }
+};
 
 /** Отправляет код для входа на email (`type: "sign-in"` — тот же код используется в `/login`). */
 export const sendEmailCode = async (
@@ -92,5 +143,5 @@ export const confirmEmailChange = (newEmail: string, otp: string) =>
  */
 export const signOut = async () => {
   await authClient.signOut();
-  window.location.assign("/");
+  window.location.assign(homePath());
 };

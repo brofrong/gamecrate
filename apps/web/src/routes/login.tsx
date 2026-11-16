@@ -12,6 +12,7 @@ import { CubeScene } from "@/components/login/CubeScene";
 import { LoginPanel } from "@/components/login/LoginPanel";
 import { authErrorMessage } from "@/lib/authErrors";
 import type { Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
+import { homePath } from "@/lib/desktop";
 import { safeNext } from "@/lib/safeNext";
 import { meAtom, providersAtom } from "@/rpc";
 import { rootRoute } from "./__root";
@@ -48,7 +49,7 @@ function LoginPage() {
     <main className="grid min-h-dvh bg-brand-bg font-sans text-brand-text lg:grid-cols-[55fr_45fr]">
       <div className="relative order-2 h-[240px] lg:order-1 lg:h-auto">
         <Link
-          to="/"
+          to={homePath()}
           aria-label={brand.name}
           className="absolute top-7 left-7 z-10"
         >

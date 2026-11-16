@@ -9,7 +9,7 @@
 // `../src/rpc` открывает реальный WebSocket, поэтому он подменяется целиком через
 // `mock.module` (как в `myGamesPage.test.tsx`) — `rpcStub()` даёт все имена настоящего
 // модуля, поверх — свои атомы этого файла.
-import { afterEach, describe, expect, it, jest, mock } from "bun:test";
+import { afterEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
 import type { SessionState, SessionView } from "@cg/rpc";
 import { act, render } from "@testing-library/react";
 import { RegistryProvider, useAtomSet } from "@effect/atom-react";
@@ -372,5 +372,102 @@ describe("QueueWatcher", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe("QueueWatcher in the desktop app", () => {
+  const setBridge = () => {
+    const invoke = mock(async (_cmd: string, _args?: unknown) => undefined);
+    Object.assign(window, { __TAURI_INTERNALS__: { invoke } });
+    return invoke;
+  };
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  const renderQueued = (initial: SessionView) => {
+    const apiRef: { set?: (v: SessionView) => void } = {};
+    const rendered = render(
+      <RegistryProvider
+        initialValues={[
+          signedIn,
+          [activeSessionAtom, AsyncResult.success(initial)],
+          [sessionWatchAtom(sessionId), AsyncResult.success(initial)],
+        ]}
+      >
+        <Driver apiRef={apiRef} />
+      </RegistryProvider>,
+    );
+    return { apiRef, ...rendered };
+  };
+
+  it("server ready while the window is hidden: system notification via the app, not new Notification", () => {
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    const { ctor: notifyCtor } = stubNotification();
+    const invoke = setBridge();
+    const { apiRef } = renderQueued(view("queued"));
+
+    act(() => apiRef.set?.(view("starting")));
+
+    expect(invoke).toHaveBeenCalledWith("notify", {
+      title: "Сервер готов — возвращайтесь в игру",
+      body: "Portal 2",
+    });
+    expect(notifyCtor).not.toHaveBeenCalled();
+  });
+
+  it("server ready while the window is visible but another app is focused: notifies", () => {
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      const invoke = setBridge();
+      const { apiRef } = renderQueued(view("queued"));
+      act(() => apiRef.set?.(view("playing")));
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "notify")).toBe(true);
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("server ready while the player looks at the window: no notification", () => {
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    const hasFocus = spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      const invoke = setBridge();
+      const { apiRef } = renderQueued(view("queued"));
+      act(() => apiRef.set?.(view("starting")));
+      expect(invoke.mock.calls.some(([cmd]) => cmd === "notify")).toBe(false);
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("queue position changes go to the tray via set_status", () => {
+    const invoke = setBridge();
+    const { apiRef } = renderQueued(
+      view("queued", { queue: { position: 3, total: 5, etaMinutes: 4 } }),
+    );
+    act(() =>
+      apiRef.set?.(
+        view("queued", { queue: { position: 2, total: 5, etaMinutes: 3 } }),
+      ),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("set_status", {
+      status: { kind: "queued", position: 3, total: 5, etaMinutes: 4 },
+    });
+    expect(invoke).toHaveBeenCalledWith("set_status", {
+      status: { kind: "queued", position: 2, total: 5, etaMinutes: 3 },
+    });
+  });
+
+  it("leaving the queue for good resets the tray to idle", () => {
+    const invoke = setBridge();
+    const { apiRef } = renderQueued(view("queued"));
+    act(() => apiRef.set?.(view("ended", { failReason: "Вы вышли из очереди" })));
+    expect(invoke).toHaveBeenLastCalledWith("set_status", {
+      status: { kind: "idle" },
+    });
   });
 });

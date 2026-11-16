@@ -1,5 +1,7 @@
 // HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
-// прокси стрима (/stream/<id>/*), статика SPA (`index.html` по витрине хоста, brand/route.ts).
+// прокси стрима (/stream/<id>/*), раздача десктоп-сборок (/download/desktop/*),
+// статика SPA (`index.html` по витрине хоста, brand/route.ts). Перед всеми — общий страж тела
+// (bodyLimit.ts): 1 МиБ и только с Content-Length, кроме `PUT /download/desktop/*`.
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -9,8 +11,11 @@ import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
+import { BodyLimit } from "./bodyLimit";
 import { BrandedStaticRoute } from "./brand/route";
 import { AppConfig, rpcAllowedOrigins } from "./config";
+import { DesktopReleases } from "./download/DesktopReleases";
+import { DesktopRoutes, DesktopUpload } from "./download/routes";
 import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
 import { SessionRpcHandlers } from "./session/rpc";
@@ -96,11 +101,24 @@ const RpcRoute = RpcServer.layer(AppRpcs).pipe(
   Layer.provide(RpcSerialization.layerNdjson),
 );
 
+/**
+ * Раздача десктоп-сборок `/download/desktop/*` — публично; выкладка (`PUT`) — по
+ * `DESKTOP_UPLOAD_TOKEN`. Хранилище и токен берёт из окружения само (`DESKTOP_S3_*`, без ключей —
+ * 404), поэтому в `HttpApp` они не входят зависимостью и остальным тестам/деплоям ничего нового
+ * не нужно.
+ */
+const DesktopDownloadRoute = DesktopRoutes.pipe(
+  Layer.provide(DesktopReleases.layer),
+  Layer.provide(DesktopUpload.layer),
+);
+
 /** Всё приложение; запускается через `HttpRouter.serve` (main.ts) или `toWebHandler` (тесты). */
 export const HttpApp = Layer.mergeAll(
+  BodyLimit,
   HealthRoute,
   AuthRoute,
   RpcRoute,
   StreamProxyRoute,
+  DesktopDownloadRoute,
   BrandedStaticRoute,
 );

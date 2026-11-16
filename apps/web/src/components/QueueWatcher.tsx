@@ -20,6 +20,11 @@
 // (`ActiveSessionPanel`, `cardAction` → `blocked` у остальных игр).
 //
 // Только для вошедшего (`meAtom` успешен): гостю `session.active` не нужен.
+//
+// В десктоп-приложении (`isDesktop()`): «Сервер готов» — системное уведомление через
+// приложение (`desktopNotify`, без запроса разрешения), и не только при скрытом окне, но и
+// когда окно видно, а игрок в другой программе; состояние сессии зеркалится в трей
+// (`useDesktopStatusMirror`). Браузер ведёт себя как раньше.
 import {
   isTerminalSessionState,
   type SessionState,
@@ -29,6 +34,8 @@ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef } from "react";
+import { desktopNotify, isDesktop } from "@/lib/desktop";
+import { useDesktopStatusMirror } from "@/lib/desktopStatus";
 import {
   activeSessionAtom,
   heartbeatAtom,
@@ -132,12 +139,22 @@ function QueueWatcherActive({ sessionId }: { sessionId: string }) {
     if (terminal) refreshActive();
   }, [terminal, refreshActive]);
 
+  useDesktopStatusMirror(view);
+
+  const gameName = view?.gameName ?? "";
   useEffect(() => {
     if (!left) return;
+    if (isDesktop()) {
+      // окно в трее, свёрнуто или за другой программой
+      if (!document.hidden && document.hasFocus()) return;
+      playQueueChime();
+      void desktopNotify(queueReadyNotification, gameName);
+      return;
+    }
     if (!document.hidden) return;
     playQueueChime();
     notifyQueueReady();
-  }, [left]);
+  }, [left, gameName]);
 
   return null;
 }

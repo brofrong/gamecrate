@@ -97,6 +97,48 @@ GameCrate. `X-Forwarded-Host` прокси перезаписывает, а не
 - `S3_PUBLIC_ENDPOINT=https://<хост S3>`, `S3_BUCKET=cg-profiles` (по умолчанию).
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — по `openssl rand -hex 24` (корневые ключи RustFS, они
   же S3-ключи, которые оркестратор выдаёт агентам).
+- Необязательно, раздача десктоп-приложения (страница `/download`, файлы `/download/desktop/*`):
+  `DESKTOP_S3_ENDPOINT` (по умолчанию `http://cg-rustfs:9000`), `DESKTOP_S3_BUCKET` (по умолчанию
+  `cg-desktop`), `DESKTOP_S3_ACCESS_KEY`/`DESKTOP_S3_SECRET_KEY` — ключ на чтение и запись
+  `cg-desktop`; пустые в `.env` = корневые `RUSTFS_*` (compose подставляет сам), отдельный
+  пользователь RustFS только на `cg-desktop/*` — по желанию. Бакет создаётся один раз (см. ниже).
+- Необязательно, выкладка сборок из GitHub Actions: `DESKTOP_UPLOAD_TOKEN` — `openssl rand -hex 32`.
+  RustFS снаружи docker-сети не виден, поэтому джоб `publish` (`.github/workflows/desktop.yml`) шлёт
+  файлы в API: `PUT /download/desktop/<версия>/<файл>` и последним `PUT /download/desktop/latest.json`
+  с `Authorization: Bearer <токен>`, тело до 500 МиБ потоком в бакет. Пусто — `PUT` отвечает 404.
+  Тот же токен владелец кладёт в секрет GitHub `DESKTOP_UPLOAD_TOKEN` (Settings → Secrets and
+  variables → Actions) и в Bitwarden. Включить выкладку:
+
+  ```sh
+  # пустую строку из .env.example заменить, нет строки — дописать; уже задан — не трогать
+  T=$(openssl rand -hex 32)
+  sed -i "s/^DESKTOP_UPLOAD_TOKEN=$/DESKTOP_UPLOAD_TOKEN=$T/" .env
+  grep -q '^DESKTOP_UPLOAD_TOKEN=' .env || printf 'DESKTOP_UPLOAD_TOKEN=%s\n' "$T" >> .env
+  unset T
+  docker compose -f compose.main.yaml --env-file .env up -d cg-api
+  ```
+
+  Обратный прокси перед `cg-api` не должен ограничивать тело запроса меньше 500 МиБ (у Caddy
+  по умолчанию лимита нет; `request_body max_size` в его конфиге — не наш файл, проверить).
+  Если выкладка падает на 413 от прокси, а не от API, — это он. Большое тело API принимает только
+  у `PUT /download/desktop/*`, всем остальным маршрутам — не больше 1 МиБ и только с
+  `Content-Length` (`apps/api/src/bodyLimit.ts`).
+  Выложенный файл версии API не перезаписывает (409), `latest.json` — перезаписывает. Повтор джоба
+  с теми же файлами проходит (sha256 совпал — файл пропускается), с другими — ошибка: поднять версию.
+  Бакет `cg-desktop` создаётся один раз (`run --rm -e BUCKET=cg-desktop cg-rustfs-bucket`, см.
+  «Запуск и обновление главного»). Оборванная выкладка большого файла оставляет в бакете
+  незавершённые части multipart (место на диске, объекта нет). Их убирает правило lifecycle —
+  поставить один раз после создания бакета:
+
+  ```sh
+  docker compose -f compose.main.yaml --env-file .env run --rm --entrypoint aws cg-rustfs-bucket \
+    s3api put-bucket-lifecycle-configuration --bucket cg-desktop --lifecycle-configuration \
+    '{"Rules":[{"ID":"abort-incomplete-uploads","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+  ```
+
+  RustFS 1.0.3 правило принимает и отдаёт обратно (`get-bucket-lifecycle-configuration`); что он
+  действительно чистит части через сутки, не проверялось — при сомнении посмотреть
+  `aws s3api list-multipart-uploads --bucket cg-desktop` и снять лишнее `abort-multipart-upload`.
 - `RELAY_SECRET` — `openssl rand -hex 32` (не короче 32 символов): общий секрет `cg-api` и relay
   оркестратора, compose передаёт его обоим.
 - `PROFILE_KEY`, `SEED_KEY` — по `openssl rand -base64 32` (base64 ровно 32 байт).
@@ -110,7 +152,7 @@ grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base6
 ```
 
 Каждый сервис получает только свои переменные (`POSTGRES_PASSWORD` — только `cg-postgres`,
-`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор).
+`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор, `DESKTOP_S3_*` и `DESKTOP_UPLOAD_TOKEN` — только `cg-api`).
 
 ### Запуск и обновление главного
 
@@ -118,6 +160,8 @@ grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base6
 docker login registry.imtechnologies.ru                     # токен на чтение, один раз
 docker compose -f compose.main.yaml --env-file .env pull
 docker compose -f compose.main.yaml --env-file .env run --rm cg-rustfs-bucket   # бакет, идемпотентно
+# бакет десктоп-сборок (один раз; тот же сервис, имя бакета — переменная BUCKET):
+docker compose -f compose.main.yaml --env-file .env run --rm -e BUCKET=cg-desktop cg-rustfs-bucket
 docker compose -f compose.main.yaml --env-file .env up -d
 curl -s https://<домен>/healthz                             # ok
 ```
@@ -155,6 +199,30 @@ curl -s https://<домен>/healthz                             # ok
   `--data-dir /raid/cloud-gaming --public-ip 37.153.14.138`; в его `.env` шаблон Steam и scratch
   переведены на `/home/brofrong/cloud-gaming-steam{,/client}` и `/home/brofrong/cloud-gaming-scratch`
   (там они лежали со стенда). UDP `59000`.
+- Десктоп-приложение (один раз, перед первым тегом `desktop-v*`). Сборки по умолчанию зашивают
+  `https://gamecrate.srv5.wbrofrong.ru`. Переменная репозитория GitHub `GAMECRATE_URL` перекрывает
+  этот адрес для сборки и для `publish`.
+  1. В `.env` прописать `DESKTOP_UPLOAD_TOKEN`: тот же токен, что в секрете GitHub, Bitwarden
+     01608fd5. Подставлять из `bw`, на экран не выводить.
+  2. В каталоге проекта создать бакет:
+     `docker compose run --rm -e BUCKET=cg-desktop cg-rustfs-bucket`.
+  3. Пересоздать API: `docker compose up -d cg-api`.
+  4. В сайт nginx добавить отдельный `location`, у nginx по умолчанию `client_max_body_size 1m`:
+
+     ```nginx
+     location /download/desktop/ {
+         client_max_body_size 600m;   # API режет на 500 МиБ, остальное — запас
+         proxy_pass http://127.0.0.1:13000;
+         # те же proxy_set_header и таймауты, что у location /
+     }
+     ```
+
+     Без этого `PUT` сборок получает 413 от nginx. Остальным путям API хватает 1 МиБ: `BodyLimit`
+     и так режет тело больше 1 МиБ и запросы без `Content-Length` (411).
+  5. Проверить: `nginx -t && nginx -s reload`, затем
+     `curl -sI https://gamecrate.srv5.wbrofrong.ru/download/desktop/latest.json`. До первого релиза
+     ответ 404. Вход через `/api/auth` тоже должен работать: браузеры шлют `Content-Length`. 411 на
+     обычные запросы значит, что nginx переделывает тело в chunked.
 
 ## Игровой сервер
 
