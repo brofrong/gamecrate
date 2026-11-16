@@ -72,6 +72,7 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
     let nav_app = app.clone();
     let nav_public = public.clone();
     let popup_app = app.clone();
+    let load_public = public.clone();
     // `tauri dev` сам раздаёт заглушку (frontendDist) с http://127.0.0.1:1430 — в отладочной
     // сборке это тоже «страница из бандла», иначе окно отправило бы её в браузер.
     let dev_server = if cfg!(debug_assertions) {
@@ -123,15 +124,27 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.user_agent(&ua);
     }
 
-    #[cfg(debug_assertions)]
-    {
-        builder = builder.on_page_load(|_, payload| {
-            eprintln!("gamecrate: {:?} {}", payload.event(), payload.url());
-        });
-    }
+    // Ушли с сайта (заглушка без сети) — статус сбросить: заглушка не умеет `set_status`, а
+    // старый «в очереди»/«в игре» прятал бы окно в трей. Перезагрузку сайта не трогаем —
+    // страница сама пришлёт статус заново.
+    builder = builder.on_page_load(move |webview, payload| {
+        #[cfg(debug_assertions)]
+        eprintln!("gamecrate: {:?} {}", payload.event(), payload.url());
+        if !nav::is_internal(payload.url(), &load_public) {
+            reset_status(webview.app_handle());
+        }
+    });
 
     builder.build()?;
     Ok(())
+}
+
+/// Статус — в `Idle` (и трей, если он был другим).
+fn reset_status<R: Runtime>(app: &AppHandle<R>) {
+    let idle = status::Status::Idle;
+    if app.state::<AppState>().replace_status(idle.clone()) != idle {
+        tray::update(app, &idle);
+    }
 }
 
 /// Контекст сборки (конфиг, ассеты, ACL). Один `generate_context!` на крейт: на macOS он встраивает
