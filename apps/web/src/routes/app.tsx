@@ -114,7 +114,8 @@ export const appTimeRoute = createRoute({
 });
 
 /**
- * Страница тарифов-заглушка `/app/plans` (дизайн §8, спека §7): «Докупить» на `PlanPanel`.
+ * Страница тарифов-заглушка `/app/plans` (дизайн §8, спека §7): «Докупить» («Подписка» у
+ * партнёра) на `PlanPanel`.
  * У партнёрской витрины — подписка у партнёра (`PlansRouteView` выбирает по витрине).
  */
 export const appPlansRoute = createRoute({

@@ -65,6 +65,10 @@
 | `https://<домен>/agent*` | `cg-orchestrator:3001` | агенты (`wss://…/agent`, `/agent/tunnel`), установка сервера |
 | `https://<хост S3>`      | `cg-rustfs:9000`       | профили (отдельный хост: S3 плохо живёт под префиксом пути)  |
 
+Прокси передаёт `cg-api` исходный заголовок `Host` (или `X-Forwarded-Host`): по нему `cg-api`
+выбирает витрину и адрес входа. Прокси, подменяющий `Host` на `cg-api`, на любом домене покажет
+GameCrate.
+
 `RELAY_PORT` (3002) в маршруты **не добавлять**. Docker не делит порты контейнера по сетям, так что
 в сети `proxy` relay тоже слушается — поэтому он и требует `RELAY_SECRET`: без секрета другой
 контейнер в `proxy` получит 403. Секрет не выводить и не класть в маршруты прокси.
@@ -345,10 +349,11 @@ ssh brofrong 'docker logs cg-agent 2>&1 | grep -m1 "Connected to orchestrator"' 
    списка — GameCrate. Домен также попадает в разрешённые origin для `/rpc`. Локально хост
    `<id>.localhost` открывает витрину без настройки (`http://beeline.localhost:5173/`).
 4. DNS и TLS на новый домен; маршруты обратного прокси из таблицы главного сервера (`https://<домен>`
-   на `cg-api:3000`, `https://<домен>/agent*` на `cg-orchestrator:3001`, если агенты ходят через него).
+   на `cg-api:3000` **с исходным заголовком `Host`** — по нему выбирается витрина;
+   `https://<домен>/agent*` на `cg-orchestrator:3001`, если агенты ходят через него).
 5. Вход через провайдеров на новом домене: callback у провайдера
-   `https://<домен>/api/auth/callback/<google|yandex|telegram|pocket-id>` (для generic OAuth —
-   `/api/auth/oauth2/callback/<id>`). **Только после того, как callback прописан**, добавить домен в
+   `https://<домен>/api/auth/callback/<google|yandex|telegram|pocket-id>` (Pocket ID тоже по
+   `/api/auth/callback/…`, см. выше). **Только после того, как callback прописан**, добавить домен в
    `OAUTH_HOSTS_GOOGLE`/`_YANDEX`/`_POCKET_ID`/`_TELEGRAM` (хосты через запятую, без порта). Пока
    переменная не задана, провайдер включён только на хосте `PUBLIC_URL`.
 6. `cg-api` пересоздать (`docker compose -f compose.main.yaml --env-file .env up -d`) и открыть домен:

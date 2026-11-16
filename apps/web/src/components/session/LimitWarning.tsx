@@ -1,7 +1,8 @@
 // Предупреждение о лимите тарифа поверх стрима (спека §4/§7, бриф задачи 11): за 10 и
 // за 2 минуты до `SessionView.limit.deadline` — плашка с обратным отсчётом; «Докупить»
 // только при нехватке минут (`reason: "minutes"`), ведёт на страницу тарифов (заглушка
-// оплаты) в новой вкладке — сессия не должна прерваться от ухода со страницы. Крестик
+// оплаты) в новой вкладке — сессия не должна прерваться от ухода со страницы. У партнёрской
+// витрины (билайн) вместо покупки — «Подписка» на ту же страницу (там подписка, без цен). Крестик
 // закрывает плашку, но на отметке 2 минуты она обязательно возвращается — иначе игрок
 // мог бы пропустить конец сессии. Отсчёт — тот же приём, что у `IdlePrompt`
 // (подменяемые часы `now`, тик чаще секунды, чтобы цифра не «залипала»).
@@ -9,6 +10,7 @@ import type { SessionLimitView } from "@cg/rpc";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { formatCountdown } from "@/components/IdlePrompt";
+import { useBrand } from "@/brands";
 import { Button } from "@/components/ui/button";
 
 /** Плашка видна с этого остатка до дедлайна (спека §4: «за 10 и за 2 минуты»). */
@@ -26,6 +28,7 @@ export function LimitWarning({
   /** Часы (подменяются в тестах). */
   now?: () => number;
 }) {
+  const ownPlans = useBrand().monetization.kind === "own";
   const deadlineMs = Date.parse(limit.deadline);
   const [left, setLeft] = useState(() => deadlineMs - now());
   const [dismissed, setDismissed] = useState(false);
@@ -64,7 +67,7 @@ export function LimitWarning({
         {limit.reason === "minutes" && (
           <Button asChild size="sm" variant="secondary">
             <a href="/app/plans" target="_blank" rel="noreferrer">
-              Докупить
+              {ownPlans ? "Докупить" : "Подписка"}
             </a>
           </Button>
         )}

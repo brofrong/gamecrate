@@ -1,5 +1,6 @@
 // Монетизация витрины: у GameCrate свои тарифы и цены, у партнёра (билайн) — подписка
-// без цен, каталога и кнопок покупки. Лендинг, `/app/plans`, `PlanPanel`, пункт меню.
+// без цен, каталога и кнопок покупки. Лендинг, `/app/plans`, `PlanPanel`, пункт меню,
+// плашка лимита в стриме и подсказка про тариф выше в очереди.
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import type { PlayerPlan, PublicTariff } from "@cg/rpc";
 import { RegistryProvider } from "@effect/atom-react";
@@ -15,6 +16,8 @@ const { BrandProvider, WEB_BRANDS } = await import("../src/brands");
 const { LandingPage } = await import("../src/components/landing/LandingPage");
 const { LandingNav } = await import("../src/components/landing/LandingNav");
 const { PlanPanel } = await import("../src/components/app/PlanPanel");
+const { LimitWarning } = await import("../src/components/session/LimitWarning");
+const { showHigherTariffHint } = await import("../src/lib/planFormat");
 
 type Brand = (typeof WEB_BRANDS)[keyof typeof WEB_BRANDS];
 
@@ -187,5 +190,55 @@ describe("PlanPanel", () => {
     const link = await screen.findByRole("link", { name: "Докупить" });
     expect(link.getAttribute("href")).toBe("/app/plans");
     expect(screen.queryByRole("link", { name: "Подписка" })).toBeNull();
+  });
+});
+
+describe("плашка лимита минут в стриме", () => {
+  const T = Date.parse("2026-11-11T12:00:00.000Z");
+  const renderWarning = (brand: Brand) =>
+    render(
+      <BrandProvider brand={brand}>
+        <LimitWarning
+          limit={{
+            deadline: new Date(T + 5 * 60_000).toISOString(),
+            reason: "minutes",
+          }}
+          now={() => T}
+        />
+      </BrandProvider>,
+    );
+
+  it("билайн: «Подписка» на /app/plans, «Докупить» нет", () => {
+    renderWarning(WEB_BRANDS.beeline);
+    const link = screen.getByRole("link", { name: "Подписка" });
+    expect(link.getAttribute("href")).toBe("/app/plans");
+    expect(screen.queryByRole("link", { name: "Докупить" })).toBeNull();
+  });
+
+  it("GameCrate: «Докупить»", () => {
+    renderWarning(WEB_BRANDS.gamecrate);
+    expect(screen.getByRole("link", { name: "Докупить" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Подписка" })).toBeNull();
+  });
+});
+
+describe("подсказка «В тарифе выше очередь короче»", () => {
+  it("билайн: нет, хотя в каталоге есть тариф с приоритетом выше", () => {
+    const higher = {
+      ...plan,
+      tariffs: [basic, { ...basic, id: "t2", queuePriority: 10 }],
+    };
+    expect(showHigherTariffHint(WEB_BRANDS.beeline.monetization, higher)).toBe(
+      false,
+    );
+    expect(
+      showHigherTariffHint(WEB_BRANDS.gamecrate.monetization, higher),
+    ).toBe(true);
+  });
+
+  it("GameCrate: нет, если выше тарифа нет", () => {
+    expect(showHigherTariffHint(WEB_BRANDS.gamecrate.monetization, plan)).toBe(
+      false,
+    );
   });
 });
