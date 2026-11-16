@@ -89,6 +89,19 @@ impl<T> Pending<T> {
         slot.take()
     }
 
+    /// Нажали «Перезапустить»: если статус всё ещё позволяет — отдать обновление на установку,
+    /// иначе (пока диалог висел, встали в очередь или запустили игру) вернуть его в слот и снять
+    /// «спрошено» — на следующем `Idle` диалог появится снова.
+    pub fn confirm_restart(&self, status: &Status, update: T) -> Option<T> {
+        if prompt_allowed(status) {
+            return Some(update);
+        }
+        let mut slot = self.slot();
+        *slot = Some(update);
+        self.asked.store(false, Ordering::SeqCst);
+        None
+    }
+
     /// «Позже» (или установка не удалась): до следующего запуска не спрашивать и не проверять.
     pub fn decline(&self) {
         self.asked.store(true, Ordering::SeqCst);
@@ -147,7 +160,8 @@ fn tick<R: Runtime>(app: &AppHandle<R>) {
     on_status(app, &status);
 }
 
-/// Есть новая версия — скачать (подпись плагин проверит при установке).
+/// Есть новая версия — скачать. Подпись (minisign, ключ из tauri.conf.json) плагин проверяет в
+/// `download`: не сошлась — ошибка здесь, до диалога и установки дело не доходит.
 async fn fetch<R: Runtime>(app: &AppHandle<R>) -> tauri_plugin_updater::Result<Option<Downloaded>> {
     let updater = app
         .updater_builder()
@@ -190,17 +204,23 @@ pub fn on_status<R: Runtime>(app: &AppHandle<R>, status: &Status) {
             "Позже".into(),
         ))
         .show(move |restart| {
+            let state = answer_app.state::<UpdateState>();
             if !restart {
-                answer_app.state::<UpdateState>().decline();
+                state.decline();
                 return;
             }
+            // диалог мог висеть долго: перезапуск из очереди или игры выкинул бы из них
+            let status = answer_app.state::<AppState>().status();
+            let Some(downloaded) = state.confirm_restart(&status, downloaded) else {
+                return;
+            };
             // Windows: установщик запускается, а приложение выходит само (плагин), NSIS
             // открывает новую версию; macOS/AppImage: файлы заменены — перезапуск наш
             match downloaded.update.install(&downloaded.bytes) {
                 Ok(()) => answer_app.restart(),
                 Err(err) => {
                     eprintln!("gamecrate: установка обновления: {err}");
-                    answer_app.state::<UpdateState>().decline();
+                    state.decline();
                 }
             }
         });
@@ -281,6 +301,42 @@ mod tests {
         assert!(!pending.wants_check(), "до следующего запуска не проверять");
         pending.ready("0.3.0".to_string());
         assert_eq!(pending.take_if_allowed(&Status::Idle), None);
+    }
+
+    #[test]
+    fn restart_goes_ahead_while_still_idle() {
+        let pending = Pending::default();
+        pending.ready("0.2.0".to_string());
+        let update = pending.take_if_allowed(&Status::Idle).unwrap();
+        assert_eq!(
+            pending.confirm_restart(&Status::Idle, update),
+            Some("0.2.0".to_string())
+        );
+        assert!(!pending.wants_check(), "ставим — больше не проверять");
+    }
+
+    #[test]
+    fn restart_waits_again_if_status_left_idle_during_dialog() {
+        let pending = Pending::default();
+        pending.ready("0.2.0".to_string());
+        let update = pending.take_if_allowed(&Status::Idle).unwrap();
+        // пока диалог висел, человек встал в очередь — перезапуск выкинул бы его
+        let queued = Status::Queued {
+            position: 1,
+            total: 2,
+            eta_minutes: None,
+        };
+        assert_eq!(pending.confirm_restart(&queued, update), None);
+        assert!(
+            !pending.wants_check(),
+            "скачанное снова ждёт, качать заново не нужно"
+        );
+        assert_eq!(pending.take_if_allowed(&Status::Playing), None);
+        assert_eq!(
+            pending.take_if_allowed(&Status::Idle),
+            Some("0.2.0".to_string()),
+            "на следующем Idle спросить снова"
+        );
     }
 
     #[test]
