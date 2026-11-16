@@ -88,6 +88,13 @@
 - `S3_PUBLIC_ENDPOINT=https://<хост S3>`, `S3_BUCKET=cg-profiles` (по умолчанию).
 - `RUSTFS_ACCESS_KEY`, `RUSTFS_SECRET_KEY` — по `openssl rand -hex 24` (корневые ключи RustFS, они
   же S3-ключи, которые оркестратор выдаёт агентам).
+- Необязательно, раздача десктоп-приложения (страница `/download`, файлы `/download/desktop/*`):
+  `DESKTOP_S3_ACCESS_KEY`, `DESKTOP_S3_SECRET_KEY` — отдельный пользователь RustFS **только на чтение**
+  бакета `cg-desktop` (не корневые `RUSTFS_*`), `DESKTOP_S3_ENDPOINT` (по умолчанию
+  `http://cg-rustfs:9000`) и `DESKTOP_S3_BUCKET` (по умолчанию `cg-desktop`). Ключи задаются только
+  парой; без них `cg-api` стартует, а `/download/desktop/*` отвечает 404, на странице «Скачать» будет
+  «Скоро». Бакет создаётся один раз (см. ниже). Файлы туда загружает публикация сборки
+  (GitHub Actions) отдельным ключом на запись, API их не пишет.
 - `RELAY_SECRET` — `openssl rand -hex 32` (не короче 32 символов): общий секрет `cg-api` и relay
   оркестратора, compose передаёт его обоим.
 - `PROFILE_KEY`, `SEED_KEY` — по `openssl rand -base64 32` (base64 ровно 32 байт).
@@ -101,7 +108,7 @@ grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base6
 ```
 
 Каждый сервис получает только свои переменные (`POSTGRES_PASSWORD` — только `cg-postgres`,
-`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор).
+`PROFILE_KEY`, `SEED_KEY`, `REGISTRY_*` — только оркестратор, `RELAY_SECRET` — api и оркестратор, `DESKTOP_S3_*` — только `cg-api`).
 
 ### Запуск и обновление главного
 
@@ -109,6 +116,8 @@ grep -q '^PROFILE_KEY=' .env || printf 'PROFILE_KEY=%s\n' "$(openssl rand -base6
 docker login registry.imtechnologies.ru                     # токен на чтение, один раз
 docker compose -f compose.main.yaml --env-file .env pull
 docker compose -f compose.main.yaml --env-file .env run --rm cg-rustfs-bucket   # бакет, идемпотентно
+# бакет десктоп-сборок (один раз; тот же сервис, имя бакета — переменная BUCKET):
+docker compose -f compose.main.yaml --env-file .env run --rm -e BUCKET=cg-desktop cg-rustfs-bucket
 docker compose -f compose.main.yaml --env-file .env up -d
 curl -s https://<домен>/healthz                             # ok
 ```

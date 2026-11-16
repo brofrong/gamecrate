@@ -1,5 +1,5 @@
 // HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
-// прокси стрима (/stream/<id>/*), статика SPA.
+// прокси стрима (/stream/<id>/*), раздача десктоп-сборок (/download/desktop/*), статика SPA.
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
 import {
@@ -15,6 +15,8 @@ import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
 import { AppConfig, rpcAllowedOrigins } from "./config";
+import { DesktopReleases } from "./download/DesktopReleases";
+import { DesktopRoutes } from "./download/routes";
 import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
 import { SessionRpcHandlers } from "./session/rpc";
@@ -107,11 +109,21 @@ const StaticRoute = Layer.unwrap(
   ),
 );
 
+/**
+ * Раздача десктоп-сборок `/download/desktop/*` — публично. Хранилище берёт из окружения само
+ * (`DESKTOP_S3_*`, без ключей — 404), поэтому в `HttpApp` оно не входит зависимостью и
+ * остальным тестам/деплоям ничего нового не нужно.
+ */
+const DesktopDownloadRoute = DesktopRoutes.pipe(
+  Layer.provide(DesktopReleases.layer),
+);
+
 /** Всё приложение; запускается через `HttpRouter.serve` (main.ts) или `toWebHandler` (тесты). */
 export const HttpApp = Layer.mergeAll(
   HealthRoute,
   AuthRoute,
   RpcRoute,
   StreamProxyRoute,
+  DesktopDownloadRoute,
   StaticRoute,
 );

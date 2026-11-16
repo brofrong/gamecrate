@@ -8,7 +8,7 @@
     "build": "tauri build",
     "tauri": "tauri",
     "check": "bun check",
-    "lint": "bun lint test offline",
+    "lint": "bun lint test offline scripts",
     "test": "bun test",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
   },

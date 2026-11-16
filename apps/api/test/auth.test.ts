@@ -319,6 +319,21 @@ describe("http", () => {
     expect(await response.text()).toBe("<p>spa</p>");
   });
 
+  it("/download/desktop/* without S3 keys is 404, not the SPA index", async () => {
+    for (const path of [
+      "/download/desktop/latest.json",
+      "/download/desktop/0.1.0/GameCrate.exe",
+      "/download/desktop/0.1.0/a/b",
+    ]) {
+      const response = await app.handler(
+        new Request(`http://localhost${path}`, {
+          headers: { accept: "text/html" },
+        }),
+      );
+      expect(response.status).toBe(404);
+    }
+  });
+
   it("/rpc upgrade with a foreign Origin is 403", async () => {
     const response = await app.handler(
       new Request("http://localhost/rpc", {

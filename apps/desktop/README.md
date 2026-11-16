@@ -78,3 +78,41 @@ CI приложение не собирает.
   (иначе Gatekeeper не пустит);
 - Windows: SmartScreen покажет «Windows защитила ваш компьютер» — «Подробнее» → «Выполнить в любом
   случае».
+
+## Раздача и манифест обновлений
+
+Установщики и манифест `latest.json` (формат updater Tauri v2) лежат в бакете `cg-desktop` на
+RustFS главного сервера, а наружу их отдаёт API без авторизации:
+
+- `GET /download/desktop/latest.json` — манифест (`Cache-Control: no-cache`);
+- `GET /download/desktop/<X.Y.Z>/<файл>` — файлы версии (кэш на год, `immutable`).
+
+Ключи бакета (`DESKTOP_S3_*`) — в окружении `cg-api`, см. `deploy/README.md`. Без ключей раздача
+выключена: оба адреса отвечают 404, а страница `/download` показывает «Скоро».
+
+Страница сайта `/download` читает `latest.json`: берёт версию, ссылки и размеры из поля
+`downloads` (установщики: macOS `.dmg`, Windows `-setup.exe`, Linux `.AppImage`), а если его нет —
+ссылки updater из `platforms`.
+
+### `scripts/manifest.ts`
+
+Собирает `latest.json` из скачанных артефактов сборки (джоб публикации в `desktop.yml`):
+
+```sh
+bun apps/desktop/scripts/manifest.ts \
+  --tag desktop-v0.1.0 --dir artifacts --out latest.json \
+  --base-url https://game.brofrong.ru/download/desktop \
+  [--notes "Что нового" | --notes-file notes.md] [--pub-date 2026-11-16T12:00:00Z]
+```
+
+- `--dir` — каталог артефактов (ищется рекурсивно, как кладёт `download-artifact`). Для каждой
+  платформы нужен ровно один файл обновления (`.app.tar.gz`, `-setup.exe`, `.AppImage`) и `.sig`
+  рядом; подпись попадает в манифест. Нет файла, нет `.sig` или их несколько — ненулевой код: лучше
+  ничего не опубликовать, чем выпустить манифест, на который updater упадёт у всех.
+- macOS — один универсальный архив, он записывается и под `darwin-aarch64`, и под `darwin-x86_64`.
+- В stdout — пути файлов к загрузке (файл обновления, его `.sig`, установщик `.dmg`), по одному в
+  строке, относительно `--dir`. Каждый файл кладётся в бакет как `<X.Y.Z>/<имя файла>`, а
+  `latest.json` — в корень бакета, **последним**: пока манифеста нет или он старый, новая версия
+  никому не видна.
+
+Проверка: `bun run --cwd apps/desktop test`.

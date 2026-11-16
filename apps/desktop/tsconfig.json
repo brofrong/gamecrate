@@ -5,5 +5,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["offline", "test"]
+  "include": ["offline", "scripts", "test"]
 }

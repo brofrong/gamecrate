@@ -1,5 +1,6 @@
 // Футер лендинга: знак, имя и слоган, копирайт и упоминание Valve.
 import { Logo } from "@/components/brand/Logo";
+import { DownloadLink } from "@/components/DownloadLink";
 
 export function LandingFooter() {
   return (
@@ -9,8 +10,11 @@ export function LandingFooter() {
           <Logo iconOnly height={22} />
           GameCrate · Games in containers
         </span>
-        <span>
-          © 2026 GameCrate. Steam является торговой маркой Valve Corporation.
+        <span className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <DownloadLink className="font-medium text-brand-text hover:underline" />
+          <span>
+            © 2026 GameCrate. Steam является торговой маркой Valve Corporation.
+          </span>
         </span>
       </div>
     </footer>

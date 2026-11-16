@@ -15,6 +15,7 @@ import {
   appGameRoute,
   appTrendingRoute,
 } from "./routes/app";
+import { downloadRoute } from "./routes/download";
 import { indexRoute } from "./routes/index";
 import { libraryRoute } from "./routes/library";
 import { loginRoute } from "./routes/login";
@@ -26,6 +27,7 @@ const routeTree = rootRoute.addChildren([
   libraryRoute,
   loginRoute,
   profileRoute,
+  downloadRoute,
   sessionRoute,
   adminRoute,
   appRoute.addChildren([

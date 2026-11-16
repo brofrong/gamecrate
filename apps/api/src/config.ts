@@ -157,6 +157,30 @@ export const appConfig = Config.all({
   ),
 });
 
+/**
+ * Раздача десктоп-сборок (`download/`): бакет `cg-desktop` в `cg-rustfs`, доступ только на чтение.
+ * Отдельно от `appConfig`: переменные необязательные — на деплое без ключей API стартует как
+ * раньше, а `/download/desktop/*` отвечает 404 (`DesktopReleases.disabled`). Ключи — парой:
+ * `Some` только если заданы оба, одиночный ключ — ConfigError (как у OAuth-провайдеров).
+ */
+export const desktopConfig = Config.all({
+  endpoint: Config.String("DESKTOP_S3_ENDPOINT").pipe(
+    Config.withDefault("http://cg-rustfs:9000"),
+  ),
+  bucket: Config.String("DESKTOP_S3_BUCKET").pipe(
+    Config.withDefault("cg-desktop"),
+  ),
+  credentials: pairOrNone(
+    Config.Redacted("DESKTOP_S3_ACCESS_KEY"),
+    Config.Redacted("DESKTOP_S3_SECRET_KEY"),
+    "DESKTOP_S3_ACCESS_KEY/DESKTOP_S3_SECRET_KEY",
+  ).pipe(
+    Config.map(
+      Option.map(([accessKey, secretKey]) => ({ accessKey, secretKey })),
+    ),
+  ),
+});
+
 export type AppConfigValues = Config.Success<typeof appConfig>;
 
 /** Сервис с прочитанной конфигурацией. */
