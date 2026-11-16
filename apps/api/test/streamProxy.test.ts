@@ -502,7 +502,8 @@ describe("stream proxy", () => {
     expect(declared.status).toBe(413);
     expect(seen.requests).toBe(before);
 
-    // Chunked без Content-Length — предел считается по факту чтения.
+    // Chunked без Content-Length — 411 от общего стража тела (bodyLimit.ts) до прокси;
+    // свой предел прокси по факту чтения (`readStreamBody`) остаётся вторым рубежом.
     const chunk = new Uint8Array(256 * 1024);
     let sent = 0;
     const chunked = await post(
@@ -516,7 +517,7 @@ describe("stream proxy", () => {
         },
       }),
     );
-    expect(chunked.status).toBe(413);
+    expect(chunked.status).toBe(411);
     expect(seen.requests).toBe(before);
 
     // Ровно предел проходит.

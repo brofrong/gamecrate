@@ -331,6 +331,38 @@ describe("http", () => {
     expect(await response.text()).toBe("auth:/api/auth/steam/login");
   });
 
+  it("a 2 MiB body on /api/auth/* is 413 before better auth (BodyLimit)", async () => {
+    const response = await app.handler(
+      new Request("http://localhost/api/auth/sign-in/email", {
+        method: "POST",
+        body: new Uint8Array(2 * 1024 * 1024),
+        headers: { "content-length": String(2 * 1024 * 1024) },
+      }),
+    );
+    expect(response.status).toBe(413);
+  });
+
+  it("a chunked body on /api/auth/* is 411 (BodyLimit)", async () => {
+    const response = await app.handler(
+      new Request("http://localhost/api/auth/sign-in/email", {
+        method: "POST",
+        body: new Blob(["{}"]).stream(),
+      }),
+    );
+    expect(response.status).toBe(411);
+  });
+
+  it("a small JSON body on /api/auth/* still reaches better auth", async () => {
+    const response = await app.handler(
+      new Request("http://localhost/api/auth/sign-in/email", {
+        method: "POST",
+        body: "{}",
+        headers: { "content-length": "2", "content-type": "application/json" },
+      }),
+    );
+    expect(await response.text()).toBe("auth:/api/auth/sign-in/email");
+  });
+
   it("unknown page falls back to index.html", async () => {
     const response = await app.handler(
       new Request("http://localhost/library", {

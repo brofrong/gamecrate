@@ -1,6 +1,7 @@
 // HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
 // прокси стрима (/stream/<id>/*), раздача десктоп-сборок (/download/desktop/*),
-// статика SPA (`index.html` по витрине хоста, brand/route.ts).
+// статика SPA (`index.html` по витрине хоста, brand/route.ts). Перед всеми — общий страж тела
+// (bodyLimit.ts): 1 МиБ и только с Content-Length, кроме `PUT /download/desktop/*`.
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -10,6 +11,7 @@ import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
+import { BodyLimit } from "./bodyLimit";
 import { BrandedStaticRoute } from "./brand/route";
 import { AppConfig, rpcAllowedOrigins } from "./config";
 import { DesktopReleases } from "./download/DesktopReleases";
@@ -112,6 +114,7 @@ const DesktopDownloadRoute = DesktopRoutes.pipe(
 
 /** Всё приложение; запускается через `HttpRouter.serve` (main.ts) или `toWebHandler` (тесты). */
 export const HttpApp = Layer.mergeAll(
+  BodyLimit,
   HealthRoute,
   AuthRoute,
   RpcRoute,
