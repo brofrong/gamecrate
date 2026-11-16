@@ -26,6 +26,7 @@ const token = "upload-token-0123456789abcdef";
 let storedBytes = 0;
 const countingReleases = Layer.succeed(DesktopReleases, {
   get: () => Effect.succeed(Option.none()),
+  exists: () => Effect.succeed(false),
   put: (_key, body) =>
     Effect.promise(async () => {
       const reader = body.getReader();

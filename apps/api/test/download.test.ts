@@ -217,6 +217,11 @@ describe("DesktopReleases on Bun.S3Client", () => {
     async fetch(request) {
       const { pathname } = new URL(request.url);
       seen.push(`${request.method} ${pathname}`);
+      if (pathname.startsWith("/no-bucket/"))
+        return new Response(
+          "<Error><Code>NoSuchBucket</Code><Message>nope</Message></Error>",
+          { status: 404, headers: { "content-type": "application/xml" } },
+        );
       if (request.method === "PUT" && pathname === "/cg-desktop/fail.exe")
         return new Response("<Error><Code>AccessDenied</Code></Error>", {
           status: 403,
@@ -268,6 +273,43 @@ describe("DesktopReleases on Bun.S3Client", () => {
     expect(Option.isNone(found)).toBe(true);
   });
 
+  it("exists() tells a present object from a missing one", async () => {
+    expect(await Effect.runPromise(releases.exists("0.1.0/a.exe"))).toBe(true);
+    expect(await Effect.runPromise(releases.exists("0.1.0/missing.exe"))).toBe(
+      false,
+    );
+    const failed = await Effect.runPromise(
+      releases.exists("boom").pipe(Effect.result),
+    );
+    expect(failed._tag).toBe("Failure");
+  });
+
+  it("treats a missing bucket (NoSuchBucket) as no object", async () => {
+    const noBucket = DesktopReleases.make({
+      endpoint: `http://127.0.0.1:${s3.port}`,
+      bucket: "no-bucket",
+      accessKeyId: "ak",
+      secretAccessKey: "sk",
+    });
+    const found = await Effect.runPromise(noBucket.get("latest.json"));
+    expect(Option.isNone(found)).toBe(true);
+    expect(await Effect.runPromise(noBucket.exists("0.1.0/a.exe"))).toBe(false);
+    // и маршрут отвечает 404 (страница /download покажет «Скоро»), а не 502
+    const routes = HttpRouter.toWebHandler(
+      DesktopRoutes.pipe(
+        Layer.provide(Layer.succeed(DesktopReleases, noBucket)),
+        Layer.provide(DesktopUpload.none),
+        Layer.provide(BunHttpServer.layerHttpServices),
+      ),
+      { disableLogger: true },
+    );
+    const response = await routes.handler(
+      new Request("http://localhost/download/desktop/latest.json"),
+    );
+    expect(response.status).toBe(404);
+    await routes.dispose();
+  });
+
   it("fails on a storage error", async () => {
     const result = await Effect.runPromise(
       releases.get("boom").pipe(Effect.result),
@@ -278,7 +320,7 @@ describe("DesktopReleases on Bun.S3Client", () => {
   it("writes a stream with its content type through a path-style URL", async () => {
     const body = new Blob([new Uint8Array([4, 5, 6])]).stream();
     await Effect.runPromise(
-      releases.put("0.2.0/up.exe", body, contentTypeOf("up.exe"), 3),
+      releases.put("0.2.0/up.exe", body, contentTypeOf("up.exe")),
     );
     const object = stored.get("/cg-desktop/0.2.0/up.exe");
     expect(object?.body).toEqual(new Uint8Array([4, 5, 6]));
@@ -464,6 +506,103 @@ describe("PUT /download/desktop/* (выкладка из GitHub Actions)", () =>
     expect(bucket.size).toBe(0);
   });
 
+  it("is 409 for a version file that is already there, and keeps it", async () => {
+    expect((await put(file, payload)).status).toBe(201);
+    const again = await put(file, new Uint8Array([42]));
+    expect(again.status).toBe(409);
+    expect(bucket.get("0.2.0/GameCrate_0.2.0_x64-setup.exe")?.body).toEqual(
+      payload,
+    );
+  });
+
+  it("is 409 before reading the body", async () => {
+    expect((await put(file, payload)).status).toBe(201);
+    let pulled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled = true;
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const again = await put(file, stream);
+    expect(again.status).toBe(409);
+    expect(pulled).toBe(false);
+  });
+
+  it("overwrites latest.json (201 again)", async () => {
+    const path = "/download/desktop/latest.json";
+    expect((await put(path, '{"version":"0.2.0"}')).status).toBe(201);
+    expect((await put(path, '{"version":"0.2.1"}')).status).toBe(201);
+    const served = await getFrom(path);
+    expect(await served.json()).toEqual({ version: "0.2.1" });
+  });
+
+  it("is 400 for a chunked body that turns out empty, and stores nothing", async () => {
+    const empty = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(0));
+        controller.close();
+      },
+    });
+    const response = await put(file, empty);
+    expect(response.status).toBe(400);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("is 400 for Content-Length: 0, and stores nothing", async () => {
+    const response = await put(file, new Uint8Array(0), {
+      authorization: `Bearer ${token}`,
+      "content-length": "0",
+    });
+    expect(response.status).toBe(400);
+    expect(bucket.size).toBe(0);
+  });
+
+  it("keeps the first chunk when it peeks for an empty body", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(0));
+        controller.enqueue(new Uint8Array([1]));
+        controller.enqueue(new Uint8Array([2, 3]));
+        controller.close();
+      },
+    });
+    expect((await put(file, stream)).status).toBe(201);
+    expect(bucket.get("0.2.0/GameCrate_0.2.0_x64-setup.exe")?.body).toEqual(
+      new Uint8Array([1, 2, 3]),
+    );
+  });
+
+  it("is 502 when the storage cannot tell whether the version exists", async () => {
+    const broken = HttpRouter.toWebHandler(
+      DesktopRoutes.pipe(
+        Layer.provide(
+          Layer.succeed(DesktopReleases, {
+            get: () => Effect.succeed(Option.none()),
+            exists: () =>
+              Effect.fail(new DesktopReleasesError({ message: "down" })),
+            put: () => Effect.void,
+          }),
+        ),
+        Layer.provide(DesktopUpload.withToken(token)),
+        Layer.provide(BunHttpServer.layerHttpServices),
+      ),
+      { disableLogger: true },
+    );
+    const response = await broken.handler(
+      new Request(`http://localhost${file}`, {
+        method: "PUT",
+        body: payload,
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+    expect(response.status).toBe(502);
+    await broken.dispose();
+  });
+
   it("accepts a body of exactly the limit", async () => {
     const response = await put(file, new Uint8Array(limit));
     expect(response.status).toBe(201);
@@ -481,6 +620,7 @@ describe("PUT /download/desktop/* (выкладка из GitHub Actions)", () =>
         Layer.provide(
           Layer.succeed(DesktopReleases, {
             get: () => Effect.succeed(Option.none()),
+            exists: () => Effect.succeed(false),
             put: (key) =>
               Effect.fail(new DesktopReleasesError({ message: `boom ${key}` })),
           }),

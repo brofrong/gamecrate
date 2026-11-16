@@ -4,8 +4,11 @@
 // Выкладка (джоб `publish` в `.github/workflows/desktop.yml`; RustFS снаружи docker-сети не виден):
 //   PUT /download/desktop/latest.json, PUT /download/desktop/<версия>/<файл>
 //   с `Authorization: Bearer <DESKTOP_UPLOAD_TOKEN>` → 201. Нет токена в конфиге — 404, неверный
-//   или нет заголовка — 401, тело больше `maxUploadBytes` — 413, без тела — 400. Тело идёт в бакет
-//   потоком. Сам токен никуда не пишется (в логе — только ключ объекта и текст ошибки S3).
+//   или нет заголовка — 401, тело больше `maxUploadBytes` — 413, пустое тело — 400. Файл версии,
+//   который уже выложен, — 409 (выложенная версия неизменна, у её файлов кэш `immutable`);
+//   `latest.json` перезаписывается. Тело идёт в бакет потоком. Большое и chunked тело можно только
+//   здесь — остальным маршрутам общий страж (bodyLimit.ts) оставляет 1 МиБ. Сам токен никуда не
+//   пишется (в логе — только ключ объекта и текст ошибки S3).
 // Версия — только `X.Y.Z`, файл — только `[A-Za-z0-9._-]+`, не `.`/`..`: путь в бакете строится
 // из этих двух сегментов, так что выйти из префикса или попасть в чужой объект нельзя. Версионные
 // файлы неизменны (новая версия — новый путь), поэтому кэш `immutable`. Нет объекта или
@@ -137,8 +140,44 @@ const status = (text: string, code: number) =>
   HttpServerResponse.text(text, { status: code });
 
 /**
+ * Поток `body`, если в нём есть хоть один байт, иначе `undefined` (пустое chunked-тело). Пустые
+ * куски в начале пропускаются, первый непустой возвращается в поток, остальное читается дальше.
+ */
+const nonEmpty = async (
+  body: ReadableStream<Uint8Array>,
+): Promise<ReadableStream<Uint8Array> | undefined> => {
+  const reader = body.getReader();
+  let first: Uint8Array | undefined;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return undefined;
+    if (value.byteLength > 0) {
+      first = value;
+      break;
+    }
+  }
+  return new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        controller.enqueue(first);
+      },
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+};
+
+/**
  * Принять тело `PUT` в бакет под ключом `key`. Порядок: выкладка выключена → 404; токен → 401;
- * путь → 404; размер → 413; тело потоком в хранилище → 201 (сбой хранилища — 502).
+ * путь → 404; размер → 413; файл версии уже есть → 409; пустое тело → 400; тело потоком в
+ * хранилище → 201 (сбой хранилища — 502).
  */
 const receive = (
   releases: DesktopReleasesShape,
@@ -154,12 +193,28 @@ const receive = (
     const length = declaredLength(request.headers["content-length"]);
     if (length !== undefined && length > upload.maxBytes)
       return status("Payload too large", 413);
+    // Проверка и запись не атомарны: два публикатора одной версии одновременно могут оба получить
+    // 201. Публикатор один (джоб `publish`, тег — одна версия), гонкой пренебрегаем.
+    if (key !== "latest.json") {
+      const taken = yield* releases.exists(key).pipe(Effect.result);
+      if (taken._tag === "Failure")
+        return yield* Effect.logWarning(
+          `desktop upload: ${key}: ${taken.failure.message}`,
+        ).pipe(Effect.as(status("Storage unavailable", 502)));
+      if (taken.success) return status("Version already published", 409);
+    }
     const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
-    if (web.body === null || length === 0) return status("Empty body", 400);
+    const raw = web.body;
+    if (raw === null || length === 0) return status("Empty body", 400);
+    // клиент оборвал тело до первого байта — то же, что пустое
+    const filled = yield* Effect.tryPromise(() => nonEmpty(raw)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (filled === undefined) return status("Empty body", 400);
     // тело без Content-Length (chunked) считаем по ходу; лишний байт — поток рвётся, объекта нет
     let received = 0;
     let tooLarge = false;
-    const body = web.body.pipeThrough(
+    const body = filled.pipeThrough(
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           received += chunk.byteLength;
@@ -172,7 +227,7 @@ const receive = (
         },
       }),
     );
-    return yield* releases.put(key, body, contentTypeOf(key), length).pipe(
+    return yield* releases.put(key, body, contentTypeOf(key)).pipe(
       Effect.as(status("Created", 201)),
       Effect.catch((error) =>
         tooLarge

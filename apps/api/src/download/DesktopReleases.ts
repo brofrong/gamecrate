@@ -22,16 +22,18 @@ export interface DesktopReleasesShape {
   readonly get: (
     key: string,
   ) => Effect.Effect<Option.Option<DesktopObject>, DesktopReleasesError>;
+  /** Есть ли объект (HEAD); нет бакета — тоже `false`. */
+  readonly exists: (
+    key: string,
+  ) => Effect.Effect<boolean, DesktopReleasesError>;
   /**
    * Положить объект потоком (в память целиком не читается). Ошибка потока `body` (например,
    * превышен лимит размера) — тоже `DesktopReleasesError`, объект при этом не появляется.
-   * `size` — длина из `Content-Length`, если известна.
    */
   readonly put: (
     key: string,
     body: ReadableStream<Uint8Array>,
     contentType: string,
-    size?: number,
   ) => Effect.Effect<void, DesktopReleasesError>;
 }
 
@@ -51,10 +53,13 @@ export const contentTypeOf = (key: string): string => {
   return octet;
 };
 
-/** S3 «объекта нет»: у Bun это `S3Error` с кодом `NoSuchKey`/`NotFound`. */
+/**
+ * S3 «объекта нет»: у Bun это `S3Error` с кодом `NoSuchKey`/`NotFound`. `NoSuchBucket` — тоже:
+ * бакет `cg-desktop` ещё не создан, значит и сборок нет (`/download` покажет «Скоро», а не 502).
+ */
 const isMissing = (cause: unknown): boolean => {
   const code = (cause as { code?: unknown } | null)?.code;
-  return code === "NoSuchKey" || code === "NotFound";
+  return code === "NoSuchKey" || code === "NotFound" || code === "NoSuchBucket";
 };
 
 const failure = (cause: unknown): DesktopReleasesError =>
@@ -81,25 +86,36 @@ export const make = (options: DesktopReleasesOptions): DesktopReleasesShape => {
     secretAccessKey: options.secretAccessKey,
     virtualHostedStyle: false,
   });
+  /** HEAD объекта; `null` — его (или бакета) нет. */
+  const stat = (key: string) =>
+    client
+      .file(key)
+      .stat()
+      .then(
+        (value) => value,
+        (cause: unknown) => {
+          if (isMissing(cause)) return null;
+          throw cause;
+        },
+      );
   return {
     get: (key) =>
       Effect.tryPromise({
         try: async () => {
           const file = client.file(key);
-          const stat = await file.stat().then(
-            (value) => value,
-            (cause: unknown) => {
-              if (isMissing(cause)) return null;
-              throw cause;
-            },
-          );
-          if (stat === null) return Option.none<DesktopObject>();
+          const found = await stat(key);
+          if (found === null) return Option.none<DesktopObject>();
           return Option.some<DesktopObject>({
             body: file.stream(),
-            size: stat.size,
+            size: found.size,
             contentType: contentTypeOf(key),
           });
         },
+        catch: failure,
+      }),
+    exists: (key) =>
+      Effect.tryPromise({
+        try: async () => (await stat(key)) !== null,
         catch: failure,
       }),
     put: (key, body, contentType) =>
@@ -122,6 +138,7 @@ export class DesktopReleases extends Context.Service<
     DesktopReleases,
     {
       get: () => Effect.succeed(Option.none()),
+      exists: () => Effect.succeed(false),
       put: () =>
         Effect.fail(
           new DesktopReleasesError({
@@ -170,6 +187,7 @@ export class DesktopReleases extends Context.Service<
             contentType: contentTypeOf(key),
           });
         }),
+      exists: (key) => Effect.sync(() => objects.has(key)),
       put: (key, body) =>
         Effect.tryPromise({
           try: () => new Response(body).bytes(),
