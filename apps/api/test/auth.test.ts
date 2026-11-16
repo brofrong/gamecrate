@@ -542,6 +542,24 @@ describe("oauth redirect_uri follows the request host (real better auth)", () =>
     ).toStartWith("https://game.x.ru/api/auth/");
   });
 
+  it("https PUBLIC_URL: redirect_uri stays https without x-forwarded-proto", async () => {
+    expect(
+      await redirectUri({
+        host: "cg-api:3000",
+        "x-forwarded-host": "play.beeline.ru",
+      }),
+    ).toStartWith("https://play.beeline.ru/api/auth/");
+    expect(await redirectUri({ host: "game.x.ru" })).toStartWith(
+      "https://game.x.ru/api/auth/",
+    );
+  });
+
+  it("https PUBLIC_URL: session cookie keeps __Secure- name and Secure (as before multi-host)", async () => {
+    const { sessionToken } = (await auth.$context).authCookies;
+    expect(sessionToken.name).toBe("__Secure-better-auth.session_token");
+    expect(sessionToken.attributes.secure).toBe(true);
+  });
+
   it("foreign host falls back to PUBLIC_URL", async () => {
     for (const headers of [
       { host: "evil.ru", "x-forwarded-proto": "https" },

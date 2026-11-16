@@ -1,7 +1,7 @@
 // Монетизация витрины: у GameCrate свои тарифы и цены, у партнёра (билайн) — подписка
 // без цен, каталога и кнопок покупки. Лендинг, `/app/plans`, `PlanPanel`, пункт меню,
 // плашка лимита в стриме и подсказка про тариф выше в очереди.
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { PlayerPlan, PublicTariff } from "@cg/rpc";
 import { RegistryProvider } from "@effect/atom-react";
 import { RouterProvider } from "@tanstack/react-router";
@@ -18,6 +18,8 @@ const { LandingNav } = await import("../src/components/landing/LandingNav");
 const { PlanPanel } = await import("../src/components/app/PlanPanel");
 const { LimitWarning } = await import("../src/components/session/LimitWarning");
 const { showHigherTariffHint } = await import("../src/lib/planFormat");
+const { reportStartError } = await import("../src/lib/usePlaySession");
+const { toast } = await import("sonner");
 
 type Brand = (typeof WEB_BRANDS)[keyof typeof WEB_BRANDS];
 
@@ -240,5 +242,27 @@ describe("подсказка «В тарифе выше очередь коро�
     expect(showHigherTariffHint(WEB_BRANDS.gamecrate.monetization, plan)).toBe(
       false,
     );
+  });
+});
+
+describe("тост «Часы закончились» при старте игры", () => {
+  const actionLabel = (brand: string | undefined) => {
+    if (brand !== undefined) document.documentElement.dataset.brand = brand;
+    const toastError = spyOn(toast, "error").mockImplementation(
+      () => "" as never,
+    );
+    reportStartError("NoMinutes");
+    const [, options] = toastError.mock.calls[0] ?? [];
+    toastError.mockRestore();
+    return (options as { action?: { label?: string } } | undefined)?.action
+      ?.label;
+  };
+
+  it("билайн: «Подписка»", () => {
+    expect(actionLabel("beeline")).toBe("Подписка");
+  });
+
+  it("GameCrate (без data-brand): «Докупить»", () => {
+    expect(actionLabel(undefined)).toBe("Докупить");
   });
 });

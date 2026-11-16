@@ -10,6 +10,7 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { toast } from "sonner";
+import { currentBrand } from "@/brands";
 import type { LibraryPlay } from "@/lib/cardAction";
 import {
   activeSessionAtom,
@@ -35,7 +36,9 @@ export function reportStartError(tag: string | undefined): void {
   } else if (tag === "NoMinutes") {
     toast.error(noMinutesReason, {
       action: {
-        label: "Докупить",
+        // У партнёрской витрины покупки нет — там же страница подписки.
+        label:
+          currentBrand().monetization.kind === "own" ? "Докупить" : "Подписка",
         onClick: () => window.location.assign("/app/plans"),
       },
     });

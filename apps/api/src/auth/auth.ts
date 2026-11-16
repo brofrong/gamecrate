@@ -80,10 +80,14 @@ export const makeAuth = (
     // Один Better Auth на все домены витрин: baseURL (redirect_uri OAuth, ссылки, cookie)
     // берётся из хоста запроса, но только из списка PUBLIC_URL + BRAND_HOSTS; чужой хост
     // получает fallback. За прокси хост приходит в x-forwarded-host (trustedProxyHeaders).
+    // Схема — всегда схема PUBLIC_URL, не "auto": с "auto" Better Auth 1.7 не ставит
+    // `__Secure-` и Secure на cookie (имя сессии на проде сменилось бы — все разлогинены),
+    // а redirect_uri без x-forwarded-proto стал бы `http://`.
     baseURL: {
       allowedHosts: [...appHosts(config)],
       fallback: config.publicUrl,
-      protocol: "auto",
+      protocol:
+        new URL(config.publicUrl).protocol === "https:" ? "https" : "http",
     },
     trustedOrigins: [...rpcAllowedOrigins(config)],
     advanced: { trustedProxyHeaders: true },
