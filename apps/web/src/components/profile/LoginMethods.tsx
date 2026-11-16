@@ -38,7 +38,11 @@ const ORDER: ReadonlyArray<LoginProviderId> = [
   "steam",
 ];
 
-/** Pocket ID и Steam показываются всегда [решение контроллера]; остальные — если включены на сервере. */
+/**
+ * Pocket ID и Steam показываются всегда [решение контроллера]; остальные — если включены на сервере
+ * и на этом домене. Привязанный способ показывается в любом случае (только «Отвязать»), чтобы его
+ * можно было отвязать и с домена витрины, где этот вход выключен.
+ */
 const isConfigured = (
   providerId: LoginProviderId,
   providers: AuthProviders,
@@ -72,56 +76,58 @@ export function LoginMethods({
   const [steamOpen, setSteamOpen] = useState(false);
   return (
     <div className="grid gap-2">
-      {ORDER.filter((providerId) => isConfigured(providerId, providers)).map(
-        (providerId) => {
-          const account = accounts.find((a) => a.providerId === providerId);
-          const linked = account !== undefined;
-          const allowed = linked && canUnlink(accounts, providerId, user);
-          const isSteamLink = providerId === "steam" && !linked;
-          return (
-            <div
-              key={providerId}
-              className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
-            >
-              <p className="text-sm">
-                {METHOD_LABELS[providerId]} —{" "}
-                {linked ? "привязан" : "не привязан"}
-                {linked && providerId === "steam"
-                  ? ` · SteamID ${user.steamId}`
-                  : ""}
-              </p>
-              {linked ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!allowed || busy === providerId}
-                  title={allowed ? undefined : "Это единственный способ входа"}
-                  onClick={() => account && onUnlink(account)}
-                >
-                  Отвязать
-                </Button>
-              ) : isSteamLink ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSteamOpen(true)}
-                >
-                  Подключить
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy === providerId}
-                  onClick={() => onLink(providerId)}
-                >
-                  Привязать
-                </Button>
-              )}
-            </div>
-          );
-        },
-      )}
+      {ORDER.filter(
+        (providerId) =>
+          isConfigured(providerId, providers) ||
+          accounts.some((a) => a.providerId === providerId),
+      ).map((providerId) => {
+        const account = accounts.find((a) => a.providerId === providerId);
+        const linked = account !== undefined;
+        const allowed = linked && canUnlink(accounts, providerId, user);
+        const isSteamLink = providerId === "steam" && !linked;
+        return (
+          <div
+            key={providerId}
+            className="flex items-center justify-between gap-3 rounded-lg border px-4 py-3"
+          >
+            <p className="text-sm">
+              {METHOD_LABELS[providerId]} —{" "}
+              {linked ? "привязан" : "не привязан"}
+              {linked && providerId === "steam"
+                ? ` · SteamID ${user.steamId}`
+                : ""}
+            </p>
+            {linked ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!allowed || busy === providerId}
+                title={allowed ? undefined : "Это единственный способ входа"}
+                onClick={() => account && onUnlink(account)}
+              >
+                Отвязать
+              </Button>
+            ) : isSteamLink ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSteamOpen(true)}
+              >
+                Подключить
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy === providerId}
+                onClick={() => onLink(providerId)}
+              >
+                Привязать
+              </Button>
+            )}
+          </div>
+        );
+      })}
       <SteamQrLoginDialog
         open={steamOpen}
         title="Подключите Steam"

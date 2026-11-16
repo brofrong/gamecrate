@@ -87,6 +87,31 @@ describe("LoginMethods", () => {
     expect(screen.getByText("Steam — не привязан")).toBeTruthy();
   });
 
+  it("keeps a linked provider that is off on this domain, with unlink only", () => {
+    const onUnlink = mock((_a: LinkedAccount) => {});
+    render(
+      <LoginMethods
+        user={user}
+        accounts={[
+          { id: "acc-tg", providerId: "telegram", accountId: "t1" },
+          ...accounts,
+        ]}
+        providers={{ ...providers, telegram: false }}
+        onLink={noop}
+        onUnlink={onUnlink}
+        onSteamDone={noop}
+        busy={null}
+      />,
+    );
+    const row = screen.getByText("Telegram — привязан").parentElement;
+    if (row === null) throw new Error("no row");
+    expect(within(row).queryByRole("button", { name: "Привязать" })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Отвязать" }));
+    expect(onUnlink).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "acc-tg" }),
+    );
+  });
+
   it("last login method cannot be unlinked", () => {
     render(
       <LoginMethods
