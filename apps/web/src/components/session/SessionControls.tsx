@@ -16,7 +16,7 @@
 // Esc уходит в игру, а удержание Esc (`escHold`) выходит через `exit_game_fullscreen`; уход с
 // экрана сессии в игровом полном экране — тоже выход (иначе на macOS Dock и Cmd+Tab остались бы
 // выключенными).
-import { Maximize, Menu, X } from "lucide-react";
+import { Maximize, Menu, Minimize, X } from "lucide-react";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import {
   AlertDialog,
@@ -389,6 +389,19 @@ export function SessionControls({
               На весь экран
             </Button>
           </div>
+        )}
+        {/* Приложение на сенсорном экране без клавиатуры: удержать Esc нечем, а жестов выхода,
+            как у браузера, у окна нет. */}
+        {fullscreen && isDesktop() && touchOnly() && (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="pointer-events-auto h-[34px] self-start opacity-60 hover:opacity-100 focus-visible:opacity-100"
+            onClick={() => void exitGameFullscreen()}
+          >
+            <Minimize />
+            Выйти из полного экрана
+          </Button>
         )}
         <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <AlertDialogContent

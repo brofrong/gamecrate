@@ -160,6 +160,41 @@ describe("session screen in the desktop app", () => {
     );
   });
 
+  it("touch screen without keyboard: a button exits fullscreen", async () => {
+    const invoke = setDesktop();
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: noop,
+      removeEventListener: noop,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      renderPlayer();
+      expect(
+        screen.queryByRole("button", { name: "Выйти из полного экрана" }),
+      ).toBeNull();
+      act(() => dispatchDesktopGameFullscreen(true));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Выйти из полного экрана" }),
+      );
+      await waitFor(() =>
+        expect(commands(invoke)).toEqual(["exit_game_fullscreen"]),
+      );
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it("with a mouse there is no exit button in fullscreen (Esc hold)", () => {
+    setDesktop();
+    renderPlayer();
+    act(() => dispatchDesktopGameFullscreen(true));
+    expect(
+      screen.queryByRole("button", { name: "Выйти из полного экрана" }),
+    ).toBeNull();
+  });
+
   it("leaving the session screen outside fullscreen does nothing", async () => {
     const invoke = setDesktop();
     const player = renderPlayer();

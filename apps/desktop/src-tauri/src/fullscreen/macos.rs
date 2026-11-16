@@ -48,6 +48,18 @@ pub fn normal_options(current: Options) -> Options {
     }
 }
 
+/// Опции после включения (`on`) или снятия перехвата. Включаем только в полноэкранном
+/// пространстве (`FullScreen` уже стоит): AppKit при входе окна в полный экран запоминает
+/// текущие опции и возвращает их при выходе — игровые, поставленные до входа, остались бы
+/// после игры (без Dock, меню и Cmd+Tab). До входа ждём `Resized`/`Focused` в конце перехода.
+pub fn next_options(current: Options, on: bool) -> Options {
+    if on && current.contains(Options::FullScreen) {
+        game_options(current)
+    } else {
+        normal_options(current)
+    }
+}
+
 /// Сочетание, которое AppKit примет (правила — в шапке модуля).
 pub fn allowed(options: Options) -> bool {
     let has = |flags: Options| options.contains(flags);
@@ -78,11 +90,7 @@ fn apply(on: bool) {
     };
     let app = NSApplication::sharedApplication(mtm);
     let current = app.presentationOptions();
-    let next = if on {
-        game_options(current)
-    } else {
-        normal_options(current)
-    };
+    let next = next_options(current, on);
     if next == current {
         return;
     }
@@ -135,6 +143,22 @@ mod tests {
         // уже обычные — без изменений
         assert_eq!(normal_options(SYSTEM_FULLSCREEN), SYSTEM_FULLSCREEN);
         assert_eq!(normal_options(Options::Default), Options::Default);
+    }
+
+    #[test]
+    fn capture_waits_for_fullscreen_space() {
+        // окно ещё не вошло в полный экран — игровые опции не ставим
+        assert_eq!(next_options(Options::Default, true), Options::Default);
+        // AppKit вернул игровые опции после выхода — снимаем их
+        assert_eq!(next_options(GAME, true), Options::Default);
+        assert_eq!(
+            next_options(SYSTEM_FULLSCREEN, true),
+            Options::FullScreen | GAME
+        );
+        assert_eq!(
+            next_options(Options::FullScreen | GAME, false),
+            Options::FullScreen | Options::AutoHideDock | Options::AutoHideMenuBar
+        );
     }
 
     #[test]

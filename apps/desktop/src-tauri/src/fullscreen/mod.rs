@@ -20,12 +20,12 @@ mod macos;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(windows)]
+use self::windows as platform;
 #[cfg(target_os = "linux")]
 use linux as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
-#[cfg(windows)]
-use windows as platform;
 
 use crate::status::AppState;
 use std::sync::atomic::Ordering;
@@ -66,8 +66,9 @@ pub fn enter<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
         .state::<AppState>()
         .game_fullscreen
         .store(true, Ordering::SeqCst);
-    // Сразу после `set_fullscreen` окно ещё в анимации — перехват включится и по `Resized` в
-    // конце перехода (AppKit в начале перехода ставит свои опции).
+    // `set_fullscreen` лишь ставит переход в очередь: окно ещё не на весь экран, и macOS тут
+    // перехват не включит (`macos::next_options`) — он включится по `Resized` из
+    // `windowDidEnterFullScreen`. Здесь — на случай, если окно уже было на весь экран.
     let focused = window.is_focused().unwrap_or(true);
     platform::set_capture(window.app_handle(), capture_wanted(true, focused, true));
     tell_page(window.app_handle(), true);
@@ -108,8 +109,11 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let app = window.app_handle();
     let state = app.state::<AppState>();
     let active = state.game_fullscreen.load(Ordering::SeqCst);
-    // вне игры — ничего: обычный ресайз окна не трогает ни опции, ни страницу
+    // вне игры — только снять перехват, если он вдруг остался (macOS может вернуть игровые
+    // опции при выходе из полноэкранного пространства уже после команды выхода); без игровых
+    // флагов это ничего не меняет, страницу не трогаем
     if !active {
+        platform::set_capture(app, false);
         return;
     }
     let focused = match event {
