@@ -135,10 +135,14 @@ fn build_main(app: &AppHandle, start: Url) -> tauri::Result<()> {
     builder = builder.on_page_load(move |webview, payload| {
         #[cfg(debug_assertions)]
         {
-            // без фрагмента: в нём токен входа (`/login/desktop/finish#token=…`)
-            let mut shown = payload.url().clone();
-            shown.set_fragment(None);
-            eprintln!("gamecrate: {:?} {shown}", payload.event());
+            // только схема, хост и путь: токен входа бывает во фрагменте
+            // (`/login/desktop/finish#token=…`) и в query (`index.html?retry=…` заглушки на
+            // холодном старте по ссылке)
+            eprintln!(
+                "gamecrate: {:?} {}",
+                payload.event(),
+                nav::loggable(payload.url())
+            );
         }
         if payload.event() == PageLoadEvent::Started {
             // страница сменилась — экрана сессии больше нет, игровой полный экран снять

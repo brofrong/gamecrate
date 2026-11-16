@@ -86,6 +86,18 @@ pub fn offline_query(retry: &Url) -> String {
     format!("index.html?retry={encoded}")
 }
 
+/// Адрес для лога: только схема, хост (с портом) и путь. Query и фрагмент отрезаны — в них
+/// бывает токен входа (`/login/desktop/finish#token=…`, а на холодном старте по ссылке —
+/// `index.html?retry=<адрес с токеном>` у заглушки).
+/// У адресов без хоста (`about:`, `data:`) — только схема.
+pub fn loggable(url: &Url) -> String {
+    let Some(host) = url.host_str() else {
+        return format!("{}:", url.scheme());
+    };
+    let port = url.port().map(|p| format!(":{p}")).unwrap_or_default();
+    format!("{}://{host}{port}{}", url.scheme(), url.path())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +253,31 @@ mod tests {
         assert_eq!(
             page,
             "index.html?retry=https%3A%2F%2Fgame.brofrong.ru%2Fapp"
+        );
+    }
+
+    #[test]
+    fn loggable_url_drops_query_and_fragment() {
+        let token = "AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+        let finish = url(&format!(
+            "https://game.brofrong.ru/login/desktop/finish#token={token}&state=s"
+        ));
+        assert_eq!(
+            loggable(&finish),
+            "https://game.brofrong.ru/login/desktop/finish"
+        );
+        // холодный старт по ссылке: адрес с токеном лежит в `?retry=` заглушки
+        let offline = url(&format!("tauri://localhost/{}", offline_query(&finish)));
+        let shown = loggable(&offline);
+        assert_eq!(shown, "tauri://localhost/index.html");
+        assert!(!shown.contains(token));
+        assert_eq!(
+            loggable(&url("http://localhost:3000/app?x=1")),
+            "http://localhost:3000/app"
+        );
+        assert_eq!(
+            loggable(&url("https://user:pw@game.brofrong.ru/app")),
+            "https://game.brofrong.ru/app"
         );
     }
 }
