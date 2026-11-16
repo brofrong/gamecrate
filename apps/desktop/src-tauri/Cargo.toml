@@ -1,0 +1,19 @@
+[package]
+name = "gamecrate-desktop"
+version = "0.1.0"
+description = "GameCrate — десктоп-приложение"
+edition = "2021"
+publish = false
+
+[lib]
+# `_lib` — чтобы имя библиотеки не совпало с бинарником (на Windows это ломает сборку).
+name = "gamecrate_desktop_lib"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+tauri-plugin-opener = "=2.7.3"
+tauri-plugin-single-instance = "=2.5.5"
+url = "=2.5.8"

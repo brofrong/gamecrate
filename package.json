@@ -10,8 +10,8 @@
     "check": "turbo run check",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "build": "turbo run build",
-    "dev": "turbo run dev",
+    "build": "turbo run build --filter=!@cg/desktop",
+    "dev": "turbo run dev --filter=!@cg/desktop",
     "fmt": "bun fmt"
   },
   "devDependencies": {

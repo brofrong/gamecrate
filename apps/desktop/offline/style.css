@@ -1,0 +1,107 @@
+/* Цвета бренда GameCrate (apps/web/src/styles.css): фон #05060f, текст #f3f4ff. */
+:root {
+  color-scheme: dark;
+  --bg: #05060f;
+  --fg: #f3f4ff;
+  --muted: #9ea3c4;
+  --accent-from: #3cc2ff;
+  --accent-to: #5b2fff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px;
+  text-align: center;
+}
+
+.logo {
+  display: block;
+}
+
+body[data-state="checking"] .logo {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.offline {
+  display: none;
+}
+
+body[data-state="offline"] .offline {
+  display: block;
+}
+
+body[data-state="offline"] .checking {
+  display: none;
+}
+
+button {
+  margin-top: 24px;
+  padding: 12px 32px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-from);
+  outline-offset: 3px;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-state="checking"] .logo {
+    animation: none;
+  }
+}
