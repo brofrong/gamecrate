@@ -144,6 +144,7 @@ mod tests {
     fn mock_app() -> tauri::WebviewWindow<tauri::test::MockRuntime> {
         let app = mock_builder()
             .plugin(tauri_plugin_opener::init())
+            .plugin(tauri_plugin_deep_link::init())
             .manage(AppState::default())
             .invoke_handler(handler())
             .build(crate::context())
@@ -268,6 +269,25 @@ mod tests {
         );
         assert!(denied(&result), "{result:?}");
         let _ = window.app_handle();
+    }
+
+    #[test]
+    fn site_page_gets_no_deep_link_commands() {
+        let window = mock_app();
+        for cmd in [
+            "plugin:deep-link|get_current",
+            "plugin:deep-link|register",
+            "plugin:deep-link|unregister",
+            "plugin:deep-link|is_registered",
+        ] {
+            let result = invoke(
+                &window,
+                cmd,
+                "https://game.brofrong.ru/app",
+                serde_json::json!({ "protocol": "gamecrate" }),
+            );
+            assert!(denied(&result), "{cmd}: {result:?}");
+        }
     }
 
     #[test]

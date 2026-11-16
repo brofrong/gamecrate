@@ -1,6 +1,7 @@
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod commands;
+mod deep_link;
 mod fullscreen;
 mod nav;
 mod status;
@@ -15,6 +16,7 @@ use tauri::window::Color;
 use tauri::{
     AppHandle, Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
 };
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -67,10 +69,10 @@ pub(crate) fn show_main<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Главное окно. Сначала открывается заглушка из бандла: она проверяет, что сайт отвечает, и
-/// сразу уходит на `<сайт>/app`; без сети остаётся на экране с кнопкой «Повторить».
-fn build_main(app: &AppHandle) -> tauri::Result<()> {
+/// сразу уходит на `start` (`<сайт>/app` или страницу из ссылки запуска); без сети остаётся на
+/// экране с кнопкой «Повторить».
+fn build_main(app: &AppHandle, start: Url) -> tauri::Result<()> {
     let public = nav::public_url();
-    let start = nav::start_url(nav::public_base());
 
     let nav_app = app.clone();
     let nav_public = public.clone();
@@ -132,7 +134,12 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
     // страница сама пришлёт статус заново.
     builder = builder.on_page_load(move |webview, payload| {
         #[cfg(debug_assertions)]
-        eprintln!("gamecrate: {:?} {}", payload.event(), payload.url());
+        {
+            // без фрагмента: в нём токен входа (`/login/desktop/finish#token=…`)
+            let mut shown = payload.url().clone();
+            shown.set_fragment(None);
+            eprintln!("gamecrate: {:?} {shown}", payload.event());
+        }
         if payload.event() == PageLoadEvent::Started {
             // страница сменилась — экрана сессии больше нет, игровой полный экран снять
             fullscreen::on_page_load(&webview);
@@ -144,6 +151,27 @@ fn build_main(app: &AppHandle) -> tauri::Result<()> {
 
     builder.build()?;
     Ok(())
+}
+
+/// Первая ссылка `gamecrate://`, которую приложение понимает, → страница сайта.
+fn link_target(urls: &[Url]) -> Option<Url> {
+    let public = nav::public_url();
+    urls.iter().find_map(|url| deep_link::target(url, &public))
+}
+
+/// Ссылка `gamecrate://` пришла в запущенное приложение (macOS — событием ОС, Windows/Linux —
+/// из второго запуска через single-instance): открыть страницу в главном окне и показать его.
+/// Саму ссылку не логируем — в ней может быть токен входа.
+fn open_link<R: Runtime>(app: &AppHandle<R>, urls: &[Url]) {
+    let Some(target) = link_target(urls) else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window(MAIN) {
+        if let Err(err) = window.navigate(target) {
+            eprintln!("gamecrate: не открыть ссылку в окне: {err}");
+        }
+    }
+    show_main(app);
 }
 
 /// Статус — в `Idle` (и трей, если он был другим).
@@ -193,9 +221,11 @@ pub fn run() {
         .on_menu_event(|app, event| app_menu::on_event(app, &event));
     builder
         // первым: второй запуск не поднимает остальное, а будит уже открытое окно
+        // ссылку из argv второго запуска плагин (фича `deep-link`) сам отдаёт в `on_open_url`
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app)
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -221,7 +251,26 @@ pub fn run() {
                 .notification()
                 .on_action(move |_| show_main(&on_click))?;
             tray::create(&handle)?;
-            build_main(&handle)?;
+            // запуск ссылкой (Windows/Linux: ссылка в argv) — сразу на её страницу
+            let launched = handle
+                .deep_link()
+                .get_current()
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let start =
+                link_target(&launched).unwrap_or_else(|| nav::start_url(nav::public_base()));
+            build_main(&handle, start)?;
+            // ссылки в запущенное приложение; macOS присылает и ссылку запуска — уже событием
+            let on_link = handle.clone();
+            handle
+                .deep_link()
+                .on_open_url(move |event| open_link(&on_link, &event.urls()));
+            // в релизе схему регистрирует установщик; dev-сборке — самим (на macOS только из .app)
+            #[cfg(all(debug_assertions, any(windows, target_os = "linux")))]
+            if let Err(err) = handle.deep_link().register_all() {
+                eprintln!("gamecrate: схема gamecrate:// не зарегистрирована: {err}");
+            }
             Ok(())
         })
         .build(context())

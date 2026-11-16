@@ -14,11 +14,15 @@ tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
 tauri = { version = "=2.12.5", features = ["tray-icon"] }
+tauri-plugin-deep-link = "=2.6.3"
 tauri-plugin-dialog = "=2.8.4"
 tauri-plugin-notification = "=2.8.0"
 tauri-plugin-opener = "=2.7.3"
-tauri-plugin-single-instance = "=2.5.5"
+# `deep-link`: ссылка `gamecrate://` из второго запуска (Windows/Linux — в argv) уходит первому
+tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }
 serde = { version = "=1.0.229", features = ["derive"] }
+# `generate_context!` встраивает конфиг плагинов (`plugins.deep-link`) через serde_json
+serde_json = "=1.0.154"
 url = "=2.5.8"
 
 # Перехват в игровом полном экране: `NSApplication.presentationOptions` (src/fullscreen/macos.rs).
@@ -30,4 +34,3 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std
 [dev-dependencies]
 # мок-рантайм Tauri: проверка ACL команд (какие страницы их зовут) без окна
 tauri = { version = "=2.12.5", features = ["tray-icon", "test"] }
-serde_json = "=1.0.154"
