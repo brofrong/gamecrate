@@ -212,6 +212,24 @@ describe("название и логотип витрины", () => {
     expect(ids[0]).not.toBe(ids[1]);
   });
 
+  it("логотип билайна: рядом с шаром «beePlay Cloud», в iconOnly — только шар", () => {
+    const full = render(
+      <BrandProvider brand={WEB_BRANDS.beeline}>
+        <BrandLogo height={36} title="билайн" />
+      </BrandProvider>,
+    );
+    expect(full.container.textContent).toContain("beePlay Cloud");
+    expect(screen.getByRole("img", { name: "билайн" })).toBeTruthy();
+    full.unmount();
+
+    const icon = render(
+      <BrandProvider brand={WEB_BRANDS.beeline}>
+        <BrandLogo iconOnly height={36} />
+      </BrandProvider>,
+    );
+    expect(icon.container.textContent).not.toContain("beePlay Cloud");
+  });
+
   it("authErrorMessage подставляет название витрины", () => {
     expect(
       authErrorMessage("ACCOUNT_ALREADY_LINKED_TO_DIFFERENT_USER", "билайн"),
