@@ -1,7 +1,8 @@
 // Сцена «сборка куба» для левой половины страницы входа: 27 изометрических кубиков
 // слетаются к своим местам по мере заполнения формы (почта → код → готово), наведение
 // на способ входа подсвечивает их цветом провайдера, а успешный вход зажигает куб.
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { readBrandPalette } from "@/lib/brandColors";
 import {
   approach,
   CAPTIONS,
@@ -90,10 +91,12 @@ export function CubeScene({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cubes = useRef<Cube[] | null>(null);
   const reduced = usePrefersReducedMotion();
+  // Палитра витрины читается один раз при монтировании.
+  const [palette] = useState(readBrandPalette);
 
   const draw: DrawFrame = (ctx, size: CanvasSize, t) => {
     const { width: W, height: H } = size;
-    cubes.current ??= makeCubes(Math.random);
+    cubes.current ??= makeCubes(Math.random, palette);
     const s = edgeSize(W);
     const cx = W / 2;
     const cy = H / 2 + 60;
@@ -117,8 +120,9 @@ export function CubeScene({
 
     if (lit) {
       const g = ctx.createRadialGradient(cx, cy - 40, 0, cx, cy - 40, 260);
-      g.addColorStop(0, "rgba(60,194,255,0.35)");
-      g.addColorStop(1, "rgba(60,194,255,0)");
+      const glowRgb = palette.glowRgb.join(",");
+      g.addColorStop(0, `rgba(${glowRgb},0.35)`);
+      g.addColorStop(1, `rgba(${glowRgb},0)`);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, W, H);
     }

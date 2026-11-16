@@ -56,6 +56,11 @@ services:
       YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
       TELEGRAM_CLIENT_ID: ${TELEGRAM_CLIENT_ID:-}
       TELEGRAM_CLIENT_SECRET: ${TELEGRAM_CLIENT_SECRET:-}
+      BRAND_HOSTS: ${BRAND_HOSTS:-}
+      OAUTH_HOSTS_GOOGLE: ${OAUTH_HOSTS_GOOGLE:-}
+      OAUTH_HOSTS_YANDEX: ${OAUTH_HOSTS_YANDEX:-}
+      OAUTH_HOSTS_POCKET_ID: ${OAUTH_HOSTS_POCKET_ID:-}
+      OAUTH_HOSTS_TELEGRAM: ${OAUTH_HOSTS_TELEGRAM:-}
       # Прокси стрима /stream/<id>/ ходит в relay оркестратора (а тот — по тоннелю агента в
       # Selkies сессии); в сети cg-sessions api больше нет.
       ORCHESTRATOR_RELAY_URL: http://cg-orchestrator:${RELAY_PORT:-3002}

@@ -44,7 +44,7 @@ export function GameTile({
       to="/app/game/$appId"
       params={{ appId: game.appId }}
       aria-label={`Игра: ${game.name}`}
-      className="group flex flex-col gap-2 rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-[#3cc2ff]"
+      className="group flex flex-col gap-2 rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-brand-accent"
     >
       <article className="relative aspect-[460/215] overflow-hidden rounded-[14px] bg-[#1a1d26] ring-1 ring-white/5 transition group-hover:ring-white/20">
         <GameCover game={game} dimmed={dimmed} />

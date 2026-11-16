@@ -198,7 +198,7 @@ export const achievements: ReadonlyArray<{
   },
 ];
 
-/** FAQ в виде чата: вопрос игрока — ответ GameCrate. */
+/** FAQ в виде чата: вопрос игрока — ответ витрины. */
 export const faq: ReadonlyArray<{ q: string; a: string }> = [
   {
     q: "А лагать не будет?",

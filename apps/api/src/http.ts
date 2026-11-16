@@ -1,19 +1,15 @@
 // HTTP-роутер: /healthz, Better Auth (/api/auth/*), Effect RPC по WebSocket (/rpc),
-// прокси стрима (/stream/<id>/*), статика SPA.
+// прокси стрима (/stream/<id>/*), статика SPA (`index.html` по витрине хоста, brand/route.ts).
 import { AppRpcs } from "@cg/rpc";
 import { Effect, Layer } from "effect";
-import {
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-  HttpStaticServer,
-} from "effect/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import { AccountRpcHandlers } from "./account/rpc";
 import { AdminRpcHandlers } from "./admin/rpc";
 import { BetterAuth } from "./auth/auth";
 import { RpcMiddlewares } from "./auth/currentUser";
 import { AuthRpcHandlers, PublicAuthRpcHandlers } from "./auth/rpc";
+import { BrandedStaticRoute } from "./brand/route";
 import { AppConfig, rpcAllowedOrigins } from "./config";
 import { LibraryRpcHandlers } from "./library/rpc";
 import { SessionEvents } from "./session/SessionEvents";
@@ -100,18 +96,11 @@ const RpcRoute = RpcServer.layer(AppRpcs).pipe(
   Layer.provide(RpcSerialization.layerNdjson),
 );
 
-/** Остальные GET — файлы из `webDistDir`; неизвестные страницы → `index.html` (SPA). */
-const StaticRoute = Layer.unwrap(
-  AppConfig.useSync((config) =>
-    HttpStaticServer.layer({ root: config.webDistDir, spa: true }),
-  ),
-);
-
 /** Всё приложение; запускается через `HttpRouter.serve` (main.ts) или `toWebHandler` (тесты). */
 export const HttpApp = Layer.mergeAll(
   HealthRoute,
   AuthRoute,
   RpcRoute,
   StreamProxyRoute,
-  StaticRoute,
+  BrandedStaticRoute,
 );

@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AuthProviders } from "@cg/rpc";
 import { sendEmailCode, signInWithEmailCode, signInWithProvider } from "@/auth";
+import { useBrand } from "@/brands";
 import { Button } from "@/components/ui/button";
 import { authErrorMessage } from "@/lib/authErrors";
 import { assemblyLevel, type Level, PROVIDER_TINT } from "@/lib/cubeAssembly";
@@ -31,6 +32,7 @@ export function LoginPanel({
   onTint: (t: keyof typeof PROVIDER_TINT | null) => void;
   onLit: () => void;
 }) {
+  const brand = useBrand();
   const [step, setStep] = useState<PanelStep>({ kind: "email", email: "" });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export function LoginPanel({
     const result = await sendEmailCode(email);
     setPending(false);
     if (result.error) {
-      setError(authErrorMessage(result.error));
+      setError(authErrorMessage(result.error, brand.name));
       return;
     }
     autoSubmitted.current = null;
@@ -62,7 +64,7 @@ export function LoginPanel({
     const result = await signInWithEmailCode(email, otp);
     setPending(false);
     if (result.error) {
-      setError(authErrorMessage(result.error));
+      setError(authErrorMessage(result.error, brand.name));
       return;
     }
     onLit();
@@ -139,7 +141,7 @@ export function LoginPanel({
   return (
     <div className="grid w-full max-w-sm gap-5">
       <h1 className="text-2xl font-semibold tracking-[-0.02em] text-brand-text">
-        Войти в GameCrate
+        Войти в {brand.name}
       </h1>
 
       {step.kind === "email" ? (
@@ -180,7 +182,7 @@ export function LoginPanel({
             <Button
               type="submit"
               disabled={pending || step.email.trim().length === 0}
-              className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
+              className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
             >
               Получить код
             </Button>
@@ -215,7 +217,7 @@ export function LoginPanel({
             type="button"
             disabled={pending || step.otp.length !== 6}
             onClick={() => void submitCode(step.email, step.otp)}
-            className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-white"
+            className="h-11 w-full rounded-xl bg-brand-gradient text-sm font-semibold text-brand-on-accent"
           >
             Войти
           </Button>
@@ -240,7 +242,7 @@ export function LoginPanel({
       )}
 
       <p className="text-xs text-brand-dim">
-        Входя, ты создаёшь аккаунт GameCrate, если его ещё нет
+        Входя, ты создаёшь аккаунт {brand.name}, если его ещё нет
       </p>
       {providers.pocketId && (
         <Button

@@ -7,7 +7,8 @@ import { BarChart3, Clock, LayoutGrid, Package, Search } from "lucide-react";
 import type { ComponentType } from "react";
 import type { CurrentUserShape } from "@cg/rpc";
 import { UserAvatar } from "@/components/app/UserAvatar";
-import { Logo } from "@/components/brand/Logo";
+import { useBrand } from "@/brands";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import {
   Tooltip,
   TooltipContent,
@@ -48,13 +49,14 @@ const linkClassName =
   "relative flex size-11 items-center justify-center rounded-2xl text-[#8a90a8] transition-colors hover:bg-white/5 hover:text-[#eef1ff]";
 
 export function Rail({ user }: { user: CurrentUserShape }) {
+  const brand = useBrand();
   return (
     <nav
       aria-label="Разделы"
       className="flex h-[calc(100dvh-3rem)] w-[84px] flex-col items-center gap-2 rounded-[40px] bg-[#13161d] py-5"
     >
-      <Link to="/app" aria-label="GameCrate" className="mb-6">
-        <Logo iconOnly progress={1} height={36} />
+      <Link to="/app" aria-label={brand.name} className="mb-6">
+        <BrandLogo iconOnly progress={1} height={36} />
       </Link>
       {SECTIONS.map(({ to, label, icon }) => (
         <Tooltip key={to}>

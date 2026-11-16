@@ -1,7 +1,10 @@
 // Продакшн-сборка SPA: `src/index.html` → `dist/` (index.html + хэшированные ассеты)
-// и картинки своих игр `games/<slug>/site/*.jpg` → `dist/own-games/<appId>/`.
+// и картинки своих игр `games/<slug>/site/*.jpg` → `dist/own-games/<appId>/`,
+// и файлы витрин `src/brands/<id>/public/*` → `dist/brands/<id>/` (favicon и т. п.).
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { BRAND_IDS } from "@cg/brands";
 import tailwind from "bun-plugin-tailwind";
 import { OWN_ASSET_FILE, ownGameSiteDirs } from "./scripts/ownGameAssets";
 
@@ -39,4 +42,19 @@ for (const [appId, siteDir] of ownGameSiteDirs()) {
     await copyFile(join(siteDir, file.name), join(target, file.name));
   }
   console.log(`dist/own-games/${appId}/  ${files.length} файлов`);
+}
+
+for (const id of BRAND_IDS) {
+  const publicDir = new URL(`./src/brands/${id}/public`, import.meta.url)
+    .pathname;
+  if (!existsSync(publicDir)) continue;
+  const target = join(outdir, "brands", id);
+  await mkdir(target, { recursive: true });
+  const files = (await readdir(publicDir, { withFileTypes: true })).filter(
+    (entry) => entry.isFile(),
+  );
+  for (const file of files) {
+    await copyFile(join(publicDir, file.name), join(target, file.name));
+  }
+  console.log(`dist/brands/${id}/  ${files.length} файлов`);
 }

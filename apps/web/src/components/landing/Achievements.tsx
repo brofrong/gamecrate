@@ -1,14 +1,16 @@
 // Ачивки: сетка карточек с эмодзи в шестиугольнике; сезонные — серые и подписаны.
+import { useBrand } from "@/brands";
 import { cn } from "@/lib/utils";
 import { achievements } from "./data";
 import { SectionHead } from "./SectionHead";
 
 export function Achievements() {
+  const brand = useBrand();
   return (
     <section id="ach" className="relative py-[110px]">
       <div className="mx-auto max-w-[1180px] px-7">
         <SectionHead label="Ачивки" title="Играй и собирай">
-          Свои достижения за то, как ты играешь на GameCrate. Часть открыта
+          Свои достижения за то, как ты играешь на {brand.name}. Часть открыта
           только в сезонные ивенты.
         </SectionHead>
         <div className="grid grid-cols-2 gap-3.5 min-[960px]:grid-cols-4">

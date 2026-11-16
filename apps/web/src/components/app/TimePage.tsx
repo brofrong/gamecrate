@@ -111,7 +111,7 @@ export function TimePage() {
                   </span>
                   <div className="col-span-2 h-[5px] overflow-hidden rounded-full bg-white/10">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-[#3cc2ff] via-[#3a6cff] to-[#5b2fff]"
+                      className="h-full rounded-full bg-gradient-to-r from-brand-accent via-brand-accent-2 to-brand-accent-3"
                       style={{
                         width: `${(game.minutes / maxGameMinutes) * 100}%`,
                       }}
@@ -150,7 +150,7 @@ export function TimePage() {
               <button
                 type="button"
                 onClick={() => setExpanded(true)}
-                className="py-3 text-center text-sm font-semibold text-[#3cc2ff] hover:text-[#eef1ff]"
+                className="py-3 text-center text-sm font-semibold text-brand-accent hover:text-[#eef1ff]"
               >
                 показать ещё {remaining}
               </button>

@@ -1,7 +1,7 @@
 // Тесты конфигурации: обязательные почтовые переменные и опциональные провайдеры входа.
 import { describe, expect, it } from "bun:test";
 import { ConfigProvider, Effect, Option, Redacted } from "effect";
-import { appConfig } from "../src/config";
+import { appConfig, appHosts, rpcAllowedOrigins } from "../src/config";
 
 const base = {
   PUBLIC_URL: "https://game.brofrong.ru",
@@ -83,6 +83,78 @@ describe("appConfig", () => {
       parse(withoutSmtp).pipe(Effect.result),
     );
     expect(result._tag).toBe("Failure");
+  });
+
+  it("brand hosts are empty by default and when empty string", async () => {
+    for (const env of [base, { ...base, BRAND_HOSTS: "" }]) {
+      const config = await Effect.runPromise(parse(env));
+      expect(config.brandHosts.size).toBe(0);
+    }
+  });
+
+  it("BRAND_HOSTS maps hosts to brands", async () => {
+    const config = await Effect.runPromise(
+      parse({ ...base, BRAND_HOSTS: "play.beeline.ru=beeline" }),
+    );
+    expect(config.brandHosts.get("play.beeline.ru")).toBe("beeline");
+  });
+
+  it("BRAND_HOSTS with an unknown brand is a ConfigError", async () => {
+    const result = await Effect.runPromise(
+      parse({ ...base, BRAND_HOSTS: "x=bad" }).pipe(Effect.result),
+    );
+    expect(result._tag).toBe("Failure");
+  });
+
+  it("rpcAllowedOrigins include PUBLIC_URL and every brand host", async () => {
+    const config = await Effect.runPromise(
+      parse({
+        ...base,
+        PUBLIC_URL: "https://game.x.ru",
+        BRAND_HOSTS: "play.beeline.ru=beeline",
+      }),
+    );
+    const origins = rpcAllowedOrigins(config);
+    expect(origins.has("https://game.x.ru")).toBe(true);
+    expect(origins.has("https://play.beeline.ru")).toBe(true);
+    expect(appHosts(config)).toEqual(["game.x.ru", "play.beeline.ru"]);
+  });
+
+  it("OAUTH_HOSTS_* default to the PUBLIC_URL host (also when empty)", async () => {
+    for (const env of [
+      { ...base, PUBLIC_URL: "https://game.x.ru" },
+      {
+        ...base,
+        PUBLIC_URL: "https://game.x.ru",
+        OAUTH_HOSTS_GOOGLE: "",
+        OAUTH_HOSTS_YANDEX: "",
+        OAUTH_HOSTS_POCKET_ID: "",
+        OAUTH_HOSTS_TELEGRAM: "",
+      },
+    ]) {
+      const config = await Effect.runPromise(parse(env));
+      for (const hosts of Object.values(config.oauthHosts)) {
+        expect([...hosts]).toEqual(["game.x.ru"]);
+      }
+    }
+  });
+
+  it("OAUTH_HOSTS_* is a normalized comma-separated list per provider", async () => {
+    const config = await Effect.runPromise(
+      parse({
+        ...base,
+        PUBLIC_URL: "https://game.x.ru",
+        OAUTH_HOSTS_GOOGLE: "a.ru, B.ru",
+        OAUTH_HOSTS_POCKET_ID: "game.x.ru, play.beeline.ru",
+      }),
+    );
+    expect([...config.oauthHosts.google]).toEqual(["a.ru", "b.ru"]);
+    expect([...config.oauthHosts.pocketId]).toEqual([
+      "game.x.ru",
+      "play.beeline.ru",
+    ]);
+    expect([...config.oauthHosts.yandex]).toEqual(["game.x.ru"]);
+    expect([...config.oauthHosts.telegram]).toEqual(["game.x.ru"]);
   });
 
   it("empty provider vars count as unset", async () => {

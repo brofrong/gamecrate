@@ -12,6 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@cg/brands": "workspace:*",
     "@cg/rpc": "workspace:*",
     "@effect/atom-react": "4.0.5",
     "@effect/platform-browser": "4.0.5",
