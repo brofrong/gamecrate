@@ -114,7 +114,9 @@ const signIn = async (email: string): Promise<string> => {
   await post("/email-otp/send-verification-otp", { email, type: "sign-in" });
   const code = sent[0]?.text.match(/\b\d{6}\b/)?.[0];
   if (!code) throw new Error("no code in mail");
-  const cookie = sessionCookie(await post("/sign-in/email-otp", { email, otp: code }));
+  const cookie = sessionCookie(
+    await post("/sign-in/email-otp", { email, otp: code }),
+  );
   if (!cookie) throw new Error("no session cookie");
   return cookie;
 };
