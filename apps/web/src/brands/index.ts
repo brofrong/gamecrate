@@ -7,6 +7,16 @@ import { createContext, createElement, useContext } from "react";
 import { beeline } from "./beeline";
 import { gamecrate } from "./gamecrate";
 
+/** Подписка партнёра — карточка на витрине (оформляется у партнёра, не у нас). */
+export type PartnerPlan = {
+  readonly name: string;
+  /** Цена как на сайте партнёра, например «75 ₽». */
+  readonly price: string;
+  /** Что за цена, например «стоимость подключения, 1 час». */
+  readonly priceNote: string;
+  readonly perks: readonly string[];
+};
+
 /** Как витрина зарабатывает: свои тарифы или подписка у партнёра. */
 export type Monetization =
   /** GameCrate: тарифы, цены, «Докупить». */
@@ -15,7 +25,10 @@ export type Monetization =
       readonly kind: "partner";
       readonly title: string;
       readonly text: string;
+      /** Где оформить подписку; `null` — адрес неизвестен, ссылок и «Подключить» нет. */
       readonly url: string | null;
+      /** Карточки подписок; пустой список — без карточек. */
+      readonly plans: readonly PartnerPlan[];
     };
 
 /** Страницы, которые витрина может подменить целиком. */
